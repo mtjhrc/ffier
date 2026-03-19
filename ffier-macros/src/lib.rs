@@ -505,10 +505,32 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         header_exprs.push(quote! {
             concat!("typedef ", #bytes_c_name, " ", #path_c_name, ";")
         });
+        let bytes_macro_name = format!("{upper_pfx}BYTES");
         header_exprs.push(quote! { "" });
         header_exprs.push(quote! {
             concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
         });
+        header_exprs.push(quote! {
+            concat!(
+                "#define ", #bytes_macro_name, "(arr) ({ \\")
+        });
+        header_exprs.push(quote! {
+            concat!(
+                "    _Static_assert( \\")
+        });
+        header_exprs.push(quote! {
+            concat!(
+                "        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\")
+        });
+        header_exprs.push(quote! {
+            concat!(
+                "        \"", #bytes_macro_name, "() requires an array, not a pointer\"); \\")
+        });
+        header_exprs.push(quote! {
+            concat!(
+                "    ((", #bytes_c_name, "){ .data = (const char*)(arr), .len = sizeof(arr) }); \\")
+        });
+        header_exprs.push(quote! { "})" });
         header_exprs.push(quote! { concat!("#endif /* ", #bytes_guard, " */") });
         header_exprs.push(quote! { "" });
     }
