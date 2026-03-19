@@ -58,14 +58,72 @@ mod std_impls {
 }
 
 // ---------------------------------------------------------------------------
+// FfierBytes — zero-copy byte slice for C FFI (&[u8], &str, &Path)
+// ---------------------------------------------------------------------------
+
+/// `#[repr(C)]` byte slice passed across FFI. In C, each usage gets a
+/// typedef (`Str`, `Bytes`, `Path`) from the same underlying struct.
+#[repr(C)]
+pub struct FfierBytes {
+    pub data: *const u8,
+    pub len: usize,
+}
+
+impl FfierBytes {
+    pub const EMPTY: Self = Self {
+        data: core::ptr::null(),
+        len: 0,
+    };
+
+    /// # Safety
+    /// `data` must be valid for `len` bytes, or null (returns `&[]`).
+    pub unsafe fn as_bytes(&self) -> &[u8] {
+        if self.data.is_null() {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(self.data, self.len) }
+        }
+    }
+
+    /// # Safety
+    /// `data` must point to valid UTF-8 of length `len`.
+    pub unsafe fn as_str_unchecked(&self) -> &str {
+        unsafe { core::str::from_utf8_unchecked(self.as_bytes()) }
+    }
+
+    /// # Safety
+    /// `data` must point to valid UTF-8 of length `len`.
+    #[cfg(unix)]
+    pub unsafe fn as_path(&self) -> &std::path::Path {
+        use std::os::unix::ffi::OsStrExt;
+        std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe { self.as_bytes() }))
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Self {
+        Self {
+            data: b.as_ptr(),
+            len: b.len(),
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        Self::from_bytes(s.as_bytes())
+    }
+
+    #[cfg(unix)]
+    pub fn from_path(p: &std::path::Path) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        Self::from_bytes(p.as_os_str().as_bytes())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FfiError — per-type C error struct: { code, _msg }
 // ---------------------------------------------------------------------------
 
 pub trait FfiError: Sized {
     fn code(&self) -> u64;
 
-    /// Optional heap-allocated custom message. If `None`, `static_message()`
-    /// provides the fallback (zero-allocation path).
     fn message(&self) -> Option<String> {
         None
     }
@@ -76,8 +134,6 @@ pub trait FfiError: Sized {
     fn codes() -> &'static [(&'static str, u64)];
 }
 
-/// The underlying `#[repr(C)]` error struct. In C, each error type gets its
-/// own structurally-identical struct definition (not a typedef).
 #[repr(C)]
 pub struct FfierError {
     pub code: u64,
@@ -110,8 +166,6 @@ impl FfierError {
         self._msg
     }
 
-    /// Free any heap-allocated message and zero the struct.
-    ///
     /// # Safety
     /// `_msg` must be null or from `CString::into_raw`.
     pub unsafe fn free(&mut self) {
