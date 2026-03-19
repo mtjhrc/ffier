@@ -14,6 +14,11 @@ pub struct MyCalculator {
 
 #[ffier::exportable(prefix = "ex")]
 impl MyCalculator {
+    /// Create a new calculator.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
     /// Add two integers.
     ///
     /// # Arguments

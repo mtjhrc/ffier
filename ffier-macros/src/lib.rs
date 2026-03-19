@@ -2,7 +2,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
     Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, LitStr, Pat, PathArguments,
-    ReturnType, Token, Type, parse::Parse, parse_macro_input,
+    ReturnType, Token, Type, parse::Parse, parse_macro_input, visit_mut::VisitMut,
 };
 
 struct ReflectArgs {
@@ -65,7 +65,9 @@ struct MethodInfo {
     method_name: syn::Ident,
     ffi_name: syn::Ident,
     ffi_name_str: String,
+    has_receiver: bool,
     is_mut: bool,
+    is_by_value: bool,
     param_idents: Vec<syn::Ident>,
     param_name_strs: Vec<String>,
     param_kinds: Vec<ParamKind>,
@@ -133,10 +135,19 @@ fn ffi_param_tokens(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
 }
 
 fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStream {
+    // Slice/HandleRef conversions produce references with unconstrained lifetimes
+    // (from raw pointers). The compiler infers the needed lifetime — typically
+    // 'static at the FFI boundary. The C caller is responsible for keeping the
+    // data alive.
     match kind {
         ParamKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::from_c(#id) },
-        ParamKind::Slice(SliceKind::Str) => quote! { unsafe { #id.as_str_unchecked() } },
-        ParamKind::Slice(SliceKind::Bytes) => quote! { unsafe { #id.as_bytes() } },
+        ParamKind::Slice(SliceKind::Str) => quote! { unsafe {
+            core::str::from_utf8_unchecked(
+                core::slice::from_raw_parts(#id.data, #id.len))
+        } },
+        ParamKind::Slice(SliceKind::Bytes) => quote! { unsafe {
+            core::slice::from_raw_parts(#id.data, #id.len)
+        } },
         ParamKind::Slice(SliceKind::Path) => quote! { unsafe { #id.as_path() } },
         ParamKind::HandleRef { inner_ty, is_mut: true } => {
             quote! { unsafe { &mut *(#id as *mut #inner_ty) } }
@@ -209,7 +220,16 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     };
-    let struct_ident = struct_path.path.get_ident().expect("expected simple struct name");
+    let last_seg = struct_path
+        .path
+        .segments
+        .last()
+        .expect("expected struct name");
+    let struct_ident = &last_seg.ident;
+    let self_ty = &input.self_ty;
+    let self_ty_static = erase_lifetimes(self_ty);
+    let impl_generics = &input.generics;
+    let _ = impl_generics; // used later for lifetime detection
     let struct_name = struct_ident.to_string();
     let struct_lower = struct_name.to_lowercase();
 
@@ -272,9 +292,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let ffi_name_str = ffi_name.to_string();
 
         let self_arg = method.sig.inputs.first();
-        if !matches!(self_arg, Some(FnArg::Receiver(_))) {
-            continue;
-        }
+        let has_receiver = matches!(self_arg, Some(FnArg::Receiver(_)));
 
         // Skip non-public methods in inherent impls (bridge crate can't call them)
         if is_inherent && !matches!(method.vis, syn::Visibility::Public(_)) {
@@ -291,26 +309,34 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             });
             continue;
         }
-        let receiver = match self_arg.unwrap() {
-            FnArg::Receiver(r) => r,
-            _ => unreachable!(),
+        let (is_mut, is_by_value) = if has_receiver {
+            let receiver = match self_arg.unwrap() {
+                FnArg::Receiver(r) => r,
+                _ => unreachable!(),
+            };
+            (receiver.mutability.is_some(), receiver.reference.is_none())
+        } else {
+            (false, false)
         };
-        let is_mut = receiver.mutability.is_some();
 
         let mut param_idents = Vec::new();
         let mut param_name_strs = Vec::new();
         let mut param_kinds = Vec::new();
 
-        for arg in method.sig.inputs.iter().skip(1) {
+        let skip_n = if has_receiver { 1 } else { 0 };
+        for arg in method.sig.inputs.iter().skip(skip_n) {
             let FnArg::Typed(pat_ty) = arg else { continue };
             let Pat::Ident(pat_ident) = &*pat_ty.pat else { continue };
             param_idents.push(pat_ident.ident.clone());
             param_name_strs.push(pat_ident.ident.to_string());
 
-            let kind = if let Some(sk) = classify_ref_type(&pat_ty.ty) {
+            // Replace `Self` with the concrete (lifetime-erased) struct type
+            let param_ty = replace_self_type(&pat_ty.ty, &self_ty_static);
+
+            let kind = if let Some(sk) = classify_ref_type(&param_ty) {
                 uses_slices = true;
                 ParamKind::Slice(sk)
-            } else if let Type::Reference(ref_ty) = &*pat_ty.ty {
+            } else if let Type::Reference(ref_ty) = &param_ty {
                 // &SomeType / &mut SomeType that isn't str/[u8]/Path → handle ref
                 let inner_ty = type_tokens_for_macro(
                     &ref_ty.elem,
@@ -325,7 +351,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             } else {
                 ParamKind::Regular(type_tokens_for_macro(
-                    &pat_ty.ty,
+                    &param_ty,
                     &mut reexport_types,
                     &mut reexport_aliases,
                     &mut alias_counter,
@@ -338,6 +364,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let ret = match &method.sig.output {
             ReturnType::Default => ReturnKind::Void,
             ReturnType::Type(_, ty) => {
+                // Replace `Self` and erase lifetimes for FFI boundary
+                let ty = &replace_self_type(ty, &self_ty_static);
                 if let Some((ok, err)) = extract_result_types(ty) {
                     let err_ident = type_ident_name(&err);
                     let err_tokens = type_tokens_for_macro(
@@ -389,7 +417,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             method_name: method_name.clone(),
             ffi_name,
             ffi_name_str,
+            has_receiver,
             is_mut,
+            is_by_value,
             param_idents,
             param_name_strs,
             param_kinds,
@@ -398,8 +428,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
     }
 
-    // Bytes/Str/Path struct + typedefs (only if used)
+    // Bytes/Str/Path struct + typedefs (guarded for multi-header concatenation)
     if uses_slices {
+        let bytes_guard = format!("{upper_pfx}BYTES_DEFINED");
+        header_exprs.push(quote! { concat!("#ifndef ", #bytes_guard) });
+        header_exprs.push(quote! { concat!("#define ", #bytes_guard) });
         header_exprs.push(quote! { "typedef struct {" });
         header_exprs.push(quote! { "    const char* data;" });
         header_exprs.push(quote! { "    uintptr_t len;" });
@@ -421,6 +454,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         header_exprs.push(quote! {
             concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
         });
+        header_exprs.push(quote! { concat!("#endif /* ", #bytes_guard, " */") });
         header_exprs.push(quote! { "" });
     }
 
@@ -490,12 +524,27 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let ffi_name_str = &m.ffi_name_str;
         let ffi_name = &m.ffi_name;
         let method_name = &m.method_name;
-        let handle_type = format!("{handle_c_name} handle");
 
-        let cast = if m.is_mut {
-            quote! { &mut *(handle as *mut $struct_ty) }
+        // Handle parameter: present for instance methods, absent for static
+        let handle_type = format!("{handle_c_name} handle");
+        let handle_ffi_param = if m.has_receiver {
+            Some(quote! { handle: *mut core::ffi::c_void, })
         } else {
-            quote! { &*(handle as *const $struct_ty) }
+            None
+        };
+
+        // Self cast (instance methods only)
+        let obj_binding = if m.has_receiver {
+            let cast = if m.is_by_value {
+                quote! { *Box::from_raw(handle as *mut $struct_ty) }
+            } else if m.is_mut {
+                quote! { &mut *(handle as *mut $struct_ty) }
+            } else {
+                quote! { &*(handle as *const $struct_ty) }
+            };
+            Some(quote! { let obj = unsafe { #cast }; })
+        } else {
+            None
         };
 
         let ffi_params: Vec<_> = m
@@ -519,10 +568,15 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .collect();
         let param_name_str_refs: Vec<_> = m.param_name_strs.iter().collect::<Vec<_>>();
 
-        let method_call = if let Some(tp) = &trait_path {
-            quote! { <$struct_ty as $crate::#tp>::#method_name }
+        // Method call: instance methods pass obj as receiver, static methods don't
+        let method_call = if m.has_receiver {
+            if let Some(tp) = &trait_path {
+                quote! { <$struct_ty as $crate::#tp>::#method_name(obj, #(#converted_args),*) }
+            } else {
+                quote! { obj.#method_name(#(#converted_args),*) }
+            }
         } else {
-            quote! { <$struct_ty>::#method_name }
+            quote! { <$struct_ty>::#method_name(#(#converted_args),*) }
         };
 
         // Doxygen comment
@@ -541,12 +595,18 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             header_exprs.push(quote! { #doc });
         }
 
+        let header_handle = if m.has_receiver {
+            Some(&handle_type)
+        } else {
+            None
+        };
+
         match &m.ret {
             ReturnKind::Void => {
                 let header_line = build_header_line(
                     quote! { "void" },
                     ffi_name_str,
-                    &handle_type,
+                    header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
                     None,
@@ -556,11 +616,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        handle: *mut core::ffi::c_void,
+                        #handle_ffi_param
                         #(#ffi_params),*
                     ) {
-                        let obj = unsafe { #cast };
-                        #method_call(obj, #(#converted_args),*);
+                        #obj_binding
+                        #method_call;
                     }
                 });
             }
@@ -569,7 +629,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let header_line = build_header_line(
                     ret_c,
                     ffi_name_str,
-                    &handle_type,
+                    header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
                     None,
@@ -583,11 +643,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        handle: *mut core::ffi::c_void,
+                        #handle_ffi_param
                         #(#ffi_params),*
                     ) #ret_ann {
-                        let obj = unsafe { #cast };
-                        let result = #method_call(obj, #(#converted_args),*);
+                        #obj_binding
+                        let result = #method_call;
                         #into_c
                     }
                 });
@@ -606,7 +666,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let header_line = build_header_line(
                     quote! { #err_c_name },
                     ffi_name_str,
-                    &handle_type,
+                    header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
                     out_c_type.as_ref(),
@@ -641,12 +701,12 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        handle: *mut core::ffi::c_void,
+                        #handle_ffi_param
                         #(#ffi_params,)*
                         #out_ffi_param
                     ) -> ffier::FfierError {
-                        let obj = unsafe { #cast };
-                        match #method_call(obj, #(#converted_args),*) {
+                        #obj_binding
+                        match #method_call {
                             #ok_branch
                             Err(e) => ffier::FfierError::from_err(e),
                         }
@@ -656,25 +716,14 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
-    // create / destroy
-    let create_name = format_ident!("{fn_pfx}{struct_lower}_create");
+    // destroy (no auto-generated create — methods returning Self serve as constructors)
     let destroy_name = format_ident!("{fn_pfx}{struct_lower}_destroy");
-    let create_str = create_name.to_string();
     let destroy_str = destroy_name.to_string();
 
     header_exprs.push(quote! { "" });
-    header_exprs.push(quote! { concat!(#handle_c_name, " ", #create_str, "(void);") });
     header_exprs.push(
         quote! { concat!("void ", #destroy_str, "(", #handle_c_name, " handle);") },
     );
-
-    ffi_fns.push(quote! {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn #create_name() -> *mut core::ffi::c_void {
-            let obj = Box::new(<$struct_ty>::default());
-            Box::into_raw(obj) as *mut core::ffi::c_void
-        }
-    });
 
     ffi_fns.push(quote! {
         #[unsafe(no_mangle)]
@@ -696,17 +745,20 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let reexport_items: Vec<_> = reexport_types
         .iter()
         .zip(reexport_aliases.iter())
-        .map(|(ty, alias)| quote! { pub type #alias = super::#ty; })
+        .map(|(ty, alias)| {
+            let erased = erase_lifetimes(ty);
+            quote! { pub type #alias = super::#erased; }
+        })
         .collect();
 
     let output = quote! {
         #impl_block
 
-        impl ffier::FfiHandle for #struct_ident {
+        impl ffier::FfiHandle for #self_ty_static {
             const C_HANDLE_NAME: &str = #handle_c_name;
         }
 
-        impl ffier::FfiType for #struct_ident {
+        impl ffier::FfiType for #self_ty_static {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &str = #handle_c_name;
             fn into_c(self) -> *mut core::ffi::c_void {
@@ -749,16 +801,23 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 fn build_header_line(
     c_ret_expr: proc_macro2::TokenStream,
     ffi_name_str: &str,
-    handle_type: &str,
+    handle_type: Option<&String>,
     param_c_type_exprs: &[proc_macro2::TokenStream],
     param_name_strs: &[&String],
     out_param_c_type: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let out_snippet = out_param_c_type.map(|ct| {
         quote! {
-            s.push_str(", ");
+            if need_comma { s.push_str(", "); }
             s.push_str(#ct);
             s.push_str("* result");
+            need_comma = true;
+        }
+    });
+    let handle_snippet = handle_type.map(|ht| {
+        quote! {
+            s.push_str(#ht);
+            need_comma = true;
         }
     });
     quote! {{
@@ -769,14 +828,17 @@ fn build_header_line(
         s.push(' ');
         s.push_str(#ffi_name_str);
         s.push('(');
-        s.push_str(#handle_type);
+        let mut need_comma = false;
+        #handle_snippet
         for (cty, name) in c_type_names.iter().zip(param_names.iter()) {
-            s.push_str(", ");
+            if need_comma { s.push_str(", "); }
             s.push_str(cty);
             s.push(' ');
             s.push_str(name);
+            need_comma = true;
         }
         #out_snippet
+        if !need_comma { s.push_str("void"); }
         s.push_str(");");
         s
     }}
@@ -833,6 +895,39 @@ fn camel_to_snake(s: &str) -> String {
 
 fn camel_to_upper_snake(s: &str) -> String {
     camel_to_snake(s).to_ascii_uppercase()
+}
+
+/// Replace all named lifetimes with `'static` so types can be used at the
+/// FFI boundary (reexport modules, bridge macros) without free lifetime params.
+fn erase_lifetimes(ty: &Type) -> Type {
+    struct Eraser;
+    impl VisitMut for Eraser {
+        fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+            *lt = syn::Lifetime::new("'static", lt.apostrophe);
+        }
+    }
+    let mut ty = ty.clone();
+    Eraser.visit_type_mut(&mut ty);
+    ty
+}
+
+/// Replace all occurrences of `Self` in a type with a concrete type.
+fn replace_self_type(ty: &Type, replacement: &Type) -> Type {
+    struct Replacer<'a>(&'a Type);
+    impl VisitMut for Replacer<'_> {
+        fn visit_type_mut(&mut self, ty: &mut Type) {
+            if let Type::Path(tp) = ty {
+                if tp.path.is_ident("Self") {
+                    *ty = self.0.clone();
+                    return;
+                }
+            }
+            syn::visit_mut::visit_type_mut(self, ty);
+        }
+    }
+    let mut ty = ty.clone();
+    Replacer(replacement).visit_type_mut(&mut ty);
+    ty
 }
 
 fn snake_to_pascal(s: &str) -> String {
