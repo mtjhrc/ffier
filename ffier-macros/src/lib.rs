@@ -150,10 +150,14 @@ fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
         } },
         ParamKind::Slice(SliceKind::Path) => quote! { unsafe { #id.as_path() } },
         ParamKind::HandleRef { inner_ty, is_mut: true } => {
-            quote! { unsafe { &mut *(#id as *mut #inner_ty) } }
+            quote! { unsafe {
+                &mut (*(#id as *mut ffier::FfierTaggedBox<#inner_ty>)).value
+            } }
         }
         ParamKind::HandleRef { inner_ty, is_mut: false } => {
-            quote! { unsafe { &*(#id as *const #inner_ty) } }
+            quote! { unsafe {
+                &(*(#id as *const ffier::FfierTaggedBox<#inner_ty>)).value
+            } }
         }
     }
 }
@@ -533,14 +537,23 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             None
         };
 
-        // Self cast (instance methods only)
+        // Self cast via FfierTaggedBox (instance methods only)
         let obj_binding = if m.has_receiver {
             let cast = if m.is_by_value {
-                quote! { *Box::from_raw(handle as *mut $struct_ty) }
+                quote! {
+                    let tagged = *Box::from_raw(
+                        handle as *mut ffier::FfierTaggedBox<$struct_ty>
+                    );
+                    tagged.value
+                }
             } else if m.is_mut {
-                quote! { &mut *(handle as *mut $struct_ty) }
+                quote! {
+                    &mut (*(handle as *mut ffier::FfierTaggedBox<$struct_ty>)).value
+                }
             } else {
-                quote! { &*(handle as *const $struct_ty) }
+                quote! {
+                    &(*(handle as *const ffier::FfierTaggedBox<$struct_ty>)).value
+                }
             };
             Some(quote! { let obj = unsafe { #cast }; })
         } else {
@@ -729,7 +742,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
-                drop(unsafe { Box::from_raw(handle as *mut $struct_ty) });
+                drop(unsafe {
+                    Box::from_raw(handle as *mut ffier::FfierTaggedBox<$struct_ty>)
+                });
             }
         }
     });
@@ -756,16 +771,26 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl ffier::FfiHandle for #self_ty_static {
             const C_HANDLE_NAME: &str = #handle_c_name;
+            const TYPE_ID: u64 = ffier::fnv1a(#handle_c_name.as_bytes());
         }
 
         impl ffier::FfiType for #self_ty_static {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &str = #handle_c_name;
             fn into_c(self) -> *mut core::ffi::c_void {
-                Box::into_raw(Box::new(self)) as *mut core::ffi::c_void
+                let tagged = ffier::FfierTaggedBox {
+                    type_id: <Self as ffier::FfiHandle>::TYPE_ID,
+                    value: self,
+                };
+                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
             }
             fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe { *Box::from_raw(repr as *mut Self) }
+                unsafe {
+                    let tagged = Box::from_raw(
+                        repr as *mut ffier::FfierTaggedBox<Self>
+                    );
+                    tagged.value
+                }
             }
         }
 
