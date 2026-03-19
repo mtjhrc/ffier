@@ -42,6 +42,18 @@ int main(void) {
     printf("checked_add(INT_MAX, 1) = error %lu: %s\n", err.code, ex_calc_error_message(&err));
     ex_calc_error_free(&err);
 
+    /* Result<&str, CalcError> — success */
+    ExStr desc;
+    err = ex_mycalculator_describe(calc, 1, &desc);
+    assert(err.code == 0);
+    printf("describe(1) = %.*s\n", (int)desc.len, desc.data);
+
+    /* Result<&str, CalcError> — error */
+    err = ex_mycalculator_describe(calc, 99, &desc);
+    assert(err.code == EX_CALC_ERROR_OVERFLOW);
+    printf("describe(99) = error %lu: %s\n", err.code, ex_calc_error_message(&err));
+    ex_calc_error_free(&err);
+
     /* Result<(), CalcError> */
     err = ex_mycalculator_validate(calc);
     assert(err.code == 0);
