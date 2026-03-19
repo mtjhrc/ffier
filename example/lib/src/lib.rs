@@ -167,3 +167,30 @@ impl CalcResult {
         self.value
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ffier::{FfiHandle, FfiType};
+
+    #[test]
+    fn type_ids_are_nonzero_and_distinct() {
+        let mc_id = <MyCalculator as FfiHandle>::TYPE_ID;
+        let cr_id = <CalcResult as FfiHandle>::TYPE_ID;
+        eprintln!("MyCalculator TYPE_ID = {mc_id}");
+        eprintln!("CalcResult   TYPE_ID = {cr_id}");
+        assert_ne!(mc_id, 0, "MyCalculator TYPE_ID should not be 0");
+        assert_ne!(cr_id, 0, "CalcResult TYPE_ID should not be 0");
+        assert_ne!(mc_id, cr_id, "TYPE_IDs should be distinct");
+    }
+
+    #[test]
+    fn handle_carries_type_id() {
+        let handle = MyCalculator::default().into_c();
+        let tid = unsafe { ffier::handle_type_id(handle) };
+        eprintln!("handle type_id = {tid}");
+        assert_eq!(tid, <MyCalculator as FfiHandle>::TYPE_ID);
+        // cleanup
+        let _ = MyCalculator::from_c(handle);
+    }
+}
