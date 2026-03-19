@@ -59,6 +59,20 @@ mod std_impls {
 }
 
 // ---------------------------------------------------------------------------
+// FfiHandle — marker for types exported via #[ffier::exportable]
+// ---------------------------------------------------------------------------
+
+/// Marker trait for types that are exported as opaque C handles.
+///
+/// Automatically implemented by `#[ffier::exportable]`. Enables using
+/// `&Widget` as a parameter type (borrows the handle) and `Widget` as
+/// a return type (creates a new handle).
+pub trait FfiHandle {
+    /// The C handle typedef name (e.g. `"ExWidgetHandle"`).
+    const C_HANDLE_NAME: &str;
+}
+
+// ---------------------------------------------------------------------------
 // FfierBytes — zero-copy byte slice for C FFI (&[u8], &str, &Path)
 // ---------------------------------------------------------------------------
 

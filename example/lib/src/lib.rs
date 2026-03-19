@@ -120,4 +120,45 @@ impl MyCalculator {
             _ => Err(CalcError::Overflow),
         }
     }
+
+    /// Create a new result accumulator.
+    pub fn create_result(&self) -> CalcResult {
+        CalcResult { value: 0 }
+    }
+
+    /// Add a value into a result accumulator.
+    pub fn accumulate(&self, res: &mut CalcResult, n: i32) {
+        res.value += n;
+    }
+
+    /// Read the value from a result accumulator.
+    pub fn read_result(&self, res: &CalcResult) -> i32 {
+        res.value
+    }
+
+    /// Try to create a result with an initial divide.
+    ///
+    /// # Returns
+    ///
+    /// A new result accumulator initialized with the quotient.
+    pub fn try_create_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
+        if b == 0 {
+            Err(CalcError::DivisionByZero)
+        } else {
+            Ok(CalcResult { value: a / b })
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct CalcResult {
+    value: i32,
+}
+
+#[ffier::exportable(prefix = "ex")]
+impl CalcResult {
+    /// Get the accumulated value.
+    pub fn get(&self) -> i32 {
+        self.value
+    }
 }
