@@ -1,8 +1,8 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    FnArg, GenericArgument, ImplItem, ItemImpl, LitStr, Pat, PathArguments, ReturnType, Token,
-    Type, parse::Parse, parse_macro_input,
+    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, LitStr, Pat, PathArguments,
+    ReturnType, Token, Type, parse::Parse, parse_macro_input,
 };
 
 struct ReflectArgs {
@@ -808,4 +808,145 @@ fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
+}
+
+// ---------------------------------------------------------------------------
+// #[derive(FfiError)]
+// ---------------------------------------------------------------------------
+
+/// Derive `ffier::FfiError` for a unit enum.
+///
+/// Each variant must have `#[ffier(code = N)]` and optionally
+/// `#[ffier(code = N, message = "...")]`. Without an explicit message,
+/// the variant name is humanized (`DivisionByZero` → `"division by zero"`).
+///
+/// ```ignore
+/// #[derive(ffier::FfiError)]
+/// pub enum CalcError {
+///     #[ffier(code = 1)]
+///     DivisionByZero,
+///     #[ffier(code = 2, message = "integer overflow")]
+///     Overflow,
+/// }
+/// ```
+#[proc_macro_derive(FfiError, attributes(ffier))]
+pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let name = &input.ident;
+
+    let Data::Enum(data_enum) = &input.data else {
+        return syn::Error::new_spanned(&input, "FfiError can only be derived for enums")
+            .to_compile_error()
+            .into();
+    };
+
+    let mut code_arms = Vec::new();
+    let mut message_arms = Vec::new();
+    let mut codes_entries = Vec::new();
+
+    for variant in &data_enum.variants {
+        let var_ident = &variant.ident;
+
+        let attrs = match parse_ffier_variant_attrs(&variant.attrs) {
+            Ok(a) => a,
+            Err(e) => return e.to_compile_error().into(),
+        };
+
+        let code = attrs.code;
+        let message = attrs
+            .message
+            .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+        let upper_name = camel_to_upper_snake(&var_ident.to_string());
+
+        code_arms.push(quote! { #name::#var_ident => #code });
+
+        let msg_with_nul = format!("{message}\0");
+        let msg_lit = proc_macro2::Literal::byte_string(msg_with_nul.as_bytes());
+        message_arms.push(quote! {
+            #code => unsafe {
+                core::ffi::CStr::from_bytes_with_nul_unchecked(#msg_lit)
+            }
+        });
+
+        codes_entries.push(quote! { (#upper_name, #code) });
+    }
+
+    let unknown_msg = format!(
+        "unknown {} error\0",
+        camel_to_snake(&name.to_string()).replace('_', " ")
+    );
+    let unknown_lit = proc_macro2::Literal::byte_string(unknown_msg.as_bytes());
+
+    let output = quote! {
+        impl ffier::FfiError for #name {
+            fn code(&self) -> u64 {
+                match self {
+                    #(#code_arms,)*
+                }
+            }
+
+            fn static_message(code: u64) -> &'static core::ffi::CStr {
+                match code {
+                    #(#message_arms,)*
+                    _ => unsafe {
+                        core::ffi::CStr::from_bytes_with_nul_unchecked(#unknown_lit)
+                    },
+                }
+            }
+
+            fn codes() -> &'static [(&'static str, u64)] {
+                &[#(#codes_entries),*]
+            }
+        }
+    };
+
+    output.into()
+}
+
+struct FfierVariantAttrs {
+    code: u64,
+    message: Option<String>,
+}
+
+fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVariantAttrs> {
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+
+        let mut code = None;
+        let mut message = None;
+
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("code") {
+                let value = meta.value()?;
+                let lit: syn::LitInt = value.parse()?;
+                code = Some(lit.base10_parse::<u64>()?);
+                Ok(())
+            } else if meta.path.is_ident("message") {
+                let value = meta.value()?;
+                let lit: LitStr = value.parse()?;
+                message = Some(lit.value());
+                Ok(())
+            } else {
+                Err(meta.error("expected `code` or `message`"))
+            }
+        })?;
+
+        let code = code.ok_or_else(|| {
+            syn::Error::new_spanned(attr, "missing `code` in #[ffier(code = N)]")
+        })?;
+
+        return Ok(FfierVariantAttrs { code, message });
+    }
+
+    Err(syn::Error::new(
+        proc_macro2::Span::call_site(),
+        "missing #[ffier(code = N)] attribute on variant",
+    ))
+}
+
+/// `DivisionByZero` → `"division by zero"`
+fn camel_to_human(s: &str) -> String {
+    camel_to_snake(s).replace('_', " ")
 }
