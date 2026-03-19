@@ -36,11 +36,15 @@ pub trait Calculator {
     fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError>;
     fn checked_add(&self, a: i32, b: i32) -> Result<i32, CalcError>;
     fn validate(&self) -> Result<(), CalcError>;
+    fn name(&self) -> &str;
+    fn echo<'a>(&self, msg: &'a str) -> &'a str;
+    fn data(&self) -> &[u8];
 }
 
 #[derive(Default)]
 pub struct MyCalculator {
     precision: u8,
+    label: String,
 }
 
 #[ffier::exportable(prefix = "ex")]
@@ -79,5 +83,21 @@ impl Calculator for MyCalculator {
 
     fn validate(&self) -> Result<(), CalcError> {
         Ok(())
+    }
+
+    fn name(&self) -> &str {
+        if self.label.is_empty() {
+            "calculator"
+        } else {
+            &self.label
+        }
+    }
+
+    fn echo<'a>(&self, msg: &'a str) -> &'a str {
+        msg
+    }
+
+    fn data(&self) -> &[u8] {
+        self.label.as_bytes()
     }
 }

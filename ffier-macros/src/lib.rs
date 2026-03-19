@@ -26,6 +26,162 @@ impl Parse for ReflectArgs {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Type classification for params and return values
+// ---------------------------------------------------------------------------
+
+enum SliceKind {
+    Str,
+    Bytes,
+    Path,
+}
+
+enum ParamKind {
+    Regular(proc_macro2::TokenStream),
+    Slice(SliceKind),
+}
+
+enum ValueKind {
+    Regular(proc_macro2::TokenStream),
+    Slice(SliceKind),
+}
+
+enum ReturnKind {
+    Void,
+    Value(ValueKind),
+    Result {
+        ok_ty: Option<ValueKind>,
+        err_ty: proc_macro2::TokenStream,
+        err_ident: String,
+    },
+}
+
+struct MethodInfo {
+    method_name: syn::Ident,
+    ffi_name: syn::Ident,
+    ffi_name_str: String,
+    is_mut: bool,
+    param_idents: Vec<syn::Ident>,
+    param_name_strs: Vec<String>,
+    param_kinds: Vec<ParamKind>,
+    ret: ReturnKind,
+}
+
+/// Detect `&str`, `&[u8]`, `&Path` reference types.
+fn classify_ref_type(ty: &Type) -> Option<SliceKind> {
+    let Type::Reference(ref_ty) = ty else {
+        return None;
+    };
+    match &*ref_ty.elem {
+        Type::Path(tp) if tp.path.is_ident("str") => Some(SliceKind::Str),
+        Type::Path(tp) => {
+            let last = tp.path.segments.last()?;
+            if last.ident == "Path" {
+                Some(SliceKind::Path)
+            } else {
+                None
+            }
+        }
+        Type::Slice(sl) => {
+            if let Type::Path(tp) = &*sl.elem {
+                if tp.path.is_ident("u8") {
+                    return Some(SliceKind::Bytes);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn classify_value(
+    ty: &Type,
+    reexport_types: &mut Vec<Type>,
+    reexport_aliases: &mut Vec<syn::Ident>,
+    alias_counter: &mut u32,
+    helper_mod: &syn::Ident,
+) -> ValueKind {
+    if let Some(sk) = classify_ref_type(ty) {
+        ValueKind::Slice(sk)
+    } else {
+        ValueKind::Regular(type_tokens_for_macro(
+            ty,
+            reexport_types,
+            reexport_aliases,
+            alias_counter,
+            helper_mod,
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Code generation helpers
+// ---------------------------------------------------------------------------
+
+fn ffi_param_tokens(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStream {
+    match kind {
+        ParamKind::Regular(ty) => quote! { #id: <#ty as ffier::FfiType>::CRepr },
+        ParamKind::Slice(_) => quote! { #id: ffier::FfierBytes },
+    }
+}
+
+fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStream {
+    match kind {
+        ParamKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::from_c(#id) },
+        ParamKind::Slice(SliceKind::Str) => quote! { unsafe { #id.as_str_unchecked() } },
+        ParamKind::Slice(SliceKind::Bytes) => quote! { unsafe { #id.as_bytes() } },
+        ParamKind::Slice(SliceKind::Path) => quote! { unsafe { #id.as_path() } },
+    }
+}
+
+fn param_c_type_expr(
+    kind: &ParamKind,
+    str_name: &str,
+    bytes_name: &str,
+    path_name: &str,
+) -> proc_macro2::TokenStream {
+    match kind {
+        ParamKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
+        ParamKind::Slice(SliceKind::Str) => quote! { #str_name },
+        ParamKind::Slice(SliceKind::Bytes) => quote! { #bytes_name },
+        ParamKind::Slice(SliceKind::Path) => quote! { #path_name },
+    }
+}
+
+fn value_ret_annotation(kind: &ValueKind) -> proc_macro2::TokenStream {
+    match kind {
+        ValueKind::Regular(ty) => quote! { -> <#ty as ffier::FfiType>::CRepr },
+        ValueKind::Slice(_) => quote! { -> ffier::FfierBytes },
+    }
+}
+
+fn value_into_c(kind: &ValueKind) -> proc_macro2::TokenStream {
+    match kind {
+        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::into_c(result) },
+        ValueKind::Slice(SliceKind::Str) => quote! { ffier::FfierBytes::from_str(result) },
+        ValueKind::Slice(SliceKind::Bytes) => quote! { ffier::FfierBytes::from_bytes(result) },
+        ValueKind::Slice(SliceKind::Path) => quote! { ffier::FfierBytes::from_path(result) },
+    }
+}
+
+fn value_c_type_expr(
+    kind: &ValueKind,
+    str_name: &str,
+    bytes_name: &str,
+    path_name: &str,
+) -> proc_macro2::TokenStream {
+    match kind {
+        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
+        ValueKind::Slice(SliceKind::Str) => quote! { #str_name },
+        ValueKind::Slice(SliceKind::Bytes) => quote! { #bytes_name },
+        ValueKind::Slice(SliceKind::Path) => quote! { #path_name },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main macro
+// ---------------------------------------------------------------------------
+
 #[proc_macro_attribute]
 pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ReflectArgs);
@@ -41,7 +197,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_lower = struct_name.to_lowercase();
 
-    // Prefix forms: snake for functions, Pascal for types, UPPER for constants
     let fn_pfx = args
         .prefix
         .as_ref()
@@ -59,6 +214,10 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .unwrap_or_default();
 
     let handle_c_name = format!("{type_pfx}{struct_name}Handle");
+    let bytes_c_name = format!("{type_pfx}Bytes");
+    let str_c_name = format!("{type_pfx}Str");
+    let path_c_name = format!("{type_pfx}Path");
+    let str_macro_name = format!("{upper_pfx}STR");
 
     let trait_path = input.trait_.as_ref().map(|(_, path, _)| path);
 
@@ -70,6 +229,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     header_exprs.push(quote! { "#pragma once" });
     header_exprs.push(quote! { "#include <stdint.h>" });
     header_exprs.push(quote! { "#include <stdbool.h>" });
+    header_exprs.push(quote! { "#include <string.h>" });
     header_exprs.push(quote! { "" });
     header_exprs.push(quote! { concat!("typedef void* ", #handle_c_name, ";") });
     header_exprs.push(quote! { "" });
@@ -78,29 +238,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
     let helper_mod_name = format_ident!("_ffier_{struct_lower}");
 
-    enum ReturnKind {
-        Void,
-        Value(proc_macro2::TokenStream),
-        Result {
-            ok_ty: Option<proc_macro2::TokenStream>,
-            err_ty: proc_macro2::TokenStream,
-            err_ident: String,
-        },
-    }
-
-    struct MethodInfo {
-        method_name: syn::Ident,
-        ffi_name: syn::Ident,
-        ffi_name_str: String,
-        is_mut: bool,
-        param_idents: Vec<syn::Ident>,
-        param_name_strs: Vec<String>,
-        param_type_tokens: Vec<proc_macro2::TokenStream>,
-        ret: ReturnKind,
-    }
-
     let mut methods = Vec::new();
     let mut alias_counter = 0u32;
+    let mut uses_slices = false;
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
@@ -120,20 +260,27 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let mut param_idents = Vec::new();
         let mut param_name_strs = Vec::new();
-        let mut param_type_tokens = Vec::new();
+        let mut param_kinds = Vec::new();
 
         for arg in method.sig.inputs.iter().skip(1) {
             let FnArg::Typed(pat_ty) = arg else { continue };
             let Pat::Ident(pat_ident) = &*pat_ty.pat else { continue };
             param_idents.push(pat_ident.ident.clone());
             param_name_strs.push(pat_ident.ident.to_string());
-            param_type_tokens.push(type_tokens_for_macro(
-                &pat_ty.ty,
-                &mut reexport_types,
-                &mut reexport_aliases,
-                &mut alias_counter,
-                &helper_mod_name,
-            ));
+
+            let kind = if let Some(sk) = classify_ref_type(&pat_ty.ty) {
+                uses_slices = true;
+                ParamKind::Slice(sk)
+            } else {
+                ParamKind::Regular(type_tokens_for_macro(
+                    &pat_ty.ty,
+                    &mut reexport_types,
+                    &mut reexport_aliases,
+                    &mut alias_counter,
+                    &helper_mod_name,
+                ))
+            };
+            param_kinds.push(kind);
         }
 
         let ret = match &method.sig.output {
@@ -148,30 +295,38 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                         &mut alias_counter,
                         &helper_mod_name,
                     );
-                    let ok_tokens = if is_unit_type(&ok) {
+                    let ok_kind = if is_unit_type(&ok) {
                         None
                     } else {
-                        Some(type_tokens_for_macro(
+                        let vk = classify_value(
                             &ok,
                             &mut reexport_types,
                             &mut reexport_aliases,
                             &mut alias_counter,
                             &helper_mod_name,
-                        ))
+                        );
+                        if matches!(vk, ValueKind::Slice(_)) {
+                            uses_slices = true;
+                        }
+                        Some(vk)
                     };
                     ReturnKind::Result {
-                        ok_ty: ok_tokens,
+                        ok_ty: ok_kind,
                         err_ty: err_tokens,
                         err_ident,
                     }
                 } else {
-                    ReturnKind::Value(type_tokens_for_macro(
+                    let vk = classify_value(
                         ty,
                         &mut reexport_types,
                         &mut reexport_aliases,
                         &mut alias_counter,
                         &helper_mod_name,
-                    ))
+                    );
+                    if matches!(vk, ValueKind::Slice(_)) {
+                        uses_slices = true;
+                    }
+                    ReturnKind::Value(vk)
                 }
             }
         };
@@ -183,12 +338,42 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             is_mut,
             param_idents,
             param_name_strs,
-            param_type_tokens,
+            param_kinds,
             ret,
         });
     }
 
-    // Per-error-type: struct definition, #defines, _message(), _free()
+    // Bytes/Str/Path struct + typedefs (only if used)
+    if uses_slices {
+        let guard = format!("{upper_pfx}BYTES_DEFINED");
+        header_exprs.push(quote! { concat!("#ifndef ", #guard) });
+        header_exprs.push(quote! { concat!("#define ", #guard) });
+        header_exprs.push(quote! { "typedef struct {" });
+        header_exprs.push(quote! { "    const char* data;" });
+        header_exprs.push(quote! { "    uintptr_t len;" });
+        header_exprs.push(quote! { concat!("} ", #bytes_c_name, ";") });
+        header_exprs.push(quote! { "" });
+        header_exprs.push(quote! {
+            concat!("/* Caller must ensure data is valid UTF-8 */")
+        });
+        header_exprs.push(quote! {
+            concat!("typedef ", #bytes_c_name, " ", #str_c_name, ";")
+        });
+        header_exprs.push(quote! {
+            concat!("/* Caller must ensure data is a valid UTF-8 path */")
+        });
+        header_exprs.push(quote! {
+            concat!("typedef ", #bytes_c_name, " ", #path_c_name, ";")
+        });
+        header_exprs.push(quote! { "" });
+        header_exprs.push(quote! {
+            concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
+        });
+        header_exprs.push(quote! { concat!("#endif /* ", #guard, " */") });
+        header_exprs.push(quote! { "" });
+    }
+
+    // Per-error-type artifacts
     let mut generated_error_types: Vec<String> = Vec::new();
 
     for m in &methods {
@@ -212,7 +397,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let free_fn = format_ident!("{fn_pfx}{err_snake}_free");
             let free_fn_str = free_fn.to_string();
 
-            // Struct definition + defines + function declarations
             header_exprs.push(quote! { concat!("#ifndef ", #guard) });
             header_exprs.push(quote! { concat!("#define ", #guard) });
             header_exprs.push(quote! { "typedef struct {" });
@@ -221,7 +405,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             header_exprs.push(quote! { concat!("} ", #err_c_name, ";") });
             header_exprs.push(quote! { "" });
 
-            // #defines from FfiError::codes()
             header_exprs.push(quote! {{
                 let mut s = String::new();
                 for (name, val) in <#err_ty as ffier::FfiError>::codes() {
@@ -235,7 +418,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             header_exprs.push(quote! { concat!("#endif /* ", #guard, " */") });
             header_exprs.push(quote! { "" });
 
-            // _message function
             ffi_fns.push(quote! {
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn #message_fn(
@@ -243,14 +425,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 ) -> *const core::ffi::c_char {
                     let err = unsafe { &*err };
                     let ptr = err.msg_ptr();
-                    if !ptr.is_null() {
-                        return ptr;
-                    }
+                    if !ptr.is_null() { return ptr; }
                     <#err_ty as ffier::FfiError>::static_message(err.code).as_ptr()
                 }
             });
 
-            // _free function
             ffi_fns.push(quote! {
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn #free_fn(err: *mut ffier::FfierError) {
@@ -276,21 +455,21 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let ffi_params: Vec<_> = m
             .param_idents
             .iter()
-            .zip(m.param_type_tokens.iter())
-            .map(|(id, ty)| quote! { #id: <#ty as ffier::FfiType>::CRepr })
+            .zip(m.param_kinds.iter())
+            .map(|(id, k)| ffi_param_tokens(id, k))
             .collect();
 
         let converted_args: Vec<_> = m
             .param_idents
             .iter()
-            .zip(m.param_type_tokens.iter())
-            .map(|(id, ty)| quote! { <#ty as ffier::FfiType>::from_c(#id) })
+            .zip(m.param_kinds.iter())
+            .map(|(id, k)| param_conversion(id, k))
             .collect();
 
-        let param_c_type_exprs: Vec<_> = m
-            .param_type_tokens
+        let c_type_exprs: Vec<_> = m
+            .param_kinds
             .iter()
-            .map(|ty| quote! { <#ty as ffier::FfiType>::C_TYPE_NAME })
+            .map(|k| param_c_type_expr(k, &str_c_name, &bytes_c_name, &path_c_name))
             .collect();
         let param_name_str_refs: Vec<_> = m.param_name_strs.iter().collect::<Vec<_>>();
 
@@ -306,7 +485,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote! { "void" },
                     ffi_name_str,
                     &handle_type,
-                    &param_c_type_exprs,
+                    &c_type_exprs,
                     &param_name_str_refs,
                     None,
                 );
@@ -323,26 +502,30 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 });
             }
-            ReturnKind::Value(ty) => {
+            ReturnKind::Value(vk) => {
+                let ret_c = value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name);
                 let header_line = build_header_line(
-                    quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
+                    ret_c,
                     ffi_name_str,
                     &handle_type,
-                    &param_c_type_exprs,
+                    &c_type_exprs,
                     &param_name_str_refs,
                     None,
                 );
                 header_exprs.push(header_line);
+
+                let ret_ann = value_ret_annotation(vk);
+                let into_c = value_into_c(vk);
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
                         handle: *mut core::ffi::c_void,
                         #(#ffi_params),*
-                    ) -> <#ty as ffier::FfiType>::CRepr {
+                    ) #ret_ann {
                         let obj = unsafe { #cast };
                         let result = #method_call(obj, #(#converted_args),*);
-                        <#ty as ffier::FfiType>::into_c(result)
+                        #into_c
                     }
                 });
             }
@@ -353,35 +536,50 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             } => {
                 let err_c_name = format!("{type_pfx}{err_ident}");
 
-                let out_c_type = ok_ty.as_ref().map(|ty| {
-                    quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+                let out_c_type = ok_ty.as_ref().map(|vk| {
+                    value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name)
                 });
 
                 let header_line = build_header_line(
                     quote! { #err_c_name },
                     ffi_name_str,
                     &handle_type,
-                    &param_c_type_exprs,
+                    &c_type_exprs,
                     &param_name_str_refs,
                     out_c_type.as_ref(),
                 );
                 header_exprs.push(header_line);
 
-                let ok_branch = if let Some(ok) = ok_ty {
-                    quote! {
-                        Ok(val) => {
-                            unsafe { out.write(<#ok as ffier::FfiType>::into_c(val)) };
-                            ffier::FfierError::ok()
+                let ok_branch = match ok_ty {
+                    Some(vk) => {
+                        let into_c = value_into_c(vk);
+                        let out_write = match vk {
+                            ValueKind::Slice(_) => quote! {
+                                unsafe { out.write(#into_c) };
+                            },
+                            ValueKind::Regular(_) => quote! {
+                                unsafe { out.write(#into_c) };
+                            },
+                        };
+                        quote! {
+                            Ok(result) => {
+                                #out_write
+                                ffier::FfierError::ok()
+                            }
                         }
                     }
-                } else {
-                    quote! {
+                    None => quote! {
                         Ok(()) => ffier::FfierError::ok(),
-                    }
+                    },
                 };
 
-                let out_ffi_param = ok_ty.as_ref().map(|ok| {
-                    quote! { out: *mut <#ok as ffier::FfiType>::CRepr, }
+                let out_ffi_param = ok_ty.as_ref().map(|vk| match vk {
+                    ValueKind::Regular(ty) => {
+                        quote! { out: *mut <#ty as ffier::FfiType>::CRepr, }
+                    }
+                    ValueKind::Slice(_) => {
+                        quote! { out: *mut ffier::FfierBytes, }
+                    }
                 });
 
                 ffi_fns.push(quote! {
@@ -466,6 +664,10 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn build_header_line(
     c_ret_expr: proc_macro2::TokenStream,
@@ -556,7 +758,6 @@ fn camel_to_upper_snake(s: &str) -> String {
     camel_to_snake(s).to_ascii_uppercase()
 }
 
-/// `my_lib` → `MyLib`
 fn snake_to_pascal(s: &str) -> String {
     s.split('_')
         .map(|w| {
