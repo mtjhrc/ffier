@@ -29,6 +29,19 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     header_exprs.push(quote! { "#include <stdint.h>" });
     header_exprs.push(quote! { "#include <stdbool.h>" });
     header_exprs.push(quote! { "" });
+
+    // Shared FfierError base struct (include-guarded)
+    header_exprs.push(quote! { "#ifndef FFIER_ERROR_DEFINED" });
+    header_exprs.push(quote! { "#define FFIER_ERROR_DEFINED" });
+    header_exprs.push(quote! { "typedef struct {" });
+    header_exprs.push(quote! { "    uint64_t code;" });
+    header_exprs.push(quote! { "    char* _msg; /* private - use *_message() */" });
+    header_exprs.push(quote! { "} FfierError;" });
+    header_exprs.push(quote! { "" });
+    header_exprs.push(quote! { "void ffier_error_free(FfierError* err);" });
+    header_exprs.push(quote! { "#endif /* FFIER_ERROR_DEFINED */" });
+    header_exprs.push(quote! { "" });
+
     header_exprs.push(quote! { concat!("typedef void* ", #struct_name, "Handle;") });
     header_exprs.push(quote! { "" });
 
@@ -40,8 +53,10 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
         Void,
         Value(proc_macro2::TokenStream),
         Result {
-            ok_ty: Option<proc_macro2::TokenStream>, // None for ()
+            ok_ty: Option<proc_macro2::TokenStream>,
             err_ty: proc_macro2::TokenStream,
+            /// Original error type ident (e.g. CalcError) for naming C functions
+            err_ident: String,
         },
     }
 
@@ -97,6 +112,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
             ReturnType::Default => ReturnKind::Void,
             ReturnType::Type(_, ty) => {
                 if let Some((ok, err)) = extract_result_types(ty) {
+                    let err_ident = type_ident_name(&err);
                     let err_tokens = type_tokens_for_macro(
                         &err,
                         &mut reexport_types,
@@ -118,6 +134,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnKind::Result {
                         ok_ty: ok_tokens,
                         err_ty: err_tokens,
+                        err_ident,
                     }
                 } else {
                     ReturnKind::Value(type_tokens_for_macro(
@@ -141,6 +158,57 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
             param_type_tokens,
             ret,
         });
+    }
+
+    // Collect unique error types and generate per-type C artifacts
+    let mut generated_error_types: Vec<String> = Vec::new();
+
+    for m in &methods {
+        if let ReturnKind::Result {
+            err_ty, err_ident, ..
+        } = &m.ret
+        {
+            if generated_error_types.contains(err_ident) {
+                continue;
+            }
+            generated_error_types.push(err_ident.clone());
+
+            let err_snake = camel_to_snake(err_ident);
+            let err_upper = camel_to_upper_snake(err_ident);
+            let message_fn_name = format_ident!("{err_snake}_message");
+            let message_fn_name_str = message_fn_name.to_string();
+
+            // Header: typedef + #defines + message function declaration
+            header_exprs.push(quote! {
+                concat!("typedef FfierError ", #err_ident, ";")
+            });
+
+            // #defines from FfiError::codes()
+            header_exprs.push(quote! {{
+                let mut s = String::new();
+                for (name, val) in <#err_ty as ffier::FfiError>::codes() {
+                    s.push_str(&format!("#define {}_{} {}\n", #err_upper, name, val));
+                }
+                s.push_str(&format!("\nconst char* {}(const {}* err);", #message_fn_name_str, #err_ident));
+                s
+            }});
+            header_exprs.push(quote! { "" });
+
+            // Generate the per-type _message function
+            ffi_fns.push(quote! {
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #message_fn_name(
+                    err: *const ffier::FfierError,
+                ) -> *const core::ffi::c_char {
+                    let err = unsafe { &*err };
+                    let ptr = err.msg_ptr();
+                    if !ptr.is_null() {
+                        return ptr;
+                    }
+                    <#err_ty as ffier::FfiError>::static_message(err.code).as_ptr()
+                }
+            });
+        }
     }
 
     for m in &methods {
@@ -184,7 +252,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         match &m.ret {
             ReturnKind::Void => {
-                let header_line: proc_macro2::TokenStream = build_header_line(
+                let header_line = build_header_line(
                     quote! { "void" },
                     ffi_name_str,
                     &handle_type,
@@ -206,7 +274,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 });
             }
             ReturnKind::Value(ty) => {
-                let header_line: proc_macro2::TokenStream = build_header_line(
+                let header_line = build_header_line(
                     quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
                     ffi_name_str,
                     &handle_type,
@@ -228,13 +296,17 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 });
             }
-            ReturnKind::Result { ok_ty, err_ty } => {
+            ReturnKind::Result {
+                ok_ty,
+                err_ty: _,
+                err_ident,
+            } => {
                 let out_c_type = ok_ty.as_ref().map(|ty| {
                     quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
                 });
 
-                let header_line: proc_macro2::TokenStream = build_header_line(
-                    quote! { <#err_ty as ffier::FfiType>::C_TYPE_NAME },
+                let header_line = build_header_line(
+                    quote! { #err_ident },
                     ffi_name_str,
                     &handle_type,
                     &param_c_type_exprs,
@@ -247,14 +319,12 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote! {
                         Ok(val) => {
                             unsafe { out.write(<#ok as ffier::FfiType>::into_c(val)) };
-                            unsafe { core::mem::zeroed() }
+                            ffier::FfierError::ok()
                         }
                     }
                 } else {
                     quote! {
-                        Ok(()) => {
-                            unsafe { core::mem::zeroed() }
-                        }
+                        Ok(()) => ffier::FfierError::ok(),
                     }
                 };
 
@@ -268,11 +338,11 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
                         handle: *mut core::ffi::c_void,
                         #(#ffi_params,)*
                         #out_ffi_param
-                    ) -> <#err_ty as ffier::FfiType>::CRepr {
+                    ) -> ffier::FfierError {
                         let obj = unsafe { #cast };
                         match #method_call(obj, #(#converted_args),*) {
                             #ok_branch
-                            Err(e) => <#err_ty as ffier::FfiType>::into_c(e),
+                            Err(e) => ffier::FfierError::from_err(e),
                         }
                     }
                 });
@@ -287,8 +357,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let destroy_str = destroy_name.to_string();
 
     header_exprs.push(quote! { "" });
-    header_exprs
-        .push(quote! { concat!(#struct_name, "Handle ", #create_str, "(void);") });
+    header_exprs.push(quote! { concat!(#struct_name, "Handle ", #create_str, "(void);") });
     header_exprs.push(
         quote! { concat!("void ", #destroy_str, "(", #struct_name, "Handle handle);") },
     );
@@ -346,14 +415,12 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
-/// Build a C header line like `ret_type name(Handle handle, type1 arg1, type2* out);`
 fn build_header_line(
     c_ret_expr: proc_macro2::TokenStream,
     ffi_name_str: &str,
     handle_type: &str,
     param_c_type_exprs: &[proc_macro2::TokenStream],
     param_name_strs: &[&String],
-    // c_type_expr for an output pointer param `type* out`
     out_param_c_type: Option<&proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let out_snippet = out_param_c_type.map(|ct| {
@@ -384,7 +451,6 @@ fn build_header_line(
     }}
 }
 
-/// If `ty` is `Result<T, E>`, returns `Some((T, E))`.
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     let Type::Path(tp) = ty else { return None };
     let last = tp.path.segments.last()?;
@@ -404,8 +470,41 @@ fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     Some((ok_ty.clone(), err_ty.clone()))
 }
 
+/// Extract the simple ident name from a type (e.g. `CalcError` → `"CalcError"`).
+fn type_ident_name(ty: &Type) -> String {
+    let Type::Path(tp) = ty else {
+        return "Error".to_string();
+    };
+    tp.path
+        .segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .unwrap_or_else(|| "Error".to_string())
+}
+
 fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
+/// `CalcError` → `calc_error`
+fn camel_to_snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// `CalcError` → `CALC_ERROR`
+fn camel_to_upper_snake(s: &str) -> String {
+    camel_to_snake(s).to_ascii_uppercase()
 }
 
 const PRIMITIVES: &[&str] = &[
