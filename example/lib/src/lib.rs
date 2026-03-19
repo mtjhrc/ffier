@@ -1,30 +1,9 @@
-use std::ffi::CStr;
-
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, ffier::FfiError)]
 pub enum CalcError {
+    #[ffier(code = 1)]
     DivisionByZero,
+    #[ffier(code = 2, message = "integer overflow")]
     Overflow,
-}
-
-impl ffier::FfiError for CalcError {
-    fn code(&self) -> u64 {
-        match self {
-            CalcError::DivisionByZero => 1,
-            CalcError::Overflow => 2,
-        }
-    }
-
-    fn static_message(code: u64) -> &'static CStr {
-        match code {
-            1 => c"division by zero",
-            2 => c"integer overflow",
-            _ => c"unknown calculator error",
-        }
-    }
-
-    fn codes() -> &'static [(&'static str, u64)] {
-        &[("DIVISION_BY_ZERO", 1), ("OVERFLOW", 2)]
-    }
 }
 
 pub trait Calculator {

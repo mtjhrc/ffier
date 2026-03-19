@@ -1,6 +1,7 @@
 use std::ffi::{CStr, CString, c_char};
 
 pub use ffier_macros::exportable;
+pub use ffier_macros::FfiError;
 
 // ---------------------------------------------------------------------------
 // FfiType — maps Rust types to C-compatible representations
