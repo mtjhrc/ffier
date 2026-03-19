@@ -1,0 +1,3 @@
+[workspace]
+members = ["ffier", "ffier-macros", "example/lib", "example/cdylib"]
+resolver = "2"
