@@ -38,11 +38,8 @@ int main(void) {
     uint8_t tap_buf[] = {0xCA, 0xFE, 0xBA, 0xBE};
     uint8_t disk_data[] = {0xDE, 0xAD, 0xBE, 0xEF, 0x00};
 
-    KrunBytes tap = { .data = (const char*)tap_buf, .len = sizeof(tap_buf) };
-    KrunBytes disk = { .data = (const char*)disk_data, .len = sizeof(disk_data) };
-
-    KrunNetDeviceHandle net_dev = krun_netdevicebuilder_build(net_b, tap, resources);
-    KrunBlockDeviceHandle blk_dev = krun_blockdevicebuilder_build(blk_b, disk, resources);
+    KrunNetDeviceHandle net_dev = krun_netdevicebuilder_build(net_b, KRUN_BYTES(tap_buf), resources);
+    KrunBlockDeviceHandle blk_dev = krun_blockdevicebuilder_build(blk_b, KRUN_BYTES(disk_data), resources);
 
     /* C-implemented device via vtable */
     KrunDevice custom_dev = krun_device_from_vtable(NULL, &MY_DEVICE_VTABLE);
