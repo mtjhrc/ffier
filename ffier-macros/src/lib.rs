@@ -156,12 +156,12 @@ fn value_ret_annotation(kind: &ValueKind) -> proc_macro2::TokenStream {
     }
 }
 
-fn value_into_c(kind: &ValueKind) -> proc_macro2::TokenStream {
+fn value_into_c(kind: &ValueKind, var: &syn::Ident) -> proc_macro2::TokenStream {
     match kind {
-        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::into_c(result) },
-        ValueKind::Slice(SliceKind::Str) => quote! { ffier::FfierBytes::from_str(result) },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { ffier::FfierBytes::from_bytes(result) },
-        ValueKind::Slice(SliceKind::Path) => quote! { ffier::FfierBytes::from_path(result) },
+        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::into_c(#var) },
+        ValueKind::Slice(SliceKind::Str) => quote! { ffier::FfierBytes::from_str(#var) },
+        ValueKind::Slice(SliceKind::Bytes) => quote! { ffier::FfierBytes::from_bytes(#var) },
+        ValueKind::Slice(SliceKind::Path) => quote! { ffier::FfierBytes::from_path(#var) },
     }
 }
 
@@ -549,7 +549,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 header_exprs.push(header_line);
 
                 let ret_ann = value_ret_annotation(vk);
-                let into_c = value_into_c(vk);
+                let result_ident = format_ident!("result");
+                let into_c = value_into_c(vk, &result_ident);
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
@@ -586,18 +587,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let ok_branch = match ok_ty {
                     Some(vk) => {
-                        let into_c = value_into_c(vk);
-                        let out_write = match vk {
-                            ValueKind::Slice(_) => quote! {
-                                unsafe { out.write(#into_c) };
-                            },
-                            ValueKind::Regular(_) => quote! {
-                                unsafe { out.write(#into_c) };
-                            },
-                        };
+                        let ok_val_ident = format_ident!("ok_val");
+                        let into_c = value_into_c(vk, &ok_val_ident);
                         quote! {
-                            Ok(result) => {
-                                #out_write
+                            Ok(ok_val) => {
+                                unsafe { result.write(#into_c) };
                                 ffier::FfierError::ok()
                             }
                         }
@@ -609,10 +603,10 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
                 let out_ffi_param = ok_ty.as_ref().map(|vk| match vk {
                     ValueKind::Regular(ty) => {
-                        quote! { out: *mut <#ty as ffier::FfiType>::CRepr, }
+                        quote! { result: *mut <#ty as ffier::FfiType>::CRepr, }
                     }
                     ValueKind::Slice(_) => {
-                        quote! { out: *mut ffier::FfierBytes, }
+                        quote! { result: *mut ffier::FfierBytes, }
                     }
                 });
 
@@ -721,7 +715,7 @@ fn build_header_line(
         quote! {
             s.push_str(", ");
             s.push_str(#ct);
-            s.push_str("* out");
+            s.push_str("* result");
         }
     });
     quote! {{
@@ -1176,9 +1170,9 @@ fn build_doxygen_comment(
         // For Result methods, Rust's `# Returns` describes the Ok value,
         // which maps to the C `out` parameter (not the C return).
         if let Some(ref doc) = sections.returns_doc {
-            out.push_str(&format!(" * @param[out] out {doc}\n"));
+            out.push_str(&format!(" * @param[out] result {doc}\n"));
         } else {
-            out.push_str(" * @param[out] out Receives the result value on success.\n");
+            out.push_str(" * @param[out] result\n");
         }
     }
 
