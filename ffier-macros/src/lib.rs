@@ -65,6 +65,7 @@ struct MethodInfo {
     param_name_strs: Vec<String>,
     param_kinds: Vec<ParamKind>,
     ret: ReturnKind,
+    doc_lines: Vec<String>,
 }
 
 /// Detect `&str`, `&[u8]`, `&Path` reference types.
@@ -354,6 +355,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         };
 
+        let doc_lines = extract_doc_comments(&method.attrs);
+
         methods.push(MethodInfo {
             method_name: method_name.clone(),
             ffi_name,
@@ -363,6 +366,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             param_name_strs,
             param_kinds,
             ret,
+            doc_lines,
         });
     }
 
@@ -492,6 +496,22 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             quote! { <$struct_ty>::#method_name }
         };
+
+        // Doxygen comment
+        let (has_out_param, err_c_name_for_doc) = match &m.ret {
+            ReturnKind::Result { ok_ty, err_ident, .. } => {
+                (ok_ty.is_some(), Some(format!("{type_pfx}{err_ident}")))
+            }
+            _ => (false, None),
+        };
+        if let Some(doc) = build_doxygen_comment(
+            &m.doc_lines,
+            &m.param_name_strs,
+            has_out_param,
+            err_c_name_for_doc.as_deref(),
+        ) {
+            header_exprs.push(quote! { #doc });
+        }
 
         match &m.ret {
             ReturnKind::Void => {
@@ -969,4 +989,74 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
 /// `DivisionByZero` → `"division by zero"`
 fn camel_to_human(s: &str) -> String {
     camel_to_snake(s).replace('_', " ")
+}
+
+/// Extract `/// doc` comments from attributes.
+fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if !attr.path().is_ident("doc") {
+                return None;
+            }
+            let syn::Meta::NameValue(nv) = &attr.meta else {
+                return None;
+            };
+            let syn::Expr::Lit(lit) = &nv.value else {
+                return None;
+            };
+            let syn::Lit::Str(s) = &lit.lit else {
+                return None;
+            };
+            Some(s.value())
+        })
+        .collect()
+}
+
+/// Build a Doxygen comment block string from doc lines and method metadata.
+fn build_doxygen_comment(
+    doc_lines: &[String],
+    param_names: &[String],
+    has_out_param: bool,
+    err_c_name: Option<&str>,
+) -> Option<String> {
+    if doc_lines.is_empty() {
+        return None;
+    }
+
+    let mut out = String::from("/**\n");
+
+    for line in doc_lines {
+        let trimmed = line.strip_prefix(' ').unwrap_or(line);
+        if trimmed.is_empty() {
+            out.push_str(" *\n");
+        } else {
+            out.push_str(&format!(" * {trimmed}\n"));
+        }
+    }
+
+    // @param entries
+    let needs_separator =
+        !param_names.is_empty() || has_out_param || err_c_name.is_some();
+    if needs_separator {
+        out.push_str(" *\n");
+    }
+
+    for name in param_names {
+        out.push_str(&format!(" * @param {name}\n"));
+    }
+
+    if has_out_param {
+        out.push_str(" * @param[out] out Receives the result value on success.\n");
+    }
+
+    // @return
+    if let Some(err_name) = err_c_name {
+        out.push_str(&format!(
+            " * @return {err_name} with code 0 on success, error code on failure.\n"
+        ));
+    }
+
+    out.push_str(" */");
+    Some(out)
 }
