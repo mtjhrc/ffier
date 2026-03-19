@@ -39,6 +39,7 @@ pub trait Calculator {
     fn name(&self) -> &str;
     fn echo<'a>(&self, msg: &'a str) -> &'a str;
     fn data(&self) -> &[u8];
+    fn describe(&self, code: i32) -> Result<&str, CalcError>;
 }
 
 #[derive(Default)]
@@ -99,5 +100,14 @@ impl Calculator for MyCalculator {
 
     fn data(&self) -> &[u8] {
         self.label.as_bytes()
+    }
+
+    fn describe(&self, code: i32) -> Result<&str, CalcError> {
+        match code {
+            0 => Ok("ok"),
+            1 => Ok("addition"),
+            2 => Ok("subtraction"),
+            _ => Err(CalcError::Overflow),
+        }
     }
 }
