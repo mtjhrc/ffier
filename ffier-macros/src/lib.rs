@@ -27,7 +27,7 @@ impl Parse for ReflectArgs {
 }
 
 #[proc_macro_attribute]
-pub fn reflect(attr: TokenStream, item: TokenStream) -> TokenStream {
+pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ReflectArgs);
     let input = parse_macro_input!(item as ItemImpl);
     let impl_block = input.clone();
