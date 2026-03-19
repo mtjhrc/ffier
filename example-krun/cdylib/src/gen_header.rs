@@ -6,6 +6,7 @@ krun_lib::blockdevice_ffier!(BlockDevice<'static>);
 krun_lib::netdevicebuilder_ffier!(NetDeviceBuilder);
 krun_lib::blockdevicebuilder_ffier!(BlockDeviceBuilder);
 krun_lib::vmm_ffier!(Vmm<'static>);
+krun_lib::vtabledevice_ffier!();
 
 fn main() {
     // Order: dependencies first
@@ -18,6 +19,8 @@ fn main() {
     print!("{}", krun_netdevicebuilder__header());
     println!();
     print!("{}", krun_blockdevicebuilder__header());
+    println!();
+    print!("{}", krun_vtabledevice__header());
     println!();
     print!("{}", krun_vmm__header());
 }

@@ -1,5 +1,9 @@
 use std::sync::Arc;
 
+#[ffier::implementable(
+    prefix = "krun",
+    supers(EventSubscriber { fn on_event(&self); })
+)]
 pub trait Device<'a>: EventSubscriber {
     fn name(&self) -> &str;
     fn data(&self) -> &'a [u8];
@@ -75,8 +79,8 @@ impl<'a> Vmm<'a> {
     ///
     /// # Arguments
     ///
-    /// * `dev` - A device handle (NetDevice or BlockDevice).
-    #[ffier(dyn_param(dev, "Device", [NetDevice<'a>, BlockDevice<'a>]))]
+    /// * `dev` - A device handle (NetDevice, BlockDevice, or custom vtable device).
+    #[ffier(dyn_param(dev, "Device", [NetDevice<'a>, BlockDevice<'a>, VtableDevice]))]
     pub fn add_device(&mut self, dev: impl IntoDevice<'a>) {
         let dev = dev.into_device();
         let transport = MmioTransport {
