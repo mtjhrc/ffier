@@ -246,6 +246,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut methods = Vec::new();
     let mut alias_counter = 0u32;
     let mut uses_slices = false;
+    let is_inherent = input.trait_.is_none();
+    let mut warnings = Vec::new();
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
@@ -255,6 +257,22 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         let self_arg = method.sig.inputs.first();
         if !matches!(self_arg, Some(FnArg::Receiver(_))) {
+            continue;
+        }
+
+        // Skip non-public methods in inherent impls (bridge crate can't call them)
+        if is_inherent && !matches!(method.vis, syn::Visibility::Public(_)) {
+            let msg = format!(
+                "ffier: skipping non-public method `{}`; make it `pub` to export via FFI",
+                method_name
+            );
+            warnings.push(quote::quote_spanned! { method.sig.ident.span() =>
+                const _: () = {
+                    #[deprecated = #msg]
+                    const WARNING: () = ();
+                    let _ = WARNING;
+                };
+            });
             continue;
         }
         let receiver = match self_arg.unwrap() {
@@ -641,6 +659,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #impl_block
+
+        #(#warnings)*
 
         #[doc(hidden)]
         pub mod #helper_mod_name {
