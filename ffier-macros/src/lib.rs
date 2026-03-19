@@ -1173,18 +1173,20 @@ fn build_doxygen_comment(
     }
 
     if has_out_param {
-        out.push_str(" * @param[out] out Receives the result value on success.\n");
+        // For Result methods, Rust's `# Returns` describes the Ok value,
+        // which maps to the C `out` parameter (not the C return).
+        if let Some(ref doc) = sections.returns_doc {
+            out.push_str(&format!(" * @param[out] out {doc}\n"));
+        } else {
+            out.push_str(" * @param[out] out Receives the result value on success.\n");
+        }
     }
 
     // @return
     if let Some(err_name) = err_c_name {
-        if let Some(ref doc) = sections.returns_doc {
-            out.push_str(&format!(" * @return {err_name} — {doc}\n"));
-        } else {
-            out.push_str(&format!(
-                " * @return {err_name} with code 0 on success, error code on failure.\n"
-            ));
-        }
+        out.push_str(&format!(
+            " * @return {err_name} with code 0 on success, error code on failure.\n"
+        ));
     } else if let Some(ref doc) = sections.returns_doc {
         out.push_str(&format!(" * @return {doc}\n"));
     }
