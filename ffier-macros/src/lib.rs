@@ -39,6 +39,11 @@ enum SliceKind {
 enum ParamKind {
     Regular(proc_macro2::TokenStream),
     Slice(SliceKind),
+    /// `&ExportedType` — borrows an opaque handle.
+    HandleRef {
+        inner_ty: proc_macro2::TokenStream,
+        is_mut: bool,
+    },
 }
 
 enum ValueKind {
@@ -123,6 +128,7 @@ fn ffi_param_tokens(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
     match kind {
         ParamKind::Regular(ty) => quote! { #id: <#ty as ffier::FfiType>::CRepr },
         ParamKind::Slice(_) => quote! { #id: ffier::FfierBytes },
+        ParamKind::HandleRef { .. } => quote! { #id: *mut core::ffi::c_void },
     }
 }
 
@@ -132,6 +138,12 @@ fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
         ParamKind::Slice(SliceKind::Str) => quote! { unsafe { #id.as_str_unchecked() } },
         ParamKind::Slice(SliceKind::Bytes) => quote! { unsafe { #id.as_bytes() } },
         ParamKind::Slice(SliceKind::Path) => quote! { unsafe { #id.as_path() } },
+        ParamKind::HandleRef { inner_ty, is_mut: true } => {
+            quote! { unsafe { &mut *(#id as *mut #inner_ty) } }
+        }
+        ParamKind::HandleRef { inner_ty, is_mut: false } => {
+            quote! { unsafe { &*(#id as *const #inner_ty) } }
+        }
     }
 }
 
@@ -146,6 +158,9 @@ fn param_c_type_expr(
         ParamKind::Slice(SliceKind::Str) => quote! { #str_name },
         ParamKind::Slice(SliceKind::Bytes) => quote! { #bytes_name },
         ParamKind::Slice(SliceKind::Path) => quote! { #path_name },
+        ParamKind::HandleRef { inner_ty, .. } => {
+            quote! { <#inner_ty as ffier::FfiHandle>::C_HANDLE_NAME }
+        }
     }
 }
 
@@ -295,6 +310,19 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let kind = if let Some(sk) = classify_ref_type(&pat_ty.ty) {
                 uses_slices = true;
                 ParamKind::Slice(sk)
+            } else if let Type::Reference(ref_ty) = &*pat_ty.ty {
+                // &SomeType / &mut SomeType that isn't str/[u8]/Path → handle ref
+                let inner_ty = type_tokens_for_macro(
+                    &ref_ty.elem,
+                    &mut reexport_types,
+                    &mut reexport_aliases,
+                    &mut alias_counter,
+                    &helper_mod_name,
+                );
+                ParamKind::HandleRef {
+                    inner_ty,
+                    is_mut: ref_ty.mutability.is_some(),
+                }
             } else {
                 ParamKind::Regular(type_tokens_for_macro(
                     &pat_ty.ty,
@@ -673,6 +701,21 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #impl_block
+
+        impl ffier::FfiHandle for #struct_ident {
+            const C_HANDLE_NAME: &str = #handle_c_name;
+        }
+
+        impl ffier::FfiType for #struct_ident {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &str = #handle_c_name;
+            fn into_c(self) -> *mut core::ffi::c_void {
+                Box::into_raw(Box::new(self)) as *mut core::ffi::c_void
+            }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                unsafe { *Box::from_raw(repr as *mut Self) }
+            }
+        }
 
         #(#warnings)*
 

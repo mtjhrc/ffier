@@ -59,6 +59,32 @@ int main(void) {
     assert(err.code == 0);
     printf("validate() = ok\n");
 
+    /* Returning an exported object (new handle) */
+    ExCalcResultHandle res = ex_mycalculator_create_result(calc);
+    printf("create_result() value = %d\n", ex_calcresult_get(res));
+
+    /* Passing &mut ExportedType (mutable borrow of handle) */
+    ex_mycalculator_accumulate(calc, res, 10);
+    ex_mycalculator_accumulate(calc, res, 20);
+    printf("after accumulate(10, 20) = %d\n", ex_calcresult_get(res));
+
+    /* Passing &ExportedType (immutable borrow of handle) */
+    printf("read_result() = %d\n", ex_mycalculator_read_result(calc, res));
+    ex_calcresult_destroy(res);
+
+    /* Result<ExportedType, Error> — success */
+    ExCalcResultHandle res2;
+    err = ex_mycalculator_try_create_result(calc, 10, 2, &res2);
+    assert(err.code == 0);
+    printf("try_create_result(10, 2) = %d\n", ex_calcresult_get(res2));
+    ex_calcresult_destroy(res2);
+
+    /* Result<ExportedType, Error> — error */
+    err = ex_mycalculator_try_create_result(calc, 10, 0, &res2);
+    assert(err.code == EX_CALC_ERROR_DIVISION_BY_ZERO);
+    printf("try_create_result(10, 0) = error %lu: %s\n", err.code, ex_calc_error_message(&err));
+    ex_calc_error_free(&err);
+
     ex_mycalculator_destroy(calc);
     printf("All C tests passed!\n");
     return 0;
