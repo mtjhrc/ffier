@@ -15,6 +15,15 @@ pub struct MyCalculator {
 #[ffier::exportable(prefix = "ex")]
 impl MyCalculator {
     /// Add two integers.
+    ///
+    /// # Arguments
+    ///
+    /// * `a` - Left operand.
+    /// * `b` - Right operand.
+    ///
+    /// # Returns
+    ///
+    /// The sum of `a` and `b`.
     pub fn add(&self, a: i32, b: i32) -> i32 {
         a + b
     }
@@ -35,13 +44,24 @@ impl MyCalculator {
     }
 
     /// Set the internal precision (number of bits).
+    ///
+    /// # Arguments
+    ///
+    /// * `bits` - Precision in bits.
     pub fn set_precision(&mut self, bits: u8) {
         self.precision = bits;
     }
 
     /// Divide `a` by `b`.
     ///
-    /// Returns `DivisionByZero` when `b` is zero.
+    /// # Arguments
+    ///
+    /// * `a` - Dividend.
+    /// * `b` - Divisor (must not be zero).
+    ///
+    /// # Returns
+    ///
+    /// The quotient, or `DivisionByZero` if `b` is zero.
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
         if b == 0 {
             Err(CalcError::DivisionByZero)
@@ -61,6 +81,10 @@ impl MyCalculator {
     }
 
     /// Get the calculator's display name.
+    ///
+    /// # Returns
+    ///
+    /// A borrowed string referencing the internal label.
     pub fn name(&self) -> &str {
         if self.label.is_empty() {
             "calculator"
@@ -81,7 +105,13 @@ impl MyCalculator {
 
     /// Look up a human-readable description for an operation code.
     ///
-    /// Known codes: 0 = ok, 1 = addition, 2 = subtraction.
+    /// # Arguments
+    ///
+    /// * `code` - Operation code (0=ok, 1=addition, 2=subtraction).
+    ///
+    /// # Returns
+    ///
+    /// The description string, or `Overflow` for unknown codes.
     pub fn describe(&self, code: i32) -> Result<&str, CalcError> {
         match code {
             0 => Ok("ok"),
