@@ -1,8 +1,9 @@
 #include <stdio.h>
 #include <assert.h>
+#include <string.h>
 #include "mycalculator.h"
 
-int main(void) {
+int main(int argc, char **argv) {
     ExMyCalculatorHandle calc = ex_mycalculator_new();
 
     /* Plain returns */
@@ -87,5 +88,19 @@ int main(void) {
 
     ex_mycalculator_destroy(calc);
     printf("All C tests passed!\n");
+
+    /* Test RTTI: pass a CalcResult handle where a MyCalculator handle is expected.
+     * This should panic with a clear type mismatch message. */
+    if (argc > 1 && strcmp(argv[1], "--test-rtti") == 0) {
+        ExMyCalculatorHandle calc2 = ex_mycalculator_new();
+        ExCalcResultHandle bad = ex_mycalculator_create_result(calc2);
+        /* Passing a CalcResult handle where MyCalculator is expected → panic */
+        printf("Calling ex_mycalculator_add with wrong handle type (will abort)...\n");
+        fflush(stdout);
+        ex_mycalculator_add((ExMyCalculatorHandle)bad, 1, 2);
+        /* unreachable */
+        ex_mycalculator_destroy(calc2);
+    }
+
     return 0;
 }
