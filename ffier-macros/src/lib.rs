@@ -624,6 +624,16 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Self cast via FfierTaggedBox (instance methods only)
         let obj_binding = if m.has_receiver {
+            let ffi_name_for_msg = &m.ffi_name_str;
+            let type_assert = quote! {
+                let __actual = unsafe { ffier::handle_type_id(handle) };
+                let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
+                assert!(
+                    __actual == __expected,
+                    "{}: wrong handle type (expected type_id={}, got {})",
+                    #ffi_name_for_msg, __expected, __actual,
+                );
+            };
             let cast = if m.is_by_value {
                 quote! {
                     let tagged = *Box::from_raw(
@@ -640,7 +650,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     &(*(handle as *const ffier::FfierTaggedBox<$struct_ty>)).value
                 }
             };
-            Some(quote! { let obj = unsafe { #cast }; })
+            Some(quote! { #type_assert let obj = unsafe { #cast }; })
         } else {
             None
         };
@@ -869,6 +879,13 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
+                let __actual = unsafe { ffier::handle_type_id(handle) };
+                let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
+                assert!(
+                    __actual == __expected,
+                    "{}: wrong handle type (expected type_id={}, got {})",
+                    #destroy_str, __expected, __actual,
+                );
                 drop(unsafe {
                     Box::from_raw(handle as *mut ffier::FfierTaggedBox<$struct_ty>)
                 });
