@@ -1013,6 +1013,112 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
         .collect()
 }
 
+/// Parsed doc comment sections.
+struct DocSections {
+    /// Lines before any `# Arguments` / `# Returns` heading.
+    body: Vec<String>,
+    /// `param_name` → description (from `# Arguments` section).
+    param_docs: Vec<(String, String)>,
+    /// Text from `# Returns` section.
+    returns_doc: Option<String>,
+}
+
+/// Parse Rust doc lines into body, `# Arguments`, and `# Returns` sections.
+///
+/// Recognizes:
+/// - `# Arguments` / `# Parameters` heading
+///   - `* \`name\` - description` or `- \`name\` - description` entries
+/// - `# Returns` / `# Return value` heading
+///   - All following lines until the next `#` heading
+fn parse_doc_sections(doc_lines: &[String]) -> DocSections {
+    let mut body = Vec::new();
+    let mut param_docs = Vec::new();
+    let mut returns_doc = None;
+
+    enum Section {
+        Body,
+        Arguments,
+        Returns,
+    }
+    let mut section = Section::Body;
+    let mut returns_lines: Vec<String> = Vec::new();
+
+    for raw in doc_lines {
+        let line = raw.strip_prefix(' ').unwrap_or(raw);
+
+        // Detect heading transitions
+        let lower = line.trim().to_lowercase();
+        if lower == "# arguments" || lower == "# parameters" {
+            section = Section::Arguments;
+            continue;
+        }
+        if lower.starts_with("# return") {
+            section = Section::Returns;
+            continue;
+        }
+        // Any other `#` heading ends the current special section
+        if line.trim().starts_with("# ") {
+            // Flush returns
+            if !returns_lines.is_empty() {
+                returns_doc = Some(returns_lines.join(" ").trim().to_string());
+                returns_lines.clear();
+            }
+            section = Section::Body;
+            // Fall through to add this line to body
+        }
+
+        match section {
+            Section::Body => body.push(raw.clone()),
+            Section::Arguments => {
+                // Parse `* \`name\` - description` or `- \`name\` - description`
+                let trimmed = line.trim();
+                let after_bullet = trimmed
+                    .strip_prefix("* ")
+                    .or_else(|| trimmed.strip_prefix("- "));
+                if let Some(rest) = after_bullet {
+                    if let Some((name, desc)) = parse_param_entry(rest) {
+                        param_docs.push((name, desc));
+                    }
+                }
+                // Ignore non-matching lines in the section (blank lines, etc.)
+            }
+            Section::Returns => {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    returns_lines.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    // Flush any remaining returns lines
+    if !returns_lines.is_empty() {
+        returns_doc = Some(returns_lines.join(" ").trim().to_string());
+    }
+
+    // Trim trailing blank lines from body
+    while body.last().is_some_and(|l| l.trim().is_empty()) {
+        body.pop();
+    }
+
+    DocSections {
+        body,
+        param_docs,
+        returns_doc,
+    }
+}
+
+/// Parse `` `name` - description `` or `` `name` description ``.
+fn parse_param_entry(s: &str) -> Option<(String, String)> {
+    let s = s.trim();
+    let rest = s.strip_prefix('`')?;
+    let end = rest.find('`')?;
+    let name = rest[..end].to_string();
+    let after = rest[end + 1..].trim();
+    let desc = after.strip_prefix('-').unwrap_or(after).trim().to_string();
+    Some((name, desc))
+}
+
 /// Build a Doxygen comment block string from doc lines and method metadata.
 fn build_doxygen_comment(
     doc_lines: &[String],
@@ -1024,9 +1130,19 @@ fn build_doxygen_comment(
         return None;
     }
 
+    let sections = parse_doc_sections(doc_lines);
+
+    if sections.body.is_empty()
+        && sections.param_docs.is_empty()
+        && sections.returns_doc.is_none()
+    {
+        return None;
+    }
+
     let mut out = String::from("/**\n");
 
-    for line in doc_lines {
+    // Body text
+    for line in &sections.body {
         let trimmed = line.strip_prefix(' ').unwrap_or(line);
         if trimmed.is_empty() {
             out.push_str(" *\n");
@@ -1036,14 +1152,24 @@ fn build_doxygen_comment(
     }
 
     // @param entries
-    let needs_separator =
-        !param_names.is_empty() || has_out_param || err_c_name.is_some();
-    if needs_separator {
+    let has_params = !param_names.is_empty() || has_out_param;
+    let has_return = err_c_name.is_some() || sections.returns_doc.is_some();
+    if has_params || has_return {
         out.push_str(" *\n");
     }
 
     for name in param_names {
-        out.push_str(&format!(" * @param {name}\n"));
+        let desc = sections
+            .param_docs
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, d)| d.as_str())
+            .unwrap_or("");
+        if desc.is_empty() {
+            out.push_str(&format!(" * @param {name}\n"));
+        } else {
+            out.push_str(&format!(" * @param {name} {desc}\n"));
+        }
     }
 
     if has_out_param {
@@ -1052,9 +1178,15 @@ fn build_doxygen_comment(
 
     // @return
     if let Some(err_name) = err_c_name {
-        out.push_str(&format!(
-            " * @return {err_name} with code 0 on success, error code on failure.\n"
-        ));
+        if let Some(ref doc) = sections.returns_doc {
+            out.push_str(&format!(" * @return {err_name} — {doc}\n"));
+        } else {
+            out.push_str(&format!(
+                " * @return {err_name} with code 0 on success, error code on failure.\n"
+            ));
+        }
+    } else if let Some(ref doc) = sections.returns_doc {
+        out.push_str(&format!(" * @return {doc}\n"));
     }
 
     out.push_str(" */");
