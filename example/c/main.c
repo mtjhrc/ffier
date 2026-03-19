@@ -3,7 +3,7 @@
 #include "mycalculator.h"
 
 int main(void) {
-    ExMyCalculatorHandle calc = ex_mycalculator_create();
+    ExMyCalculatorHandle calc = ex_mycalculator_new();
 
     /* Plain returns */
     printf("add(3, 4) = %d\n", ex_mycalculator_add(calc, 3, 4));

@@ -13,7 +13,7 @@ mycalculator.h: ../cdylib/src/gen_header.rs ../lib/src/lib.rs
 	cargo run -p example-cdylib --bin gen-header --manifest-path ../../Cargo.toml > $@
 
 main: main.c mycalculator.h $(LIB_DIR)/libexample_cdylib.so
-	$(CC) -o $@ main.c -L$(LIB_DIR) -lexample_cdylib
+	$(CC) -o $@ main.c -L$(LIB_DIR) -Wl,--no-as-needed -lexample_cdylib
 
 run: main
 	LD_LIBRARY_PATH=$(LIB_DIR) ./main
