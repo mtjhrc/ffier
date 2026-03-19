@@ -1,14 +1,10 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{FnArg, ImplItem, ItemImpl, Pat, ReturnType, Type, parse_macro_input};
+use syn::{
+    FnArg, GenericArgument, ImplItem, ItemImpl, Pat, PathArguments, ReturnType, Type,
+    parse_macro_input,
+};
 
-/// Attribute macro placed on `impl Trait for Struct` blocks.
-///
-/// Preserves the impl and generates:
-/// 1. A helper module `_ffier_{struct_lowercase}` that re-exports all types
-///    used in method signatures (so the bridge macro can reference them).
-/// 2. A `#[macro_export]` macro `{struct_lowercase}_ffier!()` that generates
-///    all `extern "C"` wrapper functions and a header function.
 #[proc_macro_attribute]
 pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
@@ -36,13 +32,18 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     header_exprs.push(quote! { concat!("typedef void* ", #struct_name, "Handle;") });
     header_exprs.push(quote! { "" });
 
-    // Collect all non-primitive types used in signatures for re-export
     let mut reexport_types: Vec<Type> = Vec::new();
     let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
-
-    // Helper: get an alias ident for a type, and register it for re-export if needed.
-    // Returns the token stream to use in the macro body.
     let helper_mod_name = format_ident!("_ffier_{struct_lower}");
+
+    enum ReturnKind {
+        Void,
+        Value(proc_macro2::TokenStream),
+        Result {
+            ok_ty: Option<proc_macro2::TokenStream>, // None for ()
+            err_ty: proc_macro2::TokenStream,
+        },
+    }
 
     struct MethodInfo {
         method_name: syn::Ident,
@@ -51,9 +52,8 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
         is_mut: bool,
         param_idents: Vec<syn::Ident>,
         param_name_strs: Vec<String>,
-        // These are the tokens to use in the macro body (may reference helper mod)
         param_type_tokens: Vec<proc_macro2::TokenStream>,
-        ret_type_tokens: Option<proc_macro2::TokenStream>,
+        ret: ReturnKind,
     }
 
     let mut methods = Vec::new();
@@ -84,27 +84,51 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let Pat::Ident(pat_ident) = &*pat_ty.pat else { continue };
             param_idents.push(pat_ident.ident.clone());
             param_name_strs.push(pat_ident.ident.to_string());
-
-            let ty = &*pat_ty.ty;
-            let tokens = type_tokens_for_macro(
-                ty,
+            param_type_tokens.push(type_tokens_for_macro(
+                &pat_ty.ty,
                 &mut reexport_types,
                 &mut reexport_aliases,
                 &mut alias_counter,
                 &helper_mod_name,
-            );
-            param_type_tokens.push(tokens);
+            ));
         }
 
-        let ret_type_tokens = match &method.sig.output {
-            ReturnType::Default => None,
-            ReturnType::Type(_, ty) => Some(type_tokens_for_macro(
-                ty,
-                &mut reexport_types,
-                &mut reexport_aliases,
-                &mut alias_counter,
-                &helper_mod_name,
-            )),
+        let ret = match &method.sig.output {
+            ReturnType::Default => ReturnKind::Void,
+            ReturnType::Type(_, ty) => {
+                if let Some((ok, err)) = extract_result_types(ty) {
+                    let err_tokens = type_tokens_for_macro(
+                        &err,
+                        &mut reexport_types,
+                        &mut reexport_aliases,
+                        &mut alias_counter,
+                        &helper_mod_name,
+                    );
+                    let ok_tokens = if is_unit_type(&ok) {
+                        None
+                    } else {
+                        Some(type_tokens_for_macro(
+                            &ok,
+                            &mut reexport_types,
+                            &mut reexport_aliases,
+                            &mut alias_counter,
+                            &helper_mod_name,
+                        ))
+                    };
+                    ReturnKind::Result {
+                        ok_ty: ok_tokens,
+                        err_ty: err_tokens,
+                    }
+                } else {
+                    ReturnKind::Value(type_tokens_for_macro(
+                        ty,
+                        &mut reexport_types,
+                        &mut reexport_aliases,
+                        &mut alias_counter,
+                        &helper_mod_name,
+                    ))
+                }
+            }
         };
 
         methods.push(MethodInfo {
@@ -115,7 +139,7 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
             param_idents,
             param_name_strs,
             param_type_tokens,
-            ret_type_tokens,
+            ret,
         });
     }
 
@@ -123,65 +147,34 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
         let ffi_name_str = &m.ffi_name_str;
         let ffi_name = &m.ffi_name;
         let method_name = &m.method_name;
-
-        // Header line
-        let c_ret_expr = match &m.ret_type_tokens {
-            Some(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
-            None => quote! { "void" },
-        };
-        let param_c_type_exprs: Vec<_> = m.param_type_tokens.iter().map(|ty| {
-            quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
-        }).collect();
-        let param_name_str_refs: Vec<_> = m.param_name_strs.iter().collect::<Vec<_>>();
         let handle_type = format!("{struct_name}Handle handle");
 
-        let header_line_expr = if m.param_type_tokens.is_empty() {
-            quote! {{
-                let mut s = String::new();
-                s.push_str(#c_ret_expr);
-                s.push(' ');
-                s.push_str(#ffi_name_str);
-                s.push('(');
-                s.push_str(#handle_type);
-                s.push_str(");");
-                s
-            }}
-        } else {
-            quote! {{
-                let c_type_names: &[&str] = &[#(#param_c_type_exprs),*];
-                let param_names: &[&str] = &[#(#param_name_str_refs),*];
-                let mut s = String::new();
-                s.push_str(#c_ret_expr);
-                s.push(' ');
-                s.push_str(#ffi_name_str);
-                s.push('(');
-                s.push_str(#handle_type);
-                for (cty, name) in c_type_names.iter().zip(param_names.iter()) {
-                    s.push_str(", ");
-                    s.push_str(cty);
-                    s.push(' ');
-                    s.push_str(name);
-                }
-                s.push_str(");");
-                s
-            }}
-        };
-        header_exprs.push(header_line_expr);
-
-        // FFI function
         let cast = if m.is_mut {
             quote! { &mut *(handle as *mut $struct_ty) }
         } else {
             quote! { &*(handle as *const $struct_ty) }
         };
 
-        let ffi_params: Vec<_> = m.param_idents.iter().zip(m.param_type_tokens.iter()).map(|(id, ty)| {
-            quote! { #id: <#ty as ffier::FfiType>::CRepr }
-        }).collect();
+        let ffi_params: Vec<_> = m
+            .param_idents
+            .iter()
+            .zip(m.param_type_tokens.iter())
+            .map(|(id, ty)| quote! { #id: <#ty as ffier::FfiType>::CRepr })
+            .collect();
 
-        let converted_args: Vec<_> = m.param_idents.iter().zip(m.param_type_tokens.iter()).map(|(id, ty)| {
-            quote! { <#ty as ffier::FfiType>::from_c(#id) }
-        }).collect();
+        let converted_args: Vec<_> = m
+            .param_idents
+            .iter()
+            .zip(m.param_type_tokens.iter())
+            .map(|(id, ty)| quote! { <#ty as ffier::FfiType>::from_c(#id) })
+            .collect();
+
+        let param_c_type_exprs: Vec<_> = m
+            .param_type_tokens
+            .iter()
+            .map(|ty| quote! { <#ty as ffier::FfiType>::C_TYPE_NAME })
+            .collect();
+        let param_name_str_refs: Vec<_> = m.param_name_strs.iter().collect::<Vec<_>>();
 
         let method_call = if let Some(tp) = &trait_path {
             quote! { <$struct_ty as $crate::#tp>::#method_name }
@@ -189,27 +182,102 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
             quote! { <$struct_ty>::#method_name }
         };
 
-        let (body, ret_annotation) = match &m.ret_type_tokens {
-            Some(ty) => (
-                quote! {
-                    let result = #method_call(obj, #(#converted_args),*);
-                    <#ty as ffier::FfiType>::into_c(result)
-                },
-                quote! { -> <#ty as ffier::FfiType>::CRepr },
-            ),
-            None => (
-                quote! { #method_call(obj, #(#converted_args),*); },
-                quote! {},
-            ),
-        };
+        match &m.ret {
+            ReturnKind::Void => {
+                let header_line: proc_macro2::TokenStream = build_header_line(
+                    quote! { "void" },
+                    ffi_name_str,
+                    &handle_type,
+                    &param_c_type_exprs,
+                    &param_name_str_refs,
+                    None,
+                );
+                header_exprs.push(header_line);
 
-        ffi_fns.push(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #ffi_name(handle: *mut core::ffi::c_void, #(#ffi_params),*) #ret_annotation {
-                let obj = unsafe { #cast };
-                #body
+                ffi_fns.push(quote! {
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn #ffi_name(
+                        handle: *mut core::ffi::c_void,
+                        #(#ffi_params),*
+                    ) {
+                        let obj = unsafe { #cast };
+                        #method_call(obj, #(#converted_args),*);
+                    }
+                });
             }
-        });
+            ReturnKind::Value(ty) => {
+                let header_line: proc_macro2::TokenStream = build_header_line(
+                    quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
+                    ffi_name_str,
+                    &handle_type,
+                    &param_c_type_exprs,
+                    &param_name_str_refs,
+                    None,
+                );
+                header_exprs.push(header_line);
+
+                ffi_fns.push(quote! {
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn #ffi_name(
+                        handle: *mut core::ffi::c_void,
+                        #(#ffi_params),*
+                    ) -> <#ty as ffier::FfiType>::CRepr {
+                        let obj = unsafe { #cast };
+                        let result = #method_call(obj, #(#converted_args),*);
+                        <#ty as ffier::FfiType>::into_c(result)
+                    }
+                });
+            }
+            ReturnKind::Result { ok_ty, err_ty } => {
+                let out_c_type = ok_ty.as_ref().map(|ty| {
+                    quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+                });
+
+                let header_line: proc_macro2::TokenStream = build_header_line(
+                    quote! { <#err_ty as ffier::FfiType>::C_TYPE_NAME },
+                    ffi_name_str,
+                    &handle_type,
+                    &param_c_type_exprs,
+                    &param_name_str_refs,
+                    out_c_type.as_ref(),
+                );
+                header_exprs.push(header_line);
+
+                let ok_branch = if let Some(ok) = ok_ty {
+                    quote! {
+                        Ok(val) => {
+                            unsafe { out.write(<#ok as ffier::FfiType>::into_c(val)) };
+                            unsafe { core::mem::zeroed() }
+                        }
+                    }
+                } else {
+                    quote! {
+                        Ok(()) => {
+                            unsafe { core::mem::zeroed() }
+                        }
+                    }
+                };
+
+                let out_ffi_param = ok_ty.as_ref().map(|ok| {
+                    quote! { out: *mut <#ok as ffier::FfiType>::CRepr, }
+                });
+
+                ffi_fns.push(quote! {
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn #ffi_name(
+                        handle: *mut core::ffi::c_void,
+                        #(#ffi_params,)*
+                        #out_ffi_param
+                    ) -> <#err_ty as ffier::FfiType>::CRepr {
+                        let obj = unsafe { #cast };
+                        match #method_call(obj, #(#converted_args),*) {
+                            #ok_branch
+                            Err(e) => <#err_ty as ffier::FfiType>::into_c(e),
+                        }
+                    }
+                });
+            }
+        }
     }
 
     // create / destroy
@@ -219,8 +287,11 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let destroy_str = destroy_name.to_string();
 
     header_exprs.push(quote! { "" });
-    header_exprs.push(quote! { concat!(#struct_name, "Handle ", #create_str, "(void);") });
-    header_exprs.push(quote! { concat!("void ", #destroy_str, "(", #struct_name, "Handle handle);") });
+    header_exprs
+        .push(quote! { concat!(#struct_name, "Handle ", #create_str, "(void);") });
+    header_exprs.push(
+        quote! { concat!("void ", #destroy_str, "(", #struct_name, "Handle handle);") },
+    );
 
     ffi_fns.push(quote! {
         #[unsafe(no_mangle)]
@@ -243,10 +314,11 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let num_lines = header_exprs.len();
     let bridge_macro_name = format_ident!("{struct_lower}_ffier");
 
-    // Generate the re-export helper module
-    let reexport_items: Vec<_> = reexport_types.iter().zip(reexport_aliases.iter()).map(|(ty, alias)| {
-        quote! { pub type #alias = super::#ty; }
-    }).collect();
+    let reexport_items: Vec<_> = reexport_types
+        .iter()
+        .zip(reexport_aliases.iter())
+        .map(|(ty, alias)| quote! { pub type #alias = super::#ty; })
+        .collect();
 
     let output = quote! {
         #impl_block
@@ -274,17 +346,72 @@ pub fn reflect(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
+/// Build a C header line like `ret_type name(Handle handle, type1 arg1, type2* out);`
+fn build_header_line(
+    c_ret_expr: proc_macro2::TokenStream,
+    ffi_name_str: &str,
+    handle_type: &str,
+    param_c_type_exprs: &[proc_macro2::TokenStream],
+    param_name_strs: &[&String],
+    // c_type_expr for an output pointer param `type* out`
+    out_param_c_type: Option<&proc_macro2::TokenStream>,
+) -> proc_macro2::TokenStream {
+    let out_snippet = out_param_c_type.map(|ct| {
+        quote! {
+            s.push_str(", ");
+            s.push_str(#ct);
+            s.push_str("* out");
+        }
+    });
+    quote! {{
+        let c_type_names: &[&str] = &[#(#param_c_type_exprs),*];
+        let param_names: &[&str] = &[#(#param_name_strs),*];
+        let mut s = String::new();
+        s.push_str(#c_ret_expr);
+        s.push(' ');
+        s.push_str(#ffi_name_str);
+        s.push('(');
+        s.push_str(#handle_type);
+        for (cty, name) in c_type_names.iter().zip(param_names.iter()) {
+            s.push_str(", ");
+            s.push_str(cty);
+            s.push(' ');
+            s.push_str(name);
+        }
+        #out_snippet
+        s.push_str(");");
+        s
+    }}
+}
+
+/// If `ty` is `Result<T, E>`, returns `Some((T, E))`.
+fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
+    let Type::Path(tp) = ty else { return None };
+    let last = tp.path.segments.last()?;
+    if last.ident != "Result" {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &last.arguments else {
+        return None;
+    };
+    let mut iter = args.args.iter();
+    let GenericArgument::Type(ok_ty) = iter.next()? else {
+        return None;
+    };
+    let GenericArgument::Type(err_ty) = iter.next()? else {
+        return None;
+    };
+    Some((ok_ty.clone(), err_ty.clone()))
+}
+
+fn is_unit_type(ty: &Type) -> bool {
+    matches!(ty, Type::Tuple(t) if t.elems.is_empty())
+}
+
 const PRIMITIVES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64",
-    "isize", "usize", "bool", "f32", "f64",
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
 ];
 
-/// For a type used in a method signature, returns token stream suitable for
-/// use inside the generated `macro_rules!` body.
-///
-/// Primitive types are emitted as-is. Non-primitive types are re-exported
-/// through a helper module using `$crate::_ffier_xxx::AliasN` so they
-/// resolve correctly when the macro is expanded in another crate.
 fn type_tokens_for_macro(
     ty: &Type,
     reexport_types: &mut Vec<Type>,
@@ -296,7 +423,6 @@ fn type_tokens_for_macro(
         return quote! { #ty };
     }
 
-    // Check if we already have this type re-exported
     for (i, existing) in reexport_types.iter().enumerate() {
         if quote!(#existing).to_string() == quote!(#ty).to_string() {
             let alias = &reexport_aliases[i];
