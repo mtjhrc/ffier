@@ -1,13 +1,37 @@
 #include <stdio.h>
 #include "krun.h"
 
+/* --- Custom device implemented in C via vtable --- */
+
+static KrunStr my_device_name(void *self) {
+    (void)self;
+    return (KrunStr){ .data = "custom-c-device", .len = 15 };
+}
+
+static KrunBytes my_device_data(void *self) {
+    (void)self;
+    static const char data[] = {0x42, 0x43};
+    return (KrunBytes){ .data = data, .len = sizeof(data) };
+}
+
+static void my_device_on_event(void *self) {
+    (void)self;
+    printf("  custom-c-device: got event from C!\n");
+}
+
+static const KrunDeviceVtable MY_DEVICE_VTABLE = {
+    .name = my_device_name,
+    .data = my_device_data,
+    .on_event = my_device_on_event,
+    .drop = NULL, /* no cleanup needed */
+};
+
+/* --- main --- */
+
 int main(void) {
-    /* Create resources (shared by all devices) */
     KrunVmResourcesHandle resources = krun_vmresources_new();
 
-    /* Build devices using the builder pattern:
-     * builder = new(resources)  — reserves resources (mutates)
-     * device  = build(builder, data, resources) — consumes builder */
+    /* Rust-implemented devices via builders */
     KrunNetDeviceBuilderHandle net_b = krun_netdevicebuilder_new(resources);
     KrunBlockDeviceBuilderHandle blk_b = krun_blockdevicebuilder_new(resources);
 
@@ -17,22 +41,22 @@ int main(void) {
     KrunBytes tap = { .data = (const char*)tap_buf, .len = sizeof(tap_buf) };
     KrunBytes disk = { .data = (const char*)disk_data, .len = sizeof(disk_data) };
 
-    /* build() consumes the builder handle (don't use net_b/blk_b after this) */
     KrunNetDeviceHandle net_dev = krun_netdevicebuilder_build(net_b, tap, resources);
     KrunBlockDeviceHandle blk_dev = krun_blockdevicebuilder_build(blk_b, disk, resources);
 
-    /* Create VMM bound to resources */
-    KrunVmmHandle vmm = krun_vmm_new(resources);
+    /* C-implemented device via vtable */
+    KrunDevice custom_dev = krun_device_from_vtable(NULL, &MY_DEVICE_VTABLE);
 
-    /* Add devices — one function accepts any device type */
+    /* Create VMM and add all three devices through ONE function */
+    KrunVmmHandle vmm = krun_vmm_new(resources);
     krun_vmm_add_device(vmm, net_dev);
     krun_vmm_add_device(vmm, blk_dev);
+    krun_vmm_add_device(vmm, custom_dev);
 
     printf("device_count = %d\n", krun_vmm_device_count(vmm));
     printf("firing event:\n");
     krun_vmm_fire_event(vmm);
 
-    /* Destroy in reverse order: vmm first, then resources */
     krun_vmm_destroy(vmm);
     krun_vmresources_destroy(resources);
 

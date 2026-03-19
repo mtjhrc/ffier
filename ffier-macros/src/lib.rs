@@ -1,8 +1,9 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, LitStr, Pat, PathArguments,
-    ReturnType, Token, Type, parse::Parse, parse_macro_input, visit_mut::VisitMut,
+    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemTrait, LitStr, Pat,
+    PathArguments, ReturnType, Token, TraitItem, Type, parse::Parse, parse_macro_input,
+    visit_mut::VisitMut,
 };
 
 struct ReflectArgs {
@@ -1576,4 +1577,596 @@ fn build_doxygen_comment(
 
     out.push_str(" */");
     Some(out)
+}
+
+// ===========================================================================
+// #[ffier::implementable] — C users can implement a Rust trait via vtable
+// ===========================================================================
+
+struct ImplementableArgs {
+    prefix: Option<String>,
+    supers: Vec<SupertraitBlock>,
+}
+
+struct SupertraitBlock {
+    trait_name: syn::Ident,
+    methods: Vec<syn::TraitItemFn>,
+}
+
+impl Parse for ImplementableArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut prefix = None;
+        let mut supers = Vec::new();
+
+        while !input.is_empty() {
+            let ident: syn::Ident = input.parse()?;
+
+            if ident == "prefix" {
+                input.parse::<Token![=]>()?;
+                let lit: LitStr = input.parse()?;
+                prefix = Some(lit.value());
+            } else if ident == "supers" {
+                let content;
+                syn::parenthesized!(content in input);
+                while !content.is_empty() {
+                    let trait_name: syn::Ident = content.parse()?;
+                    let methods_content;
+                    syn::braced!(methods_content in content);
+                    let mut methods = Vec::new();
+                    while !methods_content.is_empty() {
+                        methods.push(methods_content.parse::<syn::TraitItemFn>()?);
+                    }
+                    supers.push(SupertraitBlock {
+                        trait_name,
+                        methods,
+                    });
+                    // optional comma between supertrait blocks
+                    let _ = content.parse::<Token![,]>();
+                }
+            } else {
+                return Err(syn::Error::new(ident.span(), "expected `prefix` or `supers`"));
+            }
+            let _ = input.parse::<Token![,]>();
+        }
+
+        Ok(Self { prefix, supers })
+    }
+}
+
+/// A method signature extracted from a trait, classified for vtable generation.
+struct VtableMethod {
+    name: syn::Ident,
+    /// The trait this method belongs to (None = the annotated trait itself)
+    trait_name: Option<syn::Ident>,
+    /// Parameters (excluding &self), as (ident, ffi_type) pairs
+    params: Vec<(syn::Ident, VtableParamType)>,
+    /// Return type
+    ret: VtableRetType,
+}
+
+enum VtableParamType {
+    Primitive(Type),
+    Str,
+    Bytes,
+    Path,
+    Handle(Type),
+}
+
+enum VtableRetType {
+    Void,
+    Primitive(Type),
+    Str,
+    Bytes,
+    Path,
+    Handle(Type),
+}
+
+fn classify_vtable_param(ty: &Type) -> VtableParamType {
+    if let Some(sk) = classify_ref_type(ty) {
+        return match sk {
+            SliceKind::Str => VtableParamType::Str,
+            SliceKind::Bytes => VtableParamType::Bytes,
+            SliceKind::Path => VtableParamType::Path,
+        };
+    }
+    if let Type::Reference(r) = ty {
+        return VtableParamType::Handle(erase_lifetimes(&r.elem));
+    }
+    VtableParamType::Primitive(erase_lifetimes(ty))
+}
+
+fn classify_vtable_ret(ty: &Type) -> VtableRetType {
+    if let Some(sk) = classify_ref_type(ty) {
+        return match sk {
+            SliceKind::Str => VtableRetType::Str,
+            SliceKind::Bytes => VtableRetType::Bytes,
+            SliceKind::Path => VtableRetType::Path,
+        };
+    }
+    if let Type::Reference(r) = ty {
+        return VtableRetType::Handle(erase_lifetimes(&r.elem));
+    }
+    VtableRetType::Primitive(erase_lifetimes(ty))
+}
+
+fn extract_vtable_methods(
+    trait_item: &ItemTrait,
+    supers: &[SupertraitBlock],
+) -> Vec<VtableMethod> {
+    let mut methods = Vec::new();
+
+    // Methods from the trait itself
+    for item in &trait_item.items {
+        let TraitItem::Fn(method) = item else {
+            continue;
+        };
+        if let Some(vm) = parse_trait_method_sig(&method.sig, None) {
+            methods.push(vm);
+        }
+    }
+
+    // Methods from supertrait blocks
+    for sup in supers {
+        for method in &sup.methods {
+            if let Some(vm) = parse_trait_method_sig(&method.sig, Some(sup.trait_name.clone())) {
+                methods.push(vm);
+            }
+        }
+    }
+
+    methods
+}
+
+fn parse_trait_method_sig(
+    sig: &syn::Signature,
+    trait_name: Option<syn::Ident>,
+) -> Option<VtableMethod> {
+    // Must have &self receiver
+    let first = sig.inputs.first()?;
+    if !matches!(first, FnArg::Receiver(_)) {
+        return None;
+    }
+
+    let params: Vec<_> = sig
+        .inputs
+        .iter()
+        .skip(1)
+        .filter_map(|arg| {
+            let FnArg::Typed(pt) = arg else { return None };
+            let Pat::Ident(pi) = &*pt.pat else {
+                return None;
+            };
+            Some((pi.ident.clone(), classify_vtable_param(&pt.ty)))
+        })
+        .collect();
+
+    let ret = match &sig.output {
+        ReturnType::Default => VtableRetType::Void,
+        ReturnType::Type(_, ty) => classify_vtable_ret(ty),
+    };
+
+    Some(VtableMethod {
+        name: sig.ident.clone(),
+        trait_name,
+        params,
+        ret,
+    })
+}
+
+/// Generate the C function pointer type for a vtable method parameter
+fn vtable_ffi_param_type(vpt: &VtableParamType) -> proc_macro2::TokenStream {
+    match vpt {
+        VtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::CRepr },
+        VtableParamType::Str | VtableParamType::Bytes | VtableParamType::Path => {
+            quote! { ffier::FfierBytes }
+        }
+        VtableParamType::Handle(_) => quote! { *mut core::ffi::c_void },
+    }
+}
+
+fn vtable_ffi_ret_type(vrt: &VtableRetType) -> proc_macro2::TokenStream {
+    match vrt {
+        VtableRetType::Void => quote! {},
+        VtableRetType::Primitive(ty) => quote! { -> <#ty as ffier::FfiType>::CRepr },
+        VtableRetType::Str | VtableRetType::Bytes | VtableRetType::Path => {
+            quote! { -> ffier::FfierBytes }
+        }
+        VtableRetType::Handle(_) => quote! { -> *mut core::ffi::c_void },
+    }
+}
+
+/// Generate Rust code to convert a vtable call result back to the trait return type
+fn vtable_result_conversion(vrt: &VtableRetType, expr: proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    match vrt {
+        VtableRetType::Void => expr,
+        VtableRetType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::from_c(#expr) },
+        VtableRetType::Str => quote! { unsafe {
+            let __b = #expr;
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(__b.data, __b.len))
+        }},
+        VtableRetType::Bytes => quote! { unsafe {
+            let __b = #expr;
+            core::slice::from_raw_parts(__b.data, __b.len)
+        }},
+        VtableRetType::Path => quote! { unsafe { (#expr).as_path() } },
+        VtableRetType::Handle(ty) => quote! { <#ty as ffier::FfiType>::from_c(#expr) },
+    }
+}
+
+/// Generate Rust code to convert a Rust param value to the vtable call arg
+fn vtable_arg_conversion(vpt: &VtableParamType, ident: &syn::Ident) -> proc_macro2::TokenStream {
+    match vpt {
+        VtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
+        VtableParamType::Str => quote! { ffier::FfierBytes::from_str(#ident) },
+        VtableParamType::Bytes => quote! { ffier::FfierBytes::from_bytes(#ident) },
+        VtableParamType::Path => quote! { ffier::FfierBytes::from_path(#ident) },
+        VtableParamType::Handle(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
+    }
+}
+
+fn vtable_c_param_type(vpt: &VtableParamType, str_n: &str, bytes_n: &str, path_n: &str) -> String {
+    match vpt {
+        VtableParamType::Primitive(ty) => {
+            // Approximation: use the FfiType::C_TYPE_NAME at codegen time
+            // We'll handle this in the header function via runtime formatting
+            return String::new(); // placeholder, handled in header gen
+        }
+        VtableParamType::Str => str_n.to_string(),
+        VtableParamType::Bytes => bytes_n.to_string(),
+        VtableParamType::Path => path_n.to_string(),
+        VtableParamType::Handle(_) => "void*".to_string(),
+    }
+}
+
+#[proc_macro_attribute]
+pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as ImplementableArgs);
+    let trait_item = parse_macro_input!(item as ItemTrait);
+    let original_trait = trait_item.clone();
+
+    let trait_name = &trait_item.ident;
+    let trait_name_str = trait_name.to_string();
+    let trait_snake = camel_to_snake(&trait_name_str);
+    let trait_upper = camel_to_upper_snake(&trait_name_str);
+
+    let fn_pfx = args
+        .prefix
+        .as_ref()
+        .map(|p| format!("{p}_"))
+        .unwrap_or_default();
+    let type_pfx = args
+        .prefix
+        .as_ref()
+        .map(|p| snake_to_pascal(p))
+        .unwrap_or_default();
+
+    let vtable_c_name = format!("{type_pfx}{trait_name_str}Vtable");
+    let wrapper_name = format_ident!("Vtable{trait_name_str}");
+    let wrapper_c_handle = format!("{type_pfx}Vtable{trait_name_str}Handle");
+    let vtable_struct_name = format_ident!("{type_pfx}{trait_name_str}Vtable");
+    let constructor_name = format_ident!("{fn_pfx}{trait_snake}_from_vtable");
+    let constructor_name_str = constructor_name.to_string();
+
+    // Extract all methods (trait + supertraits)
+    let vtable_methods = extract_vtable_methods(&trait_item, &args.supers);
+
+    // --- Generate vtable struct fields ---
+    let vtable_fields: Vec<_> = vtable_methods
+        .iter()
+        .map(|m| {
+            let name = &m.name;
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|(_, vpt)| vtable_ffi_param_type(vpt))
+                .collect();
+            let ret = vtable_ffi_ret_type(&m.ret);
+            quote! {
+                pub #name: unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret
+            }
+        })
+        .collect();
+
+    // --- Generate trait impl method bodies (call through vtable) ---
+    // Group methods by trait
+    let mut own_methods = Vec::new();
+    let mut super_methods: std::collections::HashMap<String, Vec<&VtableMethod>> =
+        std::collections::HashMap::new();
+
+    for m in &vtable_methods {
+        match &m.trait_name {
+            None => own_methods.push(m),
+            Some(tn) => super_methods.entry(tn.to_string()).or_default().push(m),
+        }
+    }
+
+    // Trait's own methods impl
+    let own_impl_methods: Vec<_> = own_methods
+        .iter()
+        .map(|m| {
+            let name = &m.name;
+            let param_idents: Vec<_> = m.params.iter().map(|(id, _)| id).collect();
+            let param_types: Vec<_> = m.params.iter().map(|(id, vpt)| {
+                let _ = id;
+                // Use original trait method signature types
+                quote! {} // placeholder - we need the original sig
+            }).collect();
+            let _ = param_types;
+
+            let vtable_args: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| vtable_arg_conversion(vpt, id))
+                .collect();
+
+            let call = quote! {
+                unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
+            };
+            let body = vtable_result_conversion(&m.ret, call);
+
+            // We need to reconstruct the method signature from the trait
+            // For simplicity, find the matching method in the original trait
+            quote! { #body }
+        })
+        .collect();
+
+    // Build trait path with 'static lifetimes for the wrapper impl
+    let trait_generics = &trait_item.generics;
+    let trait_ty_generics = {
+        let mut g = trait_generics.clone();
+        for lt in g.lifetimes_mut() {
+            lt.lifetime = syn::Lifetime::new("'static", lt.lifetime.apostrophe);
+        }
+        let (_, tg, _) = g.split_for_impl();
+        tg.to_token_stream()
+    };
+    // Also erase lifetimes in method signatures
+    let trait_item_erased = {
+        let mut t = trait_item.clone();
+        struct Eraser;
+        impl VisitMut for Eraser {
+            fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+                *lt = syn::Lifetime::new("'static", lt.apostrophe);
+            }
+        }
+        Eraser.visit_item_trait_mut(&mut t);
+        t
+    };
+
+    let own_method_impls: Vec<_> = trait_item_erased
+        .items
+        .iter()
+        .filter_map(|item| {
+            let TraitItem::Fn(method) = item else {
+                return None;
+            };
+            let name = &method.sig.ident;
+            let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+
+            let sig = &method.sig;
+            let vtable_args: Vec<_> = vm
+                .params
+                .iter()
+                .map(|(id, vpt)| vtable_arg_conversion(vpt, id))
+                .collect();
+            let call = quote! {
+                unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
+            };
+            let body = vtable_result_conversion(&vm.ret, call);
+
+            Some(quote! {
+                #sig { #body }
+            })
+        })
+        .collect();
+
+    // Supertrait impls
+    let super_impls: Vec<_> = args
+        .supers
+        .iter()
+        .map(|sup| {
+            let tn = &sup.trait_name;
+            let method_impls: Vec<_> = sup
+                .methods
+                .iter()
+                .filter_map(|method| {
+                    let name = &method.sig.ident;
+                    let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+
+                    let sig = &method.sig;
+                    let vtable_args: Vec<_> = vm
+                        .params
+                        .iter()
+                        .map(|(id, vpt)| vtable_arg_conversion(vpt, id))
+                        .collect();
+                    let call = quote! {
+                        unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
+                    };
+                    let body = vtable_result_conversion(&vm.ret, call);
+
+                    Some(quote! { #sig { #body } })
+                })
+                .collect();
+
+            quote! {
+                impl #tn for #wrapper_name {
+                    #(#method_impls)*
+                }
+            }
+        })
+        .collect();
+
+    // --- Header generation (via bridge macro) ---
+    let bridge_macro_name = format_ident!("vtable{trait_snake}_ffier");
+    let header_fn_name = format_ident!("{fn_pfx}vtable{trait_snake}__header");
+
+    // Build header lines for vtable struct
+    let mut header_lines: Vec<proc_macro2::TokenStream> = Vec::new();
+
+    let vtable_guard = format!("{type_pfx}{trait_upper}_VTABLE_DEFINED");
+    header_lines.push(quote! { concat!("#ifndef ", #vtable_guard) });
+    header_lines.push(quote! { concat!("#define ", #vtable_guard) });
+    header_lines.push(quote! { concat!("typedef struct {") });
+
+    // For each method, generate a C function pointer line
+    for m in &vtable_methods {
+        let name_str = m.name.to_string();
+        // Build C return type and params at runtime
+        let param_c_types: Vec<_> = m
+            .params
+            .iter()
+            .map(|(id, vpt)| {
+                let id_str = id.to_string();
+                let type_expr = match vpt {
+                    VtableParamType::Primitive(ty) => {
+                        quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+                    }
+                    VtableParamType::Str => {
+                        let n = format!("{type_pfx}Str");
+                        quote! { #n }
+                    }
+                    VtableParamType::Bytes => {
+                        let n = format!("{type_pfx}Bytes");
+                        quote! { #n }
+                    }
+                    VtableParamType::Path => {
+                        let n = format!("{type_pfx}Path");
+                        quote! { #n }
+                    }
+                    VtableParamType::Handle(_) => quote! { "void*" },
+                };
+                (id_str, type_expr)
+            })
+            .collect();
+
+        let ret_c_expr = match &m.ret {
+            VtableRetType::Void => quote! { "void" },
+            VtableRetType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
+            VtableRetType::Str => {
+                let n = format!("{type_pfx}Str");
+                quote! { #n }
+            }
+            VtableRetType::Bytes => {
+                let n = format!("{type_pfx}Bytes");
+                quote! { #n }
+            }
+            VtableRetType::Path => {
+                let n = format!("{type_pfx}Path");
+                quote! { #n }
+            }
+            VtableRetType::Handle(_) => quote! { "void*" },
+        };
+
+        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
+        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
+
+        header_lines.push(quote! {{
+            let mut s = String::from("    ");
+            s.push_str(#ret_c_expr);
+            s.push_str(" (*");
+            s.push_str(#name_str);
+            s.push_str(")(void* self_data");
+            let param_types: &[&str] = &[#(#param_type_exprs),*];
+            let param_names: &[&str] = &[#(#param_id_strs),*];
+            for (t, n) in param_types.iter().zip(param_names.iter()) {
+                s.push_str(", ");
+                s.push_str(t);
+                s.push(' ');
+                s.push_str(n);
+            }
+            s.push_str(");");
+            s
+        }});
+    }
+
+    // drop function pointer
+    header_lines.push(quote! { "    void (*drop)(void* self_data);" });
+    header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
+    header_lines.push(quote! { "" });
+    header_lines.push(quote! {
+        concat!("void* ", #constructor_name_str, "(void* user_data, const ", #vtable_c_name, "* vtable);")
+    });
+    header_lines.push(quote! { concat!("#endif /* ", #vtable_guard, " */") });
+
+    let num_header_lines = header_lines.len();
+
+    let output = quote! {
+        #original_trait
+
+        #[repr(C)]
+        pub struct #vtable_struct_name {
+            #(#vtable_fields,)*
+            pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+        }
+
+        pub struct #wrapper_name {
+            pub user_data: *mut core::ffi::c_void,
+            pub vtable: *const #vtable_struct_name,
+        }
+
+        impl #trait_name #trait_ty_generics for #wrapper_name {
+            #(#own_method_impls)*
+        }
+
+        #(#super_impls)*
+
+        impl Drop for #wrapper_name {
+            fn drop(&mut self) {
+                if let Some(drop_fn) = unsafe { (*self.vtable).drop } {
+                    unsafe { drop_fn(self.user_data) };
+                }
+            }
+        }
+
+        impl ffier::FfiHandle for #wrapper_name {
+            const C_HANDLE_NAME: &str = #wrapper_c_handle;
+            const TYPE_ID: u64 = ffier::fnv1a(#wrapper_c_handle.as_bytes());
+        }
+
+        impl ffier::FfiType for #wrapper_name {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &str = #wrapper_c_handle;
+            fn into_c(self) -> *mut core::ffi::c_void {
+                let tagged = ffier::FfierTaggedBox {
+                    type_id: <Self as ffier::FfiHandle>::TYPE_ID,
+                    value: self,
+                };
+                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
+            }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                unsafe {
+                    let tagged = Box::from_raw(
+                        repr as *mut ffier::FfierTaggedBox<Self>
+                    );
+                    tagged.value
+                }
+            }
+        }
+
+        #[macro_export]
+        macro_rules! #bridge_macro_name {
+            () => {
+                #[unsafe(no_mangle)]
+                pub extern "C" fn #constructor_name(
+                    user_data: *mut core::ffi::c_void,
+                    vtable: *const $crate::#vtable_struct_name,
+                ) -> *mut core::ffi::c_void {
+                    let wrapper = $crate::#wrapper_name {
+                        user_data,
+                        vtable,
+                    };
+                    <$crate::#wrapper_name as ffier::FfiType>::into_c(wrapper)
+                }
+
+                pub fn #header_fn_name() -> String {
+                    let lines: [String; #num_header_lines] = [
+                        #(#header_lines .to_string()),*
+                    ];
+                    lines.join("\n")
+                }
+            };
+        }
+    };
+
+    output.into()
 }
