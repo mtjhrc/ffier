@@ -1,23 +1,29 @@
-/// Error codes for calculator operations. Zero means success.
-#[repr(i32)]
+use std::ffi::CStr;
+
 #[derive(Clone, Copy)]
 pub enum CalcError {
-    DivisionByZero = 1,
-    Overflow = 2,
+    DivisionByZero,
+    Overflow,
 }
 
-impl ffier::FfiType for CalcError {
-    type CRepr = i32;
-    const C_TYPE_NAME: &str = "int32_t";
-    fn into_c(self) -> i32 {
-        self as i32
-    }
-    fn from_c(v: i32) -> Self {
-        match v {
-            1 => CalcError::DivisionByZero,
-            2 => CalcError::Overflow,
-            _ => panic!("invalid CalcError value: {v}"),
+impl ffier::FfiError for CalcError {
+    fn code(&self) -> u64 {
+        match self {
+            CalcError::DivisionByZero => 1,
+            CalcError::Overflow => 2,
         }
+    }
+
+    fn static_message(code: u64) -> &'static CStr {
+        match code {
+            1 => c"division by zero",
+            2 => c"integer overflow",
+            _ => c"unknown calculator error",
+        }
+    }
+
+    fn codes() -> &'static [(&'static str, u64)] {
+        &[("DIVISION_BY_ZERO", 1), ("OVERFLOW", 2)]
     }
 }
 
