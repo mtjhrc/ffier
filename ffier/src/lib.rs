@@ -61,12 +61,7 @@ mod std_impls {
 // FfiError — per-type C error struct: { code, _msg }
 // ---------------------------------------------------------------------------
 
-/// Trait for Rust error types that cross the FFI boundary.
-///
-/// Each error type becomes its own C struct (typedef of `FfierError`),
-/// with its own `_message()` and `_free()` functions.
 pub trait FfiError: Sized {
-    /// Error code for this value.
     fn code(&self) -> u64;
 
     /// Optional heap-allocated custom message. If `None`, `static_message()`
@@ -75,19 +70,17 @@ pub trait FfiError: Sized {
         None
     }
 
-    /// Static fallback message for a given error code.
     fn static_message(code: u64) -> &'static CStr;
 
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
     fn codes() -> &'static [(&'static str, u64)];
 }
 
-/// The underlying `#[repr(C)]` error struct. Each user error type gets a
-/// C typedef alias (e.g. `typedef FfierError CalcError;`).
+/// The underlying `#[repr(C)]` error struct. In C, each error type gets its
+/// own structurally-identical struct definition (not a typedef).
 #[repr(C)]
 pub struct FfierError {
     pub code: u64,
-    // Private — use the per-type `*_message()` function.
     _msg: *mut c_char,
 }
 
@@ -113,18 +106,18 @@ impl FfierError {
         }
     }
 
-    /// Returns the custom message pointer (may be null).
     pub fn msg_ptr(&self) -> *const c_char {
         self._msg
     }
-}
 
-/// Free any heap-allocated message and zero the error struct.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ffier_error_free(err: *mut FfierError) {
-    let err = unsafe { &mut *err };
-    if !err._msg.is_null() {
-        drop(unsafe { CString::from_raw(err._msg) });
+    /// Free any heap-allocated message and zero the struct.
+    ///
+    /// # Safety
+    /// `_msg` must be null or from `CString::into_raw`.
+    pub unsafe fn free(&mut self) {
+        if !self._msg.is_null() {
+            drop(unsafe { CString::from_raw(self._msg) });
+        }
+        *self = Self::ok();
     }
-    *err = FfierError::ok();
 }
