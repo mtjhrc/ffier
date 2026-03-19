@@ -71,23 +71,19 @@ impl<'a> Vmm<'a> {
         }
     }
 
-    fn add_device(&mut self, dev: impl IntoDevice<'a>) {
+    /// Add a device to the VMM.
+    ///
+    /// # Arguments
+    ///
+    /// * `dev` - A device handle (NetDevice or BlockDevice).
+    #[ffier(dyn_param(dev, "Device", [NetDevice<'a>, BlockDevice<'a>]))]
+    pub fn add_device(&mut self, dev: impl IntoDevice<'a>) {
         let dev = dev.into_device();
         let transport = MmioTransport {
             device: Arc::clone(&dev),
         };
         self.transports.push(transport);
         self.event_subscribers.push(dev);
-    }
-
-    /// Add a network device to the VMM.
-    pub fn add_net_device(&mut self, dev: NetDevice<'a>) {
-        self.add_device(dev);
-    }
-
-    /// Add a block device to the VMM.
-    pub fn add_block_device(&mut self, dev: BlockDevice<'a>) {
-        self.add_device(dev);
     }
 
     /// List all attached devices.

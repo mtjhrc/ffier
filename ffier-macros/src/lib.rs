@@ -44,6 +44,15 @@ enum ParamKind {
         inner_ty: proc_macro2::TokenStream,
         is_mut: bool,
     },
+    /// `impl Trait` param with runtime dispatch over listed concrete types.
+    DynDispatch(DynParamConfig),
+}
+
+struct DynParamConfig {
+    /// C type name suffix (e.g. "Device" → "{Prefix}Device" typedef)
+    c_name: String,
+    /// Concrete types to dispatch over, as token streams (cross-crate safe)
+    variants: Vec<(String, proc_macro2::TokenStream)>, // (ident_name, tokens)
 }
 
 enum ValueKind {
@@ -130,7 +139,9 @@ fn ffi_param_tokens(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
     match kind {
         ParamKind::Regular(ty) => quote! { #id: <#ty as ffier::FfiType>::CRepr },
         ParamKind::Slice(_) => quote! { #id: ffier::FfierBytes },
-        ParamKind::HandleRef { .. } => quote! { #id: *mut core::ffi::c_void },
+        ParamKind::HandleRef { .. } | ParamKind::DynDispatch(_) => {
+            quote! { #id: *mut core::ffi::c_void }
+        }
     }
 }
 
@@ -159,6 +170,11 @@ fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStre
                 &(*(#id as *const ffier::FfierTaggedBox<#inner_ty>)).value
             } }
         }
+        ParamKind::DynDispatch(_) => {
+            // Dispatch is handled specially in the method codegen, not here.
+            // This is a placeholder — the actual match is generated inline.
+            quote! { compile_error!("DynDispatch should not use param_conversion") }
+        }
     }
 }
 
@@ -175,6 +191,10 @@ fn param_c_type_expr(
         ParamKind::Slice(SliceKind::Path) => quote! { #path_name },
         ParamKind::HandleRef { inner_ty, .. } => {
             quote! { <#inner_ty as ffier::FfiHandle>::C_HANDLE_NAME }
+        }
+        ParamKind::DynDispatch(cfg) => {
+            let name = &cfg.c_name;
+            quote! { #name }
         }
     }
 }
@@ -217,7 +237,17 @@ fn value_c_type_expr(
 pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ReflectArgs);
     let input = parse_macro_input!(item as ItemImpl);
-    let impl_block = input.clone();
+
+    // Strip #[ffier(...)] attributes from methods before emitting the impl block
+    let impl_block = {
+        let mut block = input.clone();
+        for item in &mut block.items {
+            if let ImplItem::Fn(method) = item {
+                method.attrs.retain(|a| !a.path().is_ident("ffier"));
+            }
+        }
+        block
+    };
 
     let Type::Path(ref struct_path) = *input.self_ty else {
         return syn::Error::new_spanned(&input.self_ty, "expected a named struct type")
@@ -323,6 +353,16 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             (false, false)
         };
 
+        // Parse #[ffier(dyn_param(param, "CName", [Type1, Type2]))] on this method
+        let dyn_params = parse_dyn_param_attrs(
+            &method.attrs,
+            &mut reexport_types,
+            &mut reexport_aliases,
+            &mut alias_counter,
+            &helper_mod_name,
+            &type_pfx,
+        );
+
         let mut param_idents = Vec::new();
         let mut param_name_strs = Vec::new();
         let mut param_kinds = Vec::new();
@@ -331,8 +371,18 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         for arg in method.sig.inputs.iter().skip(skip_n) {
             let FnArg::Typed(pat_ty) = arg else { continue };
             let Pat::Ident(pat_ident) = &*pat_ty.pat else { continue };
+            let param_name = pat_ident.ident.to_string();
             param_idents.push(pat_ident.ident.clone());
-            param_name_strs.push(pat_ident.ident.to_string());
+            param_name_strs.push(param_name.clone());
+
+            // Check if this param has a dyn_param annotation
+            if let Some(cfg) = dyn_params.iter().find(|d| d.0 == param_name) {
+                param_kinds.push(ParamKind::DynDispatch(DynParamConfig {
+                    c_name: cfg.1.clone(),
+                    variants: cfg.2.clone(),
+                }));
+                continue;
+            }
 
             // Replace `Self` with the concrete (lifetime-erased) struct type
             let param_ty = replace_self_type(&pat_ty.ty, &self_ty_static);
@@ -523,6 +573,41 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // Generate typedefs for dyn_param dispatch types
+    let mut generated_dyn_types: Vec<String> = Vec::new();
+    for m in &methods {
+        for (_, k) in m.param_idents.iter().zip(m.param_kinds.iter()) {
+            if let ParamKind::DynDispatch(cfg) = k {
+                if generated_dyn_types.contains(&cfg.c_name) {
+                    continue;
+                }
+                generated_dyn_types.push(cfg.c_name.clone());
+
+                let c_name = &cfg.c_name;
+                let upper_name = camel_to_upper_snake(c_name);
+
+                // typedef void* KrunDevice;
+                header_exprs.push(quote! {
+                    concat!("typedef void* ", #c_name, ";")
+                });
+
+                // TYPE_ID constants per variant
+                for (ident_name, ty_tokens) in &cfg.variants {
+                    let const_name =
+                        format!("{}_{}", upper_name, camel_to_upper_snake(ident_name));
+                    header_exprs.push(quote! {{
+                        format!(
+                            "#define {} {}",
+                            #const_name,
+                            <#ty_tokens as ffier::FfiHandle>::TYPE_ID,
+                        )
+                    }});
+                }
+                header_exprs.push(quote! { "" });
+            }
+        }
+    }
+
     // Method FFI functions
     for m in &methods {
         let ffi_name_str = &m.ffi_name_str;
@@ -567,13 +652,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .map(|(id, k)| ffi_param_tokens(id, k))
             .collect();
 
-        let converted_args: Vec<_> = m
-            .param_idents
-            .iter()
-            .zip(m.param_kinds.iter())
-            .map(|(id, k)| param_conversion(id, k))
-            .collect();
-
         let c_type_exprs: Vec<_> = m
             .param_kinds
             .iter()
@@ -581,8 +659,28 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .collect();
         let param_name_str_refs: Vec<_> = m.param_name_strs.iter().collect::<Vec<_>>();
 
-        // Method call: instance methods pass obj as receiver, static methods don't
-        let method_call = if m.has_receiver {
+        // Check for DynDispatch params
+        let dyn_dispatch = m.param_idents.iter().zip(m.param_kinds.iter()).find_map(
+            |(id, k)| match k {
+                ParamKind::DynDispatch(cfg) => Some((id.clone(), cfg)),
+                _ => None,
+            },
+        );
+
+        // Build converted args: for DynDispatch params, use the raw ident
+        // (dispatch match substitutes the correct conversion)
+        let converted_args: Vec<_> = m
+            .param_idents
+            .iter()
+            .zip(m.param_kinds.iter())
+            .map(|(id, k)| match k {
+                ParamKind::DynDispatch(_) => quote! { #id },
+                other => param_conversion(id, other),
+            })
+            .collect();
+
+        // Build the method call expression (without dispatch wrapping)
+        let base_method_call = if m.has_receiver {
             if let Some(tp) = &trait_path {
                 quote! { <$struct_ty as $crate::#tp>::#method_name(obj, #(#converted_args),*) }
             } else {
@@ -590,6 +688,35 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         } else {
             quote! { <$struct_ty>::#method_name(#(#converted_args),*) }
+        };
+
+        // Wrap in dispatch match if needed
+        let method_call = if let Some((dyn_id, dyn_cfg)) = &dyn_dispatch {
+            let match_arms: Vec<_> = dyn_cfg.variants.iter().map(|(_, ty_tokens)| {
+                quote! {
+                    <#ty_tokens as ffier::FfiHandle>::TYPE_ID => {
+                        let #dyn_id = unsafe {
+                            (*Box::from_raw(
+                                #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
+                            )).value
+                        };
+                        #base_method_call
+                    }
+                }
+            }).collect();
+
+            quote! {{
+                let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                match __type_id {
+                    #(#match_arms)*
+                    other => panic!(
+                        "ffier: unknown type_id {} for dynamic dispatch on `{}`",
+                        other, stringify!(#dyn_id)
+                    ),
+                }
+            }}
+        } else {
+            base_method_call
         };
 
         // Doxygen comment
@@ -1141,6 +1268,72 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
         proc_macro2::Span::call_site(),
         "missing #[ffier(code = N)] attribute on variant",
     ))
+}
+
+/// Parse `#[ffier(dyn_param(param_name, "CName", [Type1, Type2]))]` from method attributes.
+///
+/// Returns `Vec<(param_name, full_c_type_name, [(ident_name, type_tokens)])>`.
+fn parse_dyn_param_attrs(
+    attrs: &[syn::Attribute],
+    reexport_types: &mut Vec<Type>,
+    reexport_aliases: &mut Vec<syn::Ident>,
+    alias_counter: &mut u32,
+    helper_mod: &syn::Ident,
+    type_pfx: &str,
+) -> Vec<(String, String, Vec<(String, proc_macro2::TokenStream)>)> {
+    let mut result = Vec::new();
+
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+
+        // Parse: ffier(dyn_param(dev, "Device", [NetDevice, BlockDevice]))
+        let _ = attr.parse_nested_meta(|meta| {
+            if !meta.path.is_ident("dyn_param") {
+                return Ok(());
+            }
+
+            let content;
+            syn::parenthesized!(content in meta.input);
+
+            // param name
+            let param_ident: syn::Ident = content.parse()?;
+            content.parse::<Token![,]>()?;
+
+            // C type name suffix
+            let c_name_lit: LitStr = content.parse()?;
+            content.parse::<Token![,]>()?;
+
+            // [Type1, Type2, ...]
+            let types_content;
+            syn::bracketed!(types_content in content);
+            let variant_types: syn::punctuated::Punctuated<Type, Token![,]> =
+                types_content.parse_terminated(Type::parse, Token![,])?;
+
+            let c_name = format!("{type_pfx}{}", c_name_lit.value());
+            let variants: Vec<_> = variant_types
+                .iter()
+                .map(|ty| {
+                    let ident_name = type_ident_name(ty);
+                    let erased = erase_lifetimes(ty);
+                    let tokens = type_tokens_for_macro(
+                        &erased,
+                        reexport_types,
+                        reexport_aliases,
+                        alias_counter,
+                        helper_mod,
+                    );
+                    (ident_name, tokens)
+                })
+                .collect();
+
+            result.push((param_ident.to_string(), c_name, variants));
+            Ok(())
+        });
+    }
+
+    result
 }
 
 /// `DivisionByZero` → `"division by zero"`

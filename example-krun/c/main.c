@@ -24,9 +24,9 @@ int main(void) {
     /* Create VMM bound to resources */
     KrunVmmHandle vmm = krun_vmm_new(resources);
 
-    /* Add devices (consumes the device handles) */
-    krun_vmm_add_net_device(vmm, net_dev);
-    krun_vmm_add_block_device(vmm, blk_dev);
+    /* Add devices — one function accepts any device type */
+    krun_vmm_add_device(vmm, net_dev);
+    krun_vmm_add_device(vmm, blk_dev);
 
     printf("device_count = %d\n", krun_vmm_device_count(vmm));
     printf("firing event:\n");
