@@ -630,8 +630,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
                 assert!(
                     __actual == __expected,
-                    "{}: wrong handle type (expected type_id={}, got {})",
-                    #ffi_name_for_msg, __expected, __actual,
+                    "{}(): `handle` is not a {} (expected type_id={}, got {})",
+                    #ffi_name_for_msg,
+                    <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
+                    __expected,
+                    __actual,
                 );
             };
             let cast = if m.is_by_value {
@@ -715,13 +718,23 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }).collect();
 
+            let variant_names: Vec<_> = dyn_cfg.variants.iter()
+                .map(|(name, _)| name.as_str())
+                .collect();
+            let accepted_list = variant_names.join(" | ");
+            let ffi_name_for_dispatch = &m.ffi_name_str;
+
             quote! {{
                 let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
                 match __type_id {
                     #(#match_arms)*
                     other => panic!(
-                        "ffier: unknown type_id {} for dynamic dispatch on `{}`",
-                        other, stringify!(#dyn_id)
+                        "{}(): parameter `{}` expected an object of type: {}, \
+                         but got unknown handle (type_id={})",
+                        #ffi_name_for_dispatch,
+                        stringify!(#dyn_id),
+                        #accepted_list,
+                        other,
                     ),
                 }
             }}
@@ -883,8 +896,11 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
                 assert!(
                     __actual == __expected,
-                    "{}: wrong handle type (expected type_id={}, got {})",
-                    #destroy_str, __expected, __actual,
+                    "{}(): `handle` is not a {} (expected type_id={}, got {})",
+                    #destroy_str,
+                    <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
+                    __expected,
+                    __actual,
                 );
                 drop(unsafe {
                     Box::from_raw(handle as *mut ffier::FfierTaggedBox<$struct_ty>)
