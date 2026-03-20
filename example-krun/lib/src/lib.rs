@@ -30,7 +30,7 @@ impl<'a, T: Device<'a> + 'a> IntoDevice<'a> for Arc<T> {
 }
 
 pub struct MmioTransport<'a> {
-    device: Arc<dyn Device<'a> + 'a>,
+    _device: Arc<dyn Device<'a> + 'a>,
 }
 
 pub struct VmResources {
@@ -54,8 +54,88 @@ impl Default for VmResources {
     }
 }
 
+pub struct RootFs {
+    tag: String,
+    has_injected_init: bool,
+}
+
+#[ffier::exportable(prefix = "krun")]
+impl RootFs {
+    pub fn new(tag: &str) -> Self {
+        Self {
+            tag: tag.to_owned(),
+            has_injected_init: false,
+        }
+    }
+
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    pub fn has_injected_init(&self) -> bool {
+        self.has_injected_init
+    }
+}
+
+pub struct InitPayload<'a> {
+    rootfs_tag: &'a str,
+    command_line: String,
+}
+
+#[ffier::exportable(prefix = "krun")]
+impl<'a> InitPayload<'a> {
+    /// Create a payload builder that borrows an existing exported object.
+    pub fn builder(rootfs: &'a mut RootFs) -> InitPayloadBuilder<'a> {
+        InitPayloadBuilder {
+            rootfs,
+            command_line: String::new(),
+        }
+    }
+
+    pub fn rootfs_tag(&self) -> &str {
+        self.rootfs_tag
+    }
+
+    pub fn command_line(&self) -> &str {
+        &self.command_line
+    }
+}
+
+pub struct InitPayloadBuilder<'a> {
+    rootfs: &'a mut RootFs,
+    command_line: String,
+}
+
+#[ffier::exportable(prefix = "krun")]
+impl<'a> InitPayloadBuilder<'a> {
+    /// Set the guest command line.
+    pub fn set_exec(&mut self, exec_path: &str, args: &[&str]) {
+        let extra_len: usize = args.iter().map(|arg| arg.len() + 1).sum();
+        let mut command_line = String::with_capacity(exec_path.len() + extra_len);
+        command_line.push_str(exec_path);
+        for arg in args {
+            command_line.push(' ');
+            command_line.push_str(arg);
+        }
+        self.command_line = command_line;
+    }
+
+    /// Finalize the payload and mark the rootfs as containing injected init.
+    pub fn build(self) -> InitPayload<'a> {
+        let Self {
+            rootfs,
+            command_line,
+        } = self;
+        rootfs.has_injected_init = true;
+        InitPayload {
+            rootfs_tag: &rootfs.tag,
+            command_line,
+        }
+    }
+}
+
 pub struct Vmm<'a> {
-    resources: &'a VmResources,
+    _resources: &'a VmResources,
     transports: Vec<MmioTransport<'a>>,
     event_subscribers: Vec<Arc<dyn EventSubscriber + 'a>>,
 }
@@ -69,7 +149,7 @@ impl<'a> Vmm<'a> {
     /// * `resources` - VM resources (must outlive the VMM).
     pub fn new(resources: &'a VmResources) -> Self {
         Vmm {
-            resources,
+            _resources: resources,
             transports: Vec::new(),
             event_subscribers: Vec::new(),
         }
@@ -84,7 +164,7 @@ impl<'a> Vmm<'a> {
     pub fn add_device(&mut self, dev: impl IntoDevice<'a>) {
         let dev = dev.into_device();
         let transport = MmioTransport {
-            device: Arc::clone(&dev),
+            _device: Arc::clone(&dev),
         };
         self.transports.push(transport);
         self.event_subscribers.push(dev);
@@ -193,11 +273,7 @@ impl BlockDeviceBuilder {
     /// # Returns
     ///
     /// The constructed block device.
-    pub fn build<'a>(
-        self,
-        disk_image: &'a [u8],
-        resources: &'a VmResources,
-    ) -> BlockDevice<'a> {
+    pub fn build<'a>(self, disk_image: &'a [u8], resources: &'a VmResources) -> BlockDevice<'a> {
         BlockDevice {
             disk_image,
             shared_mem: &resources.shared_mem,
