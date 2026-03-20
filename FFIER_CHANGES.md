@@ -15,7 +15,7 @@ The `Handle` suffix is redundant — `typedef void*` already communicates it's a
 - FfiHandle::C_HANDLE_NAME: `"ExMyCalculatorHandle"` → `"ExMyCalculator"`
 - Header typedefs, function params, dyn_param dispatch constants — all affected
 
-**Scope**: `ffier-macros/src/lib.rs` — change `handle_c_name` construction (currently `format!("{type_pfx}{struct_name}Handle")`). Also update `wrapper_c_handle` in `implementable`.
+**Scope**: `ffier-macros/src/lib.rs` — change `handle_c_name` construction (currently `format!("{type_pfx}{struct_name}Handle")`). If `implementable` should keep the same naming scheme later, update `wrapper_c_handle` there too, but that is not required to unblock libkrun 2.0.
 
 **Impact**: All generated headers change. RTTI TYPE_IDs change (hash of different string). Existing examples need updating.
 
@@ -34,7 +34,7 @@ pub fn set_exec(&mut self, path: &str, args: &[&str]) -> Result<(), KrunError>;
 ```
 ```c
 // Generated C
-KrunError krun_vmmbuilder_set_exec(KrunVmmBuilder b, KrunStr path, const KrunStr* args, uintptr_t args_len);
+KrunError krun_libkruninitbuilder_set_exec(KrunLibkrunInitBuilder b, KrunStr path, const KrunStr* args, uintptr_t args_len);
 ```
 
 **Implementation**:
@@ -42,18 +42,17 @@ KrunError krun_vmmbuilder_set_exec(KrunVmmBuilder b, KrunStr path, const KrunStr
 1. Add a new `SliceKind::StrSlice` variant (or a new `ParamKind::StrSlice` / `ValueKind::StrSlice`)
 2. Detect `&[&str]` in the type classifier:
    - `Type::Reference` → inner `Type::Slice` → inner `Type::Reference` → inner `Type::Path("str")`
-3. FFI param: two params `(name: *const ffier::FfierBytes, name_len: usize)`
+3. FFI param: two params using the existing per-element `&str` FFI representation plus a length
 4. Conversion: iterate the `FfierBytes` array, convert each to `&str` via `as_str_unchecked()`
 5. C type name for header: `"const KrunStr*"` + `"uintptr_t"` (two entries)
-6. Also support `&[&[u8]]` → `const KrunBytes*` + `uintptr_t` (same pattern)
-7. Also support `&[&Path]` → `const KrunPath*` + `uintptr_t`
+6. Generalizing the same pattern to `&[&[u8]]` / `&[&Path]` can wait; libkrun 2.0 only needs `&[&str]`
 
 **Header generation**: `build_header_line` needs to handle "multi-param" types that expand to two C parameters from one Rust parameter.
 
 **C usage**:
 ```c
 KrunStr args[] = { KRUN_STR("/bin/sh"), KRUN_STR("-c"), KRUN_STR("echo hello") };
-CHECK(krun_vmmbuilder_set_exec(b, KRUN_STR("/bin/sh"), args, 3));
+CHECK(krun_libkruninitbuilder_set_exec(init_builder, KRUN_STR("/bin/sh"), args, 3));
 ```
 
 **Files**: `ffier-macros/src/lib.rs` (classify_ref_type, ffi_param_tokens, param_conversion, param_c_type_expr, build_header_line), `ffier/src/lib.rs` (FfierBytes already exists, no change needed there).
@@ -66,10 +65,10 @@ CHECK(krun_vmmbuilder_set_exec(b, KRUN_STR("/bin/sh"), args, 3));
 **Needed**: `BorrowedFd<'a>` → `int` in C, with the lifetime tying the fd to the struct's lifetime.
 
 ```rust
-pub fn add_tty_port(&mut self, name: &str, fd: BorrowedFd<'a>) -> Result<(), KrunError>;
+pub fn add_tty_port(&mut self, fd: BorrowedFd<'a>) -> Result<u32, KrunError>;
 ```
 ```c
-KrunError krun_consoledevicebuilder_add_tty_port(KrunConsoleDeviceBuilder b, KrunStr name, int fd);
+KrunError krun_consoledevicebuilder_add_tty_port(KrunConsoleDeviceBuilder b, int fd, uint32_t* result);
 ```
 
 **Implementation options**:
@@ -93,37 +92,67 @@ Option A is simpler — just add the impl to `ffier/src/lib.rs` in the `std_impl
 
 ---
 
-## 4. Builder pattern support: `Device::builder()` → `DeviceBuilder` → `.build()` → `Device`
+## 4. Builder Support for Incrementally Configured Types
 
-**Current**: `#[ffier::exportable]` goes on a single impl block. The struct gets FfiType/FfiHandle.
-**Needed**: Two linked structs where the builder produces the device.
+Types with limited configuration can keep simple constructors like `new()` or `new(args...)`.
 
-This is already supported — just use `#[ffier::exportable]` on both:
+libkrun v2.0 only needs builder support for APIs that are configured incrementally. The concrete 2.0 cases are:
+
+- `virtio-console`, where ports are added one by one before producing the final device
+- `LibkrunInit`, where exec/env/workdir are configured before producing the payload
+
+The core pattern is already close to working today: use `#[ffier::exportable]` on both the builder type and the final device type, and let `build(self)` consume the builder handle and return the device handle.
+
+Example:
 
 ```rust
 #[ffier::exportable(prefix = "krun")]
 impl<'a> ConsoleDeviceBuilder<'a> {
-    pub fn add_tty_port(&mut self, ...) -> Result<(), KrunError>;
+    pub fn add_tty_port(&mut self, fd: BorrowedFd<'a>) -> Result<u32, KrunError>;
+    pub fn add_tty_port_named(&mut self, name: &'a str, fd: BorrowedFd<'a>) -> Result<u32, KrunError>;
     pub fn build(self) -> Result<ConsoleDevice<'a>, KrunError>;
 }
 
-#[ffier::exportable(prefix = "krun")]
-impl<'a> ConsoleDevice<'a> {}  // opaque, no methods
-```
-
-The `builder()` static method lives on `ConsoleDevice`:
-```rust
 #[ffier::exportable(prefix = "krun")]
 impl<'a> ConsoleDevice<'a> {
     pub fn builder() -> ConsoleDeviceBuilder<'a>;
 }
 ```
 
-**No ffier changes needed** — this pattern works today. The `build(self)` consumes the builder handle (by-value self) and returns the device handle (via FfiType::into_c). Already supported.
+`LibkrunInit` uses the same pattern:
+
+```rust
+#[ffier::exportable(prefix = "krun")]
+impl<'a> LibkrunInit<'a> {
+    pub fn builder(rootfs: &'a mut FsDevice<'a>) -> LibkrunInitBuilder<'a>;
+}
+
+#[ffier::exportable(prefix = "krun")]
+impl<'a> LibkrunInitBuilder<'a> {
+    pub fn set_exec(&mut self, path: &str, args: &[&str]) -> Result<(), KrunError>;
+    pub fn build(self) -> Result<LibkrunInit<'a>, KrunError>;
+}
+```
+
+So item 4 is not only about zero-argument `builder()` constructors. It also covers builder entry points that borrow an already-configured exported object, like `LibkrunInit::builder(&mut rootfs)`.
+
+This assumes one exported impl block per type. Supporting multiple exported impl blocks on the same type would be a separate macro convenience, not a libkrun 2.0 requirement.
 
 ---
 
-## 5. Remove auto-generated `_create()` for types with `new()` / `builder()`
+## 5. No C-Implemented Devices in Initial 2.0
+
+Vtable-based devices implemented through the C ABI are explicitly out of scope for the initial libkrun 2.0 API. That means no `#[ffier::implementable]` work is required to unblock this release.
+
+Possible future work for a later release (for example libkrun 2.1):
+
+- Vtable methods with `BorrowedFd` params
+- Vtable methods returning `Result`
+- Better supertrait syntax
+
+---
+
+## 6. Remove Auto-Generated `_create()` for Types with `new()`
 
 **Current**: ffier auto-generates `krun_foo_create()` calling `Default::default()` for types without lifetime params.
 **Status**: Already fixed in recent commits — auto `create()` was removed. Static methods returning `Self` serve as constructors. ✓
@@ -132,60 +161,13 @@ No further changes needed.
 
 ---
 
-## 6. `#[ffier::implementable]` improvements
-
-**Current**: Basic vtable generation works (tested with krun example).
-**Needed for v2.0**:
-
-- **Vtable methods with `BorrowedFd` params** — needs item 3 above
-- **Vtable methods returning `Result`** — classify return type as Result, generate proper error handling in the vtable dispatch
-- **Better supertrait syntax** — the current `supers(TraitName { fn method(&self); })` works but is verbose
-
-These are incremental improvements on the existing implementation, not blockers for the initial v2.0 API.
-
----
-
-## 7. Multiple `#[ffier::exportable]` on the same struct
-
-**Current**: Each `#[ffier::exportable]` generates `FfiType` + `FfiHandle` impls. Two `#[ffier::exportable]` on different impl blocks of the same struct → duplicate impl error.
-
-**Needed**: For the builder pattern, `ConsoleDevice` might have:
-```rust
-#[ffier::exportable(prefix = "krun")]
-impl<'a> ConsoleDevice<'a> {
-    pub fn builder() -> ConsoleDeviceBuilder<'a>;
-}
-
-// Potentially a second impl block for other methods
-```
-
-**Solution**: Generate `FfiType`/`FfiHandle` impls only on the FIRST `#[ffier::exportable]` encountered, or use a marker attribute `#[ffier::exportable(prefix = "krun", no_impl)]` on secondary impl blocks to skip trait impl generation.
-
-**Files**: `ffier-macros/src/lib.rs` — add `no_impl` option to `ReflectArgs`.
-
----
-
-## 8. Configurable handle suffix (or no suffix)
-
-**Current**: Handle C type name is hardcoded as `{Prefix}{StructName}Handle`.
-**Needed**: Configurable or no suffix.
-
-**Option A**: Remove suffix entirely (see item 1).
-**Option B**: Make suffix configurable: `#[ffier::exportable(prefix = "krun", suffix = "")]`.
-
-Option A is recommended — `Handle` suffix adds noise. The `typedef void*` already communicates the concept.
-
-**Files**: `ffier-macros/src/lib.rs` — change `handle_c_name` from `format!("{type_pfx}{struct_name}Handle")` to `format!("{type_pfx}{struct_name}")`.
-
----
-
-## 9. `SndDevice` removal
+## 7. `SndDevice` Removal
 
 The `virtio-snd` device will be removed in libkrun v2.0 (pipewire backend was experimental). No ffier changes needed — just don't export it.
 
 ---
 
-## 10. Separate C types for Str/Path (`const char*`) vs Bytes (`const uint8_t*`)
+## 8. Separate C Types for Str/Path (`const char*`) vs Bytes (`const uint8_t*`)
 
 **Status: DONE** ✓
 
@@ -203,11 +185,12 @@ The `virtio-snd` device will be removed in libkrun v2.0 (pipewire backend was ex
 
 | # | Change | Effort | Blocker? |
 |---|--------|--------|----------|
-| 1 | Drop `Handle` suffix | Small | Style, do first |
+| 1 | Drop `Handle` suffix | Small | Yes — required by the documented 2.0 C API |
 | 2 | `&[&str]` support | Medium | Yes — needed for `set_exec`, `set_env`, `set_port_map` |
 | 3 | `BorrowedFd<'a>` support | Small | Yes — needed for console/serial/input devices |
-| 7 | Multiple exportable on same struct | Small | Yes — needed for builder pattern |
-| 4 | Builder pattern | None | Already works ✓ |
-| 5 | No auto create() | None | Already fixed ✓ |
-| 6 | implementable improvements | Medium | Not a blocker, incremental |
-| 8 | Configurable suffix | Small | Same as #1 |
+| 4 | Console/init builder patterns | None to Small | Yes — needed for `virtio-console` and `LibkrunInit` |
+| 6 | No auto create() | None | Already fixed ✓ |
+| 7 | `SndDevice` removal | None | Just don't export it |
+| 8 | Str/Path vs Bytes split | None | Done ✓ |
+
+Out of scope for libkrun 2.0: `#[ffier::implementable]` / vtable-device improvements.
