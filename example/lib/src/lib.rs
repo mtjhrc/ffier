@@ -1,3 +1,5 @@
+use std::os::unix::io::{AsRawFd, BorrowedFd};
+
 #[derive(Clone, Copy, ffier::FfiError)]
 pub enum CalcError {
     #[ffier(code = 1)]
@@ -124,6 +126,16 @@ impl MyCalculator {
             2 => Ok("subtraction"),
             _ => Err(CalcError::Overflow),
         }
+    }
+
+    /// Accept a borrowed file descriptor (returns its raw fd number).
+    pub fn fd_number(&self, fd: BorrowedFd<'_>) -> i32 {
+        fd.as_raw_fd()
+    }
+
+    /// Set the label by joining strings.
+    pub fn set_label(&mut self, parts: &[&str]) {
+        self.label = parts.join("-");
     }
 
     /// Create a new result accumulator.

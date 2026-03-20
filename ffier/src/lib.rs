@@ -1,8 +1,8 @@
 use std::ffi::{CStr, CString, c_char};
 
+pub use ffier_macros::FfiError;
 pub use ffier_macros::exportable;
 pub use ffier_macros::implementable;
-pub use ffier_macros::FfiError;
 
 // ---------------------------------------------------------------------------
 // FfiType — maps Rust types to C-compatible representations
@@ -45,7 +45,7 @@ impl_ffi_identity! {
 #[cfg(feature = "std")]
 mod std_impls {
     use super::FfiType;
-    use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+    use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
 
     impl FfiType for OwnedFd {
         type CRepr = i32;
@@ -55,6 +55,17 @@ mod std_impls {
         }
         fn from_c(fd: i32) -> Self {
             unsafe { OwnedFd::from_raw_fd(fd) }
+        }
+    }
+
+    impl FfiType for BorrowedFd<'static> {
+        type CRepr = i32;
+        const C_TYPE_NAME: &str = "int";
+        fn into_c(self) -> i32 {
+            self.as_raw_fd()
+        }
+        fn from_c(fd: i32) -> Self {
+            unsafe { BorrowedFd::borrow_raw(fd) }
         }
     }
 }
@@ -69,7 +80,7 @@ mod std_impls {
 /// `&Widget` as a parameter type (borrows the handle) and `Widget` as
 /// a return type (creates a new handle).
 pub trait FfiHandle {
-    /// The C handle typedef name (e.g. `"ExWidgetHandle"`).
+    /// The C handle typedef name (e.g. `"ExWidget"`).
     const C_HANDLE_NAME: &str;
     /// Unique runtime type identifier (FNV-1a hash of `C_HANDLE_NAME`).
     const TYPE_ID: u64;

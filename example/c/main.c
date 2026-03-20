@@ -4,7 +4,7 @@
 #include "mycalculator.h"
 
 int main(int argc, char **argv) {
-    ExMyCalculatorHandle calc = ex_mycalculator_new();
+    ExMyCalculator calc = ex_mycalculator_new();
 
     /* Plain returns */
     printf("add(3, 4) = %d\n", ex_mycalculator_add(calc, 3, 4));
@@ -20,6 +20,17 @@ int main(int argc, char **argv) {
     /* &str param + return (zero-copy round-trip) */
     ExStr greeting = ex_mycalculator_echo(calc, EX_STR("hello from C!"));
     printf("echo() = %.*s\n", (int)greeting.len, greeting.data);
+
+    /* BorrowedFd param */
+    printf("fd_number(STDOUT) = %d\n", ex_mycalculator_fd_number(calc, 1));
+    assert(ex_mycalculator_fd_number(calc, 1) == 1);
+
+    /* &[&str] param (string slice) */
+    ExStr parts[] = { EX_STR("hello"), EX_STR("from"), EX_STR("C") };
+    ex_mycalculator_set_label(calc, parts, 3);
+    ExStr label = ex_mycalculator_name(calc);
+    printf("set_label() then name() = %.*s\n", (int)label.len, label.data);
+    assert(label.len == 12); /* "hello-from-C" */
 
     /* &[u8] return */
     ExBytes data = ex_mycalculator_data(calc);
@@ -61,7 +72,7 @@ int main(int argc, char **argv) {
     printf("validate() = ok\n");
 
     /* Returning an exported object (new handle) */
-    ExCalcResultHandle res = ex_mycalculator_create_result(calc);
+    ExCalcResult res = ex_mycalculator_create_result(calc);
     printf("create_result() value = %d\n", ex_calcresult_get(res));
 
     /* Passing &mut ExportedType (mutable borrow of handle) */
@@ -74,7 +85,7 @@ int main(int argc, char **argv) {
     ex_calcresult_destroy(res);
 
     /* Result<ExportedType, Error> — success */
-    ExCalcResultHandle res2;
+    ExCalcResult res2;
     err = ex_mycalculator_try_create_result(calc, 10, 2, &res2);
     assert(err.code == 0);
     printf("try_create_result(10, 2) = %d\n", ex_calcresult_get(res2));
@@ -92,12 +103,12 @@ int main(int argc, char **argv) {
     /* Test RTTI: pass a CalcResult handle where a MyCalculator handle is expected.
      * This should panic with a clear type mismatch message. */
     if (argc > 1 && strcmp(argv[1], "--test-rtti") == 0) {
-        ExMyCalculatorHandle calc2 = ex_mycalculator_new();
-        ExCalcResultHandle bad = ex_mycalculator_create_result(calc2);
+        ExMyCalculator calc2 = ex_mycalculator_new();
+        ExCalcResult bad = ex_mycalculator_create_result(calc2);
         /* Passing a CalcResult handle where MyCalculator is expected → panic */
         printf("Calling ex_mycalculator_add with wrong handle type (will abort)...\n");
         fflush(stdout);
-        ex_mycalculator_add((ExMyCalculatorHandle)bad, 1, 2);
+        ex_mycalculator_add((ExMyCalculator)bad, 1, 2);
         /* unreachable */
         ex_mycalculator_destroy(calc2);
     }
