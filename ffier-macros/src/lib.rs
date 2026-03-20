@@ -488,23 +488,32 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let bytes_guard = format!("{upper_pfx}BYTES_DEFINED");
         header_exprs.push(quote! { concat!("#ifndef ", #bytes_guard) });
         header_exprs.push(quote! { concat!("#define ", #bytes_guard) });
-        header_exprs.push(quote! { "typedef struct {" });
-        header_exprs.push(quote! { "    const char* data;" });
-        header_exprs.push(quote! { "    uintptr_t len;" });
-        header_exprs.push(quote! { concat!("} ", #bytes_c_name, ";") });
-        header_exprs.push(quote! { "" });
+
+        // KrunStr — const char* (signedness-neutral, matches C string convention)
         header_exprs.push(quote! {
             concat!("/* Caller must ensure data is valid UTF-8 */")
         });
-        header_exprs.push(quote! {
-            concat!("typedef ", #bytes_c_name, " ", #str_c_name, ";")
-        });
+        header_exprs.push(quote! { "typedef struct {" });
+        header_exprs.push(quote! { "    const char* data;" });
+        header_exprs.push(quote! { "    uintptr_t len;" });
+        header_exprs.push(quote! { concat!("} ", #str_c_name, ";") });
+        header_exprs.push(quote! { "" });
+
+        // KrunPath — same layout as KrunStr (const char*, UTF-8 path)
         header_exprs.push(quote! {
             concat!("/* Caller must ensure data is a valid UTF-8 path */")
         });
         header_exprs.push(quote! {
-            concat!("typedef ", #bytes_c_name, " ", #path_c_name, ";")
+            concat!("typedef ", #str_c_name, " ", #path_c_name, ";")
         });
+        header_exprs.push(quote! { "" });
+
+        // KrunBytes — const uint8_t* (always unsigned raw bytes)
+        header_exprs.push(quote! { "typedef struct {" });
+        header_exprs.push(quote! { "    const uint8_t* data;" });
+        header_exprs.push(quote! { "    uintptr_t len;" });
+        header_exprs.push(quote! { concat!("} ", #bytes_c_name, ";") });
+        header_exprs.push(quote! { "" });
         let bytes_macro_name = format!("{upper_pfx}BYTES");
         header_exprs.push(quote! { "" });
         header_exprs.push(quote! {
@@ -528,7 +537,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
         header_exprs.push(quote! {
             concat!(
-                "    ((", #bytes_c_name, "){ .data = (const char*)(arr), .len = sizeof(arr) }); \\")
+                "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\")
         });
         header_exprs.push(quote! { "})" });
         header_exprs.push(quote! { concat!("#endif /* ", #bytes_guard, " */") });
