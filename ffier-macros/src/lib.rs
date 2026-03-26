@@ -665,10 +665,10 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let type_assert = quote! {
                 #handle_deref
                 let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
+                let __expected = <$struct_ty as ffier::FfiHandle>::type_id();
                 assert!(
                     __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={}, got {})",
+                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
                     #ffi_name_for_msg,
                     <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
                     __expected,
@@ -767,12 +767,12 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Wrap in dispatch match if needed
         let method_call = if let Some((dyn_id, dyn_cfg)) = &dyn_dispatch {
-            let match_arms: Vec<_> = dyn_cfg
+            let if_branches: Vec<_> = dyn_cfg
                 .variants
                 .iter()
                 .map(|(_, ty_tokens)| {
                     quote! {
-                        <#ty_tokens as ffier::FfiHandle>::TYPE_ID => {
+                        if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
                             let #dyn_id = unsafe {
                                 (*Box::from_raw(
                                     #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
@@ -794,16 +794,15 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             quote! {{
                 let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
-                match __type_id {
-                    #(#match_arms)*
-                    other => panic!(
+                #(#if_branches else)* {
+                    panic!(
                         "{}(): parameter `{}` expected an object of type: {}, \
-                         but got unknown handle (type_id={})",
+                         but got unknown handle (type_id={:?})",
                         #ffi_name_for_dispatch,
                         stringify!(#dyn_id),
                         #accepted_list,
-                        other,
-                    ),
+                        __type_id,
+                    );
                 }
             }}
         } else {
@@ -990,10 +989,10 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
                 let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <$struct_ty as ffier::FfiHandle>::TYPE_ID;
+                let __expected = <$struct_ty as ffier::FfiHandle>::type_id();
                 assert!(
                     __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={}, got {})",
+                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
                     #destroy_str,
                     <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
                     __expected,
@@ -1025,7 +1024,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl ffier::FfiHandle for #self_ty_static {
             const C_HANDLE_NAME: &str = #handle_c_name;
-            const TYPE_ID: u64 = ffier::fnv1a(#handle_c_name.as_bytes());
         }
 
         impl ffier::FfiType for #self_ty_static {
@@ -1033,7 +1031,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             const C_TYPE_NAME: &str = #handle_c_name;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierTaggedBox {
-                    type_id: <Self as ffier::FfiHandle>::TYPE_ID,
+                    type_id: core::any::TypeId::of::<Self>(),
                     value: self,
                 };
                 Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
@@ -2258,7 +2256,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl ffier::FfiHandle for #wrapper_name {
             const C_HANDLE_NAME: &str = #wrapper_c_handle;
-            const TYPE_ID: u64 = ffier::fnv1a(#wrapper_c_handle.as_bytes());
         }
 
         impl ffier::FfiType for #wrapper_name {
@@ -2266,7 +2263,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             const C_TYPE_NAME: &str = #wrapper_c_handle;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierTaggedBox {
-                    type_id: <Self as ffier::FfiHandle>::TYPE_ID,
+                    type_id: core::any::TypeId::of::<Self>(),
                     value: self,
                 };
                 Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
