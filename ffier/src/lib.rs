@@ -77,44 +77,37 @@ mod std_impls {
 // FfiHandle — marker for types exported via #[ffier::exportable]
 // ---------------------------------------------------------------------------
 
+use core::any::TypeId;
+
 /// Marker trait for types that are exported as opaque C handles.
 ///
 /// Automatically implemented by `#[ffier::exportable]`. Enables using
 /// `&Widget` as a parameter type (borrows the handle) and `Widget` as
 /// a return type (creates a new handle).
-pub trait FfiHandle {
+pub trait FfiHandle: 'static {
     /// The C handle typedef name (e.g. `"ExWidget"`).
     const C_HANDLE_NAME: &str;
-    /// Unique runtime type identifier (FNV-1a hash of `C_HANDLE_NAME`).
-    const TYPE_ID: u64;
+
+    /// Runtime type identifier.
+    fn type_id() -> TypeId {
+        TypeId::of::<Self>()
+    }
 }
 
 /// Every handle allocation is prefixed with a type tag so any `void*`
 /// handle can be introspected at runtime.
 #[repr(C)]
 pub struct FfierTaggedBox<T> {
-    pub type_id: u64,
+    pub type_id: TypeId,
     pub value: T,
 }
 
-/// Read the type_id from a raw handle pointer (first 8 bytes).
+/// Read the TypeId from a raw handle pointer.
 ///
 /// # Safety
 /// `handle` must point to a valid `FfierTaggedBox<_>`.
-pub unsafe fn handle_type_id(handle: *const core::ffi::c_void) -> u64 {
-    unsafe { *(handle as *const u64) }
-}
-
-/// Compile-time FNV-1a hash for generating stable TYPE_IDs.
-pub const fn fnv1a(s: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325;
-    let mut i = 0;
-    while i < s.len() {
-        h ^= s[i] as u64;
-        h = h.wrapping_mul(0x100000001b3);
-        i += 1;
-    }
-    h
+pub unsafe fn handle_type_id(handle: *const core::ffi::c_void) -> TypeId {
+    unsafe { *(handle as *const TypeId) }
 }
 
 // ---------------------------------------------------------------------------
