@@ -9,3 +9,4 @@ std = []
 
 [dependencies]
 ffier-macros = { path = "../ffier-macros" }
+paste = "1"
