@@ -8,7 +8,7 @@ use ffier_test_lib as api;
 #[cfg(feature = "via-cdylib")]
 use ffier_test_lib_via_cdylib as api;
 
-use api::{Config, Gadget, Widget};
+use api::{Config, Gadget, View, Widget};
 
 fn make_widget() -> Widget {
     Widget::new()
@@ -146,5 +146,38 @@ mod tests {
     fn test_builder_validated_err() {
         let result = Config::new().validated();
         assert!(result.is_err());
+    }
+
+    // ================================================================
+    // Lifetime-parameterized types (View<'a> borrows Widget)
+    // ================================================================
+
+    #[test]
+    fn test_view_borrows_widget() {
+        let mut w = Widget::new();
+        w.set_count(77);
+        let v = View::create(&w);
+        assert_eq!(v.source_count(), 77);
+    }
+
+    #[test]
+    fn test_view_label() {
+        let w = Widget::new();
+        let mut v = View::create(&w);
+        assert_eq!(v.label(), "default");
+        v.set_label("custom");
+        assert_eq!(v.label(), "custom");
+    }
+
+    #[test]
+    fn test_view_lifetime_enforced() {
+        // This should compile: view lives shorter than widget
+        let mut w = Widget::new();
+        w.set_count(42);
+        let count = {
+            let v = View::create(&w);
+            v.source_count()
+        };
+        assert_eq!(count, 42);
     }
 }
