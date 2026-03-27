@@ -5,7 +5,7 @@ use std::sync::Arc;
 // Error type
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, ffier::FfiError)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ffier::FfiError)]
 pub enum TestError {
     #[ffier(code = 1)]
     NotFound,

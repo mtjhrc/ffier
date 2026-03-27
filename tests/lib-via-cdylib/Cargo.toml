@@ -1,0 +1,8 @@
+[package]
+name = "ffier-test-lib-via-cdylib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffier-test-lib = { path = "../lib" }
+ffier = { path = "../../ffier" }
