@@ -16,14 +16,19 @@ build-cdylib:
 
 # Compile and run the C tests
 test-c: build-cdylib gen-header
-    cc -Wall -Wextra -Werror -o tests/c/test_main tests/c/test_main.c \
+    cc -Wall -Wextra -Werror -g -o tests/c/test_main tests/c/test_main.c \
         -I tests/c \
         -L target/debug \
         -lffier_test_cdylib \
         -Wl,-rpath,$(pwd)/target/debug
     ./tests/c/test_main
 
+# Run C tests under valgrind (memcheck + leak check + uninitialized value tracking)
+valgrind: test-c
+    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 \
+        ./tests/c/test_main
+
 # Run everything
-test: check-header test-c
+test: check-header valgrind
     @echo ""
     @echo "All checks passed!"
