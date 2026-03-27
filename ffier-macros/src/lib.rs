@@ -613,7 +613,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 generated_dyn_types.push(cfg.c_name.clone());
 
                 let c_name = &cfg.c_name;
-                let upper_name = camel_to_upper_snake(c_name);
 
                 // typedef void* KrunDevice; /* KrunFoo | KrunBar | ... */
                 let variant_names: Vec<String> = cfg
