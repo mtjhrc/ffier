@@ -2136,8 +2136,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Header generation (via bridge macro) ---
-    let bridge_macro_name = format_ident!("vtable{trait_snake}_ffier");
-    let header_fn_name = format_ident!("{fn_pfx}vtable{trait_snake}__header");
+    let bridge_macro_name = format_ident!("vtable_{trait_snake}_ffier");
+    let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
     let vtable_section_name = format!("Vtable{trait_name_str}");
 
     // Build header lines for vtable struct
