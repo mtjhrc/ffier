@@ -28,7 +28,18 @@ valgrind: test-c
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 \
         ./tests/c/test_main
 
+# Run Miri with Stacked Borrows (default model)
+miri-stacked:
+    cargo +nightly miri test -p ffier-test-cdylib
+
+# Run Miri with Tree Borrows
+miri-tree:
+    MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test -p ffier-test-cdylib
+
+# Run Miri with both memory models
+miri: miri-stacked miri-tree
+
 # Run everything
-test: check-header valgrind
+test: check-header valgrind miri
     @echo ""
     @echo "All checks passed!"
