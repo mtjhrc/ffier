@@ -39,7 +39,18 @@ miri-tree:
 # Run Miri with both memory models
 miri: miri-stacked miri-tree
 
+# Test consumer crate with native Rust linking
+test-consumer-native: build-cdylib
+    cargo test -p ffier-test-consumer --no-default-features --features native
+
+# Test consumer crate with C ABI dynamic linking
+test-consumer-cdylib: build-cdylib
+    cargo test -p ffier-test-consumer --no-default-features --features via-cdylib
+
+# Test consumer crate in both linking modes
+test-consumer: test-consumer-native test-consumer-cdylib
+
 # Run everything
-test: check-header valgrind miri
+test: check-header valgrind miri test-consumer
     @echo ""
     @echo "All checks passed!"
