@@ -13,7 +13,7 @@ pub use paste;
 
 pub trait FfiType {
     type CRepr;
-    const C_TYPE_NAME: &str;
+    const C_TYPE_NAME: &'static str;
     fn into_c(self) -> Self::CRepr;
     fn from_c(repr: Self::CRepr) -> Self;
 }
@@ -61,9 +61,9 @@ mod std_impls {
         }
     }
 
-    impl FfiType for BorrowedFd<'static> {
+    impl<'a> FfiType for BorrowedFd<'a> {
         type CRepr = i32;
-        const C_TYPE_NAME: &str = "int";
+        const C_TYPE_NAME: &'static str = "int";
         fn into_c(self) -> i32 {
             self.as_raw_fd()
         }
@@ -86,7 +86,7 @@ use core::any::TypeId;
 /// a return type (creates a new handle).
 pub trait FfiHandle: 'static {
     /// The C handle typedef name (e.g. `"ExWidget"`).
-    const C_HANDLE_NAME: &str;
+    const C_HANDLE_NAME: &'static str;
 
     /// Runtime type identifier.
     fn type_id() -> TypeId {

@@ -1,0 +1,13 @@
+[package]
+name = "ffier-test-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["via-cdylib"]
+native = ["dep:ffier-test-lib"]
+via-cdylib = ["dep:ffier-test-lib-via-cdylib"]
+
+[dependencies]
+ffier-test-lib = { path = "../lib", optional = true }
+ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
