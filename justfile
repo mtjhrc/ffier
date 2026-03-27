@@ -25,4 +25,5 @@ test-c: build-cdylib gen-header
 
 # Run everything
 test: check-header test-c
-    @echo "\nAll checks passed!"
+    @echo ""
+    @echo "All checks passed!"
