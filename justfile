@@ -39,6 +39,17 @@ miri-tree:
 # Run Miri with both memory models
 miri: miri-stacked miri-tree
 
+# Generate Rust client bindings source
+gen-rust-client: build-cdylib
+    cargo run --manifest-path tests/cdylib/Cargo.toml --bin gen-rust-client | rustfmt > tests/lib-via-cdylib/src/generated.rs
+
+# Update the generated client bindings
+update-generated-client: gen-rust-client
+
+# Check generated client matches checked-in version
+check-generated-client: gen-rust-client
+    diff tests/lib-via-cdylib/src/generated.rs <(cargo run --manifest-path tests/cdylib/Cargo.toml --bin gen-rust-client 2>/dev/null | rustfmt)
+
 # Test consumer crate with native Rust linking
 test-consumer-native: build-cdylib
     cargo test -p ffier-test-consumer --no-default-features --features native
