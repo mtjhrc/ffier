@@ -62,7 +62,6 @@ name = "ffier-test-lib-via-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-test-lib",
 ]
 
 [[package]]

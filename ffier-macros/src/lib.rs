@@ -6,6 +6,10 @@ use syn::{
     visit_mut::VisitMut,
 };
 
+mod gen_bridge;
+mod gen_client;
+mod meta;
+
 struct ReflectArgs {
     prefix: Option<String>,
 }
@@ -38,7 +42,7 @@ enum SliceKind {
 }
 
 enum ParamKind {
-    Regular(proc_macro2::TokenStream),
+    Regular(proc_macro2::TokenStream, meta::FfiRepr),
     Slice(SliceKind),
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
@@ -54,12 +58,14 @@ enum ParamKind {
 struct DynParamConfig {
     /// C type name suffix (e.g. "Device" → "{Prefix}Device" typedef)
     c_name: String,
+    /// The type prefix (e.g. "Ft") — needed by client codegen for trait names
+    type_pfx: String,
     /// Concrete types to dispatch over, as token streams (cross-crate safe)
     variants: Vec<(String, proc_macro2::TokenStream)>, // (ident_name, tokens)
 }
 
 enum ValueKind {
-    Regular(proc_macro2::TokenStream),
+    Regular(proc_macro2::TokenStream, meta::FfiRepr),
     Slice(SliceKind),
 }
 
@@ -74,6 +80,7 @@ enum ReturnKind {
     },
 }
 
+#[allow(dead_code)]
 struct MethodInfo {
     method_name: syn::Ident,
     ffi_name: syn::Ident,
@@ -146,137 +153,17 @@ fn classify_value(
     if let Some(sk) = classify_ref_type(ty) {
         ValueKind::Slice(sk)
     } else {
-        ValueKind::Regular(type_tokens_for_macro(
-            ty,
-            reexport_types,
-            reexport_aliases,
-            alias_counter,
-            helper_mod,
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Code generation helpers
-// ---------------------------------------------------------------------------
-
-fn ffi_param_tokens(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStream {
-    match kind {
-        ParamKind::Regular(ty) => quote! { #id: <#ty as ffier::FfiType>::CRepr },
-        ParamKind::Slice(_) => quote! { #id: ffier::FfierBytes },
-        ParamKind::StrSlice => {
-            let len_id = format_ident!("{id}_len");
-            quote! { #id: *const ffier::FfierBytes, #len_id: usize }
-        }
-        ParamKind::HandleRef { .. } | ParamKind::DynDispatch(_) => {
-            quote! { #id: *mut core::ffi::c_void }
-        }
-    }
-}
-
-fn param_conversion(id: &syn::Ident, kind: &ParamKind) -> proc_macro2::TokenStream {
-    // Slice/HandleRef conversions produce references with unconstrained lifetimes
-    // (from raw pointers). The compiler infers the needed lifetime — typically
-    // 'static at the FFI boundary. The C caller is responsible for keeping the
-    // data alive.
-    match kind {
-        ParamKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::from_c(#id) },
-        ParamKind::Slice(SliceKind::Str) => quote! { unsafe {
-            core::str::from_utf8_unchecked(
-                core::slice::from_raw_parts(#id.data, #id.len))
-        } },
-        ParamKind::Slice(SliceKind::Bytes) => quote! { unsafe {
-            core::slice::from_raw_parts(#id.data, #id.len)
-        } },
-        ParamKind::Slice(SliceKind::Path) => quote! { unsafe { #id.as_path() } },
-        ParamKind::StrSlice => {
-            let len_id = format_ident!("{id}_len");
-            quote! { {
-                let __slice = unsafe { core::slice::from_raw_parts(#id, #len_id) };
-                let __strs: Vec<&str> = __slice.iter().map(|b| unsafe {
-                    core::str::from_utf8_unchecked(
-                        core::slice::from_raw_parts(b.data, b.len))
-                }).collect();
-                __strs
-            } }
-        }
-        ParamKind::HandleRef {
-            inner_ty,
-            is_mut: true,
-        } => {
-            quote! { unsafe {
-                &mut (*(#id as *mut ffier::FfierTaggedBox<#inner_ty>)).value
-            } }
-        }
-        ParamKind::HandleRef {
-            inner_ty,
-            is_mut: false,
-        } => {
-            quote! { unsafe {
-                &(*(#id as *const ffier::FfierTaggedBox<#inner_ty>)).value
-            } }
-        }
-        ParamKind::DynDispatch(_) => {
-            // Dispatch is handled specially in the method codegen, not here.
-            // This is a placeholder — the actual match is generated inline.
-            quote! { compile_error!("DynDispatch should not use param_conversion") }
-        }
-    }
-}
-
-fn param_c_type_expr(
-    kind: &ParamKind,
-    str_name: &str,
-    bytes_name: &str,
-    path_name: &str,
-) -> proc_macro2::TokenStream {
-    match kind {
-        ParamKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
-        ParamKind::Slice(SliceKind::Str) => quote! { #str_name },
-        ParamKind::Slice(SliceKind::Bytes) => quote! { #bytes_name },
-        ParamKind::Slice(SliceKind::Path) => quote! { #path_name },
-        ParamKind::StrSlice => {
-            // StrSlice is handled by expanding to two entries in c_type_exprs directly;
-            // this arm should not be reached.
-            quote! { compile_error!("StrSlice should not use param_c_type_expr") }
-        }
-        ParamKind::HandleRef { inner_ty, .. } => {
-            quote! { <#inner_ty as ffier::FfiHandle>::C_HANDLE_NAME }
-        }
-        ParamKind::DynDispatch(cfg) => {
-            let name = &cfg.c_name;
-            quote! { #name }
-        }
-    }
-}
-
-fn value_ret_annotation(kind: &ValueKind) -> proc_macro2::TokenStream {
-    match kind {
-        ValueKind::Regular(ty) => quote! { -> <#ty as ffier::FfiType>::CRepr },
-        ValueKind::Slice(_) => quote! { -> ffier::FfierBytes },
-    }
-}
-
-fn value_into_c(kind: &ValueKind, var: &syn::Ident) -> proc_macro2::TokenStream {
-    match kind {
-        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::into_c(#var) },
-        ValueKind::Slice(SliceKind::Str) => quote! { ffier::FfierBytes::from_str(#var) },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { ffier::FfierBytes::from_bytes(#var) },
-        ValueKind::Slice(SliceKind::Path) => quote! { ffier::FfierBytes::from_path(#var) },
-    }
-}
-
-fn value_c_type_expr(
-    kind: &ValueKind,
-    str_name: &str,
-    bytes_name: &str,
-    path_name: &str,
-) -> proc_macro2::TokenStream {
-    match kind {
-        ValueKind::Regular(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
-        ValueKind::Slice(SliceKind::Str) => quote! { #str_name },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { #bytes_name },
-        ValueKind::Slice(SliceKind::Path) => quote! { #path_name },
+        let repr = ffi_repr_for_type(ty);
+        ValueKind::Regular(
+            type_tokens_for_macro(
+                ty,
+                reexport_types,
+                reexport_aliases,
+                alias_counter,
+                helper_mod,
+            ),
+            repr,
+        )
     }
 }
 
@@ -335,17 +222,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .unwrap_or_default();
 
     let handle_c_name = format!("{type_pfx}{struct_name}");
-    let bytes_c_name = format!("{type_pfx}Bytes");
-    let str_c_name = format!("{type_pfx}Str");
-    let path_c_name = format!("{type_pfx}Path");
-    let str_macro_name = format!("{upper_pfx}STR");
 
-    let trait_path = input.trait_.as_ref().map(|(_, path, _)| path);
-
-    let mut ffi_fns = Vec::new();
-    let handle_typedef_expr = quote! { concat!("typedef void* ", #handle_c_name, ";") };
-    let mut shared_types_exprs: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut decl_exprs: Vec<proc_macro2::TokenStream> = Vec::new();
+    let _trait_path = input.trait_.as_ref().map(|(_, path, _)| path);
 
     let mut reexport_types: Vec<Type> = Vec::new();
     let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
@@ -424,6 +302,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(cfg) = dyn_params.iter().find(|d| d.0 == param_name) {
                 param_kinds.push(ParamKind::DynDispatch(DynParamConfig {
                     c_name: cfg.1.clone(),
+                    type_pfx: type_pfx.clone(),
                     variants: cfg.2.clone(),
                 }));
                 continue;
@@ -452,13 +331,17 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     is_mut: ref_ty.mutability.is_some(),
                 }
             } else {
-                ParamKind::Regular(type_tokens_for_macro(
-                    &param_ty,
-                    &mut reexport_types,
-                    &mut reexport_aliases,
-                    &mut alias_counter,
-                    &helper_mod_name,
-                ))
+                let repr = ffi_repr_for_type(&param_ty);
+                ParamKind::Regular(
+                    type_tokens_for_macro(
+                        &param_ty,
+                        &mut reexport_types,
+                        &mut reexport_aliases,
+                        &mut alias_counter,
+                        &helper_mod_name,
+                    ),
+                    repr,
+                )
             };
             param_kinds.push(kind);
         }
@@ -560,471 +443,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         });
     }
 
-    // Bytes/Str/Path struct + typedefs
-    if uses_slices {
-        let bytes_macro_name = format!("{upper_pfx}BYTES");
-
-        // KrunStr — const char* (signedness-neutral, matches C string convention)
-        shared_types_exprs.push(quote! {
-            concat!("/* Caller must ensure data is valid UTF-8 */")
-        });
-        shared_types_exprs.push(quote! { "typedef struct {" });
-        shared_types_exprs.push(quote! { "    const char* data;" });
-        shared_types_exprs.push(quote! { "    uintptr_t len;" });
-        shared_types_exprs.push(quote! { concat!("} ", #str_c_name, ";") });
-        shared_types_exprs.push(quote! { "" });
-
-        // KrunPath — same layout as KrunStr (const char*, UTF-8 path)
-        shared_types_exprs.push(quote! {
-            concat!("/* Caller must ensure data is a valid UTF-8 path */")
-        });
-        shared_types_exprs.push(quote! {
-            concat!("typedef ", #str_c_name, " ", #path_c_name, ";")
-        });
-        shared_types_exprs.push(quote! { "" });
-
-        // KrunBytes — const uint8_t* (always unsigned raw bytes)
-        shared_types_exprs.push(quote! { "typedef struct {" });
-        shared_types_exprs.push(quote! { "    const uint8_t* data;" });
-        shared_types_exprs.push(quote! { "    uintptr_t len;" });
-        shared_types_exprs.push(quote! { concat!("} ", #bytes_c_name, ";") });
-        shared_types_exprs.push(quote! { "" });
-        shared_types_exprs.push(quote! {
-            concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "#define ", #bytes_macro_name, "(arr) ({ \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "    _Static_assert( \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "        \"", #bytes_macro_name, "() requires an array, not a pointer\"); \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\")
-        });
-        shared_types_exprs.push(quote! { "})" });
-    }
-
-    // Per-error-type artifacts
-    // Error type header declarations and FFI helpers are generated by the
-    // FfiError derive's bridge macro, invoked once in the cdylib.
-
-    // Generate typedefs for dyn_param dispatch types
-    let mut generated_dyn_types: Vec<String> = Vec::new();
-    for m in &methods {
-        for (_, k) in m.param_idents.iter().zip(m.param_kinds.iter()) {
-            if let ParamKind::DynDispatch(cfg) = k {
-                if generated_dyn_types.contains(&cfg.c_name) {
-                    continue;
-                }
-                generated_dyn_types.push(cfg.c_name.clone());
-
-                let c_name = &cfg.c_name;
-
-                // typedef void* KrunDevice; /* KrunFoo | KrunBar | ... */
-                let variant_names: Vec<String> = cfg
-                    .variants
-                    .iter()
-                    .map(|(name, _)| format!("{type_pfx}{name}"))
-                    .collect();
-                let variants_comment = variant_names.join(" | ");
-                decl_exprs.push(quote! {
-                    format!("typedef void* {}; /* {} */", #c_name, #variants_comment)
-                });
-            }
-        }
-    }
-
-    // Method FFI functions
-    for m in &methods {
-        let ffi_name_str = &m.ffi_name_str;
-        let ffi_name = &m.ffi_name;
-        let method_name = &m.method_name;
-
-        // Handle parameter: present for instance methods, absent for static.
-        // Builder methods (by-value self returning Self) take a pointer to the
-        // handle so the bridge can update it after the method returns a new Self.
-        let handle_is_indirect = m.is_builder && m.is_by_value;
-        let handle_type = if handle_is_indirect {
-            format!("{handle_c_name}* handle")
-        } else {
-            format!("{handle_c_name} handle")
-        };
-        let handle_ffi_param = if m.has_receiver {
-            if handle_is_indirect {
-                Some(quote! { handle: *mut *mut core::ffi::c_void, })
-            } else {
-                Some(quote! { handle: *mut core::ffi::c_void, })
-            }
-        } else {
-            None
-        };
-
-        // Self cast via FfierTaggedBox (instance methods only)
-        let obj_binding = if m.has_receiver {
-            let ffi_name_for_msg = &m.ffi_name_str;
-            let handle_deref = if handle_is_indirect {
-                quote! { let handle = unsafe { *handle }; }
-            } else {
-                quote! {}
-            };
-            let type_assert = quote! {
-                #handle_deref
-                let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <$struct_ty as ffier::FfiHandle>::type_id();
-                assert!(
-                    __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
-                    #ffi_name_for_msg,
-                    <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
-                    __expected,
-                    __actual,
-                );
-            };
-            let cast = if m.is_by_value {
-                quote! {
-                    let tagged = *Box::from_raw(
-                        handle as *mut ffier::FfierTaggedBox<$struct_ty>
-                    );
-                    tagged.value
-                }
-            } else if m.is_mut {
-                quote! {
-                    &mut (*(handle as *mut ffier::FfierTaggedBox<$struct_ty>)).value
-                }
-            } else {
-                quote! {
-                    &(*(handle as *const ffier::FfierTaggedBox<$struct_ty>)).value
-                }
-            };
-            Some(quote! { #type_assert let obj = unsafe { #cast }; })
-        } else {
-            None
-        };
-
-        let ffi_params: Vec<_> = m
-            .param_idents
-            .iter()
-            .zip(m.param_kinds.iter())
-            .map(|(id, k)| ffi_param_tokens(id, k))
-            .collect();
-
-        let mut c_type_exprs = Vec::new();
-        let mut header_param_names: Vec<String> = Vec::new();
-        for (name, k) in m.param_name_strs.iter().zip(m.param_kinds.iter()) {
-            if matches!(k, ParamKind::StrSlice) {
-                let ptr_type = format!("const {str_c_name}*");
-                c_type_exprs.push(quote! { #ptr_type });
-                header_param_names.push(name.clone());
-                c_type_exprs.push(quote! { "uintptr_t" });
-                header_param_names.push(format!("{name}_len"));
-            } else {
-                c_type_exprs.push(param_c_type_expr(
-                    k,
-                    &str_c_name,
-                    &bytes_c_name,
-                    &path_c_name,
-                ));
-                header_param_names.push(name.clone());
-            }
-        }
-        let param_name_str_refs: Vec<_> = header_param_names.iter().collect();
-
-        // Check for DynDispatch params
-        let dyn_dispatch = m
-            .param_idents
-            .iter()
-            .zip(m.param_kinds.iter())
-            .find_map(|(id, k)| match k {
-                ParamKind::DynDispatch(cfg) => Some((id.clone(), cfg)),
-                _ => None,
-            });
-
-        // Pre-bindings for multi-param types (e.g. StrSlice → Vec<&str>)
-        let mut pre_bindings = Vec::new();
-        // Build converted args: for DynDispatch params, use the raw ident
-        // (dispatch match substitutes the correct conversion)
-        let converted_args: Vec<_> = m
-            .param_idents
-            .iter()
-            .zip(m.param_kinds.iter())
-            .map(|(id, k)| match k {
-                ParamKind::DynDispatch(_) => quote! { #id },
-                ParamKind::StrSlice => {
-                    let binding = param_conversion(id, k);
-                    let vec_id = format_ident!("__{id}_vec");
-                    pre_bindings.push(quote! { let #vec_id = #binding; });
-                    quote! { &#vec_id }
-                }
-                other => param_conversion(id, other),
-            })
-            .collect();
-
-        // Build the method call expression (without dispatch wrapping)
-        let base_method_call = if m.has_receiver {
-            if let Some(tp) = &trait_path {
-                quote! { <$struct_ty as $crate::#tp>::#method_name(obj, #(#converted_args),*) }
-            } else {
-                quote! { obj.#method_name(#(#converted_args),*) }
-            }
-        } else {
-            quote! { <$struct_ty>::#method_name(#(#converted_args),*) }
-        };
-
-        // Wrap in dispatch match if needed
-        let method_call = if let Some((dyn_id, dyn_cfg)) = &dyn_dispatch {
-            let if_branches: Vec<_> = dyn_cfg
-                .variants
-                .iter()
-                .map(|(_, ty_tokens)| {
-                    quote! {
-                        if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
-                            let #dyn_id = unsafe {
-                                (*Box::from_raw(
-                                    #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
-                                )).value
-                            };
-                            #base_method_call
-                        }
-                    }
-                })
-                .collect();
-
-            let variant_names: Vec<_> = dyn_cfg
-                .variants
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect();
-            let accepted_list = variant_names.join(" | ");
-            let ffi_name_for_dispatch = &m.ffi_name_str;
-
-            quote! {{
-                let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
-                #(#if_branches else)* {
-                    panic!(
-                        "{}(): parameter `{}` expected an object of type: {}, \
-                         but got unknown handle (type_id={:?})",
-                        #ffi_name_for_dispatch,
-                        stringify!(#dyn_id),
-                        #accepted_list,
-                        __type_id,
-                    );
-                }
-            }}
-        } else {
-            base_method_call
-        };
-
-        // Doxygen comment
-        let (has_out_param, err_c_name_for_doc) = match &m.ret {
-            ReturnKind::Result {
-                ok_ty, err_ident, ..
-            } => (ok_ty.is_some(), Some(format!("{type_pfx}{err_ident}"))),
-            _ => (false, None),
-        };
-        if let Some(doc) = build_doxygen_comment(
-            &m.doc_lines,
-            &m.param_name_strs,
-            has_out_param,
-            err_c_name_for_doc.as_deref(),
-        ) {
-            decl_exprs.push(quote! { #doc });
-        }
-
-        let header_handle = if m.has_receiver {
-            Some(&handle_type)
-        } else {
-            None
-        };
-
-        match &m.ret {
-            ReturnKind::Void => {
-                let header_line = build_header_line(
-                    quote! { "void" },
-                    ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    None,
-                );
-                decl_exprs.push(header_line);
-
-                // Builder pattern with by-value self: take ownership from handle,
-                // call method (returns new Self), box it and write new handle back.
-                let body = if handle_is_indirect {
-                    quote! {
-                        let handle_ptr = handle;
-                        #obj_binding
-                        #(#pre_bindings)*
-                        let result = #method_call;
-                        unsafe { *handle_ptr = <$struct_ty as ffier::FfiType>::into_c(result) };
-                    }
-                } else {
-                    quote! {
-                        #obj_binding
-                        #(#pre_bindings)*
-                        #method_call;
-                    }
-                };
-
-                ffi_fns.push(quote! {
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params),*
-                    ) {
-                        #body
-                    }
-                });
-            }
-            ReturnKind::Value(vk) => {
-                let ret_c = value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name);
-                let header_line = build_header_line(
-                    ret_c,
-                    ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    None,
-                );
-                decl_exprs.push(header_line);
-
-                let ret_ann = value_ret_annotation(vk);
-                let result_ident = format_ident!("result");
-                let into_c = value_into_c(vk, &result_ident);
-
-                ffi_fns.push(quote! {
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params),*
-                    ) #ret_ann {
-                        #obj_binding
-                        #(#pre_bindings)*
-                        let result = #method_call;
-                        #into_c
-                    }
-                });
-            }
-            ReturnKind::Result {
-                ok_ty,
-                err_ty: _,
-                err_ident,
-            } => {
-                let err_c_name = format!("{type_pfx}{err_ident}");
-
-                let out_c_type = ok_ty
-                    .as_ref()
-                    .map(|vk| value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name));
-
-                let header_line = build_header_line(
-                    quote! { #err_c_name },
-                    ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    out_c_type.as_ref(),
-                );
-                decl_exprs.push(header_line);
-
-                let ok_branch = match ok_ty {
-                    Some(vk) => {
-                        let ok_val_ident = format_ident!("ok_val");
-                        let into_c = value_into_c(vk, &ok_val_ident);
-                        quote! {
-                            Ok(ok_val) => {
-                                unsafe { result.write(#into_c) };
-                                ffier::FfierError::ok()
-                            }
-                        }
-                    }
-                    None if handle_is_indirect => quote! {
-                        Ok(new_self) => {
-                            unsafe { *handle_ptr = <$struct_ty as ffier::FfiType>::into_c(new_self) };
-                            ffier::FfierError::ok()
-                        }
-                    },
-                    None => quote! {
-                        Ok(_) => ffier::FfierError::ok(),
-                    },
-                };
-
-                let out_ffi_param = ok_ty.as_ref().map(|vk| match vk {
-                    ValueKind::Regular(ty) => {
-                        quote! { result: *mut <#ty as ffier::FfiType>::CRepr, }
-                    }
-                    ValueKind::Slice(_) => {
-                        quote! { result: *mut ffier::FfierBytes, }
-                    }
-                });
-
-                let handle_ptr_binding = if handle_is_indirect {
-                    quote! { let handle_ptr = handle; }
-                } else {
-                    quote! {}
-                };
-
-                ffi_fns.push(quote! {
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params,)*
-                        #out_ffi_param
-                    ) -> ffier::FfierError {
-                        #handle_ptr_binding
-                        #obj_binding
-                        #(#pre_bindings)*
-                        match #method_call {
-                            #ok_branch
-                            Err(e) => ffier::FfierError::from_err(e),
-                        }
-                    }
-                });
-            }
-        }
-    }
-
-    // destroy (no auto-generated create — methods returning Self serve as constructors)
-    let destroy_name = format_ident!("{fn_pfx}{struct_lower}_destroy");
-    let destroy_str = destroy_name.to_string();
-
-    decl_exprs.push(quote! { concat!("void ", #destroy_str, "(", #handle_c_name, " handle);") });
-
-    ffi_fns.push(quote! {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
-            if !handle.is_null() {
-                let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <$struct_ty as ffier::FfiHandle>::type_id();
-                assert!(
-                    __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
-                    #destroy_str,
-                    <$struct_ty as ffier::FfiHandle>::C_HANDLE_NAME,
-                    __expected,
-                    __actual,
-                );
-                drop(unsafe {
-                    Box::from_raw(handle as *mut ffier::FfierTaggedBox<$struct_ty>)
-                });
-            }
-        }
-    });
-
-    let header_fn_name = format_ident!("{fn_pfx}{struct_lower}__header");
-    let num_shared = shared_types_exprs.len();
-    let num_decls = decl_exprs.len();
-    let bridge_macro_name = format_ident!("{struct_lower}_ffier");
+    // -----------------------------------------------------------------------
+    // Metadata emission — structured tokens for generator proc macros
+    // -----------------------------------------------------------------------
 
     let reexport_items: Vec<_> = reexport_types
         .iter()
@@ -1035,312 +456,87 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // -----------------------------------------------------------------------
-    // Client macro codegen — safe Rust wrappers calling through extern "C"
-    // -----------------------------------------------------------------------
+    let meta_macro_name = format_ident!("__ffier_meta_{struct_lower}");
 
-    let client_macro_name = format_ident!("{struct_lower}_ffi_client");
-    let struct_ident_for_client = format_ident!("{struct_name}");
-    let destroy_name_str = format!("{fn_pfx}{struct_lower}_destroy");
-    let destroy_ident = format_ident!("{destroy_name_str}");
+    // Build method metadata tokens
+    let method_meta_tokens: Vec<_> = methods.iter().map(|m| {
+        let name = &m.method_name;
+        let ffi_name_str = &m.ffi_name_str;
+        let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
 
-    // Extract lifetime params from the impl block for the client struct
-    let impl_lifetimes: Vec<_> = input.generics.lifetimes().cloned().collect();
-    let has_lifetimes = !impl_lifetimes.is_empty();
-    let client_struct_generics = if has_lifetimes {
-        let lts: Vec<_> = impl_lifetimes.iter().map(|lt| &lt.lifetime).collect();
-        quote! { <#(#lts),*> }
-    } else {
-        quote! {}
-    };
-    let client_phantom = if has_lifetimes {
-        let lts: Vec<_> = impl_lifetimes.iter().map(|lt| {
-            let lt = &lt.lifetime;
-            quote! { &#lt () }
-        }).collect();
-        quote! { , std::marker::PhantomData<(#(#lts),*)> }
-    } else {
-        quote! {}
-    };
-    let client_phantom_init = if has_lifetimes {
-        quote! { , std::marker::PhantomData }
-    } else {
-        quote! {}
-    };
-    let client_ffi_type_impl = if !has_lifetimes {
-        let si = &struct_ident_for_client;
-        quote! {
-            impl ffier::FfiType for #si {
-                type CRepr = *mut core::ffi::c_void;
-                const C_TYPE_NAME: &str = "";
-                fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-                fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
-            }
-        }
-    } else {
-        quote! {}
-    };
-
-    let mut client_extern_decls = Vec::new();
-    let mut client_methods = Vec::new();
-    let mut client_dyn_traits = Vec::new();
-
-    // extern decl for destroy
-    client_extern_decls.push(quote! {
-        fn #destroy_ident(handle: *mut core::ffi::c_void);
-    });
-
-    for m in &methods {
-        let ffi_name = &m.ffi_name;
-        let method_name = &m.method_name;
-        let handle_is_indirect = m.is_builder && m.is_by_value;
-
-        // --- Build extern "C" declaration ---
-        let extern_handle_param = if m.has_receiver {
-            if handle_is_indirect {
-                Some(quote! { handle: *mut *mut core::ffi::c_void, })
-            } else {
-                Some(quote! { handle: *mut core::ffi::c_void, })
-            }
-        } else {
-            None
-        };
-
-        let extern_params: Vec<_> = m.param_idents.iter()
-            .zip(m.param_kinds.iter())
-            .map(|(id, k)| ffi_param_tokens(id, k))
-            .collect();
-
-        // Return type + out param for extern decl
-        let (extern_ret, extern_out_param) = match &m.ret {
-            ReturnKind::Void => (quote! {}, None),
-            ReturnKind::Value(vk) => {
-                let ann = value_ret_annotation(vk);
-                (ann, None)
-            }
-            ReturnKind::Result { ok_ty, .. } => {
-                let out = ok_ty.as_ref().map(|vk| match vk {
-                    ValueKind::Regular(ty) => quote! { result: *mut <#ty as ffier::FfiType>::CRepr, },
-                    ValueKind::Slice(_) => quote! { result: *mut ffier::FfierBytes, },
-                });
-                (quote! { -> ffier::FfierError }, out)
-            }
-        };
-
-        client_extern_decls.push(quote! {
-            fn #ffi_name(#extern_handle_param #(#extern_params,)* #extern_out_param) #extern_ret;
-        });
-
-        // --- Build safe wrapper method ---
-
-        // Receiver in safe wrapper signature
-        let wrapper_receiver = if !m.has_receiver {
-            None
+        let receiver_ident = if !m.has_receiver {
+            format_ident!("none")
         } else if m.is_by_value {
-            Some(quote! { self, })
+            format_ident!("value")
         } else if m.is_mut {
-            Some(quote! { &mut self, })
+            // "mut" is a keyword, so we use r#mut
+            format_ident!("r#mut")
         } else {
-            Some(quote! { &self, })
+            // "ref" is a keyword, so we use r#ref
+            format_ident!("r#ref")
         };
 
-        // Wrapper params (original Rust types)
-        let wrapper_params: Vec<_> = m.param_idents.iter()
+        let is_builder = m.is_builder;
+
+        let param_tokens: Vec<_> = m.param_idents.iter()
             .zip(m.param_kinds.iter())
             .zip(m.param_orig_types.iter())
             .map(|((id, kind), orig_ty)| {
-                match kind {
-                    ParamKind::Slice(SliceKind::Str) => quote! { #id: &str },
-                    ParamKind::Slice(SliceKind::Bytes) => quote! { #id: &[u8] },
-                    ParamKind::Slice(SliceKind::Path) => quote! { #id: &std::path::Path },
-                    ParamKind::StrSlice => quote! { #id: &[&str] },
-                    ParamKind::HandleRef { .. } => {
-                        // Use original type directly to preserve lifetime annotations
-                        quote! { #id: #orig_ty }
-                    }
-                    ParamKind::DynDispatch(cfg) => {
-                        let trait_name = format_ident!("Into{}Handle", cfg.c_name.trim_start_matches(&type_pfx));
-                        quote! { #id: impl #trait_name }
-                    }
-                    ParamKind::Regular(_) => quote! { #id: #orig_ty },
-                }
-            })
-            .collect();
-
-        // Arg conversions (Rust value → FFI call arg)
-        let wrapper_args: Vec<_> = m.param_idents.iter()
-            .zip(m.param_kinds.iter())
-            .zip(m.param_orig_types.iter())
-            .map(|((id, kind), orig_ty)| {
-                match kind {
-                    ParamKind::Slice(SliceKind::Str) => quote! { ffier::FfierBytes::from_str(#id) },
-                    ParamKind::Slice(SliceKind::Bytes) => quote! { ffier::FfierBytes::from_bytes(#id) },
-                    ParamKind::Slice(SliceKind::Path) => quote! { ffier::FfierBytes::from_path(#id) },
-                    ParamKind::StrSlice => {
-                        quote! { __ffi_strs.as_ptr(), __ffi_strs.len() }
-                    }
-                    ParamKind::HandleRef { .. } => quote! { #id.0 },
-                    ParamKind::DynDispatch(_) => {
-                        quote! { #id.into_raw_handle() }
-                    }
-                    ParamKind::Regular(_) => {
-                        // Use original type to preserve lifetime params
-                        quote! { <#orig_ty as ffier::FfiType>::into_c(#id) }
+                let kind_tokens = meta::emit_param_kind(kind);
+                let erased_ty = strip_lifetimes_for_metadata(orig_ty);
+                quote! {
+                    {
+                        name = #id,
+                        kind = #kind_tokens,
+                        rust_type = (#erased_ty),
                     }
                 }
             })
             .collect();
 
-        // Pre-bindings for StrSlice
-        let wrapper_pre_bindings: Vec<_> = m.param_idents.iter()
-            .zip(m.param_kinds.iter())
-            .filter_map(|(id, kind)| {
-                if matches!(kind, ParamKind::StrSlice) {
-                    Some(quote! {
-                        let __ffi_strs: Vec<ffier::FfierBytes> = #id.iter()
-                            .map(|s| ffier::FfierBytes::from_str(s))
-                            .collect();
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Handle arg for calling FFI
-        let handle_arg = if !m.has_receiver {
-            quote! {}
-        } else if handle_is_indirect {
-            quote! { &mut __handle, }
-        } else {
-            quote! { self.0, }
-        };
-
-        // Build the method body based on return kind and builder pattern
-        let wrapper_body = if m.is_builder && m.is_by_value {
-            // Builder pattern: by-value self → Self
-            match &m.ret {
-                ReturnKind::Void => {
-                    // self → Self (non-Result builder)
-                    quote! {
-                        let mut __handle = {
-                            let mut this = std::mem::ManuallyDrop::new(self);
-                            this.0
-                        };
-                        #(#wrapper_pre_bindings)*
-                        unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
-                        Self(__handle #client_phantom_init)
-                    }
-                }
-                ReturnKind::Result { ok_ty: None, err_ident, .. } => {
-                    // self → Result<Self, E>
-                    let err_ty = format_ident!("{err_ident}");
-                    quote! {
-                        let mut __handle = {
-                            let mut this = std::mem::ManuallyDrop::new(self);
-                            this.0
-                        };
-                        #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
-                        if __err.code == 0 {
-                            Ok(Self(__handle #client_phantom_init))
-                        } else {
-                            Err(#err_ty::from_ffi(__err))
-                        }
-                    }
-                }
-                _ => quote! { compile_error!("unexpected builder return kind") },
-            }
-        } else if m.is_by_value && !m.has_receiver {
-            // Static method
-            build_client_static_or_instance_body(
-                ffi_name, &m.ret, &handle_arg, &wrapper_args, &wrapper_pre_bindings,
-                &m.ret_orig_type,
-            )
-        } else if m.is_by_value {
-            // By-value self, non-builder (e.g. consume, or returning other type)
-            let inner_body = build_client_static_or_instance_body(
-                ffi_name, &m.ret, &quote! { __handle, }, &wrapper_args, &wrapper_pre_bindings,
-                &m.ret_orig_type,
-            );
-            quote! {
-                let __handle = {
-                    let this = std::mem::ManuallyDrop::new(self);
-                    this.0
-                };
-                #inner_body
-            }
-        } else {
-            // &self or &mut self
-            build_client_static_or_instance_body(
-                ffi_name, &m.ret, &handle_arg, &wrapper_args, &wrapper_pre_bindings,
-                &m.ret_orig_type,
-            )
-        };
-
-        // Doc comments
-        let doc_attrs: Vec<_> = m.doc_lines.iter()
-            .map(|line| quote! { #[doc = #line] })
-            .collect();
-
-        // Return type for safe wrapper signature
-        let wrapper_ret_type = match &m.ret {
-            ReturnKind::Void if m.is_builder => {
-                // Builder returning Self
-                quote! { -> Self }
-            }
-            ReturnKind::Void => quote! {},
-            ReturnKind::Value(vk) => {
-                client_value_ret_type(vk, &m.ret_orig_type, &struct_ident_for_client)
-            }
-            ReturnKind::Result { ok_ty, err_ident, .. } if m.is_builder => {
-                let err_ty = format_ident!("{err_ident}");
-                quote! { -> Result<Self, #err_ty> }
-            }
-            ReturnKind::Result { ok_ty, err_ident, .. } => {
-                let err_ty = format_ident!("{err_ident}");
-                match ok_ty {
-                    None => quote! { -> Result<(), #err_ty> },
-                    Some(vk) => {
-                        let ok_ret = client_value_ok_type(vk, &m.ret_orig_type, &struct_ident_for_client);
-                        quote! { -> Result<#ok_ret, #err_ty> }
-                    }
-                }
+        let ret_tokens = meta::emit_return_kind(&m.ret);
+        // Emit only the type part of the return, not the `->` arrow.
+        // Erase lifetimes to anonymous (`'_`) so method-level lifetimes
+        // (e.g. `'a` in `fn echo<'a>(&self, s: &'a str) -> &'a str`)
+        // don't leak into generated client code as undeclared.
+        let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
+            ReturnType::Default => quote! { () },
+            ReturnType::Type(_, ty) => {
+                let erased = strip_lifetimes_for_metadata(ty);
+                quote! { #erased }
             }
         };
 
-        client_methods.push(quote! {
-            #(#doc_attrs)*
-            pub fn #method_name(#wrapper_receiver #(#wrapper_params),*) #wrapper_ret_type {
-                #wrapper_body
-            }
-        });
-
-        // Generate dyn_param traits
-        for (_id, kind) in m.param_idents.iter().zip(m.param_kinds.iter()) {
-            if let ParamKind::DynDispatch(cfg) = kind {
-                let trait_suffix = cfg.c_name.trim_start_matches(&type_pfx);
-                let trait_name = format_ident!("Into{trait_suffix}Handle");
-                let variant_impls: Vec<_> = cfg.variants.iter().map(|(_name, _)| {
-                    let variant_ident = format_ident!("Vtable{trait_suffix}");
-                    quote! {
-                        impl #trait_name for #variant_ident {
-                            fn into_raw_handle(self) -> *mut core::ffi::c_void {
-                                let this = std::mem::ManuallyDrop::new(self);
-                                this.0
-                            }
-                        }
-                    }
-                }).collect();
-                client_dyn_traits.push(quote! {
-                    pub trait #trait_name {
-                        fn into_raw_handle(self) -> *mut core::ffi::c_void;
-                    }
-                    #(#variant_impls)*
-                });
+        quote! {
+            {
+                name = #name,
+                ffi_name = #ffi_name_str,
+                doc = [#(#doc_tokens),*],
+                receiver = #receiver_ident,
+                is_builder = #is_builder,
+                params = [#(#param_tokens),*],
+                ret = #ret_tokens,
+                rust_ret = (#rust_ret),
             }
         }
-    }
+    }).collect();
+
+    // Build type alias metadata tokens
+    let alias_meta_tokens: Vec<_> = reexport_aliases.iter()
+        .zip(reexport_types.iter())
+        .map(|(alias, _ty)| {
+            // In the metadata, reference the alias via $crate::helper_mod::alias
+            quote! { (#alias, $crate::#helper_mod_name::#alias) }
+        })
+        .collect();
+
+    // Lifetime idents (without the tick) for metadata
+    let lifetime_idents: Vec<_> = input.generics.lifetimes()
+        .map(|lt| format_ident!("{}", lt.lifetime.ident))
+        .collect();
+
+    let prefix_lit = &fn_pfx.trim_end_matches('_'); // "ft" not "ft_"
+    let struct_path_tokens = quote! { $crate::#struct_ident };
 
     let output = quote! {
         #impl_block
@@ -1376,76 +572,30 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#reexport_items)*
         }
 
+        /// Metadata macro — passes structured type info to a generator proc macro.
+        ///
+        /// Usage:
+        /// ```ignore
+        /// my_crate::__ffier_meta_widget!(ffier::generate_bridge);
+        /// my_crate::__ffier_meta_widget!(ffier::generate_client);
+        /// ```
         #[macro_export]
-        macro_rules! #bridge_macro_name {
-            ($struct_ty:ty) => {
-                #(#ffi_fns)*
-
-                pub fn #header_fn_name() -> ffier::HeaderSection {
-                    let handle_typedef = #handle_typedef_expr .to_string();
-                    let shared_lines: [String; #num_shared] = [
-                        #(#shared_types_exprs .to_string()),*
-                    ];
-                    let shared_types = shared_lines.join("\n");
-                    let decl_lines: [String; #num_decls] = [
-                        #(#decl_exprs .to_string()),*
-                    ];
-                    let declarations = decl_lines.join("\n");
-                    ffier::HeaderSection {
-                        struct_name: #struct_name.to_string(),
-                        handle_typedef,
-                        shared_types,
-                        declarations,
-                    }
+        macro_rules! #meta_macro_name {
+            ($callback:path) => {
+                $callback! {
+                    @exportable,
+                    name = #struct_ident,
+                    struct_path = (#struct_path_tokens),
+                    prefix = #prefix_lit,
+                    lifetimes = (#(#lifetime_idents),*),
+                    handle_c_name = #handle_c_name,
+                    type_pfx = #type_pfx,
+                    fn_pfx = #fn_pfx,
+                    upper_pfx = #upper_pfx,
+                    uses_slices = #uses_slices,
+                    type_aliases = [#(#alias_meta_tokens),*],
+                    methods = [#(#method_meta_tokens),*],
                 }
-            };
-        }
-
-        /// Client macro: generates safe Rust wrapper struct calling through C ABI.
-        #[macro_export]
-        macro_rules! #client_macro_name {
-            () => {
-                unsafe extern "C" {
-                    #(#client_extern_decls)*
-                }
-
-                pub struct #struct_ident_for_client #client_struct_generics (
-                    *mut core::ffi::c_void
-                    #client_phantom
-                );
-
-                impl #client_struct_generics #struct_ident_for_client #client_struct_generics {
-                    #[doc(hidden)]
-                    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
-                        Self(ptr #client_phantom_init)
-                    }
-
-                    #[doc(hidden)]
-                    pub fn __into_raw(self) -> *mut core::ffi::c_void {
-                        let this = std::mem::ManuallyDrop::new(self);
-                        this.0
-                    }
-                }
-
-                #client_ffi_type_impl
-
-                impl #client_struct_generics std::fmt::Debug for #struct_ident_for_client #client_struct_generics {
-                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        f.debug_tuple(#struct_name).field(&self.0).finish()
-                    }
-                }
-
-                impl #client_struct_generics #struct_ident_for_client #client_struct_generics {
-                    #(#client_methods)*
-                }
-
-                impl #client_struct_generics Drop for #struct_ident_for_client #client_struct_generics {
-                    fn drop(&mut self) {
-                        unsafe { #destroy_ident(self.0) }
-                    }
-                }
-
-                #(#client_dyn_traits)*
             };
         }
     };
@@ -1454,259 +604,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// Client codegen helpers
-// ---------------------------------------------------------------------------
-
-/// Build the method body for a non-builder static or instance method in the client wrapper.
-fn build_client_static_or_instance_body(
-    ffi_name: &syn::Ident,
-    ret: &ReturnKind,
-    handle_arg: &proc_macro2::TokenStream,
-    wrapper_args: &[proc_macro2::TokenStream],
-    wrapper_pre_bindings: &[proc_macro2::TokenStream],
-    orig_ret: &ReturnType,
-) -> proc_macro2::TokenStream {
-    match ret {
-        ReturnKind::Void => {
-            quote! {
-                #(#wrapper_pre_bindings)*
-                unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) }
-            }
-        }
-        ReturnKind::Value(vk) => {
-            let convert = client_value_from_ffi(vk, orig_ret);
-            quote! {
-                #(#wrapper_pre_bindings)*
-                let __raw = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
-                #convert
-            }
-        }
-        ReturnKind::Result { ok_ty, err_ident, .. } => {
-            let err_ty = format_ident!("{err_ident}");
-            match ok_ty {
-                None => {
-                    quote! {
-                        #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
-                        if __err.code == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__err)) }
-                    }
-                }
-                Some(vk) => {
-                    let (out_decl, out_ptr, ok_convert) = client_result_ok_from_ffi(vk, orig_ret);
-                    quote! {
-                        #(#wrapper_pre_bindings)*
-                        #out_decl
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr) };
-                        if __err.code == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__err)) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// Convert a raw FFI return value to the Rust type for Value returns.
-fn client_value_from_ffi(vk: &ValueKind, orig_ret: &ReturnType) -> proc_macro2::TokenStream {
-    match vk {
-        ValueKind::Regular(_) => {
-            if let ReturnType::Type(_, orig_ty) = orig_ret {
-                if !is_primitive(orig_ty) {
-                    let stripped = strip_lifetimes_from_generics(orig_ty);
-                    // Use FfiType::from_c for non-lifetime types (works for handles + OwnedFd etc.)
-                    // Use __from_raw for lifetime-parameterized types (always handles)
-                    if has_lifetime_params(orig_ty) {
-                        return quote! { #stripped::__from_raw(__raw) };
-                    } else {
-                        return quote! { <#stripped as ffier::FfiType>::from_c(__raw) };
-                    }
-                }
-            }
-            quote! { __raw }
-        }
-        // Use raw pointer conversion to avoid lifetime tie to the temporary FfierBytes
-        ValueKind::Slice(SliceKind::Str) => quote! {
-            unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len)) }
-        },
-        ValueKind::Slice(SliceKind::Bytes) => quote! {
-            unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
-        },
-        ValueKind::Slice(SliceKind::Path) => quote! {
-            unsafe { __raw.as_path() }
-        },
-    }
-}
-
-/// For Result<T, E> returns, build (out_decl, out_ptr_expr, ok_convert).
-fn client_result_ok_from_ffi(vk: &ValueKind, orig_ret: &ReturnType) -> (proc_macro2::TokenStream, proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    match vk {
-        ValueKind::Regular(_) => {
-            if let ReturnType::Type(_, orig_ty) = orig_ret {
-                if let Some((ok_ty, _)) = extract_result_types(orig_ty) {
-                    if !is_primitive(&ok_ty) {
-                        let stripped = strip_lifetimes_from_generics(&ok_ty);
-                        let convert = if has_lifetime_params(&ok_ty) {
-                            quote! { #stripped::__from_raw(unsafe { __out.assume_init() }) }
-                        } else {
-                            quote! { <#stripped as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) }
-                        };
-                        return (
-                            quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                            quote! { __out.as_mut_ptr() },
-                            convert,
-                        );
-                    }
-                }
-            }
-            (
-                quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                quote! { __out.as_mut_ptr() },
-                quote! { unsafe { __out.assume_init() } },
-            )
-        }
-        ValueKind::Slice(SliceKind::Str) => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(__out.data, __out.len)) } },
-        ),
-        ValueKind::Slice(SliceKind::Bytes) => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { core::slice::from_raw_parts(__out.data, __out.len) } },
-        ),
-        ValueKind::Slice(SliceKind::Path) => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { __out.as_path() } },
-        ),
-    }
-}
-
-/// Check if a type has any lifetime parameters in its path.
-fn has_lifetime_params(ty: &Type) -> bool {
-    let Type::Path(tp) = ty else { return false };
-    tp.path.segments.iter().any(|seg| {
-        if let PathArguments::AngleBracketed(ab) = &seg.arguments {
-            ab.args.iter().any(|arg| matches!(arg, GenericArgument::Lifetime(_)))
-        } else {
-            false
-        }
-    })
-}
-
-/// Remove all lifetime parameters from generic arguments (e.g. `View<'static>` → `View`).
-fn strip_lifetimes_from_generics(ty: &Type) -> Type {
-    struct Stripper;
-    impl VisitMut for Stripper {
-        fn visit_path_arguments_mut(&mut self, args: &mut PathArguments) {
-            if let PathArguments::AngleBracketed(ab) = args {
-                ab.args = ab.args.iter().filter(|arg| {
-                    !matches!(arg, GenericArgument::Lifetime(_))
-                }).cloned().collect();
-                if ab.args.is_empty() {
-                    *args = PathArguments::None;
-                }
-            }
-            syn::visit_mut::visit_path_arguments_mut(self, args);
-        }
-    }
-    let mut ty = ty.clone();
-    Stripper.visit_type_mut(&mut ty);
-    ty
-}
-
-/// Determine the Rust return type for the client wrapper from a ValueKind.
-fn client_value_ret_type(
-    vk: &ValueKind,
-    orig_ret: &ReturnType,
-    _struct_ident: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    match vk {
-        ValueKind::Slice(SliceKind::Str) => quote! { -> &str },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { -> &[u8] },
-        ValueKind::Slice(SliceKind::Path) => quote! { -> &std::path::Path },
-        ValueKind::Regular(_) => {
-            if let ReturnType::Type(_, ty) = orig_ret {
-                quote! { -> #ty }
-            } else {
-                quote! {}
-            }
-        }
-    }
-}
-
-/// Determine the Ok type for Result returns in the client wrapper.
-fn client_value_ok_type(
-    vk: &ValueKind,
-    orig_ret: &ReturnType,
-    _struct_ident: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    match vk {
-        ValueKind::Slice(SliceKind::Str) => quote! { &str },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { &[u8] },
-        ValueKind::Slice(SliceKind::Path) => quote! { &std::path::Path },
-        ValueKind::Regular(_) => {
-            if let ReturnType::Type(_, ty) = orig_ret {
-                if let Some((ok_ty, _)) = extract_result_types(ty) {
-                    quote! { #ok_ty }
-                } else {
-                    quote! { () }
-                }
-            } else {
-                quote! { () }
-            }
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn build_header_line(
-    c_ret_expr: proc_macro2::TokenStream,
-    ffi_name_str: &str,
-    handle_type: Option<&String>,
-    param_c_type_exprs: &[proc_macro2::TokenStream],
-    param_name_strs: &[&String],
-    out_param_c_type: Option<&proc_macro2::TokenStream>,
-) -> proc_macro2::TokenStream {
-    let out_snippet = out_param_c_type.map(|ct| {
-        quote! {
-            if need_comma { s.push_str(", "); }
-            s.push_str(#ct);
-            s.push_str("* result");
-            need_comma = true;
-        }
-    });
-    let handle_snippet = handle_type.map(|ht| {
-        quote! {
-            s.push_str(#ht);
-            need_comma = true;
-        }
-    });
-    quote! {{
-        let c_type_names: &[&str] = &[#(#param_c_type_exprs),*];
-        let param_names: &[&str] = &[#(#param_name_strs),*];
-        let mut s = String::new();
-        s.push_str(#c_ret_expr);
-        s.push(' ');
-        s.push_str(#ffi_name_str);
-        s.push('(');
-        let mut need_comma = false;
-        #handle_snippet
-        for (cty, name) in c_type_names.iter().zip(param_names.iter()) {
-            if need_comma { s.push_str(", "); }
-            s.push_str(cty);
-            s.push(' ');
-            s.push_str(name);
-            need_comma = true;
-        }
-        #out_snippet
-        if !need_comma { s.push_str("void"); }
-        s.push_str(");");
-        s
-    }}
-}
 
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     let Type::Path(tp) = ty else { return None };
@@ -1753,7 +652,7 @@ fn is_self_return(ty: &Type, target: &Type) -> bool {
     inner == tgt
 }
 
-fn camel_to_snake(s: &str) -> String {
+pub(crate) fn camel_to_snake(s: &str) -> String {
     let mut out = String::new();
     for (i, ch) in s.chars().enumerate() {
         if ch.is_uppercase() {
@@ -1768,7 +667,7 @@ fn camel_to_snake(s: &str) -> String {
     out
 }
 
-fn camel_to_upper_snake(s: &str) -> String {
+pub(crate) fn camel_to_upper_snake(s: &str) -> String {
     camel_to_snake(s).to_ascii_uppercase()
 }
 
@@ -1783,6 +682,28 @@ fn erase_lifetimes(ty: &Type) -> Type {
     }
     let mut ty = ty.clone();
     Eraser.visit_type_mut(&mut ty);
+    ty
+}
+
+/// Strip all explicit lifetimes from a type, turning `&'a T` into `&T`
+/// and `Foo<'a>` into `Foo<'_>`. Used for metadata `rust_type` / `rust_ret`
+/// tokens so that method-level lifetimes don't leak into generated client code.
+fn strip_lifetimes_for_metadata(ty: &Type) -> Type {
+    struct Stripper;
+    impl VisitMut for Stripper {
+        fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
+            // Remove the explicit lifetime from references: `&'a T` → `&T`
+            r.lifetime = None;
+            // Continue visiting the inner type
+            syn::visit_mut::visit_type_reference_mut(self, r);
+        }
+        fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+            // For lifetimes in generic arguments (e.g., `BorrowedFd<'a>`), use `'_`.
+            *lt = syn::Lifetime::new("'_", proc_macro2::Span::call_site());
+        }
+    }
+    let mut ty = ty.clone();
+    Stripper.visit_type_mut(&mut ty);
     ty
 }
 
@@ -1855,6 +776,44 @@ fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
+}
+
+/// Check if a token stream represents a primitive type (for metadata emission).
+fn is_primitive_tokens(ts: &proc_macro2::TokenStream) -> bool {
+    let s = ts.to_string();
+    PRIMITIVES.contains(&s.as_str())
+}
+
+/// Known fd type names that map to `FfiRepr::Other(i32)` instead of Handle.
+const FD_TYPES: &[&str] = &["BorrowedFd", "OwnedFd"];
+
+/// Determine the `FfiRepr` for a Rust type (before aliasing).
+///
+/// - Primitives (i32, bool, etc.) → `Primitive`
+/// - Fd types (BorrowedFd, OwnedFd) → `Other(i32)`
+/// - Everything else → `Handle`
+fn ffi_repr_for_type(ty: &Type) -> meta::FfiRepr {
+    if is_primitive(ty) {
+        return meta::FfiRepr::Primitive;
+    }
+    if let Type::Path(tp) = ty {
+        if let Some(last) = tp.path.segments.last() {
+            let name = last.ident.to_string();
+            if FD_TYPES.contains(&name.as_str()) {
+                return meta::FfiRepr::Other(quote! { i32 });
+            }
+        }
+    }
+    meta::FfiRepr::Handle
+}
+
+/// Emit `FfiRepr` as metadata tokens for the macro output.
+fn ffi_repr_tokens(repr: &meta::FfiRepr) -> proc_macro2::TokenStream {
+    match repr {
+        meta::FfiRepr::Primitive => quote! { primitive },
+        meta::FfiRepr::Handle => quote! { handle },
+        meta::FfiRepr::Other(ts) => quote! { other(#ts) },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1945,6 +904,23 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let bridge_macro_name = format_ident!("{err_snake}_error_ffier");
     let client_error_macro_name = format_ident!("{err_snake}_ffi_client");
 
+    let meta_macro_name = format_ident!("__ffier_meta_{err_snake}");
+
+    // Build variant metadata tokens
+    let variant_meta_tokens: Vec<_> = data_enum.variants.iter().map(|variant| {
+        let var_ident = &variant.ident;
+        let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
+        let code = attrs.code;
+        let message = attrs
+            .message
+            .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+        quote! {
+            { name = #var_ident, code = #code, message = #message, }
+        }
+    }).collect();
+
+    let error_path = quote! { $crate::#name };
+
     let output = quote! {
         impl ffier::FfiError for #name {
             fn code(&self) -> u64 {
@@ -1967,97 +943,24 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        /// Bridge macro for error type FFI helpers. Invoke once in the cdylib
-        /// with the prefix: `mycrate::my_error_ffier!("prefix");`
+        /// Metadata macro for this error type.
+        ///
+        /// Accepts a prefix and a callback:
+        /// ```ignore
+        /// my_crate::__ffier_meta_test_error!("ft", ffier::generate_bridge);
+        /// ```
         #[macro_export]
-        macro_rules! #bridge_macro_name {
-
-            ($fn_pfx:literal) => {
-                ffier::paste::paste! {
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn [<$fn_pfx _ #err_snake_ident _message>](
-                        err: *const ffier::FfierError,
-                    ) -> *const core::ffi::c_char {
-                        let err = unsafe { &*err };
-                        let ptr = err.msg_ptr();
-                        if !ptr.is_null() { return ptr; }
-                        <$crate::#name as ffier::FfiError>::static_message(err.code).as_ptr()
-                    }
-
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn [<$fn_pfx _ #err_snake_ident _free>](
-                        err: *mut ffier::FfierError,
-                    ) {
-                        unsafe { (*err).free() };
-                    }
-
-                    pub fn [<$fn_pfx _ #err_snake_ident __header>]() -> ffier::HeaderSection {
-                        let err_c_name = concat!(stringify!([<$fn_pfx:camel>]), #name_str);
-                        let message_fn_str = concat!($fn_pfx, #err_snake_msg_suffix);
-                        let free_fn_str = concat!($fn_pfx, #err_snake_free_suffix);
-                        let full_upper_pfx = stringify!([<$fn_pfx:upper _ #err_upper_ident>]);
-
-                        let mut decls = String::new();
-                        decls.push_str("typedef struct {\n");
-                        decls.push_str("    uint64_t code;\n");
-                        decls.push_str("    char* _msg; /* private */\n");
-                        decls.push_str(&format!("}} {};\n\n", err_c_name));
-
-                        for (variant_name, val) in <$crate::#name as ffier::FfiError>::codes() {
-                            decls.push_str(&format!(
-                                "#define {}_{} {}\n",
-                                full_upper_pfx, variant_name, val
-                            ));
-                        }
-                        decls.push_str(&format!(
-                            "\nconst char* {}(const {}* err);\n",
-                            message_fn_str, err_c_name
-                        ));
-                        decls.push_str(&format!(
-                            "void {}({}* err);\n",
-                            free_fn_str, err_c_name
-                        ));
-
-                        ffier::HeaderSection {
-                            struct_name: #name_str.to_string(),
-                            handle_typedef: String::new(),
-                            shared_types: String::new(),
-                            declarations: decls,
-                        }
-                    }
+        macro_rules! #meta_macro_name {
+            ($fn_pfx:expr, $type_pfx:expr, $upper_pfx:expr, $callback:path) => {
+                $callback! {
+                    @error,
+                    name = #name,
+                    path = (#error_path),
+                    fn_pfx = $fn_pfx,
+                    type_pfx = $type_pfx,
+                    upper_pfx = $upper_pfx,
+                    variants = [#(#variant_meta_tokens),*],
                 }
-            };
-        }
-
-        /// Client macro: generates a matching error enum for FFI client bindings.
-        #[macro_export]
-        macro_rules! #client_error_macro_name {
-            () => {
-                #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-                pub enum #name {
-                    #(#client_variant_idents,)*
-                }
-
-                impl #name {
-                    pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-                        let code = err.code;
-                        unsafe { err.free() };
-                        match code {
-                            #(#client_from_ffi_arms,)*
-                            other => panic!(concat!("unknown ", #name_str, " error code {}"), other),
-                        }
-                    }
-                }
-
-                impl std::fmt::Display for #name {
-                    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                        match self {
-                            #(#client_display_arms,)*
-                        }
-                    }
-                }
-
-                impl std::error::Error for #name {}
             };
         }
     };
@@ -2198,186 +1101,6 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
             Some(s.value())
         })
         .collect()
-}
-
-/// Parsed doc comment sections.
-struct DocSections {
-    /// Lines before any `# Arguments` / `# Returns` heading.
-    body: Vec<String>,
-    /// `param_name` → description (from `# Arguments` section).
-    param_docs: Vec<(String, String)>,
-    /// Text from `# Returns` section.
-    returns_doc: Option<String>,
-}
-
-/// Parse Rust doc lines into body, `# Arguments`, and `# Returns` sections.
-///
-/// Recognizes:
-/// - `# Arguments` / `# Parameters` heading
-///   - `* \`name\` - description` or `- \`name\` - description` entries
-/// - `# Returns` / `# Return value` heading
-///   - All following lines until the next `#` heading
-fn parse_doc_sections(doc_lines: &[String]) -> DocSections {
-    let mut body = Vec::new();
-    let mut param_docs = Vec::new();
-    let mut returns_doc = None;
-
-    enum Section {
-        Body,
-        Arguments,
-        Returns,
-    }
-    let mut section = Section::Body;
-    let mut returns_lines: Vec<String> = Vec::new();
-
-    for raw in doc_lines {
-        let line = raw.strip_prefix(' ').unwrap_or(raw);
-
-        // Detect heading transitions
-        let lower = line.trim().to_lowercase();
-        if lower == "# arguments" || lower == "# parameters" {
-            section = Section::Arguments;
-            continue;
-        }
-        if lower.starts_with("# return") {
-            section = Section::Returns;
-            continue;
-        }
-        // Any other `#` heading ends the current special section
-        if line.trim().starts_with("# ") {
-            // Flush returns
-            if !returns_lines.is_empty() {
-                returns_doc = Some(returns_lines.join(" ").trim().to_string());
-                returns_lines.clear();
-            }
-            section = Section::Body;
-            // Fall through to add this line to body
-        }
-
-        match section {
-            Section::Body => body.push(raw.clone()),
-            Section::Arguments => {
-                // Parse `* \`name\` - description` or `- \`name\` - description`
-                let trimmed = line.trim();
-                let after_bullet = trimmed
-                    .strip_prefix("* ")
-                    .or_else(|| trimmed.strip_prefix("- "));
-                if let Some(rest) = after_bullet {
-                    if let Some((name, desc)) = parse_param_entry(rest) {
-                        param_docs.push((name, desc));
-                    }
-                }
-                // Ignore non-matching lines in the section (blank lines, etc.)
-            }
-            Section::Returns => {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    returns_lines.push(trimmed.to_string());
-                }
-            }
-        }
-    }
-
-    // Flush any remaining returns lines
-    if !returns_lines.is_empty() {
-        returns_doc = Some(returns_lines.join(" ").trim().to_string());
-    }
-
-    // Trim trailing blank lines from body
-    while body.last().is_some_and(|l| l.trim().is_empty()) {
-        body.pop();
-    }
-
-    DocSections {
-        body,
-        param_docs,
-        returns_doc,
-    }
-}
-
-/// Parse `` `name` - description `` or `` `name` description ``.
-fn parse_param_entry(s: &str) -> Option<(String, String)> {
-    let s = s.trim();
-    let rest = s.strip_prefix('`')?;
-    let end = rest.find('`')?;
-    let name = rest[..end].to_string();
-    let after = rest[end + 1..].trim();
-    let desc = after.strip_prefix('-').unwrap_or(after).trim().to_string();
-    Some((name, desc))
-}
-
-/// Build a Doxygen comment block string from doc lines and method metadata.
-fn build_doxygen_comment(
-    doc_lines: &[String],
-    param_names: &[String],
-    has_out_param: bool,
-    err_c_name: Option<&str>,
-) -> Option<String> {
-    if doc_lines.is_empty() {
-        return None;
-    }
-
-    let sections = parse_doc_sections(doc_lines);
-
-    if sections.body.is_empty() && sections.param_docs.is_empty() && sections.returns_doc.is_none()
-    {
-        return None;
-    }
-
-    let mut out = String::from("/**\n");
-
-    // Body text
-    for line in &sections.body {
-        let trimmed = line.strip_prefix(' ').unwrap_or(line);
-        if trimmed.is_empty() {
-            out.push_str(" *\n");
-        } else {
-            out.push_str(&format!(" * {trimmed}\n"));
-        }
-    }
-
-    // @param entries
-    let has_params = !param_names.is_empty() || has_out_param;
-    let has_return = err_c_name.is_some() || sections.returns_doc.is_some();
-    if has_params || has_return {
-        out.push_str(" *\n");
-    }
-
-    for name in param_names {
-        let desc = sections
-            .param_docs
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, d)| d.as_str())
-            .unwrap_or("");
-        if desc.is_empty() {
-            out.push_str(&format!(" * @param {name}\n"));
-        } else {
-            out.push_str(&format!(" * @param {name} {desc}\n"));
-        }
-    }
-
-    if has_out_param {
-        // For Result methods, Rust's `# Returns` describes the Ok value,
-        // which maps to the C `out` parameter (not the C return).
-        if let Some(ref doc) = sections.returns_doc {
-            out.push_str(&format!(" * @param[out] result {doc}\n"));
-        } else {
-            out.push_str(" * @param[out] result\n");
-        }
-    }
-
-    // @return
-    if let Some(err_name) = err_c_name {
-        out.push_str(&format!(
-            " * @return {err_name} with code 0 on success, error code on failure.\n"
-        ));
-    } else if let Some(ref doc) = sections.returns_doc {
-        out.push_str(&format!(" * @return {doc}\n"));
-    }
-
-    out.push_str(" */");
-    Some(out)
 }
 
 // ===========================================================================
@@ -2754,97 +1477,42 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // --- Header generation (via bridge macro) ---
-    let bridge_macro_name = format_ident!("vtable_{trait_snake}_ffier");
-    let client_vtable_macro_name = format_ident!("vtable_{trait_snake}_ffi_client");
-    let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
-    let vtable_section_name = format!("Vtable{trait_name_str}");
+    // --- Metadata emission ---
+    let meta_macro_name = format_ident!("__ffier_meta_vtable_{trait_snake}");
 
-    // Build header lines for vtable struct
-    let mut header_lines: Vec<proc_macro2::TokenStream> = Vec::new();
+    // Build vtable field metadata — currently no extra data fields are supported,
+    // so this is always empty. Method function pointer fields are handled by
+    // vtable_methods metadata instead.
+    let vtable_field_meta: Vec<proc_macro2::TokenStream> = Vec::new();
 
-    header_lines.push(quote! { concat!("typedef struct {") });
-
-    // For each method, generate a C function pointer line
-    for m in &vtable_methods {
-        let name_str = m.name.to_string();
-        // Build C return type and params at runtime
-        let param_c_types: Vec<_> = m
-            .params
-            .iter()
-            .map(|(id, vpt)| {
-                let id_str = id.to_string();
-                let type_expr = match vpt {
-                    VtableParamType::Primitive(ty) => {
-                        quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
-                    }
-                    VtableParamType::Str => {
-                        let n = format!("{type_pfx}Str");
-                        quote! { #n }
-                    }
-                    VtableParamType::Bytes => {
-                        let n = format!("{type_pfx}Bytes");
-                        quote! { #n }
-                    }
-                    VtableParamType::Path => {
-                        let n = format!("{type_pfx}Path");
-                        quote! { #n }
-                    }
-                    VtableParamType::Handle(_) => quote! { "void*" },
-                };
-                (id_str, type_expr)
-            })
-            .collect();
-
-        let ret_c_expr = match &m.ret {
-            VtableRetType::Void => quote! { "void" },
-            VtableRetType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::C_TYPE_NAME },
-            VtableRetType::Str => {
-                let n = format!("{type_pfx}Str");
-                quote! { #n }
-            }
-            VtableRetType::Bytes => {
-                let n = format!("{type_pfx}Bytes");
-                quote! { #n }
-            }
-            VtableRetType::Path => {
-                let n = format!("{type_pfx}Path");
-                quote! { #n }
-            }
-            VtableRetType::Handle(_) => quote! { "void*" },
+    // Build vtable method metadata
+    let vtable_method_meta: Vec<_> = vtable_methods.iter().map(|m| {
+        let mname = &m.name;
+        let param_meta: Vec<_> = m.params.iter().map(|(id, vpt)| {
+            let kind = match vpt {
+                VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
+                VtableParamType::Str => quote! { str },
+                VtableParamType::Bytes => quote! { bytes },
+                VtableParamType::Path => quote! { path },
+                VtableParamType::Handle(ty) => quote! { handle(#ty) },
+            };
+            quote! { (#id, #kind) }
+        }).collect();
+        let ret = match &m.ret {
+            VtableRetType::Void => quote! { void },
+            VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
+            VtableRetType::Str => quote! { str },
+            VtableRetType::Bytes => quote! { bytes },
+            VtableRetType::Path => quote! { path },
+            VtableRetType::Handle(ty) => quote! { handle(#ty) },
         };
+        quote! {
+            { name = #mname, params = [#(#param_meta),*], ret = #ret, }
+        }
+    }).collect();
 
-        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
-        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
-
-        header_lines.push(quote! {{
-            let mut s = String::from("    ");
-            s.push_str(#ret_c_expr);
-            s.push_str(" (*");
-            s.push_str(#name_str);
-            s.push_str(")(void* self_data");
-            let param_types: &[&str] = &[#(#param_type_exprs),*];
-            let param_names: &[&str] = &[#(#param_id_strs),*];
-            for (t, n) in param_types.iter().zip(param_names.iter()) {
-                s.push_str(", ");
-                s.push_str(t);
-                s.push(' ');
-                s.push_str(n);
-            }
-            s.push_str(");");
-            s
-        }});
-    }
-
-    // drop function pointer
-    header_lines.push(quote! { "    void (*drop)(void* self_data);" });
-    header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
-    header_lines.push(quote! { "" });
-    header_lines.push(quote! {
-        concat!("void* ", #constructor_name_str, "(void* user_data, const ", #vtable_c_name, "* vtable);")
-    });
-
-    let num_header_lines = header_lines.len();
+    let prefix_str = args.prefix.as_deref().unwrap_or("");
+    let trait_path_tokens = quote! { $crate::#trait_name };
 
     let output = quote! {
         #original_trait
@@ -2898,71 +1566,50 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
+        /// Metadata macro for this implementable trait.
         #[macro_export]
-        macro_rules! #bridge_macro_name {
-            () => {
-                #[unsafe(no_mangle)]
-                pub extern "C" fn #constructor_name(
-                    user_data: *mut core::ffi::c_void,
-                    vtable: *const $crate::#vtable_struct_name,
-                ) -> *mut core::ffi::c_void {
-                    let wrapper = $crate::#wrapper_name {
-                        user_data,
-                        vtable,
-                    };
-                    <$crate::#wrapper_name as ffier::FfiType>::into_c(wrapper)
-                }
-
-                pub fn #header_fn_name() -> ffier::HeaderSection {
-                    let decl_lines: [String; #num_header_lines] = [
-                        #(#header_lines .to_string()),*
-                    ];
-                    let declarations = decl_lines.join("\n");
-                    ffier::HeaderSection {
-                        struct_name: #vtable_section_name.to_string(),
-                        handle_typedef: String::new(),
-                        shared_types: String::new(),
-                        declarations,
-                    }
-                }
-            };
-        }
-
-        /// Client macro: generates vtable struct + handle wrapper for FFI client bindings.
-        #[macro_export]
-        macro_rules! #client_vtable_macro_name {
-            () => {
-                #[repr(C)]
-                pub struct #vtable_struct_name {
-                    #(#vtable_fields,)*
-                    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-                }
-
-                unsafe extern "C" {
-                    fn #constructor_name(
-                        user_data: *mut core::ffi::c_void,
-                        vtable: *const #vtable_struct_name,
-                    ) -> *mut core::ffi::c_void;
-                }
-
-                pub struct #wrapper_name(*mut core::ffi::c_void);
-
-                impl #wrapper_name {
-                    pub fn new(user_data: *mut core::ffi::c_void, vtable: &#vtable_struct_name) -> Self {
-                        Self(unsafe { #constructor_name(user_data, vtable) })
-                    }
-                }
-
-                impl Drop for #wrapper_name {
-                    fn drop(&mut self) {
-                        // The vtable wrapper's destructor is handled by the library side
-                        // when the handle is destroyed. We don't have a separate destroy
-                        // function for vtable handles — they are consumed by dyn_param methods.
-                    }
+        macro_rules! #meta_macro_name {
+            ($callback:path) => {
+                $callback! {
+                    @implementable,
+                    trait_name = #trait_name,
+                    trait_path = (#trait_path_tokens),
+                    prefix = #prefix_str,
+                    type_pfx = #type_pfx,
+                    fn_pfx = #fn_pfx,
+                    vtable_struct = ($crate::#vtable_struct_name),
+                    vtable_c_name = #vtable_c_name,
+                    wrapper_name = ($crate::#wrapper_name),
+                    wrapper_c_handle = #wrapper_c_handle,
+                    constructor_name = #constructor_name_str,
+                    vtable_fields = [#(#vtable_field_meta),*],
+                    vtable_methods = [#(#vtable_method_meta),*],
                 }
             };
         }
     };
 
     output.into()
+}
+
+// ---------------------------------------------------------------------------
+// Generator proc macros — invoked via metadata callback pattern
+// ---------------------------------------------------------------------------
+
+/// Generates C FFI bridge functions from ffier metadata.
+#[proc_macro]
+pub fn generate_bridge(input: TokenStream) -> TokenStream {
+    gen_bridge::generate_bridge_impl(input.into()).into()
+}
+
+/// Generates safe Rust client wrappers from ffier metadata.
+#[proc_macro]
+pub fn generate_client(input: TokenStream) -> TokenStream {
+    gen_client::generate_client_impl(input.into()).into()
+}
+
+/// Like `generate_client`, but outputs the source code as a `&str` literal.
+#[proc_macro]
+pub fn generate_client_source(input: TokenStream) -> TokenStream {
+    gen_client::generate_client_source_impl(input.into()).into()
 }

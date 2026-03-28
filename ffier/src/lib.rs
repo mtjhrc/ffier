@@ -4,6 +4,11 @@ pub use ffier_macros::FfiError;
 pub use ffier_macros::exportable;
 pub use ffier_macros::implementable;
 
+// Generator proc macros — invoked via metadata callback pattern
+pub use ffier_macros::generate_bridge;
+pub use ffier_macros::generate_client;
+pub use ffier_macros::generate_client_source;
+
 // Re-export paste so that generated error bridge macros can use it.
 pub use paste;
 

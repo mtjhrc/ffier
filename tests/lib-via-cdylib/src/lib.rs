@@ -1,19 +1,12 @@
 // FFI client bindings — safe Rust wrappers calling through C ABI.
 // These types mirror the original ffier-test-lib API but link dynamically
 // via the cdylib (linked by build.rs).
+//
+// The bindings below are generated source code, NOT macro invocations.
+// Regenerate with: just gen-rust-client
+#![allow(clippy::all)]
 
-#[allow(unused_imports)]
-use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
-
-ffier_test_lib::test_error_ffi_client!();
-ffier_test_lib::widget_ffi_client!();
-ffier_test_lib::gadget_ffi_client!();
-ffier_test_lib::config_ffi_client!();
-ffier_test_lib::gizmo_ffi_client!();
-ffier_test_lib::gizmo_builder_ffi_client!();
-ffier_test_lib::view_ffi_client!();
-ffier_test_lib::pipeline_ffi_client!();
-ffier_test_lib::vtable_processor_ffi_client!();
+include!("generated.rs");
 
 #[cfg(test)]
 mod tests {
