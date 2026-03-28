@@ -4,3 +4,5 @@ example/c/mycalculator.h
 example-krun/c/main
 example-krun/c/krun.h
 tests/c/test_main
+test_lifetime
+test_underscore
