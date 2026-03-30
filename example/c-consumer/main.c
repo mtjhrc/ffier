@@ -20,20 +20,6 @@ int main(void) {
     assert(err.code == MYLIB_CALC_ERROR_DIVISION_BY_ZERO);
     mylib_calc_error_free(&err);
 
-    /* Creating, mutating, and reading a sub-object */
-    MylibCalcResult res = mylib_calculator_create_result(calc);
-    mylib_calculator_accumulate(calc, res, 10);
-    mylib_calculator_accumulate(calc, res, 20);
-    printf("accumulated = %d\n", mylib_calculator_read_result(calc, res));
-    mylib_calc_result_destroy(res);
-
-    /* Fallible creation of a sub-object */
-    MylibCalcResult res2;
-    err = mylib_calculator_try_divide_result(calc, 10, 2, &res2);
-    assert(err.code == 0);
-    printf("try_divide_result(10, 2) = %d\n", mylib_calc_result_get(res2));
-    mylib_calc_result_destroy(res2);
-
     mylib_calculator_destroy(calc);
 
     /* ---- TextBuffer ---- */
@@ -59,6 +45,6 @@ int main(void) {
     mylib_text_buffer_clear(buf);
     mylib_text_buffer_destroy(buf);
 
-    printf("All C tests passed!\n");
+    printf("done.\n");
     return 0;
 }

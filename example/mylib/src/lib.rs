@@ -15,7 +15,7 @@ pub enum BufferError {
     WriteFailed,
 }
 
-// -- Calculator: primitives, results, handle params --
+// -- Calculator: primitives, results --
 
 #[derive(Default)]
 pub struct Calculator;
@@ -43,40 +43,6 @@ impl Calculator {
         } else {
             Ok(a / b)
         }
-    }
-
-    /// Create a new result accumulator.
-    pub fn create_result(&self) -> CalcResult {
-        CalcResult(0)
-    }
-
-    /// Add a value into a result accumulator.
-    pub fn accumulate(&self, res: &mut CalcResult, n: i32) {
-        res.0 += n;
-    }
-
-    /// Read the accumulated value.
-    pub fn read_result(&self, res: &CalcResult) -> i32 {
-        res.0
-    }
-
-    /// Divide and store the result, or error if divisor is zero.
-    pub fn try_divide_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
-        if b == 0 {
-            Err(CalcError::DivisionByZero)
-        } else {
-            Ok(CalcResult(a / b))
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct CalcResult(i32);
-
-#[ffier::exportable]
-impl CalcResult {
-    pub fn get(&self) -> i32 {
-        self.0
     }
 }
 
