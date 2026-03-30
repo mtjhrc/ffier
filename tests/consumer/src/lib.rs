@@ -190,9 +190,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "via-cdylib")]
-    api::impl_fruit!(Banana);
-
     #[test]
     fn test_mixer_with_known_types() {
         let m = Mixer::new()
