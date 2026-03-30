@@ -86,6 +86,12 @@ FtStr ft_widget_name(FtWidget handle);
  */
 FtBytes ft_widget_data(FtWidget handle);
 /**
+ * Sum the bytes of a byte slice.
+ *
+ * @param data
+ */
+int32_t ft_widget_sum_bytes(FtWidget handle, FtBytes data);
+/**
  * Echo back the given string (zero-copy borrow passthrough).
  *
  * @param s
