@@ -454,8 +454,8 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let trait_name = format_ident!("Into{c_name_suffix}Handle");
                 let variant_impls: Vec<_> = variants
                     .iter()
-                    .map(|_| {
-                        let variant_struct = format_ident!("Vtable{c_name_suffix}");
+                    .map(|(variant_name, _)| {
+                        let variant_struct = format_ident!("{variant_name}");
                         quote! {
                             impl #trait_name for #variant_struct {
                                 fn into_raw_handle(self) -> *mut core::ffi::c_void {

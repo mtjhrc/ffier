@@ -7,6 +7,9 @@ ffier_test_lib::ffier_meta_op_view!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_pipeline!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_test_error!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_apple!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_orange!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
 
 fn main() {
     let header = ffier_gen_c::HeaderBuilder::new("FFIER_TEST_H")
@@ -19,6 +22,9 @@ fn main() {
         .add(ft_view__header())
         .add(ft_pipeline__header())
         .add(ft_vtable_processor__header())
+        .add(ft_apple__header())
+        .add(ft_orange__header())
+        .add(ft_mixer__header())
         .build();
     print!("{header}");
 }

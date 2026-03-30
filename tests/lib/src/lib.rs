@@ -430,3 +430,73 @@ impl Default for Pipeline {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Mixer — uses dyn_param with multiple CONCRETE types (not vtable)
+// Tests that ffier-gen-rust generates correct IntoXxxHandle impls for each.
+// ---------------------------------------------------------------------------
+
+pub struct Apple {
+    weight: i32,
+}
+
+#[ffier::exportable]
+impl Apple {
+    pub fn new(weight: i32) -> Self {
+        Apple { weight }
+    }
+}
+
+pub struct Orange {
+    juice: i32,
+}
+
+#[ffier::exportable]
+impl Orange {
+    pub fn new(juice: i32) -> Self {
+        Orange { juice }
+    }
+}
+
+pub trait Fruit {
+    fn value(&self) -> i32;
+}
+
+impl Fruit for Apple {
+    fn value(&self) -> i32 {
+        self.weight
+    }
+}
+
+impl Fruit for Orange {
+    fn value(&self) -> i32 {
+        self.juice
+    }
+}
+
+pub struct Mixer {
+    total: i32,
+}
+
+#[ffier::exportable]
+impl Mixer {
+    pub fn new() -> Self {
+        Mixer { total: 0 }
+    }
+
+    #[ffier(dyn_param(fruit, "Fruit", [Apple, Orange]))]
+    pub fn add(mut self, fruit: impl Fruit) -> Self {
+        self.total += fruit.value();
+        self
+    }
+
+    pub fn total(&self) -> i32 {
+        self.total
+    }
+}
+
+impl Default for Mixer {
+    fn default() -> Self {
+        Self::new()
+    }
+}

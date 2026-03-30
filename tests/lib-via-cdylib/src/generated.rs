@@ -40,6 +40,7 @@ unsafe extern "C" {
     fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: i32);
     fn ft_widget_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
     fn ft_widget_data(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    fn ft_widget_sum_bytes(handle: *mut core::ffi::c_void, data: ffier::FfierBytes) -> i32;
     fn ft_widget_echo(handle: *mut core::ffi::c_void, s: ffier::FfierBytes) -> ffier::FfierBytes;
     fn ft_widget_is_active(handle: *mut core::ffi::c_void) -> bool;
     fn ft_widget_negate(handle: *mut core::ffi::c_void, v: i64) -> i64;
@@ -135,6 +136,11 @@ impl Widget {
     pub fn data(&self) -> &[u8] {
         let __raw = unsafe { ft_widget_data(self.0) };
         unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
+    }
+    #[doc = " Sum the bytes of a byte slice."]
+    pub fn sum_bytes(&self, data: &[u8]) -> i32 {
+        let __raw = unsafe { ft_widget_sum_bytes(self.0, ffier::FfierBytes::from_bytes(data)) };
+        __raw
     }
     #[doc = " Echo back the given string (zero-copy borrow passthrough)."]
     pub fn echo(&self, s: &str) -> &str {
@@ -547,7 +553,7 @@ unsafe extern "C" {
     fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
     fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
 }
-pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<(&'a ())>);
 impl<'a> View<'a> {
     #[doc(hidden)]
     pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
@@ -690,4 +696,159 @@ impl VtableProcessor {
 }
 impl Drop for VtableProcessor {
     fn drop(&mut self) {}
+}
+unsafe extern "C" {
+    fn ft_apple_destroy(handle: *mut core::ffi::c_void);
+    fn ft_apple_new(weight: i32) -> *mut core::ffi::c_void;
+}
+pub struct Apple(*mut core::ffi::c_void);
+impl Apple {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiType for Apple {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &str = "";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Apple {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Apple").field(&self.0).finish()
+    }
+}
+impl Apple {
+    pub fn new(weight: i32) -> Apple {
+        let __raw = unsafe { ft_apple_new(weight) };
+        <Apple as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Apple {
+    fn drop(&mut self) {
+        unsafe { ft_apple_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    fn ft_orange_destroy(handle: *mut core::ffi::c_void);
+    fn ft_orange_new(juice: i32) -> *mut core::ffi::c_void;
+}
+pub struct Orange(*mut core::ffi::c_void);
+impl Orange {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiType for Orange {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &str = "";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Orange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Orange").field(&self.0).finish()
+    }
+}
+impl Orange {
+    pub fn new(juice: i32) -> Orange {
+        let __raw = unsafe { ft_orange_new(juice) };
+        <Orange as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Orange {
+    fn drop(&mut self) {
+        unsafe { ft_orange_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
+    fn ft_mixer_new() -> *mut core::ffi::c_void;
+    fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
+    fn ft_mixer_total(handle: *mut core::ffi::c_void) -> i32;
+}
+pub struct Mixer(*mut core::ffi::c_void);
+impl Mixer {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiType for Mixer {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &str = "";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Mixer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Mixer").field(&self.0).finish()
+    }
+}
+impl Mixer {
+    pub fn new() -> Mixer {
+        let __raw = unsafe { ft_mixer_new() };
+        <Mixer as ffier::FfiType>::from_c(__raw)
+    }
+    pub fn add(self, fruit: impl IntoFruitHandle) -> Self {
+        let mut __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
+        unsafe { ft_mixer_add(&mut __handle, fruit.into_raw_handle()) };
+        Self(__handle)
+    }
+    pub fn total(&self) -> i32 {
+        let __raw = unsafe { ft_mixer_total(self.0) };
+        __raw
+    }
+}
+impl Drop for Mixer {
+    fn drop(&mut self) {
+        unsafe { ft_mixer_destroy(self.0) }
+    }
+}
+pub trait IntoFruitHandle {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void;
+}
+impl IntoFruitHandle for Apple {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl IntoFruitHandle for Orange {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
