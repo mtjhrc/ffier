@@ -9,6 +9,7 @@ ffier_test_lib::ffier_meta_op_test_error!("ft", ffier_gen_c_macros::generate_bri
 ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_apple!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_orange!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_vtable_fruit!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
 
 #[cfg(test)]
@@ -567,6 +568,31 @@ mod tests {
             ft_pipeline_run(p, proc, 1);
             assert!(DROP_CALLED.load(Ordering::SeqCst));
             ft_pipeline_destroy(p);
+        }
+    }
+
+    // ================================================================
+    // Mixer with vtable fruit
+    // ================================================================
+
+    unsafe extern "C" fn fruit_value(self_data: *mut core::ffi::c_void) -> i32 {
+        self_data as i32
+    }
+
+    unsafe extern "C" fn fruit_drop(_self_data: *mut core::ffi::c_void) {}
+
+    #[test]
+    fn mixer_with_vtable_fruit() {
+        unsafe {
+            let mut m = ft_mixer_new();
+            let vtable = ffier_test_lib::FruitVtable {
+                value: fruit_value,
+                drop: Some(fruit_drop),
+            };
+            let fruit = ft_fruit_from_vtable(7 as *mut core::ffi::c_void, &vtable);
+            ft_mixer_add(&mut m, fruit);
+            assert_eq!(ft_mixer_total(m), 7);
+            ft_mixer_destroy(m);
         }
     }
 

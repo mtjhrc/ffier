@@ -356,9 +356,18 @@ void ft_apple_destroy(FtApple handle);
 FtOrange ft_orange_new(int32_t juice);
 void ft_orange_destroy(FtOrange handle);
 
+/* VtableFruit ------------------------------------------------------- */
+
+typedef struct {
+    int32_t (*value)(void* self_data);
+    void (*drop)(void* self_data);
+} FtFruitVtable;
+
+void* ft_fruit_from_vtable(void* user_data, const FtFruitVtable* vtable);
+
 /* Mixer ------------------------------------------------------------- */
 
-typedef void* FtFruit; /* FtApple | FtOrange */
+typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */
 FtMixer ft_mixer_new(void);
 void ft_mixer_add(FtMixer* handle, FtFruit fruit);
 int32_t ft_mixer_total(FtMixer handle);

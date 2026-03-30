@@ -9,6 +9,7 @@ ffier_test_lib::ffier_meta_op_test_error!("ft", ffier_gen_c_macros::generate_bri
 ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_apple!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_orange!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_vtable_fruit!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
 
 fn main() {
@@ -24,6 +25,7 @@ fn main() {
         .add(ft_vtable_processor__header())
         .add(ft_apple__header())
         .add(ft_orange__header())
+        .add(ft_vtable_fruit__header())
         .add(ft_mixer__header())
         .build();
     print!("{header}");
