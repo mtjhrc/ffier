@@ -1,0 +1,69 @@
+root := justfile_directory() / ".."
+
+# Run all tests
+default: check-header valgrind miri consumer
+    @echo ""
+    @echo "All checks passed!"
+
+# Build the test cdylib
+build:
+    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+
+# Generate the C header
+gen-header:
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-header > c/ffier_test.h
+
+# Generate Rust client bindings source
+gen-rust-client: build
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-rust-client | rustfmt > lib-via-cdylib/src/generated.rs
+
+# Update the expected header snapshot
+update-expected-header: gen-header
+    cp c/ffier_test.h expected_header.h
+
+# Update the generated client bindings
+update-generated-client: gen-rust-client
+
+# Check header matches expected (byte-for-byte)
+check-header: gen-header
+    diff expected_header.h c/ffier_test.h
+
+# Check generated client matches checked-in version
+check-generated-client: gen-rust-client
+    diff lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-rust-client 2>/dev/null | rustfmt)
+
+# Compile and run the C tests
+c: build gen-header
+    cc -Wall -Wextra -Werror -g -o c/test_main c/test_main.c \
+        -I c \
+        -L {{root}}/target/debug \
+        -lffier_test_cdylib \
+        -Wl,-rpath,{{root}}/target/debug
+    ./c/test_main
+
+# Run C tests under valgrind
+valgrind: c
+    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 \
+        ./c/test_main
+
+# Run Miri with Stacked Borrows (default model)
+miri-stacked:
+    cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+
+# Run Miri with Tree Borrows
+miri-tree:
+    MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+
+# Run Miri with both memory models
+miri: miri-stacked miri-tree
+
+# Test consumer crate with native Rust linking
+consumer-native: build
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-consumer --no-default-features --features native
+
+# Test consumer crate with C ABI dynamic linking
+consumer-cdylib: build
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-consumer --no-default-features --features via-cdylib
+
+# Test consumer crate in both linking modes
+consumer: consumer-native consumer-cdylib
