@@ -14,7 +14,7 @@ pub struct MyCalculator {
     label: String,
 }
 
-#[ffier::exportable(prefix = "ex")]
+#[ffier::exportable]
 impl MyCalculator {
     /// Create a new calculator.
     pub fn new() -> Self {
@@ -172,7 +172,7 @@ pub struct CalcResult {
     value: i32,
 }
 
-#[ffier::exportable(prefix = "ex")]
+#[ffier::exportable]
 impl CalcResult {
     /// Get the accumulated value.
     pub fn get(&self) -> i32 {

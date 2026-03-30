@@ -314,8 +314,8 @@ mod tests {
         DROP_CALLED.store(true, Ordering::SeqCst);
     }
 
-    fn make_vtable() -> FtProcessorVtable {
-        FtProcessorVtable {
+    fn make_vtable() -> ProcessorVtable {
+        ProcessorVtable {
             process: test_process,
             name: test_processor_name,
             on_notify: test_on_notify,

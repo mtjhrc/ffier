@@ -11,13 +11,13 @@ mod gen_client;
 mod meta;
 
 struct ReflectArgs {
-    prefix: Option<String>,
+    _prefix: Option<String>,
 }
 
 impl Parse for ReflectArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         if input.is_empty() {
-            return Ok(Self { prefix: None });
+            return Ok(Self { _prefix: None });
         }
         let ident: syn::Ident = input.parse()?;
         if ident != "prefix" {
@@ -26,7 +26,7 @@ impl Parse for ReflectArgs {
         input.parse::<Token![=]>()?;
         let lit: LitStr = input.parse()?;
         Ok(Self {
-            prefix: Some(lit.value()),
+            _prefix: Some(lit.value()),
         })
     }
 }
@@ -56,10 +56,8 @@ enum ParamKind {
 }
 
 struct DynParamConfig {
-    /// C type name suffix (e.g. "Device" → "{Prefix}Device" typedef)
-    c_name: String,
-    /// The type prefix (e.g. "Ft") — needed by client codegen for trait names
-    type_pfx: String,
+    /// C type name suffix (e.g. "Device") — generator prepends TypePfx
+    c_name_suffix: String,
     /// Concrete types to dispatch over, as token streams (cross-crate safe)
     variants: Vec<(String, proc_macro2::TokenStream)>, // (ident_name, tokens)
 }
@@ -83,7 +81,6 @@ enum ReturnKind {
 #[allow(dead_code)]
 struct MethodInfo {
     method_name: syn::Ident,
-    ffi_name: syn::Ident,
     ffi_name_str: String,
     has_receiver: bool,
     is_mut: bool,
@@ -173,7 +170,7 @@ fn classify_value(
 
 #[proc_macro_attribute]
 pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as ReflectArgs);
+    let _args = parse_macro_input!(attr as ReflectArgs);
     let input = parse_macro_input!(item as ItemImpl);
 
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
@@ -205,24 +202,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_lower = camel_to_snake(&struct_name);
 
-    let fn_pfx = args
-        .prefix
-        .as_ref()
-        .map(|p| format!("{p}_"))
-        .unwrap_or_default();
-    let type_pfx = args
-        .prefix
-        .as_ref()
-        .map(|p| snake_to_pascal(p))
-        .unwrap_or_default();
-    let upper_pfx = args
-        .prefix
-        .as_ref()
-        .map(|p| format!("{}_", p.to_ascii_uppercase()))
-        .unwrap_or_default();
-
-    let handle_c_name = format!("{type_pfx}{struct_name}");
-
     let _trait_path = input.trait_.as_ref().map(|(_, path, _)| path);
 
     let mut reexport_types: Vec<Type> = Vec::new();
@@ -231,15 +210,13 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let mut methods = Vec::new();
     let mut alias_counter = 0u32;
-    let mut uses_slices = false;
     let is_inherent = input.trait_.is_none();
     let mut warnings = Vec::new();
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
         let method_name = &method.sig.ident;
-        let ffi_name = format_ident!("{fn_pfx}{struct_lower}_{method_name}");
-        let ffi_name_str = ffi_name.to_string();
+        let ffi_name_str = format!("{struct_lower}_{method_name}");
 
         let self_arg = method.sig.inputs.first();
         let has_receiver = matches!(self_arg, Some(FnArg::Receiver(_)));
@@ -276,7 +253,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             &mut reexport_aliases,
             &mut alias_counter,
             &helper_mod_name,
-            &type_pfx,
         );
 
         let mut param_idents = Vec::new();
@@ -301,8 +277,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             // Check if this param has a dyn_param annotation
             if let Some(cfg) = dyn_params.iter().find(|d| d.0 == param_name) {
                 param_kinds.push(ParamKind::DynDispatch(DynParamConfig {
-                    c_name: cfg.1.clone(),
-                    type_pfx: type_pfx.clone(),
+                    c_name_suffix: cfg.1.clone(),
                     variants: cfg.2.clone(),
                 }));
                 continue;
@@ -312,10 +287,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let param_ty = replace_self_type(&pat_ty.ty, &self_ty_static);
 
             let kind = if is_str_slice(&param_ty) {
-                uses_slices = true;
                 ParamKind::StrSlice
             } else if let Some(sk) = classify_ref_type(&param_ty) {
-                uses_slices = true;
                 ParamKind::Slice(sk)
             } else if let Type::Reference(ref_ty) = &param_ty {
                 // &SomeType / &mut SomeType that isn't str/[u8]/Path → handle ref
@@ -391,9 +364,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                             &mut alias_counter,
                             &helper_mod_name,
                         );
-                        if matches!(vk, ValueKind::Slice(_)) {
-                            uses_slices = true;
-                        }
                         Some(vk)
                     };
                     ReturnKind::Result {
@@ -409,9 +379,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                         &mut alias_counter,
                         &helper_mod_name,
                     );
-                    if matches!(vk, ValueKind::Slice(_)) {
-                        uses_slices = true;
-                    }
                     ReturnKind::Value(vk)
                 }
             }
@@ -421,7 +388,6 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         methods.push(MethodInfo {
             method_name: method_name.clone(),
-            ffi_name,
             ffi_name_str,
             has_receiver,
             is_mut,
@@ -456,7 +422,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_{struct_lower}");
+    let meta_macro_name = format_ident!("ffier_meta_op_{struct_lower}");
 
     // Build method metadata tokens
     let method_meta_tokens: Vec<_> = methods.iter().map(|m| {
@@ -535,19 +501,20 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
-    let prefix_lit = &fn_pfx.trim_end_matches('_'); // "ft" not "ft_"
     let struct_path_tokens = quote! { $crate::#struct_ident };
+
+    let struct_name_lit = struct_name;
 
     let output = quote! {
         #impl_block
 
         impl ffier::FfiHandle for #self_ty_static {
-            const C_HANDLE_NAME: &str = #handle_c_name;
+            const C_HANDLE_NAME: &str = #struct_name_lit;
         }
 
         impl ffier::FfiType for #self_ty_static {
             type CRepr = *mut core::ffi::c_void;
-            const C_TYPE_NAME: &str = #handle_c_name;
+            const C_TYPE_NAME: &str = #struct_name_lit;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierTaggedBox {
                     type_id: core::any::TypeId::of::<Self>(),
@@ -576,23 +543,17 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         ///
         /// Usage:
         /// ```ignore
-        /// my_crate::__ffier_meta_widget!(ffier::generate_bridge);
-        /// my_crate::__ffier_meta_widget!(ffier::generate_client);
+        /// my_crate::ffier_meta_op_widget!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($callback:path) => {
+            ($prefix:literal, $callback:path) => {
                 $callback! {
                     @exportable,
                     name = #struct_ident,
                     struct_path = (#struct_path_tokens),
-                    prefix = #prefix_lit,
+                    prefix = $prefix,
                     lifetimes = (#(#lifetime_idents),*),
-                    handle_c_name = #handle_c_name,
-                    type_pfx = #type_pfx,
-                    fn_pfx = #fn_pfx,
-                    upper_pfx = #upper_pfx,
-                    uses_slices = #uses_slices,
                     type_aliases = [#(#alias_meta_tokens),*],
                     methods = [#(#method_meta_tokens),*],
                 }
@@ -726,22 +687,6 @@ fn replace_self_type(ty: &Type, replacement: &Type) -> Type {
     ty
 }
 
-fn snake_to_pascal(s: &str) -> String {
-    s.split('_')
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(first) => {
-                    let mut s = first.to_uppercase().to_string();
-                    s.extend(c);
-                    s
-                }
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
 const PRIMITIVES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
 ];
@@ -776,12 +721,6 @@ fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
-}
-
-/// Check if a token stream represents a primitive type (for metadata emission).
-fn is_primitive_tokens(ts: &proc_macro2::TokenStream) -> bool {
-    let s = ts.to_string();
-    PRIMITIVES.contains(&s.as_str())
 }
 
 /// Known fd type names that map to `FfiRepr::Other(i32)` instead of Handle.
@@ -892,19 +831,10 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     );
     let unknown_lit = proc_macro2::Literal::byte_string(unknown_msg.as_bytes());
 
-    // Generate a bridge macro for the error type's FFI helpers.
-    // The cdylib invokes this ONCE with the prefix to emit the no_mangle functions.
     let name_str = name.to_string();
     let err_snake = camel_to_snake(&name_str);
-    let err_snake_ident = format_ident!("{err_snake}");
-    let err_upper = camel_to_upper_snake(&name_str);
-    let err_upper_ident = format_ident!("{err_upper}");
-    let err_snake_msg_suffix = format!("_{err_snake}_message");
-    let err_snake_free_suffix = format!("_{err_snake}_free");
-    let bridge_macro_name = format_ident!("{err_snake}_error_ffier");
-    let client_error_macro_name = format_ident!("{err_snake}_ffi_client");
 
-    let meta_macro_name = format_ident!("__ffier_meta_{err_snake}");
+    let meta_macro_name = format_ident!("ffier_meta_op_{err_snake}");
 
     // Build variant metadata tokens
     let variant_meta_tokens: Vec<_> = data_enum.variants.iter().map(|variant| {
@@ -947,18 +877,16 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         ///
         /// Accepts a prefix and a callback:
         /// ```ignore
-        /// my_crate::__ffier_meta_test_error!("ft", ffier::generate_bridge);
+        /// my_crate::ffier_meta_op_test_error!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($fn_pfx:expr, $type_pfx:expr, $upper_pfx:expr, $callback:path) => {
+            ($prefix:literal, $callback:path) => {
                 $callback! {
                     @error,
                     name = #name,
                     path = (#error_path),
-                    fn_pfx = $fn_pfx,
-                    type_pfx = $type_pfx,
-                    upper_pfx = $upper_pfx,
+                    prefix = $prefix,
                     variants = [#(#variant_meta_tokens),*],
                 }
             };
@@ -1019,7 +947,6 @@ fn parse_dyn_param_attrs(
     reexport_aliases: &mut Vec<syn::Ident>,
     alias_counter: &mut u32,
     helper_mod: &syn::Ident,
-    type_pfx: &str,
 ) -> Vec<(String, String, Vec<(String, proc_macro2::TokenStream)>)> {
     let mut result = Vec::new();
 
@@ -1051,7 +978,7 @@ fn parse_dyn_param_attrs(
             let variant_types: syn::punctuated::Punctuated<Type, Token![,]> =
                 types_content.parse_terminated(Type::parse, Token![,])?;
 
-            let c_name = format!("{type_pfx}{}", c_name_lit.value());
+            let c_name = c_name_lit.value();
             let variants: Vec<_> = variant_types
                 .iter()
                 .map(|ty| {
@@ -1108,7 +1035,7 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 // ===========================================================================
 
 struct ImplementableArgs {
-    prefix: Option<String>,
+    _prefix: Option<String>,
     supers: Vec<SupertraitBlock>,
 }
 
@@ -1156,7 +1083,7 @@ impl Parse for ImplementableArgs {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { prefix, supers })
+        Ok(Self { _prefix: prefix, supers })
     }
 }
 
@@ -1340,23 +1267,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_name = &trait_item.ident;
     let trait_name_str = trait_name.to_string();
     let trait_snake = camel_to_snake(&trait_name_str);
-    let fn_pfx = args
-        .prefix
-        .as_ref()
-        .map(|p| format!("{p}_"))
-        .unwrap_or_default();
-    let type_pfx = args
-        .prefix
-        .as_ref()
-        .map(|p| snake_to_pascal(p))
-        .unwrap_or_default();
 
-    let vtable_c_name = format!("{type_pfx}{trait_name_str}Vtable");
+    let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
-    let wrapper_c_handle = format!("{type_pfx}Vtable{trait_name_str}");
-    let vtable_struct_name = format_ident!("{type_pfx}{trait_name_str}Vtable");
-    let constructor_name = format_ident!("{fn_pfx}{trait_snake}_from_vtable");
-    let constructor_name_str = constructor_name.to_string();
+    let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
 
     // Extract all methods (trait + supertraits)
     let vtable_methods = extract_vtable_methods(&trait_item, &args.supers);
@@ -1478,7 +1392,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Metadata emission ---
-    let meta_macro_name = format_ident!("__ffier_meta_vtable_{trait_snake}");
+    let meta_macro_name = format_ident!("ffier_meta_op_vtable_{trait_snake}");
 
     // Build vtable field metadata — currently no extra data fields are supported,
     // so this is always empty. Method function pointer fields are handled by
@@ -1511,7 +1425,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }).collect();
 
-    let prefix_str = args.prefix.as_deref().unwrap_or("");
     let trait_path_tokens = quote! { $crate::#trait_name };
 
     let output = quote! {
@@ -1543,12 +1456,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
 
         impl ffier::FfiHandle for #wrapper_name {
-            const C_HANDLE_NAME: &str = #wrapper_c_handle;
+            const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
         }
 
         impl ffier::FfiType for #wrapper_name {
             type CRepr = *mut core::ffi::c_void;
-            const C_TYPE_NAME: &str = #wrapper_c_handle;
+            const C_TYPE_NAME: &str = #wrapper_c_handle_suffix;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierTaggedBox {
                     type_id: core::any::TypeId::of::<Self>(),
@@ -1569,19 +1482,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// Metadata macro for this implementable trait.
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($callback:path) => {
+            ($prefix:literal, $callback:path) => {
                 $callback! {
                     @implementable,
                     trait_name = #trait_name,
                     trait_path = (#trait_path_tokens),
-                    prefix = #prefix_str,
-                    type_pfx = #type_pfx,
-                    fn_pfx = #fn_pfx,
+                    prefix = $prefix,
                     vtable_struct = ($crate::#vtable_struct_name),
-                    vtable_c_name = #vtable_c_name,
                     wrapper_name = ($crate::#wrapper_name),
-                    wrapper_c_handle = #wrapper_c_handle,
-                    constructor_name = #constructor_name_str,
                     vtable_fields = [#(#vtable_field_meta),*],
                     vtable_methods = [#(#vtable_method_meta),*],
                 }

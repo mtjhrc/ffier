@@ -56,17 +56,42 @@ pub fn generate_client_impl(input: TokenStream) -> TokenStream {
 /// Like `generate_client_impl`, but wraps the output in a `const` declaration
 /// containing the source code as a string literal.
 ///
-/// Emits: `const __FFIER_SRC_N: &str = "...";` where N is a counter.
-/// Use this in a binary that prints all the const values.
+/// Emits: `const FFIER_SRC_{TYPE_UPPER}: &str = "...";`
+/// The const name is derived from the type name in the metadata.
 pub fn generate_client_source_impl(input: TokenStream) -> TokenStream {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let const_name = format_ident!("__FFIER_SRC_{n}");
+    let tag = crate::gen_bridge::peek_meta_tag(&input);
+    let type_name = peek_meta_name(&input);
+    let upper_name = crate::camel_to_upper_snake(&type_name);
+    let const_name = if tag == "implementable" {
+        format_ident!("FFIER_SRC_VTABLE_{upper_name}")
+    } else {
+        format_ident!("FFIER_SRC_{upper_name}")
+    };
 
     let code = generate_client_impl(input);
     let source = code.to_string();
     quote! { const #const_name: &str = #source; }
+}
+
+/// Peek at the type/trait name from a metadata token stream.
+///
+/// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
+fn peek_meta_name(input: &TokenStream) -> String {
+    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
+    for i in 0..tokens.len().saturating_sub(2) {
+        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i] {
+            if id == "name" || id == "trait_name" {
+                if let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1] {
+                    if p.as_char() == '=' {
+                        if let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2] {
+                            return name.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    "Unknown".to_string()
 }
 
 // ===========================================================================
@@ -77,7 +102,8 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
     let struct_name = &meta.struct_name;
     let struct_name_str = struct_name.to_string();
     let struct_lower = crate::camel_to_snake(&struct_name_str);
-    let type_pfx = &meta.type_pfx;
+    let type_pfx = meta.type_pfx();
+    let fn_pfx = meta.fn_pfx();
 
     let has_lifetimes = !meta.lifetimes.is_empty();
 
@@ -138,7 +164,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
     };
 
     // Destroy function
-    let destroy_name_str = format!("{}{}_destroy", meta.fn_pfx, struct_lower);
+    let destroy_name_str = format!("{}{}_destroy", fn_pfx, struct_lower);
     let destroy_ident = format_ident!("{destroy_name_str}");
 
     let mut client_extern_decls = Vec::new();
@@ -151,7 +177,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
     });
 
     for m in &meta.methods {
-        let ffi_name = format_ident!("{}", m.ffi_name);
+        let ffi_name = format_ident!("{}{}", fn_pfx, m.ffi_name);
         let method_name = &m.name;
 
         let has_receiver = m.receiver != MetaReceiver::None;
@@ -236,10 +262,10 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
                         quote! { #id: #rust_type }
                     }
                     MetaParamKind::DynDispatch {
-                        c_name, type_pfx: dyn_type_pfx, ..
+                        c_name_suffix, ..
                     } => {
                         let trait_name =
-                            format_ident!("Into{}Handle", c_name.trim_start_matches(dyn_type_pfx));
+                            format_ident!("Into{c_name_suffix}Handle");
                         quote! { #id: impl #trait_name }
                     }
                     MetaParamKind::Regular { .. } => {
@@ -358,7 +384,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                type_pfx,
+                &type_pfx,
             )
         } else if is_by_value {
             // By-value self, non-builder
@@ -369,7 +395,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                type_pfx,
+                &type_pfx,
             );
             quote! {
                 let __handle = {
@@ -387,7 +413,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                type_pfx,
+                &type_pfx,
             )
         };
 
@@ -438,17 +464,15 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
         // Generate dyn_param traits
         for p in &m.params {
             if let MetaParamKind::DynDispatch {
-                c_name,
-                type_pfx: dyn_type_pfx,
+                c_name_suffix,
                 variants,
             } = &p.kind
             {
-                let trait_suffix = c_name.trim_start_matches(dyn_type_pfx);
-                let trait_name = format_ident!("Into{trait_suffix}Handle");
+                let trait_name = format_ident!("Into{c_name_suffix}Handle");
                 let variant_impls: Vec<_> = variants
                     .iter()
                     .map(|_| {
-                        let variant_struct = format_ident!("Vtable{trait_suffix}");
+                        let variant_struct = format_ident!("Vtable{c_name_suffix}");
                         quote! {
                             impl #trait_name for #variant_struct {
                                 fn into_raw_handle(self) -> *mut core::ffi::c_void {
@@ -583,7 +607,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream {
         .split("::").last().unwrap_or("VtableStruct").trim());
     let wrapper_name = format_ident!("{}", meta.wrapper_name.to_string()
         .split("::").last().unwrap_or("VtableWrapper").trim());
-    let constructor_name = format_ident!("{}", meta.constructor_name);
+    let constructor_name = format_ident!("{}", meta.constructor_name());
 
     // Vtable fields (user-defined fields)
     let vtable_field_defs: Vec<_> = meta

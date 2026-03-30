@@ -5,7 +5,7 @@
 //! these tokens back into the types defined here, then produce code.
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
@@ -17,13 +17,53 @@ pub struct MetaExportable {
     pub struct_path: TokenStream,
     pub prefix: String,
     pub lifetimes: Vec<Ident>,
-    pub handle_c_name: String,
-    pub type_pfx: String,
-    pub fn_pfx: String,
-    pub upper_pfx: String,
-    pub uses_slices: bool,
     pub type_aliases: Vec<(Ident, TokenStream)>,
     pub methods: Vec<MetaMethod>,
+}
+
+impl MetaExportable {
+    pub fn fn_pfx(&self) -> String {
+        format!("{}_", self.prefix)
+    }
+
+    pub fn type_pfx(&self) -> String {
+        snake_to_pascal(&self.prefix)
+    }
+
+    pub fn upper_pfx(&self) -> String {
+        format!("{}_", self.prefix.to_ascii_uppercase())
+    }
+
+    pub fn handle_c_name(&self) -> String {
+        format!("{}{}", self.type_pfx(), self.struct_name)
+    }
+
+    pub fn uses_slices(&self) -> bool {
+        self.methods.iter().any(|m| {
+            m.params.iter().any(|p| matches!(p.kind,
+                MetaParamKind::SliceStr | MetaParamKind::SliceBytes |
+                MetaParamKind::SlicePath | MetaParamKind::StrSlice))
+            || matches!(&m.ret,
+                MetaReturn::Value(MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath) |
+                MetaReturn::Result { ok: Some(MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath), .. })
+        })
+    }
+}
+
+pub fn snake_to_pascal(s: &str) -> String {
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(first) => {
+                    let mut s = first.to_uppercase().to_string();
+                    s.extend(c);
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
 }
 
 pub struct MetaMethod {
@@ -77,8 +117,7 @@ pub enum MetaParamKind {
         is_mut: bool,
     },
     DynDispatch {
-        c_name: String,
-        type_pfx: String,
+        c_name_suffix: String,
         variants: Vec<(String, TokenStream)>,
     },
 }
@@ -88,6 +127,7 @@ pub enum MetaReturn {
     Value(MetaValueKind),
     Result {
         ok: Option<MetaValueKind>,
+        #[allow(dead_code)]
         err_bridge_type: TokenStream,
         err_ident: String,
     },
@@ -110,10 +150,22 @@ pub enum MetaValueKind {
 pub struct MetaError {
     pub name: Ident,
     pub path: TokenStream,
-    pub fn_pfx: String,
-    pub type_pfx: String,
-    pub upper_pfx: String,
+    pub prefix: String,
     pub variants: Vec<MetaErrorVariant>,
+}
+
+impl MetaError {
+    pub fn fn_pfx(&self) -> String {
+        format!("{}_", self.prefix)
+    }
+
+    pub fn type_pfx(&self) -> String {
+        snake_to_pascal(&self.prefix)
+    }
+
+    pub fn upper_pfx(&self) -> String {
+        format!("{}_", self.prefix.to_ascii_uppercase())
+    }
 }
 
 pub struct MetaErrorVariant {
@@ -130,15 +182,28 @@ pub struct MetaImplementable {
     pub trait_name: Ident,
     pub trait_path: TokenStream,
     pub prefix: String,
-    pub type_pfx: String,
-    pub fn_pfx: String,
     pub vtable_struct_name: TokenStream,
-    pub vtable_c_name: String,
     pub wrapper_name: TokenStream,
-    pub wrapper_c_handle: String,
-    pub constructor_name: String,
     pub vtable_fields: Vec<MetaVtableField>,
     pub vtable_methods: Vec<MetaVtableMethod>,
+}
+
+impl MetaImplementable {
+    pub fn fn_pfx(&self) -> String {
+        format!("{}_", self.prefix)
+    }
+
+    pub fn type_pfx(&self) -> String {
+        snake_to_pascal(&self.prefix)
+    }
+
+    pub fn vtable_c_name(&self) -> String {
+        format!("{}{}Vtable", self.type_pfx(), self.trait_name)
+    }
+
+    pub fn constructor_name(&self) -> String {
+        format!("{}{}_from_vtable", self.fn_pfx(), crate::camel_to_snake(&self.trait_name.to_string()))
+    }
 }
 
 pub struct MetaVtableField {
@@ -152,6 +217,7 @@ pub struct MetaVtableMethod {
     pub ret: MetaVtableRetType,
 }
 
+#[allow(dead_code)]
 pub enum MetaVtableParamType {
     Primitive(TokenStream),
     Str,
@@ -160,6 +226,7 @@ pub enum MetaVtableParamType {
     Handle(TokenStream),
 }
 
+#[allow(dead_code)]
 pub enum MetaVtableRetType {
     Void,
     Primitive(TokenStream),
@@ -243,26 +310,6 @@ impl syn::parse::Parse for MetaExportable {
         };
         parse_comma(input)?;
 
-        expect_key(input, "handle_c_name")?;
-        let handle_c_name = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "type_pfx")?;
-        let type_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "fn_pfx")?;
-        let fn_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "upper_pfx")?;
-        let upper_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "uses_slices")?;
-        let uses_slices = parse_bool(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "type_aliases")?;
         let type_aliases = {
             let content;
@@ -303,11 +350,6 @@ impl syn::parse::Parse for MetaExportable {
             struct_path,
             prefix,
             lifetimes,
-            handle_c_name,
-            type_pfx,
-            fn_pfx,
-            upper_pfx,
-            uses_slices,
             type_aliases,
             methods,
         })
@@ -433,11 +475,8 @@ impl syn::parse::Parse for MetaParam {
             }
             "dyn_dispatch" => {
                 parse_comma(input)?;
-                expect_key(input, "c_name")?;
-                let c_name = parse_string(input)?;
-                parse_comma(input)?;
-                expect_key(input, "type_pfx")?;
-                let type_pfx = parse_string(input)?;
+                expect_key(input, "c_name_suffix")?;
+                let c_name_suffix = parse_string(input)?;
                 parse_comma(input)?;
                 expect_key(input, "variants")?;
                 let variants = {
@@ -457,7 +496,7 @@ impl syn::parse::Parse for MetaParam {
                     }
                     vs
                 };
-                MetaParamKind::DynDispatch { c_name, type_pfx, variants }
+                MetaParamKind::DynDispatch { c_name_suffix, variants }
             }
             other => return Err(syn::Error::new(kind_ident.span(), format!("unknown param kind `{other}`"))),
         };
@@ -563,16 +602,8 @@ impl syn::parse::Parse for MetaError {
         let path = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
-        expect_key(input, "fn_pfx")?;
-        let fn_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "type_pfx")?;
-        let type_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "upper_pfx")?;
-        let upper_pfx = parse_string(input)?;
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
         parse_comma(input)?;
 
         expect_key(input, "variants")?;
@@ -602,7 +633,7 @@ impl syn::parse::Parse for MetaError {
         };
         parse_comma(input)?;
 
-        Ok(MetaError { name, path, fn_pfx, type_pfx, upper_pfx, variants })
+        Ok(MetaError { name, path, prefix, variants })
     }
 }
 
@@ -631,32 +662,12 @@ impl syn::parse::Parse for MetaImplementable {
         let prefix = parse_string(input)?;
         parse_comma(input)?;
 
-        expect_key(input, "type_pfx")?;
-        let type_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "fn_pfx")?;
-        let fn_pfx = parse_string(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "vtable_struct")?;
         let vtable_struct_name = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
-        expect_key(input, "vtable_c_name")?;
-        let vtable_c_name = parse_string(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "wrapper_name")?;
         let wrapper_name = parse_parenthesized_tokens(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "wrapper_c_handle")?;
-        let wrapper_c_handle = parse_string(input)?;
-        parse_comma(input)?;
-
-        expect_key(input, "constructor_name")?;
-        let constructor_name = parse_string(input)?;
         parse_comma(input)?;
 
         expect_key(input, "vtable_fields")?;
@@ -728,13 +739,8 @@ impl syn::parse::Parse for MetaImplementable {
             trait_name,
             trait_path,
             prefix,
-            type_pfx,
-            fn_pfx,
             vtable_struct_name,
-            vtable_c_name,
             wrapper_name,
-            wrapper_c_handle,
-            constructor_name,
             vtable_fields,
             vtable_methods,
         })
@@ -828,12 +834,11 @@ pub fn emit_param_kind(k: &ParamKind) -> TokenStream {
             quote! { handle_ref, bridge_type = (#inner_ty), is_mut = #is_mut }
         }
         ParamKind::DynDispatch(cfg) => {
-            let c_name = &cfg.c_name;
-            let type_pfx = &cfg.type_pfx;
+            let c_name_suffix = &cfg.c_name_suffix;
             let variant_tokens: Vec<_> = cfg.variants.iter().map(|(name, ty)| {
                 quote! { (#name, #ty) }
             }).collect();
-            quote! { dyn_dispatch, c_name = #c_name, type_pfx = #type_pfx, variants = [#(#variant_tokens),*] }
+            quote! { dyn_dispatch, c_name_suffix = #c_name_suffix, variants = [#(#variant_tokens),*] }
         }
     }
 }
