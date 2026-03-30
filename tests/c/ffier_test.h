@@ -365,6 +365,14 @@ typedef struct {
 
 void* ft_fruit_from_vtable(void* user_data, const FtFruitVtable* vtable);
 
+/* Fruit for Apple --------------------------------------------------- */
+
+int32_t ft_apple_value(FtApple handle);
+
+/* Fruit for Orange -------------------------------------------------- */
+
+int32_t ft_orange_value(FtOrange handle);
+
 /* Mixer ------------------------------------------------------------- */
 
 typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */

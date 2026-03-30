@@ -295,6 +295,29 @@ pub enum MetaVtableRetType {
 }
 
 // ---------------------------------------------------------------------------
+// Trait impl metadata (impl Trait for Struct, exported via C ABI)
+// ---------------------------------------------------------------------------
+
+pub struct MetaTraitImpl {
+    pub trait_name: Ident,
+    pub struct_name: Ident,
+    pub struct_path: TokenStream,
+    pub trait_path: TokenStream,
+    pub prefix: String,
+    pub methods: Vec<MetaVtableMethod>,
+}
+
+impl MetaTraitImpl {
+    pub fn fn_pfx(&self) -> String {
+        format!("{}_", self.prefix)
+    }
+
+    pub fn type_pfx(&self) -> String {
+        snake_to_pascal(&self.prefix)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Parsing --- from token stream back to metadata types
 // ---------------------------------------------------------------------------
 
@@ -902,6 +925,96 @@ fn parse_vtable_ret_type(input: ParseStream) -> syn::Result<MetaVtableRetType> {
             kind.span(),
             format!("unknown vtable ret type `{other}`"),
         )),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trait impl metadata parsing
+// ---------------------------------------------------------------------------
+
+impl syn::parse::Parse for MetaTraitImpl {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let tag: Ident = input.parse()?;
+        if tag != "trait_impl" {
+            return Err(syn::Error::new(tag.span(), "expected `trait_impl`"));
+        }
+        parse_comma(input)?;
+
+        expect_key(input, "trait_name")?;
+        let trait_name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "struct_name")?;
+        let struct_name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "struct_path")?;
+        let struct_path = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "trait_path")?;
+        let trait_path = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "methods")?;
+        let methods = {
+            let content;
+            syn::bracketed!(content in input);
+            let mut ms = Vec::new();
+            while !content.is_empty() {
+                let inner;
+                syn::braced!(inner in content);
+                expect_key(&inner, "name")?;
+                let mname: Ident = inner.parse()?;
+                parse_comma(&inner)?;
+                expect_key(&inner, "params")?;
+                let params = {
+                    let pinner;
+                    syn::bracketed!(pinner in inner);
+                    let mut ps = Vec::new();
+                    while !pinner.is_empty() {
+                        let ppinner;
+                        syn::parenthesized!(ppinner in pinner);
+                        let pname: Ident = ppinner.parse()?;
+                        ppinner.parse::<Token![,]>()?;
+                        let ptype = parse_vtable_param_type(&ppinner)?;
+                        ps.push((pname, ptype));
+                        if !pinner.is_empty() && pinner.peek(Token![,]) {
+                            pinner.parse::<Token![,]>()?;
+                        }
+                    }
+                    ps
+                };
+                parse_comma(&inner)?;
+                expect_key(&inner, "ret")?;
+                let ret = parse_vtable_ret_type(&inner)?;
+                parse_comma(&inner)?;
+                ms.push(MetaVtableMethod {
+                    name: mname,
+                    params,
+                    ret,
+                });
+                if !content.is_empty() && content.peek(Token![,]) {
+                    content.parse::<Token![,]>()?;
+                }
+            }
+            ms
+        };
+        parse_comma(input)?;
+
+        Ok(MetaTraitImpl {
+            trait_name,
+            struct_name,
+            struct_path,
+            trait_path,
+            prefix,
+            methods,
+        })
     }
 }
 

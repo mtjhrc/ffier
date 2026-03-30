@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake, camel_to_upper_snake,
-    peek_meta_tag,
+    MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
+    camel_to_upper_snake, peek_meta_tag,
 };
 
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
@@ -45,9 +45,16 @@ pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
             };
             generate_implementable_bridge(meta)
         }
+        "trait_impl" => {
+            let meta: MetaTraitImpl = match syn::parse2(input) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            generate_trait_impl_bridge(meta)
+        }
         _ => {
             let msg = format!(
-                "unknown metadata tag `@{tag}`: expected @exportable, @error, or @implementable"
+                "unknown metadata tag `@{tag}`: expected @exportable, @error, @implementable, or @trait_impl"
             );
             quote! { compile_error!(#msg); }
         }
@@ -1324,5 +1331,192 @@ impl HeaderBuilder {
         out.push('\n');
         out.push_str(&format!("#endif /* {} */\n", self.guard));
         out
+    }
+}
+
+// ===========================================================================
+// Trait impl bridge generation
+// ===========================================================================
+
+fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
+    let struct_path = &meta.struct_path;
+    let trait_path = &meta.trait_path;
+    let fn_pfx = meta.fn_pfx();
+    let type_pfx = meta.type_pfx();
+    let struct_name_str = meta.struct_name.to_string();
+    let struct_snake = camel_to_snake(&struct_name_str);
+    let trait_name_str = meta.trait_name.to_string();
+    let trait_snake = camel_to_snake(&trait_name_str);
+
+    let header_fn_name = format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header");
+    let section_name = format!("{trait_name_str} for {struct_name_str}");
+
+    let mut bridge_fns = Vec::new();
+    let mut header_lines: Vec<TokenStream2> = Vec::new();
+
+    for m in &meta.methods {
+        let method_name = &m.name;
+        let ffi_name_str = format!("{fn_pfx}{struct_snake}_{method_name}");
+        let ffi_name = format_ident!("{ffi_name_str}");
+
+        // C params for the bridge function
+        let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
+        let mut call_args = Vec::new();
+
+        for (param_name, param_type) in &m.params {
+            let c_type = match param_type {
+                MetaVtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::CRepr },
+                MetaVtableParamType::Str
+                | MetaVtableParamType::Bytes
+                | MetaVtableParamType::Path => {
+                    quote! { ffier::FfierBytes }
+                }
+                MetaVtableParamType::Handle(_) => quote! { *mut core::ffi::c_void },
+            };
+            bridge_params.push(quote! { #param_name: #c_type });
+
+            let conversion = match param_type {
+                MetaVtableParamType::Primitive(ty) => {
+                    quote! { <#ty as ffier::FfiType>::from_c(#param_name) }
+                }
+                MetaVtableParamType::Str => {
+                    quote! { unsafe { #param_name.as_str_unchecked() } }
+                }
+                MetaVtableParamType::Bytes => {
+                    quote! { unsafe { #param_name.as_bytes() } }
+                }
+                MetaVtableParamType::Path => {
+                    quote! { unsafe { #param_name.as_path() } }
+                }
+                MetaVtableParamType::Handle(ty) => {
+                    quote! { <#ty as ffier::FfiType>::from_c(#param_name) }
+                }
+            };
+            call_args.push(conversion);
+        }
+
+        // Return type
+        let (ret_type, ret_conversion) = match &m.ret {
+            MetaVtableRetType::Void => (quote! {}, quote! { call_result }),
+            MetaVtableRetType::Primitive(ty) => (
+                quote! { -> <#ty as ffier::FfiType>::CRepr },
+                quote! { <#ty as ffier::FfiType>::into_c(call_result) },
+            ),
+            MetaVtableRetType::Str => (
+                quote! { -> ffier::FfierBytes },
+                quote! { ffier::FfierBytes::from_str(call_result) },
+            ),
+            MetaVtableRetType::Bytes => (
+                quote! { -> ffier::FfierBytes },
+                quote! { ffier::FfierBytes::from_bytes(call_result) },
+            ),
+            MetaVtableRetType::Path => (
+                quote! { -> ffier::FfierBytes },
+                quote! { ffier::FfierBytes::from_path(call_result) },
+            ),
+            MetaVtableRetType::Handle(ty) => (
+                quote! { -> *mut core::ffi::c_void },
+                quote! { <#ty as ffier::FfiType>::into_c(call_result) },
+            ),
+        };
+
+        bridge_fns.push(quote! {
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+                let obj = unsafe { &(*(handle as *const ffier::FfierTaggedBox<#struct_path>)).value };
+                let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
+                #ret_conversion
+            }
+        });
+
+        // Header line
+        let param_c_types: Vec<_> = m
+            .params
+            .iter()
+            .map(|(id, vpt)| {
+                let id_str = id.to_string();
+                let type_expr = match vpt {
+                    MetaVtableParamType::Primitive(ty) => {
+                        quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+                    }
+                    MetaVtableParamType::Str => {
+                        let n = format!("{type_pfx}Str");
+                        quote! { #n }
+                    }
+                    MetaVtableParamType::Bytes => {
+                        let n = format!("{type_pfx}Bytes");
+                        quote! { #n }
+                    }
+                    MetaVtableParamType::Path => {
+                        let n = format!("{type_pfx}Path");
+                        quote! { #n }
+                    }
+                    MetaVtableParamType::Handle(_) => quote! { "void*" },
+                };
+                (id_str, type_expr)
+            })
+            .collect();
+
+        let ret_c_expr = match &m.ret {
+            MetaVtableRetType::Void => quote! { "void" },
+            MetaVtableRetType::Primitive(ty) => {
+                quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+            }
+            MetaVtableRetType::Str => {
+                let n = format!("{type_pfx}Str");
+                quote! { #n }
+            }
+            MetaVtableRetType::Bytes => {
+                let n = format!("{type_pfx}Bytes");
+                quote! { #n }
+            }
+            MetaVtableRetType::Path => {
+                let n = format!("{type_pfx}Path");
+                quote! { #n }
+            }
+            MetaVtableRetType::Handle(_) => quote! { "void*" },
+        };
+
+        let handle_c_name = format!("{type_pfx}{struct_name_str}");
+        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
+        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
+
+        header_lines.push(quote! {{
+            let mut s = String::new();
+            s.push_str(#ret_c_expr);
+            s.push(' ');
+            s.push_str(#ffi_name_str);
+            s.push('(');
+            s.push_str(#handle_c_name);
+            s.push_str(" handle");
+            let param_types: &[&str] = &[#(#param_type_exprs),*];
+            let param_names: &[&str] = &[#(#param_id_strs),*];
+            for (t, n) in param_types.iter().zip(param_names.iter()) {
+                s.push_str(", ");
+                s.push_str(t);
+                s.push(' ');
+                s.push_str(n);
+            }
+            s.push_str(");");
+            s
+        }});
+    }
+
+    let num_header_lines = header_lines.len();
+
+    quote! {
+        #(#bridge_fns)*
+
+        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+            let decl_lines: [String; #num_header_lines] = [
+                #(#header_lines .to_string()),*
+            ];
+            ffier_gen_c::HeaderSection {
+                struct_name: #section_name.to_string(),
+                handle_typedef: String::new(),
+                shared_types: String::new(),
+                declarations: decl_lines.join("\n"),
+            }
+        }
     }
 }

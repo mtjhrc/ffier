@@ -669,11 +669,10 @@ impl Drop for Pipeline {
 pub trait IntoProcessorHandle {
     fn into_raw_handle(self) -> *mut core::ffi::c_void;
 }
-impl IntoProcessorHandle for VtableProcessor {
-    fn into_raw_handle(self) -> *mut core::ffi::c_void {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.0
-    }
+pub trait Processor {
+    fn process(&self, input: i32) -> i32;
+    fn name(&self) -> &str;
+    fn on_notify(&self, code: i32);
 }
 #[repr(C)]
 pub struct ProcessorVtable {
@@ -693,9 +692,70 @@ impl VtableProcessor {
     pub fn new(user_data: *mut core::ffi::c_void, vtable: &ProcessorVtable) -> Self {
         Self(unsafe { ft_processor_from_vtable(user_data, vtable) })
     }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 impl Drop for VtableProcessor {
     fn drop(&mut self) {}
+}
+#[doc = r" Implement `IntoXxxHandle` for a user-defined type via static vtable."]
+#[doc = r""]
+#[doc = r" The type must implement the trait. A global `static` vtable is"]
+#[doc = r" generated with const trampoline function pointers — zero runtime cost."]
+#[macro_export]
+#[allow(unused_macros)]
+macro_rules! impl_processor {
+    ($ty : ty) => {
+        const _: () = {
+            use $crate::Processor;
+            static __VTABLE: $crate::ProcessorVtable = $crate::ProcessorVtable {
+                process: {
+                    unsafe extern "C" fn __trampoline(
+                        __ud: *mut core::ffi::c_void,
+                        input: i32,
+                    ) -> i32 {
+                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __result = __obj.process(input);
+                        __result
+                    }
+                    __trampoline
+                },
+                name: {
+                    unsafe extern "C" fn __trampoline(
+                        __ud: *mut core::ffi::c_void,
+                    ) -> ffier::FfierBytes {
+                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __result = __obj.name();
+                        ffier::FfierBytes::from_str(__result)
+                    }
+                    __trampoline
+                },
+                on_notify: {
+                    unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void, code: i32) {
+                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __result = __obj.on_notify(code);
+                        __result
+                    }
+                    __trampoline
+                },
+                drop: Some({
+                    unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void) {
+                        unsafe { drop(Box::from_raw(__ud as *mut $ty)) };
+                    }
+                    __trampoline
+                }),
+            };
+            impl $crate::IntoProcessorHandle for $ty {
+                fn into_raw_handle(self) -> *mut core::ffi::c_void {
+                    let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
+                    $crate::VtableProcessor::new(__ud, &__VTABLE).__into_raw()
+                }
+            }
+        };
+    };
 }
 unsafe extern "C" {
     fn ft_apple_destroy(handle: *mut core::ffi::c_void);
@@ -781,6 +841,9 @@ impl Drop for Orange {
         unsafe { ft_orange_destroy(self.0) }
     }
 }
+pub trait Fruit {
+    fn value(&self) -> i32;
+}
 #[repr(C)]
 pub struct FruitVtable {
     pub value: unsafe extern "C" fn(*mut core::ffi::c_void) -> i32,
@@ -797,9 +860,79 @@ impl VtableFruit {
     pub fn new(user_data: *mut core::ffi::c_void, vtable: &FruitVtable) -> Self {
         Self(unsafe { ft_fruit_from_vtable(user_data, vtable) })
     }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 impl Drop for VtableFruit {
     fn drop(&mut self) {}
+}
+#[doc = r" Implement `IntoXxxHandle` for a user-defined type via static vtable."]
+#[doc = r""]
+#[doc = r" The type must implement the trait. A global `static` vtable is"]
+#[doc = r" generated with const trampoline function pointers — zero runtime cost."]
+#[macro_export]
+#[allow(unused_macros)]
+macro_rules! impl_fruit {
+    ($ty : ty) => {
+        const _: () = {
+            use $crate::Fruit;
+            static __VTABLE: $crate::FruitVtable = $crate::FruitVtable {
+                value: {
+                    unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void) -> i32 {
+                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __result = __obj.value();
+                        __result
+                    }
+                    __trampoline
+                },
+                drop: Some({
+                    unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void) {
+                        unsafe { drop(Box::from_raw(__ud as *mut $ty)) };
+                    }
+                    __trampoline
+                }),
+            };
+            impl $crate::IntoFruitHandle for $ty {
+                fn into_raw_handle(self) -> *mut core::ffi::c_void {
+                    let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
+                    $crate::VtableFruit::new(__ud, &__VTABLE).__into_raw()
+                }
+            }
+        };
+    };
+}
+unsafe extern "C" {
+    fn ft_apple_value(handle: *mut core::ffi::c_void) -> i32;
+}
+impl Fruit for Apple {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_apple_value(self.0) };
+        __raw
+    }
+}
+impl IntoFruitHandle for Apple {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    fn ft_orange_value(handle: *mut core::ffi::c_void) -> i32;
+}
+impl Fruit for Orange {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_orange_value(self.0) };
+        __raw
+    }
+}
+impl IntoFruitHandle for Orange {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 unsafe extern "C" {
     fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
@@ -859,22 +992,4 @@ impl Drop for Mixer {
 }
 pub trait IntoFruitHandle {
     fn into_raw_handle(self) -> *mut core::ffi::c_void;
-}
-impl IntoFruitHandle for Apple {
-    fn into_raw_handle(self) -> *mut core::ffi::c_void {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.0
-    }
-}
-impl IntoFruitHandle for Orange {
-    fn into_raw_handle(self) -> *mut core::ffi::c_void {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.0
-    }
-}
-impl IntoFruitHandle for VtableFruit {
-    fn into_raw_handle(self) -> *mut core::ffi::c_void {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.0
-    }
 }
