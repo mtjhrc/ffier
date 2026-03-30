@@ -80,6 +80,16 @@ See [`example/`](example/) for the full runnable example including a text buffer
 with file descriptors, generated Rust client bindings, and a swappable Rust
 consumer that works with both linking modes.
 
+## TODO
+
+1. Reconsider the metadata structure and how `ffier-annotations` presents
+   metadata to the generators
+2. Avoid requiring the user to specify the library prefix multiple times
+   (currently repeated for each type in each generator invocation)
+3. Automate the boilerplate further — is it avoidable for the user to list
+   every exported type? If unavoidable, at least ensure it only needs to be
+   done once, not separately for each generator (gen-c, gen-rust, gen-header)
+
 ## Running tests
 
 ```bash
