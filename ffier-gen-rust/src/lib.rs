@@ -14,13 +14,7 @@ use ffier_meta::{
     camel_to_snake, camel_to_upper_snake, peek_meta_tag,
 };
 
-/// Generates safe Rust client wrappers from ffier metadata.
-#[proc_macro]
-pub fn generate_client(input: TokenStream) -> TokenStream {
-    generate_client_impl(input.into()).into()
-}
-
-/// Like `generate_client`, but outputs the source code as a `&str` literal.
+/// Generates Rust client source code as a named `&str` constant.
 #[proc_macro]
 pub fn generate_client_source(input: TokenStream) -> TokenStream {
     generate_client_source_impl(input.into()).into()
