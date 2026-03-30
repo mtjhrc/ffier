@@ -1,6 +1,6 @@
 /target
 example/c/main
-example/c/mycalculator.h
+example/c/mylib.h
 example-krun/c/main
 example-krun/c/krun.h
 tests/c/test_main
