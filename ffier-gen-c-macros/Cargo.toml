@@ -1,5 +1,5 @@
 [package]
-name = "ffier-gen-rust"
+name = "ffier-gen-c-macros"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,8 +7,4 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-ffier-meta = { path = "../ffier-meta" }
 ffier-gen-c = { path = "../ffier-gen-c" }
-syn = "2"
-quote = "1"
-proc-macro2 = "1"

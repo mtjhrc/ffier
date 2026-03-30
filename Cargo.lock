@@ -31,9 +31,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-gen-c-macros"
+version = "0.1.0"
+dependencies = [
+ "ffier-gen-c",
+]
+
+[[package]]
 name = "ffier-gen-rust"
 version = "0.1.0"
 dependencies = [
+ "ffier-gen-c",
  "ffier-meta",
  "proc-macro2",
  "quote",
@@ -62,6 +70,7 @@ version = "0.1.0"
 dependencies = [
  "ffier",
  "ffier-gen-c",
+ "ffier-gen-c-macros",
  "ffier-gen-rust",
  "ffier-test-lib",
 ]
@@ -101,6 +110,7 @@ version = "0.1.0"
 dependencies = [
  "ffier",
  "ffier-gen-c",
+ "ffier-gen-c-macros",
  "ffier-gen-rust",
  "mylib",
 ]

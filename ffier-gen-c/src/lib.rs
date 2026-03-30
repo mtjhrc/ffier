@@ -4,7 +4,6 @@
 //! `@error`, or `@implementable`) and produces the corresponding `extern "C"` FFI
 //! functions plus a `__header()` function returning a `HeaderSection`.
 
-use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
@@ -14,19 +13,13 @@ use ffier_meta::{
     camel_to_snake, camel_to_upper_snake, peek_meta_tag,
 };
 
-/// Generates C FFI bridge functions from ffier metadata.
-#[proc_macro]
-pub fn generate_bridge(input: TokenStream) -> TokenStream {
-    generate_bridge_impl(input.into()).into()
-}
-
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
 ///
 /// The input token stream must start with one of:
 /// - `@exportable, ...` --- generates method FFI functions, destroy, and header
 /// - `@error, ...` --- generates error message/free helpers and header
 /// - `@implementable, ...` --- generates vtable constructor and header
-fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
+pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
     // Peek at the tag to decide which parser to use.
     let tag = peek_meta_tag(&input);
 
@@ -555,7 +548,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
     quote! {
         #(#ffi_fns)*
 
-        pub fn #header_fn_name() -> ffier::HeaderSection {
+        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
             let handle_typedef = #handle_typedef_expr .to_string();
             let shared_lines: [String; #num_shared] = [
                 #(#shared_types_exprs .to_string()),*
@@ -565,7 +558,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                 #(#decl_exprs .to_string()),*
             ];
             let declarations = decl_lines.join("\n");
-            ffier::HeaderSection {
+            ffier_gen_c::HeaderSection {
                 struct_name: #struct_name.to_string(),
                 handle_typedef,
                 shared_types,
@@ -617,7 +610,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
             unsafe { (*err).free() };
         }
 
-        pub fn #header_fn_name() -> ffier::HeaderSection {
+        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
             let err_c_name = #err_c_name;
             let message_fn_str = #message_fn_str;
             let free_fn_str = #free_fn_str;
@@ -644,7 +637,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
                 free_fn_str, err_c_name
             ));
 
-            ffier::HeaderSection {
+            ffier_gen_c::HeaderSection {
                 struct_name: #name_str.to_string(),
                 handle_typedef: String::new(),
                 shared_types: String::new(),
@@ -777,12 +770,12 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             <#wrapper_name as ffier::FfiType>::into_c(wrapper)
         }
 
-        pub fn #header_fn_name() -> ffier::HeaderSection {
+        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
             let decl_lines: [String; #num_header_lines] = [
                 #(#header_lines .to_string()),*
             ];
             let declarations = decl_lines.join("\n");
-            ffier::HeaderSection {
+            ffier_gen_c::HeaderSection {
                 struct_name: #vtable_section_name.to_string(),
                 handle_typedef: String::new(),
                 shared_types: String::new(),
@@ -1150,4 +1143,96 @@ fn build_doxygen_comment(
 
     out.push_str(" */");
     Some(out)
+}
+
+// ===========================================================================
+// HeaderSection / HeaderBuilder --- structured C header generation
+// ===========================================================================
+
+pub struct HeaderSection {
+    pub struct_name: String,
+    pub handle_typedef: String,
+    pub shared_types: String,
+    pub declarations: String,
+}
+
+pub struct HeaderBuilder {
+    guard: String,
+    sections: Vec<HeaderSection>,
+}
+
+// TODO: HeaderBuilder should accept the prefix (e.g. "krun") instead of a raw guard string,
+// and derive the header guard, handle typedefs, shared type names, and macro names from it.
+// The prefix should only be specified here, not duplicated in each #[ffier::exportable(prefix = "krun")].
+
+impl HeaderBuilder {
+    pub fn new(guard: &str) -> Self {
+        Self {
+            guard: guard.to_string(),
+            sections: Vec::new(),
+        }
+    }
+
+    pub fn add(mut self, section: HeaderSection) -> Self {
+        self.sections.push(section);
+        self
+    }
+
+    pub fn build(&self) -> String {
+        let mut out = String::new();
+
+        out.push_str(&format!("#ifndef {}\n", self.guard));
+        out.push_str(&format!("#define {}\n", self.guard));
+        out.push('\n');
+        out.push_str("#include <stdint.h>\n");
+        out.push_str("#include <stdbool.h>\n");
+        out.push_str("#include <string.h>\n");
+        out.push('\n');
+
+        // Collect all handle typedefs
+        let mut has_handle = false;
+        for section in &self.sections {
+            if !section.handle_typedef.is_empty() {
+                out.push_str(&section.handle_typedef);
+                out.push('\n');
+                has_handle = true;
+            }
+        }
+        if has_handle {
+            out.push('\n');
+        }
+
+        // Emit shared types from the first section that has them
+        for section in &self.sections {
+            if !section.shared_types.is_empty() {
+                out.push_str(&section.shared_types);
+                out.push('\n');
+                break;
+            }
+        }
+
+        out.push_str("/* Header auto-generated by ffier */\n");
+
+        // Per-section declarations
+        for section in &self.sections {
+            if !section.declarations.is_empty() {
+                // Ensure blank line before section comment
+                if !out.ends_with("\n\n") {
+                    if out.ends_with('\n') {
+                        out.push('\n');
+                    } else {
+                        out.push_str("\n\n");
+                    }
+                }
+                let name = &section.struct_name;
+                let dashes = "-".repeat(72 - 6 - name.len()); // 72 cols total
+                out.push_str(&format!("/* {name} {dashes} */\n\n"));
+                out.push_str(&section.declarations);
+            }
+        }
+
+        out.push('\n');
+        out.push_str(&format!("#endif /* {} */\n", self.guard));
+        out
+    }
 }
