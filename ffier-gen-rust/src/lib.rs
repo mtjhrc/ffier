@@ -197,7 +197,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
 
     let mut client_extern_decls = Vec::new();
     let mut client_methods = Vec::new();
-    let mut client_dyn_traits: Vec<TokenStream2> = Vec::new();
 
     // Destroy extern decl
     client_extern_decls.push(quote! {
@@ -281,7 +280,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                         quote! { #id: #rust_type }
                     }
                     MetaParamKind::DynDispatch { c_name_suffix, .. } => {
-                        let trait_name = format_ident!("Into{c_name_suffix}Handle");
+                        let trait_name = format_ident!("{c_name_suffix}");
                         quote! { #id: impl #trait_name }
                     }
                     MetaParamKind::Regular { .. } => {
@@ -310,7 +309,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     }
                     MetaParamKind::HandleRef { .. } => quote! { #id.0 },
                     MetaParamKind::DynDispatch { .. } => {
-                        quote! { #id.into_raw_handle() }
+                        quote! { #id.__into_raw_handle() }
                     }
                     MetaParamKind::Regular { repr, .. } => match repr {
                         FfiRepr::Primitive => quote! { #id },
@@ -470,19 +469,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 #wrapper_body
             }
         });
-
-        // Generate dyn_param trait definition only.
-        // Per-variant impls come from @trait_impl (known types) or impl_xxx! macro (user types).
-        for p in &m.params {
-            if let MetaParamKind::DynDispatch { c_name_suffix, .. } = &p.kind {
-                let trait_name = format_ident!("Into{c_name_suffix}Handle");
-                client_dyn_traits.push(quote! {
-                    pub trait #trait_name {
-                        fn into_raw_handle(self) -> *mut core::ffi::c_void;
-                    }
-                });
-            }
-        }
     }
 
     quote! {
@@ -526,7 +512,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             }
         }
 
-        #(#client_dyn_traits)*
     }
 }
 
@@ -667,11 +652,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
-    // Generate impl_traitname! macro with trampolines
-    let macro_name = format_ident!("impl_{}", camel_to_snake(&trait_name.to_string()));
-    let into_handle_trait = format_ident!("Into{}Handle", trait_name);
-
-    // Build vtable field initializers with trampolines for the macro
+    // Build vtable field initializers with const-promoted trampolines for the default method
     let vtable_trampoline_fields: Vec<_> = meta
         .vtable_methods
         .iter()
@@ -691,14 +672,12 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             let arg_conversions: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    match vpt {
-                        MetaVtableParamType::Primitive(_) => quote! { #id },
-                        MetaVtableParamType::Str => quote! { unsafe { #id.as_str_unchecked() } },
-                        MetaVtableParamType::Bytes => quote! { unsafe { #id.as_bytes() } },
-                        MetaVtableParamType::Path => quote! { unsafe { #id.as_path() } },
-                        MetaVtableParamType::Handle(_) => quote! { #id }, // TODO: handle conversion
-                    }
+                .map(|(id, vpt)| match vpt {
+                    MetaVtableParamType::Primitive(_) => quote! { #id },
+                    MetaVtableParamType::Str => quote! { unsafe { #id.as_str_unchecked() } },
+                    MetaVtableParamType::Bytes => quote! { unsafe { #id.as_bytes() } },
+                    MetaVtableParamType::Path => quote! { unsafe { #id.as_path() } },
+                    MetaVtableParamType::Handle(_) => quote! { #id },
                 })
                 .collect();
 
@@ -709,20 +688,20 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 MetaVtableRetType::Str => quote! { ffier::FfierBytes::from_str(__result) },
                 MetaVtableRetType::Bytes => quote! { ffier::FfierBytes::from_bytes(__result) },
                 MetaVtableRetType::Path => quote! { ffier::FfierBytes::from_path(__result) },
-                MetaVtableRetType::Handle(_) => quote! { __result }, // TODO
+                MetaVtableRetType::Handle(_) => quote! { __result },
             };
 
             quote! {
                 #mname: {
-                    unsafe extern "C" fn __trampoline(
+                    unsafe extern "C" fn __trampoline<__T: #trait_name>(
                         __ud: *mut core::ffi::c_void
                         #(, #params)*
                     ) #ret {
-                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __obj = unsafe { &*(__ud as *const __T) };
                         let __result = __obj.#mname(#(#arg_conversions),*);
                         #ret_conversion
                     }
-                    __trampoline
+                    __trampoline::<Self>
                 }
             }
         })
@@ -731,6 +710,28 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     quote! {
         pub trait #trait_name {
             #(#trait_method_sigs)*
+
+            /// Convert this value into an opaque FFI handle via vtable dispatch.
+            ///
+            /// Known types (with `#[ffier::trait_impl]`) override this with
+            /// direct handle passthrough. User types get the default
+            /// implementation which builds a const-promoted static vtable.
+            #[doc(hidden)]
+            fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
+                let __vtable: &'static #vtable_struct_name = &#vtable_struct_name {
+                    #(#vtable_trampoline_fields,)*
+                    drop: Some({
+                        unsafe extern "C" fn __trampoline<__T>(
+                            __ud: *mut core::ffi::c_void,
+                        ) {
+                            unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                        }
+                        __trampoline::<Self>
+                    }),
+                };
+                let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
+                #wrapper_name::new(__ud, __vtable).__into_raw()
+            }
         }
 
         #[repr(C)]
@@ -765,36 +766,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             fn drop(&mut self) {
                 // vtable handles are consumed by dyn_param methods, no separate destroy
             }
-        }
-
-        /// Implement `IntoXxxHandle` for a user-defined type via static vtable.
-        ///
-        /// The type must implement the trait. A global `static` vtable is
-        /// generated with const trampoline function pointers — zero runtime cost.
-        #[macro_export]
-        #[allow(unused_macros)]
-        macro_rules! #macro_name {
-            ($ty:ty) => {
-                const _: () = {
-                    use $crate::#trait_name;
-                    static __VTABLE: $crate::#vtable_struct_name = $crate::#vtable_struct_name {
-                        #(#vtable_trampoline_fields,)*
-                        drop: Some({
-                            unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void) {
-                                unsafe { drop(Box::from_raw(__ud as *mut $ty)) };
-                            }
-                            __trampoline
-                        }),
-                    };
-
-                    impl $crate::#into_handle_trait for $ty {
-                        fn into_raw_handle(self) -> *mut core::ffi::c_void {
-                            let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
-                            $crate::#wrapper_name::new(__ud, &__VTABLE).__into_raw()
-                        }
-                    }
-                };
-            };
         }
     }
 }
@@ -1024,8 +995,6 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
     let struct_name = &meta.struct_name;
     let fn_pfx = meta.fn_pfx();
     let struct_snake = camel_to_snake(&struct_name.to_string());
-    let into_handle_trait = format_ident!("Into{}Handle", trait_name);
-
     // Extern declarations for trait method C functions
     let extern_decls: Vec<_> = meta
         .methods
@@ -1117,10 +1086,8 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
 
         impl #trait_name for #struct_name {
             #(#trait_method_impls)*
-        }
 
-        impl #into_handle_trait for #struct_name {
-            fn into_raw_handle(self) -> *mut core::ffi::c_void {
+            fn __into_raw_handle(self) -> *mut core::ffi::c_void {
                 let this = std::mem::ManuallyDrop::new(self);
                 this.0
             }
