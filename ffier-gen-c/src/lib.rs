@@ -116,6 +116,12 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         shared_types_exprs.push(quote! {
             concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
         });
+        // BYTES macro: GNU C (GCC + Clang) gets a statement-expression with a
+        // static assert that rejects pointers. Other compilers get a plain
+        // version that works correctly but won't catch accidental pointer args.
+        shared_types_exprs.push(quote! {
+            concat!("#if defined(__GNUC__)")
+        });
         shared_types_exprs.push(quote! {
             concat!(
                 "#define ", #bytes_macro_name, "(arr) ({ \\")
@@ -137,6 +143,16 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                 "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\")
         });
         shared_types_exprs.push(quote! { "})" });
+        shared_types_exprs.push(quote! { "#else" });
+        shared_types_exprs.push(quote! {
+            concat!(
+                "#define ", #bytes_macro_name, "(arr) \\")
+        });
+        shared_types_exprs.push(quote! {
+            concat!(
+                "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })")
+        });
+        shared_types_exprs.push(quote! { "#endif" });
     }
 
     // Generate typedefs for dyn_param dispatch types
