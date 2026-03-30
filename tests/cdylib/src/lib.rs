@@ -14,6 +14,34 @@ ffier_test_lib::ffier_meta_op_fruit_for_apple!("ft", ffier_gen_c_macros::generat
 ffier_test_lib::ffier_meta_op_fruit_for_orange!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
 
+// ---------------------------------------------------------------------------
+// Manual bridge function — peeks at a handle's TypeId to verify dispatch path.
+// Also demonstrates that hand-written bridge functions work alongside generated ones.
+// ---------------------------------------------------------------------------
+
+/// Returns the concrete type name inside the handle ("Apple", "Orange",
+/// "VtableFruit", or "unknown"). Consumes and destroys the handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
+    handle: *mut core::ffi::c_void,
+) -> ffier::FfierBytes {
+    use ffier::FfiType;
+    let type_id = unsafe { ffier::handle_type_id(handle) };
+    let name = if type_id == core::any::TypeId::of::<ffier_test_lib::VtableFruit>() {
+        drop(<ffier_test_lib::VtableFruit as FfiType>::from_c(handle));
+        "VtableFruit"
+    } else if type_id == core::any::TypeId::of::<ffier_test_lib::Apple>() {
+        drop(<ffier_test_lib::Apple as FfiType>::from_c(handle));
+        "Apple"
+    } else if type_id == core::any::TypeId::of::<ffier_test_lib::Orange>() {
+        drop(<ffier_test_lib::Orange as FfiType>::from_c(handle));
+        "Orange"
+    } else {
+        "unknown"
+    };
+    ffier::FfierBytes::from_str(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,6 +8,11 @@
 
 include!("generated.rs");
 
+// Manual extern for the hand-written debug bridge function.
+unsafe extern "C" {
+    pub fn ft_debug_fruit_dispatch_kind(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

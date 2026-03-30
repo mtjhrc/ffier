@@ -33,50 +33,57 @@ impl std::fmt::Display for TestError {
 }
 impl std::error::Error for TestError {}
 unsafe extern "C" {
-    fn ft_widget_destroy(handle: *mut core::ffi::c_void);
-    fn ft_widget_new() -> *mut core::ffi::c_void;
-    fn ft_widget_with_name(name: ffier::FfierBytes) -> *mut core::ffi::c_void;
-    fn ft_widget_get_count(handle: *mut core::ffi::c_void) -> i32;
-    fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: i32);
-    fn ft_widget_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn ft_widget_data(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn ft_widget_sum_bytes(handle: *mut core::ffi::c_void, data: ffier::FfierBytes) -> i32;
-    fn ft_widget_echo(handle: *mut core::ffi::c_void, s: ffier::FfierBytes) -> ffier::FfierBytes;
-    fn ft_widget_is_active(handle: *mut core::ffi::c_void) -> bool;
-    fn ft_widget_negate(handle: *mut core::ffi::c_void, v: i64) -> i64;
-    fn ft_widget_validate(handle: *mut core::ffi::c_void) -> ffier::FfierError;
-    fn ft_widget_parse_count(
+    pub fn ft_widget_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_widget_new() -> *mut core::ffi::c_void;
+    pub fn ft_widget_with_name(name: ffier::FfierBytes) -> *mut core::ffi::c_void;
+    pub fn ft_widget_get_count(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: i32);
+    pub fn ft_widget_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_widget_data(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_widget_sum_bytes(handle: *mut core::ffi::c_void, data: ffier::FfierBytes) -> i32;
+    pub fn ft_widget_echo(
+        handle: *mut core::ffi::c_void,
+        s: ffier::FfierBytes,
+    ) -> ffier::FfierBytes;
+    pub fn ft_widget_is_active(handle: *mut core::ffi::c_void) -> bool;
+    pub fn ft_widget_negate(handle: *mut core::ffi::c_void, v: i64) -> i64;
+    pub fn ft_widget_validate(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn ft_widget_parse_count(
         handle: *mut core::ffi::c_void,
         s: ffier::FfierBytes,
         result: *mut i32,
     ) -> ffier::FfierError;
-    fn ft_widget_describe(
+    pub fn ft_widget_describe(
         handle: *mut core::ffi::c_void,
         code: i32,
         result: *mut ffier::FfierBytes,
     ) -> ffier::FfierError;
-    fn ft_widget_fail_always(handle: *mut core::ffi::c_void) -> ffier::FfierError;
-    fn ft_widget_fail_with_value(
+    pub fn ft_widget_fail_always(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn ft_widget_fail_with_value(
         handle: *mut core::ffi::c_void,
         result: *mut i32,
     ) -> ffier::FfierError;
-    fn ft_widget_set_tags(
+    pub fn ft_widget_set_tags(
         handle: *mut core::ffi::c_void,
         tags: *const ffier::FfierBytes,
         tags_len: usize,
     );
-    fn ft_widget_tags_joined(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn ft_widget_create_gadget(handle: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn ft_widget_try_create_gadget(
+    pub fn ft_widget_tags_joined(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_widget_create_gadget(handle: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    pub fn ft_widget_try_create_gadget(
         handle: *mut core::ffi::c_void,
         ok: bool,
         result: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierError;
-    fn ft_widget_read_gadget(handle: *mut core::ffi::c_void, g: *mut core::ffi::c_void) -> i32;
-    fn ft_widget_update_gadget(handle: *mut core::ffi::c_void, g: *mut core::ffi::c_void, v: i32);
-    fn ft_widget_consume(handle: *mut core::ffi::c_void);
-    fn ft_widget_fd_number(handle: *mut core::ffi::c_void, fd: i32) -> i32;
-    fn ft_widget_dup_fd(handle: *mut core::ffi::c_void, fd: i32) -> i32;
+    pub fn ft_widget_read_gadget(handle: *mut core::ffi::c_void, g: *mut core::ffi::c_void) -> i32;
+    pub fn ft_widget_update_gadget(
+        handle: *mut core::ffi::c_void,
+        g: *mut core::ffi::c_void,
+        v: i32,
+    );
+    pub fn ft_widget_consume(handle: *mut core::ffi::c_void);
+    pub fn ft_widget_fd_number(handle: *mut core::ffi::c_void, fd: i32) -> i32;
+    pub fn ft_widget_dup_fd(handle: *mut core::ffi::c_void, fd: i32) -> i32;
 }
 pub struct Widget(*mut core::ffi::c_void);
 impl Widget {
@@ -279,8 +286,8 @@ impl Drop for Widget {
     }
 }
 unsafe extern "C" {
-    fn ft_gadget_destroy(handle: *mut core::ffi::c_void);
-    fn ft_gadget_get(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_gadget_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_gadget_get(handle: *mut core::ffi::c_void) -> i32;
 }
 pub struct Gadget(*mut core::ffi::c_void);
 impl Gadget {
@@ -322,13 +329,13 @@ impl Drop for Gadget {
     }
 }
 unsafe extern "C" {
-    fn ft_config_destroy(handle: *mut core::ffi::c_void);
-    fn ft_config_new() -> *mut core::ffi::c_void;
-    fn ft_config_set_name(handle: *mut *mut core::ffi::c_void, name: ffier::FfierBytes);
-    fn ft_config_set_size(handle: *mut *mut core::ffi::c_void, size: i32);
-    fn ft_config_validated(handle: *mut *mut core::ffi::c_void) -> ffier::FfierError;
-    fn ft_config_get_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn ft_config_get_size(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_config_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_config_new() -> *mut core::ffi::c_void;
+    pub fn ft_config_set_name(handle: *mut *mut core::ffi::c_void, name: ffier::FfierBytes);
+    pub fn ft_config_set_size(handle: *mut *mut core::ffi::c_void, size: i32);
+    pub fn ft_config_validated(handle: *mut *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn ft_config_get_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_config_get_size(handle: *mut core::ffi::c_void) -> i32;
 }
 pub struct Config(*mut core::ffi::c_void);
 impl Config {
@@ -413,9 +420,9 @@ impl Drop for Config {
     }
 }
 unsafe extern "C" {
-    fn ft_gizmo_destroy(handle: *mut core::ffi::c_void);
-    fn ft_gizmo_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn ft_gizmo_size(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_gizmo_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_gizmo_name(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_gizmo_size(handle: *mut core::ffi::c_void) -> i32;
 }
 pub struct Gizmo(*mut core::ffi::c_void);
 impl Gizmo {
@@ -464,12 +471,12 @@ impl Drop for Gizmo {
     }
 }
 unsafe extern "C" {
-    fn ft_gizmo_builder_destroy(handle: *mut core::ffi::c_void);
-    fn ft_gizmo_builder_new() -> *mut core::ffi::c_void;
-    fn ft_gizmo_builder_set_name(handle: *mut core::ffi::c_void, name: ffier::FfierBytes);
-    fn ft_gizmo_builder_set_size(handle: *mut core::ffi::c_void, size: i32);
-    fn ft_gizmo_builder_build(handle: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn ft_gizmo_builder_try_build(
+    pub fn ft_gizmo_builder_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_gizmo_builder_new() -> *mut core::ffi::c_void;
+    pub fn ft_gizmo_builder_set_name(handle: *mut core::ffi::c_void, name: ffier::FfierBytes);
+    pub fn ft_gizmo_builder_set_size(handle: *mut core::ffi::c_void, size: i32);
+    pub fn ft_gizmo_builder_build(handle: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    pub fn ft_gizmo_builder_try_build(
         handle: *mut core::ffi::c_void,
         result: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierError;
@@ -547,11 +554,11 @@ impl Drop for GizmoBuilder {
     }
 }
 unsafe extern "C" {
-    fn ft_view_destroy(handle: *mut core::ffi::c_void);
-    fn ft_view_create(source: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn ft_view_source_count(handle: *mut core::ffi::c_void) -> i32;
-    fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
-    fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_view_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_view_create(source: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    pub fn ft_view_source_count(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
+    pub fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
 }
 pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<(&'a ())>);
 impl<'a> View<'a> {
@@ -599,11 +606,15 @@ impl<'a> Drop for View<'a> {
     }
 }
 unsafe extern "C" {
-    fn ft_pipeline_destroy(handle: *mut core::ffi::c_void);
-    fn ft_pipeline_new() -> *mut core::ffi::c_void;
-    fn ft_pipeline_run(handle: *mut core::ffi::c_void, proc: *mut core::ffi::c_void, input: i32);
-    fn ft_pipeline_result_count(handle: *mut core::ffi::c_void) -> i32;
-    fn ft_pipeline_last_result(
+    pub fn ft_pipeline_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_pipeline_new() -> *mut core::ffi::c_void;
+    pub fn ft_pipeline_run(
+        handle: *mut core::ffi::c_void,
+        proc: *mut core::ffi::c_void,
+        input: i32,
+    );
+    pub fn ft_pipeline_result_count(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_pipeline_last_result(
         handle: *mut core::ffi::c_void,
         result: *mut i32,
     ) -> ffier::FfierError;
@@ -732,7 +743,7 @@ pub struct ProcessorVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
 }
 unsafe extern "C" {
-    fn ft_processor_from_vtable(
+    pub fn ft_processor_from_vtable(
         user_data: *mut core::ffi::c_void,
         vtable: *const ProcessorVtable,
     ) -> *mut core::ffi::c_void;
@@ -752,8 +763,8 @@ impl Drop for VtableProcessor {
     fn drop(&mut self) {}
 }
 unsafe extern "C" {
-    fn ft_apple_destroy(handle: *mut core::ffi::c_void);
-    fn ft_apple_new(weight: i32) -> *mut core::ffi::c_void;
+    pub fn ft_apple_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_apple_new(weight: i32) -> *mut core::ffi::c_void;
 }
 pub struct Apple(*mut core::ffi::c_void);
 impl Apple {
@@ -794,8 +805,8 @@ impl Drop for Apple {
     }
 }
 unsafe extern "C" {
-    fn ft_orange_destroy(handle: *mut core::ffi::c_void);
-    fn ft_orange_new(juice: i32) -> *mut core::ffi::c_void;
+    pub fn ft_orange_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_orange_new(juice: i32) -> *mut core::ffi::c_void;
 }
 pub struct Orange(*mut core::ffi::c_void);
 impl Orange {
@@ -873,7 +884,7 @@ pub struct FruitVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
 }
 unsafe extern "C" {
-    fn ft_fruit_from_vtable(
+    pub fn ft_fruit_from_vtable(
         user_data: *mut core::ffi::c_void,
         vtable: *const FruitVtable,
     ) -> *mut core::ffi::c_void;
@@ -893,7 +904,7 @@ impl Drop for VtableFruit {
     fn drop(&mut self) {}
 }
 unsafe extern "C" {
-    fn ft_apple_value(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_apple_value(handle: *mut core::ffi::c_void) -> i32;
 }
 impl Fruit for Apple {
     fn value(&self) -> i32 {
@@ -906,7 +917,7 @@ impl Fruit for Apple {
     }
 }
 unsafe extern "C" {
-    fn ft_orange_value(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_orange_value(handle: *mut core::ffi::c_void) -> i32;
 }
 impl Fruit for Orange {
     fn value(&self) -> i32 {
@@ -919,10 +930,10 @@ impl Fruit for Orange {
     }
 }
 unsafe extern "C" {
-    fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
-    fn ft_mixer_new() -> *mut core::ffi::c_void;
-    fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
-    fn ft_mixer_total(handle: *mut core::ffi::c_void) -> i32;
+    pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_mixer_new() -> *mut core::ffi::c_void;
+    pub fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
+    pub fn ft_mixer_total(handle: *mut core::ffi::c_void) -> i32;
 }
 pub struct Mixer(*mut core::ffi::c_void);
 impl Mixer {
