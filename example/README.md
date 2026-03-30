@@ -1,50 +1,126 @@
 # ffier example
 
-Demonstrates ffier's code generation pipeline with a small calculator library.
-
 ## Directory layout
 
 ```
 example/
-  mylib/              Rust library with ffier annotations
-  mylib-cdylib/       cdylib bridge — builds a C-ABI shared library
-  mylib-via-cdylib/   Rust client bindings that call through the C ABI
-  rust-consumer/      Rust consumer — swappable between native and cdylib
-  c-consumer/         C consumer — links against the cdylib
+  mylib/                 Your Rust library, annotated with ffier
+  mylib-cdylib/          Produces a .so with extern "C" wrappers, plus a C header
+  mylib-via-cdylib/      Generated Rust wrappers that call mylib through the .so
+  rust-consumer/         Your Rust program — can link mylib natively or through the .so
+  c-consumer/            Your C program — calls mylib through the .so
 ```
 
-## How it works
+The generated Rust wrappers in `mylib-via-cdylib` mirror the original
+`mylib` API exactly. This means consumer code can swap between native Rust
+linking and dynamic C ABI linking by changing a single `Cargo.toml`
+dependency — the code itself stays identical.
 
-1. **mylib** defines types (`Calculator`, `CalcResult`, `TextBuffer`) annotated
-   with `#[ffier::exportable]`.
+## Step by step
 
-2. **mylib-cdylib** invokes ffier macros to generate C bridge functions and
-   builds as a `cdylib` (shared library).  It also contains binaries for
-   generating the C header (`gen-header`) and Rust client source
-   (`gen-rust-client`).
+### 1. Annotate your library (`mylib/`)
 
-3. **mylib-via-cdylib** contains generated Rust wrappers that call the C ABI
-   functions from the cdylib.  The types mirror mylib's API.
+This is a regular Rust library. You annotate the types and methods you want
+to make available through C with `#[ffier::exportable]`, and error types with
+`#[derive(ffier::FfiError)]`:
 
-4. **rust-consumer** uses a Cargo feature flag to choose between linking
-   directly to `mylib` (native) or going through `mylib-via-cdylib` (cdylib).
-   This lets you verify both paths produce identical behavior.
+```rust
+#[derive(ffier::FfiError)]
+pub enum CalcError {
+    #[ffier(code = 1)]
+    DivisionByZero,
+}
 
-5. **c-consumer** generates a C header, compiles against the cdylib, and
-   exercises the API from plain C.
+#[ffier::exportable]
+impl Calculator {
+    pub fn new() -> Self { ... }
+    pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> { ... }
+}
+```
 
-## Quick start (from this directory)
+These annotations attach metadata to your types. No C code is generated at
+this point — the library remains pure Rust and can be used as a normal Rust
+dependency.
+
+### 2. Build the cdylib (`mylib-cdylib/`)
+
+This crate produces a `.so` (or `.dylib` / `.dll`) shared library that
+exposes your Rust API as C functions. It contains very little hand-written
+code — just macro invocations that tell ffier which types to export and what
+C name prefix to use:
+
+**`src/lib.rs`** — each line generates the `extern "C"` bridge functions for
+one type:
+
+```rust
+mylib::ffier_meta_op_calculator!("mylib", ffier_gen_c_macros::generate_bridge);
+mylib::ffier_meta_op_calc_error!("mylib", ffier_gen_c_macros::generate_bridge);
+```
+
+The prefix `"mylib"` controls the C naming: `Calculator::divide` becomes
+`mylib_calculator_divide`. The bridge functions handle type conversion,
+handle boxing/unboxing, and error marshalling automatically.
+
+This crate also contains two small binaries for generating source artifacts:
+
+**`src/gen_header.rs`** — prints the C header to stdout. Each bridge macro
+also generates a `__header()` function that returns the C declarations for
+that type:
+
+```rust
+fn main() {
+    let header = ffier_gen_c::HeaderBuilder::new("MYLIB_H")
+        .add(mylib_calculator__header())
+        .add(mylib_calc_error__header())
+        .build();
+    print!("{header}");
+}
+```
+
+**`src/gen_rust_client.rs`** — prints Rust client binding source to stdout
+(see next step).
+
+### 3. Generated Rust client (`mylib-via-cdylib/`)
+
+Contains generated source (`src/generated.rs`) produced by `gen-rust-client`.
+You check this file in but never edit it by hand — regenerate with
+`just gen-rust-client` after changing `mylib`.
+
+This crate depends only on `ffier` (for FFI protocol types), not on `mylib`.
+It links against the `.so` at runtime via a build script.
+
+### 4. Rust consumer (`rust-consumer/`)
+
+A Cargo feature flag selects the backend:
+
+```toml
+[features]
+default = ["native"]
+native = ["dep:mylib"]                 # link Rust code directly
+via-cdylib = ["dep:mylib-via-cdylib"]  # call through the .so
+```
+
+```rust
+#[cfg(feature = "native")]
+use mylib as api;
+#[cfg(feature = "via-cdylib")]
+use mylib_via_cdylib as api;
+
+use api::Calculator;
+```
+
+### 5. C consumer (`c-consumer/`)
+
+A C program that includes the generated header and links against the `.so`.
+The Makefile takes care of running `cargo build`, generating the header, and
+compiling.
+
+## Commands (from this directory)
 
 ```bash
-# Run Rust consumer with native linking
-just run-rust-native
-
-# Build cdylib + run Rust consumer through C ABI
-just run-rust-cdylib
-
-# Build and run the C consumer
-just run-c
-
-# Regenerate Rust client bindings after changing mylib
-just gen-rust-client
+just run-rust-native     # Run Rust consumer with direct Rust linking
+just run-rust-cdylib     # Run Rust consumer through the .so
+just run-c               # Build and run the C consumer
+just gen-rust-client     # Regenerate mylib-via-cdylib/src/generated.rs
+just clean               # Remove build artifacts
 ```
