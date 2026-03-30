@@ -1,6 +1,4 @@
 /target
-example/c/main
-example/c/mylib.h
 tests/c/test_main
 test_lifetime
 test_underscore
