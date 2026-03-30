@@ -458,6 +458,7 @@ impl Orange {
     }
 }
 
+#[ffier::implementable]
 pub trait Fruit {
     fn value(&self) -> i32;
 }
@@ -484,7 +485,7 @@ impl Mixer {
         Mixer { total: 0 }
     }
 
-    #[ffier(dyn_param(fruit, "Fruit", [Apple, Orange]))]
+    #[ffier(dyn_param(fruit, "Fruit", [Apple, Orange, VtableFruit]))]
     pub fn add(mut self, fruit: impl Fruit) -> Self {
         self.total += fruit.value();
         self

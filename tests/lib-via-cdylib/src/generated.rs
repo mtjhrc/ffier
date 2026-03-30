@@ -781,6 +781,26 @@ impl Drop for Orange {
         unsafe { ft_orange_destroy(self.0) }
     }
 }
+#[repr(C)]
+pub struct FruitVtable {
+    pub value: unsafe extern "C" fn(*mut core::ffi::c_void) -> i32,
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+}
+unsafe extern "C" {
+    fn ft_fruit_from_vtable(
+        user_data: *mut core::ffi::c_void,
+        vtable: *const FruitVtable,
+    ) -> *mut core::ffi::c_void;
+}
+pub struct VtableFruit(*mut core::ffi::c_void);
+impl VtableFruit {
+    pub fn new(user_data: *mut core::ffi::c_void, vtable: &FruitVtable) -> Self {
+        Self(unsafe { ft_fruit_from_vtable(user_data, vtable) })
+    }
+}
+impl Drop for VtableFruit {
+    fn drop(&mut self) {}
+}
 unsafe extern "C" {
     fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     fn ft_mixer_new() -> *mut core::ffi::c_void;
@@ -847,6 +867,12 @@ impl IntoFruitHandle for Apple {
     }
 }
 impl IntoFruitHandle for Orange {
+    fn into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl IntoFruitHandle for VtableFruit {
     fn into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
