@@ -1,12 +1,12 @@
-example_lib::ffier_meta_op_my_calculator!("ex", ffier_gen_c::generate_bridge);
-example_lib::ffier_meta_op_calc_result!("ex", ffier_gen_c::generate_bridge);
-example_lib::ffier_meta_op_calc_error!("ex", ffier_gen_c::generate_bridge);
+example_lib::ffier_meta_op_calculator!("mylib", ffier_gen_c::generate_bridge);
+example_lib::ffier_meta_op_calc_result!("mylib", ffier_gen_c::generate_bridge);
+example_lib::ffier_meta_op_calc_error!("mylib", ffier_gen_c::generate_bridge);
 
 fn main() {
-    let header = ffier::HeaderBuilder::new("EX_H")
-        .add(ex_calc_error__header())
-        .add(ex_calc_result__header())
-        .add(ex_my_calculator__header())
+    let header = ffier::HeaderBuilder::new("MYLIB_H")
+        .add(mylib_calc_error__header())
+        .add(mylib_calc_result__header())
+        .add(mylib_calculator__header())
         .build();
     print!("{header}");
 }

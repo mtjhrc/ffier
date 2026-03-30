@@ -9,13 +9,13 @@ pub enum CalcError {
 }
 
 #[derive(Default)]
-pub struct MyCalculator {
+pub struct Calculator {
     precision: u8,
     label: String,
 }
 
 #[ffier::exportable]
-impl MyCalculator {
+impl Calculator {
     /// Create a new calculator.
     pub fn new() -> Self {
         Self::default()
@@ -187,34 +187,34 @@ mod tests {
 
     #[test]
     fn type_ids_are_distinct() {
-        let mc_id = <MyCalculator as FfiHandle>::type_id();
+        let mc_id = <Calculator as FfiHandle>::type_id();
         let cr_id = <CalcResult as FfiHandle>::type_id();
-        eprintln!("MyCalculator type_id = {mc_id:?}");
+        eprintln!("Calculator type_id = {mc_id:?}");
         eprintln!("CalcResult   type_id = {cr_id:?}");
         assert_ne!(mc_id, cr_id, "type_ids should be distinct");
     }
 
     #[test]
     fn handle_carries_type_id() {
-        let handle = MyCalculator::default().into_c();
+        let handle = Calculator::default().into_c();
         let tid = unsafe { ffier::handle_type_id(handle) };
         eprintln!("handle type_id = {tid:?}");
-        assert_eq!(tid, <MyCalculator as FfiHandle>::type_id());
+        assert_eq!(tid, <Calculator as FfiHandle>::type_id());
         // cleanup
-        let _ = MyCalculator::from_c(handle);
+        let _ = Calculator::from_c(handle);
     }
 
     #[test]
     #[should_panic(expected = "is not a")]
     fn wrong_handle_type_panics() {
-        // Create a CalcResult handle, then pretend it's a MyCalculator
+        // Create a CalcResult handle, then pretend it's a Calculator
         let wrong_handle = CalcResult::default().into_c();
         let actual = unsafe { ffier::handle_type_id(wrong_handle) };
-        let expected = <MyCalculator as FfiHandle>::type_id();
+        let expected = <Calculator as FfiHandle>::type_id();
         assert!(
             actual == expected,
-            "ex_mycalculator_add(): `handle` is not a {} (expected type_id={:?}, got {:?})",
-            <MyCalculator as FfiHandle>::C_HANDLE_NAME,
+            "mylib_calculator_add(): `handle` is not a {} (expected type_id={:?}, got {:?})",
+            <Calculator as FfiHandle>::C_HANDLE_NAME,
             expected,
             actual,
         );

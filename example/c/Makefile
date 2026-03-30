@@ -9,14 +9,14 @@ all: main
 $(LIB_DIR)/libexample_cdylib.so: ../cdylib/src/lib.rs ../lib/src/lib.rs
 	cargo build -p example-cdylib --manifest-path ../../Cargo.toml
 
-mycalculator.h: ../cdylib/src/gen_header.rs ../lib/src/lib.rs
+mylib.h: ../cdylib/src/gen_header.rs ../lib/src/lib.rs
 	cargo run -p example-cdylib --bin gen-header --manifest-path ../../Cargo.toml > $@
 
-main: main.c mycalculator.h $(LIB_DIR)/libexample_cdylib.so
+main: main.c mylib.h $(LIB_DIR)/libexample_cdylib.so
 	$(CC) -o $@ main.c -L$(LIB_DIR) -Wl,--no-as-needed -lexample_cdylib
 
 run: main
 	LD_LIBRARY_PATH=$(LIB_DIR) ./main
 
 clean:
-	rm -f main mycalculator.h
+	rm -f main mylib.h
