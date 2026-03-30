@@ -8,7 +8,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 
 use crate::meta::{
-    MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
+    FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaValueKind, MetaVtableParamType, MetaVtableRetType,
 };
 
@@ -72,10 +72,10 @@ pub(crate) fn peek_meta_tag(input: &TokenStream) -> String {
 fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
-    let handle_c_name = &meta.handle_c_name;
-    let type_pfx = &meta.type_pfx;
-    let fn_pfx = &meta.fn_pfx;
-    let upper_pfx = &meta.upper_pfx;
+    let fn_pfx = meta.fn_pfx();
+    let type_pfx = meta.type_pfx();
+    let upper_pfx = meta.upper_pfx();
+    let handle_c_name = meta.handle_c_name();
 
     let str_c_name = format!("{type_pfx}Str");
     let bytes_c_name = format!("{type_pfx}Bytes");
@@ -85,7 +85,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     let struct_lower = crate::camel_to_snake(struct_name);
 
     // Type aliases: emit `use` statements for bridge types
-    let type_alias_uses: Vec<_> = meta
+    let _type_alias_uses: Vec<_> = meta
         .type_aliases
         .iter()
         .map(|(alias, path)| {
@@ -100,7 +100,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     let mut decl_exprs: Vec<TokenStream> = Vec::new();
 
     // Bytes/Str/Path struct + typedefs
-    if meta.uses_slices {
+    if meta.uses_slices() {
         let bytes_macro_name = format!("{upper_pfx}BYTES");
 
         shared_types_exprs.push(quote! {
@@ -156,12 +156,12 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     for m in &meta.methods {
         for p in &m.params {
             if let MetaParamKind::DynDispatch {
-                c_name,
-                type_pfx: _,
+                c_name_suffix,
                 variants,
             } = &p.kind
             {
-                if generated_dyn_types.contains(c_name) {
+                let c_name = format!("{type_pfx}{c_name_suffix}");
+                if generated_dyn_types.contains(&c_name) {
                     continue;
                 }
                 generated_dyn_types.push(c_name.clone());
@@ -180,8 +180,8 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
 
     // Method FFI functions
     for m in &meta.methods {
-        let ffi_name = format_ident!("{}", m.ffi_name);
-        let ffi_name_str = &m.ffi_name;
+        let ffi_name_str = format!("{}{}", fn_pfx, m.ffi_name);
+        let ffi_name = format_ident!("{}", ffi_name_str);
         let method_name = &m.name;
 
         let has_receiver = m.receiver != MetaReceiver::None;
@@ -269,6 +269,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
                     &str_c_name,
                     &bytes_c_name,
                     &path_c_name,
+                    &type_pfx,
                 ));
                 header_param_names.push(name);
             }
@@ -278,10 +279,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
         // Check for DynDispatch params
         let dyn_dispatch = m.params.iter().find_map(|p| match &p.kind {
             MetaParamKind::DynDispatch {
-                c_name,
-                type_pfx,
+                c_name_suffix,
                 variants,
-            } => Some((p.name.clone(), c_name.clone(), type_pfx.clone(), variants.clone())),
+            } => Some((p.name.clone(), format!("{type_pfx}{c_name_suffix}"), variants.clone())),
             _ => None,
         });
 
@@ -313,7 +313,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
         };
 
         // Wrap in dispatch match if needed
-        let method_call = if let Some((ref dyn_id, ref _c_name, ref _dyn_type_pfx, ref variants)) =
+        let method_call = if let Some((ref dyn_id, ref _c_name, ref variants)) =
             dyn_dispatch
         {
             let if_branches: Vec<_> = variants
@@ -380,7 +380,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
             MetaReturn::Void => {
                 let header_line = build_header_line(
                     quote! { "void" },
-                    ffi_name_str,
+                    &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
@@ -416,10 +416,10 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
             }
             MetaReturn::Value(vk) => {
                 let ret_c =
-                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name);
+                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name, &type_pfx);
                 let header_line = build_header_line(
                     ret_c,
-                    ffi_name_str,
+                    &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
@@ -452,12 +452,12 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
                 let err_c_name = format!("{type_pfx}{err_ident}");
 
                 let out_c_type = ok.as_ref().map(|vk| {
-                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name)
+                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name, &type_pfx)
                 });
 
                 let header_line = build_header_line(
                     quote! { #err_c_name },
-                    ffi_name_str,
+                    &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
                     &param_name_str_refs,
@@ -588,9 +588,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
 fn generate_error_bridge(meta: MetaError) -> TokenStream {
     let name = &meta.name;
     let path = &meta.path;
-    let fn_pfx = &meta.fn_pfx;
-    let type_pfx = &meta.type_pfx;
-    let upper_pfx = &meta.upper_pfx;
+    let fn_pfx = meta.fn_pfx();
+    let type_pfx = meta.type_pfx();
+    let upper_pfx = meta.upper_pfx();
 
     let name_str = name.to_string();
     let err_snake = crate::camel_to_snake(&name_str);
@@ -667,14 +667,14 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream {
 fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream {
     let vtable_struct_name = &meta.vtable_struct_name;
     let wrapper_name = &meta.wrapper_name;
-    let vtable_c_name = &meta.vtable_c_name;
-    let type_pfx = &meta.type_pfx;
-    let fn_pfx = &meta.fn_pfx;
+    let vtable_c_name = meta.vtable_c_name();
+    let type_pfx = meta.type_pfx();
+    let fn_pfx = meta.fn_pfx();
     let trait_path = &meta.trait_path;
     let _ = trait_path; // available if needed for qualified paths
 
-    let constructor_name = format_ident!("{}", meta.constructor_name);
-    let constructor_name_str = &meta.constructor_name;
+    let constructor_name_str = meta.constructor_name();
+    let constructor_name = format_ident!("{}", constructor_name_str);
 
     let trait_name_str = meta.trait_name.to_string();
     let trait_snake = crate::camel_to_snake(&trait_name_str);
@@ -873,10 +873,20 @@ fn meta_param_c_type_expr(
     str_name: &str,
     bytes_name: &str,
     path_name: &str,
+    type_pfx: &str,
 ) -> TokenStream {
     match kind {
-        MetaParamKind::Regular { bridge_type, .. } => {
-            quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
+        MetaParamKind::Regular { bridge_type, repr, .. } => {
+            match repr {
+                FfiRepr::Handle => {
+                    // Handle types: prepend type_pfx to the struct name at runtime
+                    quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
+                }
+                _ => {
+                    // Primitives & Other: C_TYPE_NAME already correct
+                    quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
+                }
+            }
         }
         MetaParamKind::SliceStr => quote! { #str_name },
         MetaParamKind::SliceBytes => quote! { #bytes_name },
@@ -885,10 +895,12 @@ fn meta_param_c_type_expr(
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
         }
         MetaParamKind::HandleRef { bridge_type, .. } => {
-            quote! { <#bridge_type as ffier::FfiHandle>::C_HANDLE_NAME }
+            // Handle ref: prepend type_pfx at runtime
+            quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiHandle>::C_HANDLE_NAME) }
         }
-        MetaParamKind::DynDispatch { c_name, .. } => {
-            quote! { #c_name }
+        MetaParamKind::DynDispatch { c_name_suffix, .. } => {
+            let full_name = format!("{type_pfx}{c_name_suffix}");
+            quote! { #full_name }
         }
     }
 }
@@ -920,10 +932,18 @@ fn meta_value_c_type_expr(
     str_name: &str,
     bytes_name: &str,
     path_name: &str,
+    type_pfx: &str,
 ) -> TokenStream {
     match kind {
-        MetaValueKind::Regular { bridge_type, .. } => {
-            quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
+        MetaValueKind::Regular { bridge_type, repr, .. } => {
+            match repr {
+                FfiRepr::Handle => {
+                    quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
+                }
+                _ => {
+                    quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
+                }
+            }
         }
         MetaValueKind::SliceStr => quote! { #str_name },
         MetaValueKind::SliceBytes => quote! { #bytes_name },

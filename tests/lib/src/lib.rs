@@ -26,7 +26,7 @@ pub struct Widget {
     tags: String,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl Widget {
     /// Create a new widget with default values.
     pub fn new() -> Self {
@@ -184,7 +184,7 @@ pub struct Gadget {
     value: i32,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl Gadget {
     /// Get the gadget value.
     pub fn get(&self) -> i32 {
@@ -201,7 +201,7 @@ pub struct Config {
     size: i32,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl Config {
     /// Create a new config.
     pub fn new() -> Self {
@@ -258,7 +258,7 @@ pub struct Gizmo {
     size: i32,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl Gizmo {
     /// Get the gizmo name.
     pub fn name(&self) -> &str {
@@ -276,7 +276,7 @@ pub struct GizmoBuilder {
     size: i32,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl GizmoBuilder {
     /// Create a new gizmo builder.
     pub fn new() -> Self {
@@ -332,7 +332,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -367,7 +367,6 @@ pub trait Observer {
 }
 
 #[ffier::implementable(
-    prefix = "ft",
     supers(Observer { fn on_notify(&self, code: i32); })
 )]
 pub trait Processor: Observer {
@@ -393,7 +392,7 @@ pub struct Pipeline {
     results: Vec<i32>,
 }
 
-#[ffier::exportable(prefix = "ft")]
+#[ffier::exportable]
 impl Pipeline {
     /// Create a new pipeline.
     pub fn new() -> Self {

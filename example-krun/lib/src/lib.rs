@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 #[ffier::implementable(
-    prefix = "krun",
     supers(EventSubscriber { fn on_event(&self); })
 )]
 pub trait Device<'a>: EventSubscriber {
@@ -38,7 +37,7 @@ pub struct VmResources {
     shared_mem: Vec<u8>,
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl VmResources {
     pub fn new() -> Self {
         VmResources {
@@ -59,7 +58,7 @@ pub struct RootFs {
     has_injected_init: bool,
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl RootFs {
     pub fn new(tag: &str) -> Self {
         Self {
@@ -82,7 +81,7 @@ pub struct InitPayload<'a> {
     command_line: String,
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl<'a> InitPayload<'a> {
     /// Create a payload builder that borrows an existing exported object.
     pub fn builder(rootfs: &'a mut RootFs) -> InitPayloadBuilder<'a> {
@@ -106,7 +105,7 @@ pub struct InitPayloadBuilder<'a> {
     command_line: String,
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl<'a> InitPayloadBuilder<'a> {
     /// Set the guest command line.
     pub fn set_exec(&mut self, exec_path: &str, args: &[&str]) {
@@ -140,7 +139,7 @@ pub struct Vmm<'a> {
     event_subscribers: Vec<Arc<dyn EventSubscriber + 'a>>,
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl<'a> Vmm<'a> {
     /// Create a new VMM bound to the given resources.
     ///
@@ -192,12 +191,12 @@ pub struct NetDevice<'a> {
     irq_table: &'a [u8],
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl<'a> NetDevice<'a> {}
 
 pub struct NetDeviceBuilder;
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl NetDeviceBuilder {
     /// Prepare a net device builder, reserving IRQ resources.
     pub fn new(resources: &mut VmResources) -> Self {
@@ -250,12 +249,12 @@ pub struct BlockDevice<'a> {
     shared_mem: &'a [u8],
 }
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl<'a> BlockDevice<'a> {}
 
 pub struct BlockDeviceBuilder;
 
-#[ffier::exportable(prefix = "krun")]
+#[ffier::exportable]
 impl BlockDeviceBuilder {
     /// Prepare a block device builder, reserving shared memory.
     pub fn new(resources: &mut VmResources) -> Self {

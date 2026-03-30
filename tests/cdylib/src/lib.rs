@@ -1,12 +1,12 @@
-ffier_test_lib::__ffier_meta_widget!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_gadget!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_config!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_gizmo!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_gizmo_builder!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_view!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_pipeline!(ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_test_error!("ft_", "Ft", "FT_", ffier::generate_bridge);
-ffier_test_lib::__ffier_meta_vtable_processor!(ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_widget!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_gadget!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_config!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_gizmo!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_gizmo_builder!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_view!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_pipeline!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_test_error!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier::generate_bridge);
 
 #[cfg(test)]
 mod tests {
@@ -495,8 +495,8 @@ mod tests {
         DROP_CALLED.store(true, Ordering::SeqCst);
     }
 
-    fn make_vtable() -> ffier_test_lib::FtProcessorVtable {
-        ffier_test_lib::FtProcessorVtable {
+    fn make_vtable() -> ffier_test_lib::ProcessorVtable {
+        ffier_test_lib::ProcessorVtable {
             process: test_process,
             name: test_processor_name,
             on_notify: test_on_notify,

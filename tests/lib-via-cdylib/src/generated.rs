@@ -670,7 +670,7 @@ impl IntoProcessorHandle for VtableProcessor {
     }
 }
 #[repr(C)]
-pub struct FtProcessorVtable {
+pub struct ProcessorVtable {
     pub process: unsafe extern "C" fn(*mut core::ffi::c_void, i32) -> i32,
     pub name: unsafe extern "C" fn(*mut core::ffi::c_void) -> ffier::FfierBytes,
     pub on_notify: unsafe extern "C" fn(*mut core::ffi::c_void, i32),
@@ -679,12 +679,12 @@ pub struct FtProcessorVtable {
 unsafe extern "C" {
     fn ft_processor_from_vtable(
         user_data: *mut core::ffi::c_void,
-        vtable: *const FtProcessorVtable,
+        vtable: *const ProcessorVtable,
     ) -> *mut core::ffi::c_void;
 }
 pub struct VtableProcessor(*mut core::ffi::c_void);
 impl VtableProcessor {
-    pub fn new(user_data: *mut core::ffi::c_void, vtable: &FtProcessorVtable) -> Self {
+    pub fn new(user_data: *mut core::ffi::c_void, vtable: &ProcessorVtable) -> Self {
         Self(unsafe { ft_processor_from_vtable(user_data, vtable) })
     }
 }
