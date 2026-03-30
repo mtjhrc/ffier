@@ -25,11 +25,12 @@ dependency appears in `Cargo.toml`.
 | Crate | Purpose |
 |---|---|
 | `ffier` | Facade — re-exports `ffier-rt` + `ffier-annotations` |
-| `ffier-rt` | Runtime types (`FfiType`, `FfierBytes`, `HeaderSection`, etc.) |
+| `ffier-rt` | Runtime types (`FfiType`, `FfierBytes`, etc.) |
 | `ffier-annotations` | Proc macros: `#[exportable]`, `#[derive(FfiError)]`, `#[implementable]` |
 | `ffier-meta` | Metadata types + parsers — the extensibility point for third-party generators |
-| `ffier-gen-c` | C bridge generator (`generate_bridge`) |
-| `ffier-gen-rust` | Rust client source generator (`generate_client_source`) |
+| `ffier-gen-c` | C codegen logic, `HeaderSection`/`HeaderBuilder` |
+| `ffier-gen-c-macros` | Proc macro entry point: `generate_bridge` |
+| `ffier-gen-rust` | Proc macro: `generate_client_source` |
 
 ## Example
 
