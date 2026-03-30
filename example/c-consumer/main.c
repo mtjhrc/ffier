@@ -10,7 +10,7 @@ int main(void) {
     printf("add(3, 4) = %d\n", mylib_calculator_add(calc, 3, 4));
     printf("is_positive(-1) = %d\n", mylib_calculator_is_positive(calc, -1));
 
-    /* Result<i32, E> — ok + error */
+    /* Fallible division — success and error */
     int32_t quotient;
     MylibCalcError err = mylib_calculator_divide(calc, 10, 3, &quotient);
     assert(err.code == 0);
@@ -20,14 +20,14 @@ int main(void) {
     assert(err.code == MYLIB_CALC_ERROR_DIVISION_BY_ZERO);
     mylib_calc_error_free(&err);
 
-    /* Handle return + &mut Handle / &Handle params */
+    /* Creating, mutating, and reading a sub-object */
     MylibCalcResult res = mylib_calculator_create_result(calc);
     mylib_calculator_accumulate(calc, res, 10);
     mylib_calculator_accumulate(calc, res, 20);
     printf("accumulated = %d\n", mylib_calculator_read_result(calc, res));
     mylib_calc_result_destroy(res);
 
-    /* Result<Handle, E> */
+    /* Fallible creation of a sub-object */
     MylibCalcResult res2;
     err = mylib_calculator_try_divide_result(calc, 10, 2, &res2);
     assert(err.code == 0);
@@ -50,7 +50,7 @@ int main(void) {
     MylibBytes raw = mylib_text_buffer_as_bytes(buf);
     assert(raw.len == 11);
 
-    /* flush() writes to the owned fd */
+    /* Flush buffer contents to the output fd */
     fflush(stdout);
     MylibBufferError buf_err = mylib_text_buffer_flush(buf);
     assert(buf_err.code == 0);
