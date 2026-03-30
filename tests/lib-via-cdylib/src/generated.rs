@@ -547,7 +547,7 @@ unsafe extern "C" {
     fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
     fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
 }
-pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<(&'a ())>);
+pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
 impl<'a> View<'a> {
     #[doc(hidden)]
     pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {

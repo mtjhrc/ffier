@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaValueKind, MetaVtableParamType, MetaVtableRetType,
-    camel_to_snake, camel_to_upper_snake, peek_meta_tag,
+    MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake, camel_to_upper_snake,
+    peek_meta_tag,
 };
 
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
@@ -46,7 +46,9 @@ pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
             generate_implementable_bridge(meta)
         }
         _ => {
-            let msg = format!("unknown metadata tag `@{tag}`: expected @exportable, @error, or @implementable");
+            let msg = format!(
+                "unknown metadata tag `@{tag}`: expected @exportable, @error, or @implementable"
+            );
             quote! { compile_error!(#msg); }
         }
     }
@@ -81,8 +83,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         .collect();
 
     let mut ffi_fns = Vec::new();
-    let handle_typedef_expr =
-        quote! { concat!("typedef void* ", #handle_c_name, ";") };
+    let handle_typedef_expr = quote! { concat!("typedef void* ", #handle_c_name, ";") };
     let mut shared_types_exprs: Vec<TokenStream2> = Vec::new();
     let mut decl_exprs: Vec<TokenStream2> = Vec::new();
 
@@ -268,7 +269,11 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             MetaParamKind::DynDispatch {
                 c_name_suffix,
                 variants,
-            } => Some((p.name.clone(), format!("{type_pfx}{c_name_suffix}"), variants.clone())),
+            } => Some((
+                p.name.clone(),
+                format!("{type_pfx}{c_name_suffix}"),
+                variants.clone(),
+            )),
             _ => None,
         });
 
@@ -300,9 +305,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         };
 
         // Wrap in dispatch match if needed
-        let method_call = if let Some((ref dyn_id, ref _c_name, ref variants)) =
-            dyn_dispatch
-        {
+        let method_call = if let Some((ref dyn_id, ref _c_name, ref variants)) = dyn_dispatch {
             let if_branches: Vec<_> = variants
                 .iter()
                 .map(|(_, ty_tokens)| {
@@ -319,8 +322,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                 })
                 .collect();
 
-            let variant_names: Vec<_> =
-                variants.iter().map(|(name, _)| name.as_str()).collect();
+            let variant_names: Vec<_> = variants.iter().map(|(name, _)| name.as_str()).collect();
             let accepted_list = variant_names.join(" | ");
 
             quote! {{
@@ -342,9 +344,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
 
         // Doxygen comment
         let (has_out_param, err_c_name_for_doc) = match &m.ret {
-            MetaReturn::Result {
-                ok, err_ident, ..
-            } => (ok.is_some(), Some(format!("{type_pfx}{err_ident}"))),
+            MetaReturn::Result { ok, err_ident, .. } => {
+                (ok.is_some(), Some(format!("{type_pfx}{err_ident}")))
+            }
             _ => (false, None),
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
@@ -515,9 +517,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
     let destroy_name = format_ident!("{fn_pfx}{struct_lower}_destroy");
     let destroy_str = destroy_name.to_string();
 
-    decl_exprs.push(
-        quote! { concat!("void ", #destroy_str, "(", #handle_c_name, " handle);") },
-    );
+    decl_exprs.push(quote! { concat!("void ", #destroy_str, "(", #handle_c_name, " handle);") });
 
     ffi_fns.push(quote! {
         #[unsafe(no_mangle)]
@@ -723,10 +723,8 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             MetaVtableRetType::Handle(_) => quote! { "void*" },
         };
 
-        let param_id_strs: Vec<_> =
-            param_c_types.iter().map(|(id, _)| id.clone()).collect();
-        let param_type_exprs: Vec<_> =
-            param_c_types.iter().map(|(_, te)| te.clone()).collect();
+        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
+        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
 
         header_lines.push(quote! {{
             let mut s = String::from("    ");
@@ -863,7 +861,9 @@ fn meta_param_c_type_expr(
     type_pfx: &str,
 ) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular { bridge_type, repr, .. } => {
+        MetaParamKind::Regular {
+            bridge_type, repr, ..
+        } => {
             match repr {
                 FfiRepr::Handle => {
                     // Handle types: prepend type_pfx to the struct name at runtime
@@ -922,16 +922,16 @@ fn meta_value_c_type_expr(
     type_pfx: &str,
 ) -> TokenStream2 {
     match kind {
-        MetaValueKind::Regular { bridge_type, repr, .. } => {
-            match repr {
-                FfiRepr::Handle => {
-                    quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
-                }
-                _ => {
-                    quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
-                }
+        MetaValueKind::Regular {
+            bridge_type, repr, ..
+        } => match repr {
+            FfiRepr::Handle => {
+                quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
             }
-        }
+            _ => {
+                quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
+            }
+        },
         MetaValueKind::SliceStr => quote! { #str_name },
         MetaValueKind::SliceBytes => quote! { #bytes_name },
         MetaValueKind::SlicePath => quote! { #path_name },
@@ -1035,10 +1035,10 @@ fn parse_doc_sections(doc_lines: &[String]) -> DocSections {
                 let after_bullet = trimmed
                     .strip_prefix("* ")
                     .or_else(|| trimmed.strip_prefix("- "));
-                if let Some(rest) = after_bullet {
-                    if let Some((name, desc)) = parse_param_entry(rest) {
-                        param_docs.push((name, desc));
-                    }
+                if let Some(rest) = after_bullet
+                    && let Some((name, desc)) = parse_param_entry(rest)
+                {
+                    param_docs.push((name, desc));
                 }
             }
             Section::Returns => {
@@ -1087,9 +1087,7 @@ fn build_doxygen_comment(
 
     let sections = parse_doc_sections(doc_lines);
 
-    if sections.body.is_empty()
-        && sections.param_docs.is_empty()
-        && sections.returns_doc.is_none()
+    if sections.body.is_empty() && sections.param_docs.is_empty() && sections.returns_doc.is_none()
     {
         return None;
     }

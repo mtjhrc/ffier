@@ -10,8 +10,8 @@ use quote::{format_ident, quote};
 
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaValueKind, MetaVtableParamType, MetaVtableRetType,
-    camel_to_snake, camel_to_upper_snake, peek_meta_tag,
+    MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake, camel_to_upper_snake,
+    peek_meta_tag,
 };
 
 /// Generates Rust client source code as a named `&str` constant.
@@ -87,16 +87,13 @@ fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
 fn peek_meta_name(input: &TokenStream2) -> String {
     let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
     for i in 0..tokens.len().saturating_sub(2) {
-        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i] {
-            if id == "name" || id == "trait_name" {
-                if let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1] {
-                    if p.as_char() == '=' {
-                        if let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2] {
-                            return name.to_string();
-                        }
-                    }
-                }
-            }
+        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
+            && (id == "name" || id == "trait_name")
+            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
+            && p.as_char() == '='
+            && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
+        {
+            return name.to_string();
         }
     }
     "Unknown".to_string()
@@ -123,10 +120,8 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             .lifetimes
             .iter()
             .map(|lt| {
-                let lt_lifetime = syn::Lifetime::new(
-                    &format!("'{lt}"),
-                    proc_macro2::Span::call_site(),
-                );
+                let lt_lifetime =
+                    syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site());
                 quote! { #lt_lifetime }
             })
             .collect();
@@ -140,10 +135,8 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             .lifetimes
             .iter()
             .map(|lt| {
-                let lt_lifetime = syn::Lifetime::new(
-                    &format!("'{lt}"),
-                    proc_macro2::Span::call_site(),
-                );
+                let lt_lifetime =
+                    syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site());
                 quote! { &#lt_lifetime () }
             })
             .collect();
@@ -220,13 +213,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             }
             MetaReturn::Result { ok, .. } => {
                 let out = ok.as_ref().map(|vk| match vk {
-                    MetaValueKind::Regular { bridge_type, repr } => {
-                        match repr {
-                            FfiRepr::Primitive => quote! { result: *mut #bridge_type, },
-                            FfiRepr::Handle => quote! { result: *mut *mut core::ffi::c_void, },
-                            FfiRepr::Other(c_repr) => quote! { result: *mut #c_repr, },
-                        }
-                    }
+                    MetaValueKind::Regular { bridge_type, repr } => match repr {
+                        FfiRepr::Primitive => quote! { result: *mut #bridge_type, },
+                        FfiRepr::Handle => quote! { result: *mut *mut core::ffi::c_void, },
+                        FfiRepr::Other(c_repr) => quote! { result: *mut #c_repr, },
+                    },
                     MetaValueKind::SliceStr
                     | MetaValueKind::SliceBytes
                     | MetaValueKind::SlicePath => {
@@ -266,19 +257,19 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     MetaParamKind::SlicePath => quote! { #id: &std::path::Path },
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
                     MetaParamKind::HandleRef { .. } => {
-                        let rust_type = p.rust_type.as_ref().expect("HandleRef must have rust_type");
+                        let rust_type =
+                            p.rust_type.as_ref().expect("HandleRef must have rust_type");
                         quote! { #id: #rust_type }
                     }
-                    MetaParamKind::DynDispatch {
-                        c_name_suffix, ..
-                    } => {
-                        let trait_name =
-                            format_ident!("Into{c_name_suffix}Handle");
+                    MetaParamKind::DynDispatch { c_name_suffix, .. } => {
+                        let trait_name = format_ident!("Into{c_name_suffix}Handle");
                         quote! { #id: impl #trait_name }
                     }
                     MetaParamKind::Regular { .. } => {
-                        let rust_type =
-                            p.rust_type.as_ref().expect("Regular param must have rust_type");
+                        let rust_type = p
+                            .rust_type
+                            .as_ref()
+                            .expect("Regular param must have rust_type");
                         quote! { #id: #rust_type }
                     }
                 }
@@ -302,19 +293,17 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     MetaParamKind::DynDispatch { .. } => {
                         quote! { #id.into_raw_handle() }
                     }
-                    MetaParamKind::Regular { repr, .. } => {
-                        match repr {
-                            FfiRepr::Primitive => quote! { #id },
-                            FfiRepr::Handle => {
-                                let rust_type = p.rust_type.as_ref().unwrap();
-                                quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
-                            }
-                            FfiRepr::Other(_) => {
-                                let rust_type = p.rust_type.as_ref().unwrap();
-                                quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
-                            }
+                    MetaParamKind::Regular { repr, .. } => match repr {
+                        FfiRepr::Primitive => quote! { #id },
+                        FfiRepr::Handle => {
+                            let rust_type = p.rust_type.as_ref().unwrap();
+                            quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
                         }
-                    }
+                        FfiRepr::Other(_) => {
+                            let rust_type = p.rust_type.as_ref().unwrap();
+                            quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
+                        }
+                    },
                 }
             })
             .collect();
@@ -426,11 +415,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         };
 
         // Doc comments
-        let doc_attrs: Vec<_> = m
-            .doc
-            .iter()
-            .map(|line| quote! { #[doc = #line] })
-            .collect();
+        let doc_attrs: Vec<_> = m.doc.iter().map(|line| quote! { #[doc = #line] }).collect();
 
         // Return type for safe wrapper signature
         let rust_ret = &m.rust_ret;
@@ -448,9 +433,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let err_ty = format_ident!("{err_ident}");
                 quote! { -> Result<Self, #err_ty> }
             }
-            MetaReturn::Result {
-                ok, err_ident, ..
-            } => {
+            MetaReturn::Result { ok, err_ident, .. } => {
                 let err_ty = format_ident!("{err_ident}");
                 match ok {
                     None => quote! { -> Result<(), #err_ty> },
@@ -611,10 +594,24 @@ fn generate_error_client(meta: MetaError) -> TokenStream2 {
 
 fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // Use plain ident names for client types (not $crate:: paths from bridge)
-    let vtable_struct_name = format_ident!("{}", meta.vtable_struct_name.to_string()
-        .split("::").last().unwrap_or("VtableStruct").trim());
-    let wrapper_name = format_ident!("{}", meta.wrapper_name.to_string()
-        .split("::").last().unwrap_or("VtableWrapper").trim());
+    let vtable_struct_name = format_ident!(
+        "{}",
+        meta.vtable_struct_name
+            .to_string()
+            .split("::")
+            .last()
+            .unwrap_or("VtableStruct")
+            .trim()
+    );
+    let wrapper_name = format_ident!(
+        "{}",
+        meta.wrapper_name
+            .to_string()
+            .split("::")
+            .last()
+            .unwrap_or("VtableWrapper")
+            .trim()
+    );
     let constructor_name = format_ident!("{}", meta.constructor_name());
 
     // Vtable fields (user-defined fields)
@@ -688,16 +685,11 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 /// Uses CONCRETE types, not `<T as FfiType>::CRepr`.
 fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular {
-            bridge_type,
-            repr,
-        } => {
-            match repr {
-                FfiRepr::Primitive => quote! { #id: #bridge_type },
-                FfiRepr::Handle => quote! { #id: *mut core::ffi::c_void },
-                FfiRepr::Other(c_repr) => quote! { #id: #c_repr },
-            }
-        }
+        MetaParamKind::Regular { bridge_type, repr } => match repr {
+            FfiRepr::Primitive => quote! { #id: #bridge_type },
+            FfiRepr::Handle => quote! { #id: *mut core::ffi::c_void },
+            FfiRepr::Other(c_repr) => quote! { #id: #c_repr },
+        },
         MetaParamKind::SliceStr | MetaParamKind::SliceBytes | MetaParamKind::SlicePath => {
             quote! { #id: ffier::FfierBytes }
         }
@@ -714,16 +706,11 @@ fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStr
 /// Generate extern "C" return type annotation for Value returns.
 fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
     match kind {
-        MetaValueKind::Regular {
-            bridge_type,
-            repr,
-        } => {
-            match repr {
-                FfiRepr::Primitive => quote! { -> #bridge_type },
-                FfiRepr::Handle => quote! { -> *mut core::ffi::c_void },
-                FfiRepr::Other(c_repr) => quote! { -> #c_repr },
-            }
-        }
+        MetaValueKind::Regular { bridge_type, repr } => match repr {
+            FfiRepr::Primitive => quote! { -> #bridge_type },
+            FfiRepr::Handle => quote! { -> *mut core::ffi::c_void },
+            FfiRepr::Other(c_repr) => quote! { -> #c_repr },
+        },
         MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath => {
             quote! { -> ffier::FfierBytes }
         }
@@ -766,8 +753,7 @@ fn build_client_body(
                     }
                 }
                 Some(vk) => {
-                    let (out_decl, out_ptr, ok_convert) =
-                        client_result_ok_from_ffi(vk, rust_ret);
+                    let (out_decl, out_ptr, ok_convert) = client_result_ok_from_ffi(vk, rust_ret);
                     quote! {
                         #(#wrapper_pre_bindings)*
                         #out_decl
@@ -783,22 +769,20 @@ fn build_client_body(
 /// Convert a raw FFI return value to the Rust type for Value returns.
 fn client_value_from_ffi(vk: &MetaValueKind, rust_ret: &TokenStream2) -> TokenStream2 {
     match vk {
-        MetaValueKind::Regular { repr, .. } => {
-            match repr {
-                FfiRepr::Primitive => quote! { __raw },
-                FfiRepr::Handle => {
-                    let rust_ret_str = rust_ret.to_string();
-                    if rust_ret_str.contains('\'') {
-                        quote! { <#rust_ret>::__from_raw(__raw) }
-                    } else {
-                        quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
-                    }
-                }
-                FfiRepr::Other(_) => {
+        MetaValueKind::Regular { repr, .. } => match repr {
+            FfiRepr::Primitive => quote! { __raw },
+            FfiRepr::Handle => {
+                let rust_ret_str = rust_ret.to_string();
+                if rust_ret_str.contains('\'') {
+                    quote! { <#rust_ret>::__from_raw(__raw) }
+                } else {
                     quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
                 }
             }
-        }
+            FfiRepr::Other(_) => {
+                quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
+            }
+        },
         MetaValueKind::SliceStr => quote! {
             unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len)) }
         },
@@ -817,38 +801,37 @@ fn client_result_ok_from_ffi(
     rust_ret: &TokenStream2,
 ) -> (TokenStream2, TokenStream2, TokenStream2) {
     match vk {
-        MetaValueKind::Regular { repr, .. } => {
-            match repr {
-                FfiRepr::Primitive => (
+        MetaValueKind::Regular { repr, .. } => match repr {
+            FfiRepr::Primitive => (
+                quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
+                quote! { __out.as_mut_ptr() },
+                quote! { unsafe { __out.assume_init() } },
+            ),
+            FfiRepr::Handle => {
+                let ok_type = extract_ok_type_from_tokens(rust_ret);
+                let ok_type_str = ok_type.to_string();
+                let convert = if ok_type_str.contains('\'') {
+                    quote! { <#ok_type>::__from_raw(unsafe { __out.assume_init() }) }
+                } else {
+                    quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) }
+                };
+                (
                     quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
                     quote! { __out.as_mut_ptr() },
-                    quote! { unsafe { __out.assume_init() } },
-                ),
-                FfiRepr::Handle => {
-                    let ok_type = extract_ok_type_from_tokens(rust_ret);
-                    let ok_type_str = ok_type.to_string();
-                    let convert = if ok_type_str.contains('\'') {
-                        quote! { <#ok_type>::__from_raw(unsafe { __out.assume_init() }) }
-                    } else {
-                        quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) }
-                    };
-                    (
-                        quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                        quote! { __out.as_mut_ptr() },
-                        convert,
-                    )
-                }
-                FfiRepr::Other(_) => {
-                    let ok_type = extract_ok_type_from_tokens(rust_ret);
-                    let convert = quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) };
-                    (
-                        quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                        quote! { __out.as_mut_ptr() },
-                        convert,
-                    )
-                }
+                    convert,
+                )
             }
-        }
+            FfiRepr::Other(_) => {
+                let ok_type = extract_ok_type_from_tokens(rust_ret);
+                let convert =
+                    quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) };
+                (
+                    quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
+                    quote! { __out.as_mut_ptr() },
+                    convert,
+                )
+            }
+        },
         MetaValueKind::SliceStr => (
             quote! { let mut __out = ffier::FfierBytes::EMPTY; },
             quote! { &mut __out },
@@ -870,18 +853,14 @@ fn client_result_ok_from_ffi(
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
 fn extract_ok_type_from_tokens(tokens: &TokenStream2) -> TokenStream2 {
     // Parse as a type and extract Result's first generic arg
-    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
-        if let syn::Type::Path(tp) = &ty {
-            if let Some(last) = tp.path.segments.last() {
-                if last.ident == "Result" {
-                    if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
-                        if let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first() {
-                            return quote! { #ok_ty };
-                        }
-                    }
-                }
-            }
-        }
+    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
+        && let syn::Type::Path(tp) = &ty
+        && let Some(last) = tp.path.segments.last()
+        && last.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+    {
+        return quote! { #ok_ty };
     }
     // Fallback: return the whole thing (shouldn't happen)
     tokens.clone()

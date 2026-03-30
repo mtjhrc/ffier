@@ -127,10 +127,10 @@ fn classify_ref_type(ty: &Type) -> Option<SliceKind> {
             }
         }
         Type::Slice(sl) => {
-            if let Type::Path(tp) = &*sl.elem {
-                if tp.path.is_ident("u8") {
-                    return Some(SliceKind::Bytes);
-                }
+            if let Type::Path(tp) = &*sl.elem
+                && tp.path.is_ident("u8")
+            {
+                return Some(SliceKind::Bytes);
             }
             None
         }
@@ -352,7 +352,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                         &helper_mod_name,
                     );
                     // Result<Self, E> in builder context → treat as Result<(), E> for C
-                    let ok_kind = if is_unit_type(&ok) || (is_builder_return && is_self_return(&ok, &self_ty_static)) {
+                    let ok_kind = if is_unit_type(&ok)
+                        || (is_builder_return && is_self_return(&ok, &self_ty_static))
+                    {
                         None
                     } else {
                         let vk = classify_value(
@@ -399,7 +401,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             ret_orig_type: {
                 let mut out = method.sig.output.clone();
                 if let ReturnType::Type(_, ty) = &mut out {
-                    *ty = Box::new(replace_self_type(ty, self_ty));
+                    **ty = replace_self_type(ty, self_ty);
                 }
                 out
             },
@@ -423,70 +425,76 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let meta_macro_name = format_ident!("ffier_meta_op_{struct_lower}");
 
     // Build method metadata tokens
-    let method_meta_tokens: Vec<_> = methods.iter().map(|m| {
-        let name = &m.method_name;
-        let ffi_name_str = &m.ffi_name_str;
-        let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
+    let method_meta_tokens: Vec<_> = methods
+        .iter()
+        .map(|m| {
+            let name = &m.method_name;
+            let ffi_name_str = &m.ffi_name_str;
+            let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
 
-        let receiver_ident = if !m.has_receiver {
-            format_ident!("none")
-        } else if m.is_by_value {
-            format_ident!("value")
-        } else if m.is_mut {
-            // "mut" is a keyword, so we use r#mut
-            format_ident!("r#mut")
-        } else {
-            // "ref" is a keyword, so we use r#ref
-            format_ident!("r#ref")
-        };
+            let receiver_ident = if !m.has_receiver {
+                format_ident!("none")
+            } else if m.is_by_value {
+                format_ident!("value")
+            } else if m.is_mut {
+                // "mut" is a keyword, so we use r#mut
+                format_ident!("r#mut")
+            } else {
+                // "ref" is a keyword, so we use r#ref
+                format_ident!("r#ref")
+            };
 
-        let is_builder = m.is_builder;
+            let is_builder = m.is_builder;
 
-        let param_tokens: Vec<_> = m.param_idents.iter()
-            .zip(m.param_kinds.iter())
-            .zip(m.param_orig_types.iter())
-            .map(|((id, kind), orig_ty)| {
-                let kind_tokens = emit_param_kind(kind);
-                let erased_ty = strip_lifetimes_for_metadata(orig_ty);
-                quote! {
-                    {
-                        name = #id,
-                        kind = #kind_tokens,
-                        rust_type = (#erased_ty),
+            let param_tokens: Vec<_> = m
+                .param_idents
+                .iter()
+                .zip(m.param_kinds.iter())
+                .zip(m.param_orig_types.iter())
+                .map(|((id, kind), orig_ty)| {
+                    let kind_tokens = emit_param_kind(kind);
+                    let erased_ty = strip_lifetimes_for_metadata(orig_ty);
+                    quote! {
+                        {
+                            name = #id,
+                            kind = #kind_tokens,
+                            rust_type = (#erased_ty),
+                        }
                     }
+                })
+                .collect();
+
+            let ret_tokens = emit_return_kind(&m.ret);
+            // Emit only the type part of the return, not the `->` arrow.
+            // Erase lifetimes to anonymous (`'_`) so method-level lifetimes
+            // (e.g. `'a` in `fn echo<'a>(&self, s: &'a str) -> &'a str`)
+            // don't leak into generated client code as undeclared.
+            let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
+                ReturnType::Default => quote! { () },
+                ReturnType::Type(_, ty) => {
+                    let erased = strip_lifetimes_for_metadata(ty);
+                    quote! { #erased }
                 }
-            })
-            .collect();
+            };
 
-        let ret_tokens = emit_return_kind(&m.ret);
-        // Emit only the type part of the return, not the `->` arrow.
-        // Erase lifetimes to anonymous (`'_`) so method-level lifetimes
-        // (e.g. `'a` in `fn echo<'a>(&self, s: &'a str) -> &'a str`)
-        // don't leak into generated client code as undeclared.
-        let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
-            ReturnType::Default => quote! { () },
-            ReturnType::Type(_, ty) => {
-                let erased = strip_lifetimes_for_metadata(ty);
-                quote! { #erased }
+            quote! {
+                {
+                    name = #name,
+                    ffi_name = #ffi_name_str,
+                    doc = [#(#doc_tokens),*],
+                    receiver = #receiver_ident,
+                    is_builder = #is_builder,
+                    params = [#(#param_tokens),*],
+                    ret = #ret_tokens,
+                    rust_ret = (#rust_ret),
+                }
             }
-        };
-
-        quote! {
-            {
-                name = #name,
-                ffi_name = #ffi_name_str,
-                doc = [#(#doc_tokens),*],
-                receiver = #receiver_ident,
-                is_builder = #is_builder,
-                params = [#(#param_tokens),*],
-                ret = #ret_tokens,
-                rust_ret = (#rust_ret),
-            }
-        }
-    }).collect();
+        })
+        .collect();
 
     // Build type alias metadata tokens
-    let alias_meta_tokens: Vec<_> = reexport_aliases.iter()
+    let alias_meta_tokens: Vec<_> = reexport_aliases
+        .iter()
         .zip(reexport_types.iter())
         .map(|(alias, _ty)| {
             // In the metadata, reference the alias via $crate::helper_mod::alias
@@ -495,7 +503,9 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // Lifetime idents (without the tick) for metadata
-    let lifetime_idents: Vec<_> = input.generics.lifetimes()
+    let lifetime_idents: Vec<_> = input
+        .generics
+        .lifetimes()
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
@@ -671,11 +681,11 @@ fn replace_self_type(ty: &Type, replacement: &Type) -> Type {
     struct Replacer<'a>(&'a Type);
     impl VisitMut for Replacer<'_> {
         fn visit_type_mut(&mut self, ty: &mut Type) {
-            if let Type::Path(tp) = ty {
-                if tp.path.is_ident("Self") {
-                    *ty = self.0.clone();
-                    return;
-                }
+            if let Type::Path(tp) = ty
+                && tp.path.is_ident("Self")
+            {
+                *ty = self.0.clone();
+                return;
             }
             syn::visit_mut::visit_type_mut(self, ty);
         }
@@ -733,12 +743,12 @@ fn ffi_repr_for_type(ty: &Type) -> FfiRepr {
     if is_primitive(ty) {
         return FfiRepr::Primitive;
     }
-    if let Type::Path(tp) = ty {
-        if let Some(last) = tp.path.segments.last() {
-            let name = last.ident.to_string();
-            if FD_TYPES.contains(&name.as_str()) {
-                return FfiRepr::Other(quote! { i32 });
-            }
+    if let Type::Path(tp) = ty
+        && let Some(last) = tp.path.segments.last()
+    {
+        let name = last.ident.to_string();
+        if FD_TYPES.contains(&name.as_str()) {
+            return FfiRepr::Other(quote! { i32 });
         }
     }
     FfiRepr::Handle
@@ -763,9 +773,13 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
         }
         ParamKind::DynDispatch(cfg) => {
             let c_name_suffix = &cfg.c_name_suffix;
-            let variant_tokens: Vec<_> = cfg.variants.iter().map(|(name, ty)| {
-                quote! { (#name, #ty) }
-            }).collect();
+            let variant_tokens: Vec<_> = cfg
+                .variants
+                .iter()
+                .map(|(name, ty)| {
+                    quote! { (#name, #ty) }
+                })
+                .collect();
             quote! { dyn_dispatch, c_name_suffix = #c_name_suffix, variants = [#(#variant_tokens),*] }
         }
     }
@@ -790,7 +804,11 @@ fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
             let vk_tokens = emit_value_kind(vk);
             quote! { value(#vk_tokens) }
         }
-        ReturnKind::Result { ok_ty, err_ty, err_ident } => {
+        ReturnKind::Result {
+            ok_ty,
+            err_ty,
+            err_ident,
+        } => {
             let ok_tokens = match ok_ty {
                 None => quote! { ok = void },
                 Some(vk) => {
@@ -894,17 +912,21 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let meta_macro_name = format_ident!("ffier_meta_op_{err_snake}");
 
     // Build variant metadata tokens
-    let variant_meta_tokens: Vec<_> = data_enum.variants.iter().map(|variant| {
-        let var_ident = &variant.ident;
-        let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
-        let code = attrs.code;
-        let message = attrs
-            .message
-            .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
-        quote! {
-            { name = #var_ident, code = #code, message = #message, }
-        }
-    }).collect();
+    let variant_meta_tokens: Vec<_> = data_enum
+        .variants
+        .iter()
+        .map(|variant| {
+            let var_ident = &variant.ident;
+            let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
+            let code = attrs.code;
+            let message = attrs
+                .message
+                .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+            quote! {
+                { name = #var_ident, code = #code, message = #message, }
+            }
+        })
+        .collect();
 
     let error_path = quote! { $crate::#name };
 
@@ -1140,7 +1162,10 @@ impl Parse for ImplementableArgs {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { _prefix: prefix, supers })
+        Ok(Self {
+            _prefix: prefix,
+            supers,
+        })
     }
 }
 
@@ -1457,30 +1482,37 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let vtable_field_meta: Vec<proc_macro2::TokenStream> = Vec::new();
 
     // Build vtable method metadata
-    let vtable_method_meta: Vec<_> = vtable_methods.iter().map(|m| {
-        let mname = &m.name;
-        let param_meta: Vec<_> = m.params.iter().map(|(id, vpt)| {
-            let kind = match vpt {
-                VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
-                VtableParamType::Str => quote! { str },
-                VtableParamType::Bytes => quote! { bytes },
-                VtableParamType::Path => quote! { path },
-                VtableParamType::Handle(ty) => quote! { handle(#ty) },
+    let vtable_method_meta: Vec<_> = vtable_methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let param_meta: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let kind = match vpt {
+                        VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
+                        VtableParamType::Str => quote! { str },
+                        VtableParamType::Bytes => quote! { bytes },
+                        VtableParamType::Path => quote! { path },
+                        VtableParamType::Handle(ty) => quote! { handle(#ty) },
+                    };
+                    quote! { (#id, #kind) }
+                })
+                .collect();
+            let ret = match &m.ret {
+                VtableRetType::Void => quote! { void },
+                VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
+                VtableRetType::Str => quote! { str },
+                VtableRetType::Bytes => quote! { bytes },
+                VtableRetType::Path => quote! { path },
+                VtableRetType::Handle(ty) => quote! { handle(#ty) },
             };
-            quote! { (#id, #kind) }
-        }).collect();
-        let ret = match &m.ret {
-            VtableRetType::Void => quote! { void },
-            VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
-            VtableRetType::Str => quote! { str },
-            VtableRetType::Bytes => quote! { bytes },
-            VtableRetType::Path => quote! { path },
-            VtableRetType::Handle(ty) => quote! { handle(#ty) },
-        };
-        quote! {
-            { name = #mname, params = [#(#param_meta),*], ret = #ret, }
-        }
-    }).collect();
+            quote! {
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
+            }
+        })
+        .collect();
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -1556,4 +1588,3 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
-
