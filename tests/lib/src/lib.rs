@@ -463,12 +463,14 @@ pub trait Fruit {
     fn value(&self) -> i32;
 }
 
+#[ffier::trait_impl]
 impl Fruit for Apple {
     fn value(&self) -> i32 {
         self.weight
     }
 }
 
+#[ffier::trait_impl]
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         self.juice

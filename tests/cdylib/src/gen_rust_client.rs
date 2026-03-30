@@ -13,6 +13,8 @@ ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_rust::generate_c
 ffier_test_lib::ffier_meta_op_apple!("ft", ffier_gen_rust::generate_client_source);
 ffier_test_lib::ffier_meta_op_orange!("ft", ffier_gen_rust::generate_client_source);
 ffier_test_lib::ffier_meta_op_vtable_fruit!("ft", ffier_gen_rust::generate_client_source);
+ffier_test_lib::ffier_meta_op_fruit_for_apple!("ft", ffier_gen_rust::generate_client_source);
+ffier_test_lib::ffier_meta_op_fruit_for_orange!("ft", ffier_gen_rust::generate_client_source);
 ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_rust::generate_client_source);
 
 fn main() {
@@ -34,5 +36,7 @@ fn main() {
     print!("{FFIER_SRC_APPLE}");
     print!("{FFIER_SRC_ORANGE}");
     print!("{FFIER_SRC_VTABLE_FRUIT}");
+    print!("{FFIER_SRC_FRUIT_FOR_APPLE}");
+    print!("{FFIER_SRC_FRUIT_FOR_ORANGE}");
     print!("{FFIER_SRC_MIXER}");
 }

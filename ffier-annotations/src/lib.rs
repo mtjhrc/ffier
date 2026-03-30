@@ -1588,3 +1588,112 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+// ===========================================================================
+// #[ffier::trait_impl] — export trait method impls as C functions
+// ===========================================================================
+
+#[proc_macro_attribute]
+pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as ItemImpl);
+    let original_impl = input.clone();
+
+    // Extract trait path and name
+    let Some((_, trait_path, _)) = &input.trait_ else {
+        return syn::Error::new_spanned(&input, "trait_impl requires a trait impl block")
+            .to_compile_error()
+            .into();
+    };
+    let trait_name = trait_path
+        .segments
+        .last()
+        .expect("trait path must have segments")
+        .ident
+        .clone();
+    let trait_snake = camel_to_snake(&trait_name.to_string());
+
+    // Extract struct type
+    let Type::Path(ref struct_type_path) = *input.self_ty else {
+        return syn::Error::new_spanned(&input.self_ty, "expected a named struct type")
+            .to_compile_error()
+            .into();
+    };
+    let struct_ident = &struct_type_path
+        .path
+        .segments
+        .last()
+        .expect("expected struct name")
+        .ident;
+    let struct_name = struct_ident.to_string();
+    let struct_snake = camel_to_snake(&struct_name);
+
+    // Extract methods using the same classification as implementable
+    let methods: Vec<VtableMethod> = input
+        .items
+        .iter()
+        .filter_map(|item| {
+            let ImplItem::Fn(method) = item else {
+                return None;
+            };
+            parse_trait_method_sig(&method.sig, None)
+        })
+        .collect();
+
+    // Build method metadata tokens (same format as implementable vtable_methods)
+    let method_meta: Vec<_> = methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let param_meta: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let kind = match vpt {
+                        VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
+                        VtableParamType::Str => quote! { str },
+                        VtableParamType::Bytes => quote! { bytes },
+                        VtableParamType::Path => quote! { path },
+                        VtableParamType::Handle(ty) => quote! { handle(#ty) },
+                    };
+                    quote! { (#id, #kind) }
+                })
+                .collect();
+            let ret = match &m.ret {
+                VtableRetType::Void => quote! { void },
+                VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
+                VtableRetType::Str => quote! { str },
+                VtableRetType::Bytes => quote! { bytes },
+                VtableRetType::Path => quote! { path },
+                VtableRetType::Handle(ty) => quote! { handle(#ty) },
+            };
+            quote! {
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
+            }
+        })
+        .collect();
+
+    let meta_macro_name = format_ident!("ffier_meta_op_{trait_snake}_for_{struct_snake}");
+    let struct_path_tokens = quote! { $crate::#struct_ident };
+    let trait_path_tokens = quote! { $crate::#trait_name };
+
+    let output = quote! {
+        #original_impl
+
+        #[macro_export]
+        macro_rules! #meta_macro_name {
+            ($prefix:literal, $callback:path) => {
+                $callback! {
+                    @trait_impl,
+                    trait_name = #trait_name,
+                    struct_name = #struct_ident,
+                    struct_path = (#struct_path_tokens),
+                    trait_path = (#trait_path_tokens),
+                    prefix = $prefix,
+                    methods = [#(#method_meta),*],
+                }
+            };
+        }
+    };
+
+    output.into()
+}

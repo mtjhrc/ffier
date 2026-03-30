@@ -8,7 +8,7 @@ use ffier_test_lib as api;
 #[cfg(feature = "via-cdylib")]
 use ffier_test_lib_via_cdylib as api;
 
-use api::{Config, Gadget, View, Widget};
+use api::{Config, Gadget, Mixer, View, Widget};
 
 fn make_widget() -> Widget {
     Widget::new()
@@ -174,5 +174,38 @@ mod tests {
             v.source_count()
         };
         assert_eq!(count, 42);
+    }
+
+    // ================================================================
+    // Mixer + custom Fruit type
+    // ================================================================
+
+    struct Banana {
+        sweetness: i32,
+    }
+
+    impl api::Fruit for Banana {
+        fn value(&self) -> i32 {
+            self.sweetness
+        }
+    }
+
+    #[cfg(feature = "via-cdylib")]
+    api::impl_fruit!(Banana);
+
+    #[test]
+    fn test_mixer_with_known_types() {
+        let m = Mixer::new()
+            .add(api::Apple::new(5))
+            .add(api::Orange::new(3));
+        assert_eq!(m.total(), 8);
+    }
+
+    #[test]
+    fn test_mixer_with_custom_banana() {
+        let m = Mixer::new()
+            .add(Banana { sweetness: 10 })
+            .add(api::Apple::new(5));
+        assert_eq!(m.total(), 15);
     }
 }

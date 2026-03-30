@@ -10,8 +10,8 @@ use quote::{format_ident, quote};
 
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake, camel_to_upper_snake,
-    peek_meta_tag,
+    MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
+    camel_to_upper_snake, peek_meta_tag,
 };
 
 /// Generates Rust client source code as a named `&str` constant.
@@ -51,9 +51,16 @@ fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
             };
             generate_implementable_client(meta)
         }
+        "trait_impl" => {
+            let meta: MetaTraitImpl = match syn::parse2(input) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            generate_trait_impl_client(meta)
+        }
         _ => {
             let msg = format!(
-                "unknown metadata tag `@{tag}`: expected @exportable, @error, or @implementable"
+                "unknown metadata tag `@{tag}`: expected @exportable, @error, @implementable, or @trait_impl"
             );
             quote! { compile_error!(#msg); }
         }
@@ -72,6 +79,10 @@ fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
     let upper_name = camel_to_upper_snake(&type_name);
     let const_name = if tag == "implementable" {
         format_ident!("FFIER_SRC_VTABLE_{upper_name}")
+    } else if tag == "trait_impl" {
+        let struct_name = peek_meta_field(&input, "struct_name");
+        let upper_struct = camel_to_upper_snake(&struct_name);
+        format_ident!("FFIER_SRC_{upper_name}_FOR_{upper_struct}")
     } else {
         format_ident!("FFIER_SRC_{upper_name}")
     };
@@ -89,6 +100,22 @@ fn peek_meta_name(input: &TokenStream2) -> String {
     for i in 0..tokens.len().saturating_sub(2) {
         if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
             && (id == "name" || id == "trait_name")
+            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
+            && p.as_char() == '='
+            && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
+        {
+            return name.to_string();
+        }
+    }
+    "Unknown".to_string()
+}
+
+/// Peek at a specific `field = IDENT` from a metadata token stream.
+fn peek_meta_field(input: &TokenStream2, field: &str) -> String {
+    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
+    for i in 0..tokens.len().saturating_sub(2) {
+        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
+            && id == field
             && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
             && p.as_char() == '='
             && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
@@ -444,33 +471,15 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             }
         });
 
-        // Generate dyn_param traits
+        // Generate dyn_param trait definition only.
+        // Per-variant impls come from @trait_impl (known types) or impl_xxx! macro (user types).
         for p in &m.params {
-            if let MetaParamKind::DynDispatch {
-                c_name_suffix,
-                variants,
-            } = &p.kind
-            {
+            if let MetaParamKind::DynDispatch { c_name_suffix, .. } = &p.kind {
                 let trait_name = format_ident!("Into{c_name_suffix}Handle");
-                let variant_impls: Vec<_> = variants
-                    .iter()
-                    .map(|(variant_name, _)| {
-                        let variant_struct = format_ident!("{variant_name}");
-                        quote! {
-                            impl #trait_name for #variant_struct {
-                                fn into_raw_handle(self) -> *mut core::ffi::c_void {
-                                    let this = std::mem::ManuallyDrop::new(self);
-                                    this.0
-                                }
-                            }
-                        }
-                    })
-                    .collect();
                 client_dyn_traits.push(quote! {
                     pub trait #trait_name {
                         fn into_raw_handle(self) -> *mut core::ffi::c_void;
                     }
-                    #(#variant_impls)*
                 });
             }
         }
@@ -638,7 +647,92 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
+    // Generate trait definition
+    let trait_name = &meta.trait_name;
+    let trait_method_sigs: Vec<_> = meta
+        .vtable_methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let ty = vtable_param_rust_type(vpt);
+                    quote! { #id: #ty }
+                })
+                .collect();
+            let ret = vtable_ret_rust_type(&m.ret);
+            quote! { fn #mname(&self, #(#params),*) #ret; }
+        })
+        .collect();
+
+    // Generate impl_traitname! macro with trampolines
+    let macro_name = format_ident!("impl_{}", camel_to_snake(&trait_name.to_string()));
+    let into_handle_trait = format_ident!("Into{}Handle", trait_name);
+
+    // Build vtable field initializers with trampolines for the macro
+    let vtable_trampoline_fields: Vec<_> = meta
+        .vtable_methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let c_ty = vtable_param_c_type(vpt);
+                    quote! { #id: #c_ty }
+                })
+                .collect();
+            let ret = vtable_ret_c_type(&m.ret);
+
+            // Argument conversions: C repr -> Rust type
+            let arg_conversions: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    match vpt {
+                        MetaVtableParamType::Primitive(_) => quote! { #id },
+                        MetaVtableParamType::Str => quote! { unsafe { #id.as_str_unchecked() } },
+                        MetaVtableParamType::Bytes => quote! { unsafe { #id.as_bytes() } },
+                        MetaVtableParamType::Path => quote! { unsafe { #id.as_path() } },
+                        MetaVtableParamType::Handle(_) => quote! { #id }, // TODO: handle conversion
+                    }
+                })
+                .collect();
+
+            // Return conversion: Rust type -> C repr
+            let ret_conversion = match &m.ret {
+                MetaVtableRetType::Void => quote! { __result },
+                MetaVtableRetType::Primitive(_) => quote! { __result },
+                MetaVtableRetType::Str => quote! { ffier::FfierBytes::from_str(__result) },
+                MetaVtableRetType::Bytes => quote! { ffier::FfierBytes::from_bytes(__result) },
+                MetaVtableRetType::Path => quote! { ffier::FfierBytes::from_path(__result) },
+                MetaVtableRetType::Handle(_) => quote! { __result }, // TODO
+            };
+
+            quote! {
+                #mname: {
+                    unsafe extern "C" fn __trampoline(
+                        __ud: *mut core::ffi::c_void
+                        #(, #params)*
+                    ) #ret {
+                        let __obj = unsafe { &*(__ud as *const $ty) };
+                        let __result = __obj.#mname(#(#arg_conversions),*);
+                        #ret_conversion
+                    }
+                    __trampoline
+                }
+            }
+        })
+        .collect();
+
     quote! {
+        pub trait #trait_name {
+            #(#trait_method_sigs)*
+        }
+
         #[repr(C)]
         pub struct #vtable_struct_name {
             #(#vtable_field_defs)*
@@ -659,12 +753,48 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             pub fn new(user_data: *mut core::ffi::c_void, vtable: &#vtable_struct_name) -> Self {
                 Self(unsafe { #constructor_name(user_data, vtable) })
             }
+
+            #[doc(hidden)]
+            pub fn __into_raw(self) -> *mut core::ffi::c_void {
+                let this = std::mem::ManuallyDrop::new(self);
+                this.0
+            }
         }
 
         impl Drop for #wrapper_name {
             fn drop(&mut self) {
                 // vtable handles are consumed by dyn_param methods, no separate destroy
             }
+        }
+
+        /// Implement `IntoXxxHandle` for a user-defined type via static vtable.
+        ///
+        /// The type must implement the trait. A global `static` vtable is
+        /// generated with const trampoline function pointers — zero runtime cost.
+        #[macro_export]
+        #[allow(unused_macros)]
+        macro_rules! #macro_name {
+            ($ty:ty) => {
+                const _: () = {
+                    use $crate::#trait_name;
+                    static __VTABLE: $crate::#vtable_struct_name = $crate::#vtable_struct_name {
+                        #(#vtable_trampoline_fields,)*
+                        drop: Some({
+                            unsafe extern "C" fn __trampoline(__ud: *mut core::ffi::c_void) {
+                                unsafe { drop(Box::from_raw(__ud as *mut $ty)) };
+                            }
+                            __trampoline
+                        }),
+                    };
+
+                    impl $crate::#into_handle_trait for $ty {
+                        fn into_raw_handle(self) -> *mut core::ffi::c_void {
+                            let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
+                            $crate::#wrapper_name::new(__ud, &__VTABLE).__into_raw()
+                        }
+                    }
+                };
+            };
         }
     }
 }
@@ -839,6 +969,29 @@ fn extract_ok_type_from_tokens(tokens: &TokenStream2) -> TokenStream2 {
     tokens.clone()
 }
 
+/// Generate Rust type tokens for vtable parameter types (trait definition).
+fn vtable_param_rust_type(vpt: &MetaVtableParamType) -> TokenStream2 {
+    match vpt {
+        MetaVtableParamType::Primitive(ty) => quote! { #ty },
+        MetaVtableParamType::Str => quote! { &str },
+        MetaVtableParamType::Bytes => quote! { &[u8] },
+        MetaVtableParamType::Path => quote! { &std::path::Path },
+        MetaVtableParamType::Handle(ty) => quote! { &#ty },
+    }
+}
+
+/// Generate Rust return type annotation for vtable return types (trait definition).
+fn vtable_ret_rust_type(ret: &MetaVtableRetType) -> TokenStream2 {
+    match ret {
+        MetaVtableRetType::Void => quote! {},
+        MetaVtableRetType::Primitive(ty) => quote! { -> #ty },
+        MetaVtableRetType::Str => quote! { -> &str },
+        MetaVtableRetType::Bytes => quote! { -> &[u8] },
+        MetaVtableRetType::Path => quote! { -> &std::path::Path },
+        MetaVtableRetType::Handle(ty) => quote! { -> #ty },
+    }
+}
+
 /// Generate C type tokens for vtable parameter types (client side).
 fn vtable_param_c_type(vpt: &MetaVtableParamType) -> TokenStream2 {
     match vpt {
@@ -859,5 +1012,118 @@ fn vtable_ret_c_type(ret: &MetaVtableRetType) -> TokenStream2 {
             quote! { -> ffier::FfierBytes }
         }
         MetaVtableRetType::Handle(_) => quote! { -> *mut core::ffi::c_void },
+    }
+}
+
+// ===========================================================================
+// Trait impl client generation
+// ===========================================================================
+
+fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
+    let trait_name = &meta.trait_name;
+    let struct_name = &meta.struct_name;
+    let fn_pfx = meta.fn_pfx();
+    let struct_snake = camel_to_snake(&struct_name.to_string());
+    let into_handle_trait = format_ident!("Into{}Handle", trait_name);
+
+    // Extern declarations for trait method C functions
+    let extern_decls: Vec<_> = meta
+        .methods
+        .iter()
+        .map(|m| {
+            let ffi_name = format_ident!("{fn_pfx}{struct_snake}_{}", m.name);
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let c_ty = vtable_param_c_type(vpt);
+                    quote! { #id: #c_ty }
+                })
+                .collect();
+            let ret = vtable_ret_c_type(&m.ret);
+            quote! { fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
+        })
+        .collect();
+
+    // Trait method implementations calling through C ABI
+    let trait_method_impls: Vec<_> = meta
+        .methods
+        .iter()
+        .map(|m| {
+            let method_name = &m.name;
+            let ffi_name = format_ident!("{fn_pfx}{struct_snake}_{method_name}");
+
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| {
+                    let ty = vtable_param_rust_type(vpt);
+                    quote! { #id: #ty }
+                })
+                .collect();
+
+            let ret = vtable_ret_rust_type(&m.ret);
+
+            // Convert Rust args to C repr for the call
+            let call_args: Vec<_> = m
+                .params
+                .iter()
+                .map(|(id, vpt)| match vpt {
+                    MetaVtableParamType::Primitive(_) => quote! { #id },
+                    MetaVtableParamType::Str => quote! { ffier::FfierBytes::from_str(#id) },
+                    MetaVtableParamType::Bytes => quote! { ffier::FfierBytes::from_bytes(#id) },
+                    MetaVtableParamType::Path => quote! { ffier::FfierBytes::from_path(#id) },
+                    MetaVtableParamType::Handle(_) => quote! { #id }, // TODO
+                })
+                .collect();
+
+            // Convert C return to Rust type
+            let ret_conversion = match &m.ret {
+                MetaVtableRetType::Void => quote! {},
+                MetaVtableRetType::Primitive(_) => quote! { __raw },
+                MetaVtableRetType::Str => quote! {
+                    unsafe { core::str::from_utf8_unchecked(
+                        core::slice::from_raw_parts(__raw.data, __raw.len)
+                    ) }
+                },
+                MetaVtableRetType::Bytes => quote! {
+                    unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
+                },
+                MetaVtableRetType::Path => quote! { unsafe { __raw.as_path() } },
+                MetaVtableRetType::Handle(_) => quote! { __raw }, // TODO
+            };
+
+            let body = if matches!(m.ret, MetaVtableRetType::Void) {
+                quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
+            } else {
+                quote! {
+                    let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
+                    #ret_conversion
+                }
+            };
+
+            quote! {
+                fn #method_name(&self, #(#params),*) #ret {
+                    #body
+                }
+            }
+        })
+        .collect();
+
+    quote! {
+        unsafe extern "C" {
+            #(#extern_decls)*
+        }
+
+        impl #trait_name for #struct_name {
+            #(#trait_method_impls)*
+        }
+
+        impl #into_handle_trait for #struct_name {
+            fn into_raw_handle(self) -> *mut core::ffi::c_void {
+                let this = std::mem::ManuallyDrop::new(self);
+                this.0
+            }
+        }
     }
 }
