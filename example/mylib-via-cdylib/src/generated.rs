@@ -58,22 +58,6 @@ unsafe extern "C" {
         b: i32,
         result: *mut i32,
     ) -> ffier::FfierError;
-    fn mylib_calculator_create_result(handle: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    fn mylib_calculator_accumulate(
-        handle: *mut core::ffi::c_void,
-        res: *mut core::ffi::c_void,
-        n: i32,
-    );
-    fn mylib_calculator_read_result(
-        handle: *mut core::ffi::c_void,
-        res: *mut core::ffi::c_void,
-    ) -> i32;
-    fn mylib_calculator_try_divide_result(
-        handle: *mut core::ffi::c_void,
-        a: i32,
-        b: i32,
-        result: *mut *mut core::ffi::c_void,
-    ) -> ffier::FfierError;
 }
 pub struct Calculator(*mut core::ffi::c_void);
 impl Calculator {
@@ -127,78 +111,10 @@ impl Calculator {
             Err(CalcError::from_ffi(__err))
         }
     }
-    #[doc = " Create a new result accumulator."]
-    pub fn create_result(&self) -> CalcResult {
-        let __raw = unsafe { mylib_calculator_create_result(self.0) };
-        <CalcResult as ffier::FfiType>::from_c(__raw)
-    }
-    #[doc = " Add a value into a result accumulator."]
-    pub fn accumulate(&self, res: &mut CalcResult, n: i32) {
-        unsafe { mylib_calculator_accumulate(self.0, res.0, n) }
-    }
-    #[doc = " Read the accumulated value."]
-    pub fn read_result(&self, res: &CalcResult) -> i32 {
-        let __raw = unsafe { mylib_calculator_read_result(self.0, res.0) };
-        __raw
-    }
-    #[doc = " Divide and store the result, or error if divisor is zero."]
-    pub fn try_divide_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
-        let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe { mylib_calculator_try_divide_result(self.0, a, b, __out.as_mut_ptr()) };
-        if __err.code == 0 {
-            Ok(<CalcResult as ffier::FfiType>::from_c(unsafe {
-                __out.assume_init()
-            }))
-        } else {
-            Err(CalcError::from_ffi(__err))
-        }
-    }
 }
 impl Drop for Calculator {
     fn drop(&mut self) {
         unsafe { mylib_calculator_destroy(self.0) }
-    }
-}
-unsafe extern "C" {
-    fn mylib_calc_result_destroy(handle: *mut core::ffi::c_void);
-    fn mylib_calc_result_get(handle: *mut core::ffi::c_void) -> i32;
-}
-pub struct CalcResult(*mut core::ffi::c_void);
-impl CalcResult {
-    #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
-        Self(ptr)
-    }
-    #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
-        let this = std::mem::ManuallyDrop::new(self);
-        this.0
-    }
-}
-impl ffier::FfiType for CalcResult {
-    type CRepr = *mut core::ffi::c_void;
-    const C_TYPE_NAME: &str = "";
-    fn into_c(self) -> *mut core::ffi::c_void {
-        self.__into_raw()
-    }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
-    }
-}
-impl std::fmt::Debug for CalcResult {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("CalcResult").field(&self.0).finish()
-    }
-}
-impl CalcResult {
-    pub fn get(&self) -> i32 {
-        let __raw = unsafe { mylib_calc_result_get(self.0) };
-        __raw
-    }
-}
-impl Drop for CalcResult {
-    fn drop(&mut self) {
-        unsafe { mylib_calc_result_destroy(self.0) }
     }
 }
 unsafe extern "C" {
