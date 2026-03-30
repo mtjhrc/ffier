@@ -7,6 +7,9 @@ ffier_test_lib::ffier_meta_op_view!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_pipeline!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_test_error!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_apple!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_orange!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
 
 #[cfg(test)]
 mod tests {

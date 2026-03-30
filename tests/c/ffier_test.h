@@ -12,6 +12,9 @@ typedef void* FtGizmo;
 typedef void* FtGizmoBuilder;
 typedef void* FtView;
 typedef void* FtPipeline;
+typedef void* FtApple;
+typedef void* FtOrange;
+typedef void* FtMixer;
 
 /* Caller must ensure data is valid UTF-8 */
 typedef struct {
@@ -342,4 +345,22 @@ typedef struct {
 } FtProcessorVtable;
 
 void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable);
+
+/* Apple ------------------------------------------------------------- */
+
+FtApple ft_apple_new(int32_t weight);
+void ft_apple_destroy(FtApple handle);
+
+/* Orange ------------------------------------------------------------ */
+
+FtOrange ft_orange_new(int32_t juice);
+void ft_orange_destroy(FtOrange handle);
+
+/* Mixer ------------------------------------------------------------- */
+
+typedef void* FtFruit; /* FtApple | FtOrange */
+FtMixer ft_mixer_new(void);
+void ft_mixer_add(FtMixer* handle, FtFruit fruit);
+int32_t ft_mixer_total(FtMixer handle);
+void ft_mixer_destroy(FtMixer handle);
 #endif /* FFIER_TEST_H */

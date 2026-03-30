@@ -366,9 +366,10 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             _ => (false, None),
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
-        let borrow_notes: Vec<String> =
-            if !meta.lifetimes.is_empty() && m.receiver == MetaReceiver::None {
-                m.params
+        let borrow_notes: Vec<String> = if !meta.lifetimes.is_empty()
+            && m.receiver == MetaReceiver::None
+        {
+            m.params
                     .iter()
                     .filter_map(|p| {
                         if matches!(p.kind, MetaParamKind::HandleRef { .. }) {
@@ -382,9 +383,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                         }
                     })
                     .collect()
-            } else {
-                vec![]
-            };
+        } else {
+            vec![]
+        };
         if let Some(doc) = build_doxygen_comment(
             &m.doc,
             &param_name_strs,
