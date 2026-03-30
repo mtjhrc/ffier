@@ -1,3 +1,3 @@
 [workspace]
-members = ["ffier", "ffier-rt", "ffier-meta", "ffier-annotations", "ffier-gen-c", "ffier-gen-rust", "example/lib", "example/cdylib", "tests/lib", "tests/cdylib", "tests/lib-via-cdylib", "tests/consumer"]
+members = ["ffier", "ffier-rt", "ffier-meta", "ffier-annotations", "ffier-gen-c", "ffier-gen-rust", "example/mylib", "example/mylib-cdylib", "example/mylib-via-cdylib", "example/rust-consumer", "tests/lib", "tests/cdylib", "tests/lib-via-cdylib", "tests/consumer"]
 resolver = "2"

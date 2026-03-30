@@ -1,5 +1,5 @@
 [package]
-name = "example-cdylib"
+name = "mylib-cdylib"
 version = "0.1.0"
 edition = "2024"
 
@@ -10,7 +10,12 @@ crate-type = ["cdylib"]
 name = "gen-header"
 path = "src/gen_header.rs"
 
+[[bin]]
+name = "gen-rust-client"
+path = "src/gen_rust_client.rs"
+
 [dependencies]
-example-lib = { path = "../lib" }
+mylib = { path = "../mylib" }
 ffier = { path = "../../ffier" }
 ffier-gen-c = { path = "../../ffier-gen-c" }
+ffier-gen-rust = { path = "../../ffier-gen-rust" }
