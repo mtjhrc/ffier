@@ -1,0 +1,13 @@
+[package]
+name = "mylib-rust-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["native"]
+native = ["dep:mylib"]
+via-cdylib = ["dep:mylib-via-cdylib"]
+
+[dependencies]
+mylib = { path = "../mylib", optional = true }
+mylib-via-cdylib = { path = "../mylib-via-cdylib", optional = true }

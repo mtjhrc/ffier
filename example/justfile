@@ -1,10 +1,24 @@
-# Build the C example (compiles cdylib, generates header, links)
-build:
-    make -C c
+root := justfile_directory() / ".."
 
-# Build and run the C example
-run: build
-    LD_LIBRARY_PATH=../target/debug ./c/main
+# Build the cdylib and C consumer
+build:
+    make -C c-consumer
+
+# Run the C consumer
+run-c: build
+    LD_LIBRARY_PATH={{root}}/target/debug ./c-consumer/main
+
+# Run Rust consumer with native linking
+run-rust-native:
+    cargo run --manifest-path {{root}}/Cargo.toml -p mylib-rust-consumer --no-default-features --features native
+
+# Run Rust consumer with C ABI linking
+run-rust-cdylib: build
+    cargo run --manifest-path {{root}}/Cargo.toml -p mylib-rust-consumer --no-default-features --features via-cdylib
+
+# Generate Rust client bindings
+gen-rust-client:
+    cargo run --manifest-path {{root}}/Cargo.toml -p mylib-cdylib --bin gen-rust-client | rustfmt > mylib-via-cdylib/src/generated.rs
 
 clean:
-    make -C c clean
+    make -C c-consumer clean
