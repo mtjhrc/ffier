@@ -591,16 +591,6 @@ mod tests {
             ft_widget_set_count(w, 123);
             let v = ft_view_create(w);
             assert_eq!(ft_view_source_count(v), 123);
-            // TODO: Both Stacked Borrows and Tree Borrows flag this as UB —
-            // View holds &Widget (Frozen), then ft_widget_set_count writes
-            // through &mut Widget, invalidating the shared borrow. The generated
-            // FFI code casts the handle to &T/&mut T which creates real Rust
-            // references. Fixing this likely requires the codegen to use raw
-            // pointers (*const T / *mut T) instead of references for handle
-            // access, so that Miri doesn't track borrow provenance across
-            // independent FFI calls.
-            // ft_widget_set_count(w, 456);
-            // assert_eq!(ft_view_source_count(v), 456);
             ft_view_destroy(v);
             ft_widget_destroy(w);
         }

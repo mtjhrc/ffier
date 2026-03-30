@@ -275,6 +275,7 @@ void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
  * Create a view that borrows a widget.
  *
  * @param source
+ * @note `source` is borrowed by the returned `FtView`. It must not be directly modified or destroyed while the `FtView` is alive.
  */
 FtView ft_view_create(FtWidget source);
 /**
