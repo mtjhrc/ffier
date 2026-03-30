@@ -1,24 +1,32 @@
 //! Bridge code generation from parsed metadata.
 //!
-//! `generate_bridge_impl` takes a metadata token stream (starting with `@exportable`,
+//! `generate_bridge` takes a metadata token stream (starting with `@exportable`,
 //! `@error`, or `@implementable`) and produces the corresponding `extern "C"` FFI
 //! functions plus a `__header()` function returning a `HeaderSection`.
 
-use proc_macro2::TokenStream;
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::meta::{
+use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaValueKind, MetaVtableParamType, MetaVtableRetType,
+    camel_to_snake, camel_to_upper_snake, peek_meta_tag,
 };
+
+/// Generates C FFI bridge functions from ffier metadata.
+#[proc_macro]
+pub fn generate_bridge(input: TokenStream) -> TokenStream {
+    generate_bridge_impl(input.into()).into()
+}
 
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
 ///
 /// The input token stream must start with one of:
-/// - `@exportable, ...` — generates method FFI functions, destroy, and header
-/// - `@error, ...` — generates error message/free helpers and header
-/// - `@implementable, ...` — generates vtable constructor and header
-pub fn generate_bridge_impl(input: TokenStream) -> TokenStream {
+/// - `@exportable, ...` --- generates method FFI functions, destroy, and header
+/// - `@error, ...` --- generates error message/free helpers and header
+/// - `@implementable, ...` --- generates vtable constructor and header
+fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
     // Peek at the tag to decide which parser to use.
     let tag = peek_meta_tag(&input);
 
@@ -51,25 +59,11 @@ pub fn generate_bridge_impl(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Peek at the `@tag` identifier from a metadata token stream without consuming it.
-pub(crate) fn peek_meta_tag(input: &TokenStream) -> String {
-    let mut iter = input.clone().into_iter();
-    // Skip `@` punct
-    if let Some(proc_macro2::TokenTree::Punct(p)) = iter.next() {
-        if p.as_char() == '@' {
-            if let Some(proc_macro2::TokenTree::Ident(id)) = iter.next() {
-                return id.to_string();
-            }
-        }
-    }
-    String::new()
-}
-
 // ===========================================================================
 // Exportable bridge generation
 // ===========================================================================
 
-fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
+fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
     let fn_pfx = meta.fn_pfx();
@@ -82,7 +76,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     let path_c_name = format!("{type_pfx}Path");
     let str_macro_name = format!("{upper_pfx}STR");
 
-    let struct_lower = crate::camel_to_snake(struct_name);
+    let struct_lower = camel_to_snake(struct_name);
 
     // Type aliases: emit `use` statements for bridge types
     let _type_alias_uses: Vec<_> = meta
@@ -96,8 +90,8 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
     let mut ffi_fns = Vec::new();
     let handle_typedef_expr =
         quote! { concat!("typedef void* ", #handle_c_name, ";") };
-    let mut shared_types_exprs: Vec<TokenStream> = Vec::new();
-    let mut decl_exprs: Vec<TokenStream> = Vec::new();
+    let mut shared_types_exprs: Vec<TokenStream2> = Vec::new();
+    let mut decl_exprs: Vec<TokenStream2> = Vec::new();
 
     // Bytes/Str/Path struct + typedefs
     if meta.uses_slices() {
@@ -585,7 +579,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream {
 // Error bridge generation
 // ===========================================================================
 
-fn generate_error_bridge(meta: MetaError) -> TokenStream {
+fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
     let name = &meta.name;
     let path = &meta.path;
     let fn_pfx = meta.fn_pfx();
@@ -593,8 +587,8 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream {
     let upper_pfx = meta.upper_pfx();
 
     let name_str = name.to_string();
-    let err_snake = crate::camel_to_snake(&name_str);
-    let err_upper = crate::camel_to_upper_snake(&name_str);
+    let err_snake = camel_to_snake(&name_str);
+    let err_upper = camel_to_upper_snake(&name_str);
 
     let message_fn_name = format_ident!("{fn_pfx}{err_snake}_message");
     let free_fn_name = format_ident!("{fn_pfx}{err_snake}_free");
@@ -664,7 +658,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream {
 // Implementable bridge generation
 // ===========================================================================
 
-fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream {
+fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     let vtable_struct_name = &meta.vtable_struct_name;
     let wrapper_name = &meta.wrapper_name;
     let vtable_c_name = meta.vtable_c_name();
@@ -677,12 +671,12 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream {
     let constructor_name = format_ident!("{}", constructor_name_str);
 
     let trait_name_str = meta.trait_name.to_string();
-    let trait_snake = crate::camel_to_snake(&trait_name_str);
+    let trait_snake = camel_to_snake(&trait_name_str);
     let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
     let vtable_section_name = format!("Vtable{trait_name_str}");
 
     // Build header lines for vtable struct
-    let mut header_lines: Vec<TokenStream> = Vec::new();
+    let mut header_lines: Vec<TokenStream2> = Vec::new();
 
     header_lines.push(quote! { concat!("typedef struct {") });
 
@@ -799,10 +793,10 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream {
 }
 
 // ===========================================================================
-// Helpers — metadata-based variants of the codegen helpers from lib.rs
+// Helpers --- metadata-based variants of the codegen helpers from lib.rs
 // ===========================================================================
 
-fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream {
+fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular {
             bridge_type,
@@ -821,7 +815,7 @@ fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream {
     }
 }
 
-fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream {
+fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular {
             bridge_type,
@@ -874,7 +868,7 @@ fn meta_param_c_type_expr(
     bytes_name: &str,
     path_name: &str,
     type_pfx: &str,
-) -> TokenStream {
+) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type, repr, .. } => {
             match repr {
@@ -905,7 +899,7 @@ fn meta_param_c_type_expr(
     }
 }
 
-fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream {
+fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
     match kind {
         MetaValueKind::Regular { bridge_type, .. } => {
             quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
@@ -916,7 +910,7 @@ fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream {
     }
 }
 
-fn meta_value_into_c(kind: &MetaValueKind, var: &syn::Ident) -> TokenStream {
+fn meta_value_into_c(kind: &MetaValueKind, var: &syn::Ident) -> TokenStream2 {
     match kind {
         MetaValueKind::Regular { bridge_type, .. } => {
             quote! { <#bridge_type as ffier::FfiType>::into_c(#var) }
@@ -933,7 +927,7 @@ fn meta_value_c_type_expr(
     bytes_name: &str,
     path_name: &str,
     type_pfx: &str,
-) -> TokenStream {
+) -> TokenStream2 {
     match kind {
         MetaValueKind::Regular { bridge_type, repr, .. } => {
             match repr {
@@ -956,13 +950,13 @@ fn meta_value_c_type_expr(
 // ---------------------------------------------------------------------------
 
 fn build_header_line(
-    c_ret_expr: TokenStream,
+    c_ret_expr: TokenStream2,
     ffi_name_str: &str,
     handle_type: Option<&String>,
-    param_c_type_exprs: &[TokenStream],
+    param_c_type_exprs: &[TokenStream2],
     param_name_strs: &[&String],
-    out_param_c_type: Option<&TokenStream>,
-) -> TokenStream {
+    out_param_c_type: Option<&TokenStream2>,
+) -> TokenStream2 {
     let out_snippet = out_param_c_type.map(|ct| {
         quote! {
             if need_comma { s.push_str(", "); }

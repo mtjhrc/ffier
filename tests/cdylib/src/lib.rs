@@ -1,12 +1,12 @@
-ffier_test_lib::ffier_meta_op_widget!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_gadget!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_config!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_gizmo!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_gizmo_builder!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_view!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_pipeline!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_test_error!("ft", ffier::generate_bridge);
-ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier::generate_bridge);
+ffier_test_lib::ffier_meta_op_widget!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_gadget!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_config!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_gizmo!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_gizmo_builder!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_view!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_pipeline!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_test_error!("ft", ffier_gen_c::generate_bridge);
+ffier_test_lib::ffier_meta_op_vtable_processor!("ft", ffier_gen_c::generate_bridge);
 
 #[cfg(test)]
 mod tests {

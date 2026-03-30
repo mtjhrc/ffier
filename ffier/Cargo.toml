@@ -5,8 +5,8 @@ edition = "2024"
 
 [features]
 default = ["std"]
-std = []
+std = ["ffier-rt/std"]
 
 [dependencies]
-ffier-macros = { path = "../ffier-macros" }
-paste = "1"
+ffier-rt = { path = "../ffier-rt" }
+ffier-annotations = { path = "../ffier-annotations" }

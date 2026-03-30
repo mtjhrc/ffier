@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "example-lib",
  "ffier",
+ "ffier-gen-c",
 ]
 
 [[package]]
@@ -21,12 +22,42 @@ dependencies = [
 name = "ffier"
 version = "0.1.0"
 dependencies = [
- "ffier-macros",
- "paste",
+ "ffier-annotations",
+ "ffier-rt",
 ]
 
 [[package]]
-name = "ffier-macros"
+name = "ffier-annotations"
+version = "0.1.0"
+dependencies = [
+ "ffier-meta",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "ffier-gen-c"
+version = "0.1.0"
+dependencies = [
+ "ffier-meta",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "ffier-gen-rust"
+version = "0.1.0"
+dependencies = [
+ "ffier-meta",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "ffier-meta"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -35,10 +66,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-rt"
+version = "0.1.0"
+dependencies = [
+ "paste",
+]
+
+[[package]]
 name = "ffier-test-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
+ "ffier-gen-c",
+ "ffier-gen-rust",
  "ffier-test-lib",
 ]
 
@@ -69,6 +109,7 @@ name = "krun-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
+ "ffier-gen-c",
  "krun-lib",
 ]
 

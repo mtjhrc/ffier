@@ -6,9 +6,7 @@ use syn::{
     visit_mut::VisitMut,
 };
 
-mod gen_bridge;
-mod gen_client;
-mod meta;
+use ffier_meta::FfiRepr;
 
 struct ReflectArgs {
     _prefix: Option<String>,
@@ -42,7 +40,7 @@ enum SliceKind {
 }
 
 enum ParamKind {
-    Regular(proc_macro2::TokenStream, meta::FfiRepr),
+    Regular(proc_macro2::TokenStream, FfiRepr),
     Slice(SliceKind),
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
@@ -63,7 +61,7 @@ struct DynParamConfig {
 }
 
 enum ValueKind {
-    Regular(proc_macro2::TokenStream, meta::FfiRepr),
+    Regular(proc_macro2::TokenStream, FfiRepr),
     Slice(SliceKind),
 }
 
@@ -448,7 +446,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .zip(m.param_kinds.iter())
             .zip(m.param_orig_types.iter())
             .map(|((id, kind), orig_ty)| {
-                let kind_tokens = meta::emit_param_kind(kind);
+                let kind_tokens = emit_param_kind(kind);
                 let erased_ty = strip_lifetimes_for_metadata(orig_ty);
                 quote! {
                     {
@@ -460,7 +458,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
 
-        let ret_tokens = meta::emit_return_kind(&m.ret);
+        let ret_tokens = emit_return_kind(&m.ret);
         // Emit only the type part of the return, not the `->` arrow.
         // Erase lifetimes to anonymous (`'_`) so method-level lifetimes
         // (e.g. `'a` in `fn echo<'a>(&self, s: &'a str) -> &'a str`)
@@ -731,27 +729,86 @@ const FD_TYPES: &[&str] = &["BorrowedFd", "OwnedFd"];
 /// - Primitives (i32, bool, etc.) → `Primitive`
 /// - Fd types (BorrowedFd, OwnedFd) → `Other(i32)`
 /// - Everything else → `Handle`
-fn ffi_repr_for_type(ty: &Type) -> meta::FfiRepr {
+fn ffi_repr_for_type(ty: &Type) -> FfiRepr {
     if is_primitive(ty) {
-        return meta::FfiRepr::Primitive;
+        return FfiRepr::Primitive;
     }
     if let Type::Path(tp) = ty {
         if let Some(last) = tp.path.segments.last() {
             let name = last.ident.to_string();
             if FD_TYPES.contains(&name.as_str()) {
-                return meta::FfiRepr::Other(quote! { i32 });
+                return FfiRepr::Other(quote! { i32 });
             }
         }
     }
-    meta::FfiRepr::Handle
+    FfiRepr::Handle
+}
+
+// ---------------------------------------------------------------------------
+// Emission helpers — convert internal types to metadata tokens
+// ---------------------------------------------------------------------------
+
+fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
+    match k {
+        ParamKind::Regular(bridge_type, repr) => {
+            let repr_tokens = ffi_repr_tokens(repr);
+            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens }
+        }
+        ParamKind::Slice(SliceKind::Str) => quote! { slice_str },
+        ParamKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
+        ParamKind::Slice(SliceKind::Path) => quote! { slice_path },
+        ParamKind::StrSlice => quote! { str_slice },
+        ParamKind::HandleRef { inner_ty, is_mut } => {
+            quote! { handle_ref, bridge_type = (#inner_ty), is_mut = #is_mut }
+        }
+        ParamKind::DynDispatch(cfg) => {
+            let c_name_suffix = &cfg.c_name_suffix;
+            let variant_tokens: Vec<_> = cfg.variants.iter().map(|(name, ty)| {
+                quote! { (#name, #ty) }
+            }).collect();
+            quote! { dyn_dispatch, c_name_suffix = #c_name_suffix, variants = [#(#variant_tokens),*] }
+        }
+    }
+}
+
+fn emit_value_kind(vk: &ValueKind) -> proc_macro2::TokenStream {
+    match vk {
+        ValueKind::Regular(bridge_type, repr) => {
+            let repr_tokens = ffi_repr_tokens(repr);
+            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens, }
+        }
+        ValueKind::Slice(SliceKind::Str) => quote! { slice_str },
+        ValueKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
+        ValueKind::Slice(SliceKind::Path) => quote! { slice_path },
+    }
+}
+
+fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
+    match ret {
+        ReturnKind::Void => quote! { void },
+        ReturnKind::Value(vk) => {
+            let vk_tokens = emit_value_kind(vk);
+            quote! { value(#vk_tokens) }
+        }
+        ReturnKind::Result { ok_ty, err_ty, err_ident } => {
+            let ok_tokens = match ok_ty {
+                None => quote! { ok = void },
+                Some(vk) => {
+                    let vk_tokens = emit_value_kind(vk);
+                    quote! { ok = some(#vk_tokens) }
+                }
+            };
+            quote! { result(#ok_tokens, err_bridge_type = (#err_ty), err_ident = #err_ident,) }
+        }
+    }
 }
 
 /// Emit `FfiRepr` as metadata tokens for the macro output.
-fn ffi_repr_tokens(repr: &meta::FfiRepr) -> proc_macro2::TokenStream {
+fn ffi_repr_tokens(repr: &FfiRepr) -> proc_macro2::TokenStream {
     match repr {
-        meta::FfiRepr::Primitive => quote! { primitive },
-        meta::FfiRepr::Handle => quote! { handle },
-        meta::FfiRepr::Other(ts) => quote! { other(#ts) },
+        FfiRepr::Primitive => quote! { primitive },
+        FfiRepr::Handle => quote! { handle },
+        FfiRepr::Other(ts) => quote! { other(#ts) },
     }
 }
 
@@ -1500,24 +1557,3 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
-// ---------------------------------------------------------------------------
-// Generator proc macros — invoked via metadata callback pattern
-// ---------------------------------------------------------------------------
-
-/// Generates C FFI bridge functions from ffier metadata.
-#[proc_macro]
-pub fn generate_bridge(input: TokenStream) -> TokenStream {
-    gen_bridge::generate_bridge_impl(input.into()).into()
-}
-
-/// Generates safe Rust client wrappers from ffier metadata.
-#[proc_macro]
-pub fn generate_client(input: TokenStream) -> TokenStream {
-    gen_client::generate_client_impl(input.into()).into()
-}
-
-/// Like `generate_client`, but outputs the source code as a `&str` literal.
-#[proc_macro]
-pub fn generate_client_source(input: TokenStream) -> TokenStream {
-    gen_client::generate_client_source_impl(input.into()).into()
-}

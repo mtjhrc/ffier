@@ -1,5 +1,5 @@
 [package]
-name = "ffier-macros"
+name = "ffier-annotations"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,6 +7,7 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
+ffier-meta = { path = "../ffier-meta" }
 syn = { version = "2", features = ["full", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"

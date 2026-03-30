@@ -1,0 +1,13 @@
+[package]
+name = "ffier-gen-rust"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+ffier-meta = { path = "../ffier-meta" }
+syn = "2"
+quote = "1"
+proc-macro2 = "1"
