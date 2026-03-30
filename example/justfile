@@ -1,0 +1,10 @@
+# Build the C example (compiles cdylib, generates header, links)
+build:
+    make -C c
+
+# Build and run the C example
+run: build
+    LD_LIBRARY_PATH=../target/debug ./c/main
+
+clean:
+    make -C c clean

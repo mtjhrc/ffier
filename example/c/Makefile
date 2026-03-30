@@ -1,7 +1,7 @@
 CARGO_TARGET_DIR := ../../target
 LIB_DIR := $(CARGO_TARGET_DIR)/debug
 
-.PHONY: all clean run
+.PHONY: all clean
 
 all: main
 
@@ -14,9 +14,6 @@ mylib.h: ../cdylib/src/gen_header.rs ../lib/src/lib.rs
 
 main: main.c mylib.h $(LIB_DIR)/libexample_cdylib.so
 	$(CC) -o $@ main.c -L$(LIB_DIR) -Wl,--no-as-needed -lexample_cdylib
-
-run: main
-	LD_LIBRARY_PATH=$(LIB_DIR) ./main
 
 clean:
 	rm -f main mylib.h
