@@ -212,17 +212,9 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 (ann, None)
             }
             MetaReturn::Result { ok, .. } => {
-                let out = ok.as_ref().map(|vk| match vk {
-                    MetaValueKind::Regular { bridge_type, repr } => match repr {
-                        FfiRepr::Primitive => quote! { result: *mut #bridge_type, },
-                        FfiRepr::Handle => quote! { result: *mut *mut core::ffi::c_void, },
-                        FfiRepr::Other(c_repr) => quote! { result: *mut #c_repr, },
-                    },
-                    MetaValueKind::SliceStr
-                    | MetaValueKind::SliceBytes
-                    | MetaValueKind::SlicePath => {
-                        quote! { result: *mut ffier::FfierBytes, }
-                    }
+                let out = ok.as_ref().map(|vk| {
+                    let ty = ffier_gen_c::c_out_param_type(vk);
+                    quote! { result: #ty, }
                 });
                 (quote! { -> ffier::FfierError }, out)
             }
@@ -684,37 +676,18 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 /// Generate extern "C" parameter tokens for client-side declarations.
 /// Uses CONCRETE types, not `<T as FfiType>::CRepr`.
 fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
-    match kind {
-        MetaParamKind::Regular { bridge_type, repr } => match repr {
-            FfiRepr::Primitive => quote! { #id: #bridge_type },
-            FfiRepr::Handle => quote! { #id: *mut core::ffi::c_void },
-            FfiRepr::Other(c_repr) => quote! { #id: #c_repr },
-        },
-        MetaParamKind::SliceStr | MetaParamKind::SliceBytes | MetaParamKind::SlicePath => {
-            quote! { #id: ffier::FfierBytes }
-        }
-        MetaParamKind::StrSlice => {
-            let len_id = format_ident!("{id}_len");
-            quote! { #id: *const ffier::FfierBytes, #len_id: usize }
-        }
-        MetaParamKind::HandleRef { .. } | MetaParamKind::DynDispatch { .. } => {
-            quote! { #id: *mut core::ffi::c_void }
-        }
+    let ty = ffier_gen_c::c_param_type(kind);
+    if matches!(kind, MetaParamKind::StrSlice) {
+        let len_id = format_ident!("{id}_len");
+        quote! { #id: #ty, #len_id: usize }
+    } else {
+        quote! { #id: #ty }
     }
 }
 
-/// Generate extern "C" return type annotation for Value returns.
 fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
-    match kind {
-        MetaValueKind::Regular { bridge_type, repr } => match repr {
-            FfiRepr::Primitive => quote! { -> #bridge_type },
-            FfiRepr::Handle => quote! { -> *mut core::ffi::c_void },
-            FfiRepr::Other(c_repr) => quote! { -> #c_repr },
-        },
-        MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath => {
-            quote! { -> ffier::FfierBytes }
-        }
-    }
+    let ty = ffier_gen_c::c_return_type(kind);
+    quote! { -> #ty }
 }
 
 /// Build the method body for a non-builder static or instance method.

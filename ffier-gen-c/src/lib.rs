@@ -820,7 +820,57 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 }
 
 // ===========================================================================
-// Helpers --- metadata-based variants of the codegen helpers from lib.rs
+// Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
+// ===========================================================================
+
+/// Produce the concrete C type tokens for a parameter kind.
+///
+/// This is the canonical "what C type does this parameter have?" function.
+/// Both the bridge generator and the client generator use it to ensure
+/// their extern declarations agree.
+pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
+    match kind {
+        MetaParamKind::Regular { bridge_type, repr } => match repr {
+            FfiRepr::Primitive => quote! { #bridge_type },
+            FfiRepr::Handle => quote! { *mut core::ffi::c_void },
+            FfiRepr::Other(c_repr) => quote! { #c_repr },
+        },
+        MetaParamKind::SliceStr | MetaParamKind::SliceBytes | MetaParamKind::SlicePath => {
+            quote! { ffier::FfierBytes }
+        }
+        MetaParamKind::HandleRef { .. } | MetaParamKind::DynDispatch { .. } => {
+            quote! { *mut core::ffi::c_void }
+        }
+        MetaParamKind::StrSlice => {
+            // StrSlice expands to two params — this returns the type of the first one.
+            // Callers must handle the second (len: usize) separately.
+            quote! { *const ffier::FfierBytes }
+        }
+    }
+}
+
+/// Produce the concrete C return type tokens for a value kind.
+pub fn c_return_type(kind: &MetaValueKind) -> TokenStream2 {
+    match kind {
+        MetaValueKind::Regular { bridge_type, repr } => match repr {
+            FfiRepr::Primitive => quote! { #bridge_type },
+            FfiRepr::Handle => quote! { *mut core::ffi::c_void },
+            FfiRepr::Other(c_repr) => quote! { #c_repr },
+        },
+        MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath => {
+            quote! { ffier::FfierBytes }
+        }
+    }
+}
+
+/// Produce the concrete C type for a Result ok-value out-parameter.
+pub fn c_out_param_type(kind: &MetaValueKind) -> TokenStream2 {
+    let inner = c_return_type(kind);
+    quote! { *mut #inner }
+}
+
+// ===========================================================================
+// Bridge-specific helpers
 // ===========================================================================
 
 fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
