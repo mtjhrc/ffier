@@ -13,3 +13,4 @@ path = "src/gen_header.rs"
 [dependencies]
 krun-lib = { path = "../lib" }
 ffier = { path = "../../ffier" }
+ffier-gen-c = { path = "../../ffier-gen-c" }

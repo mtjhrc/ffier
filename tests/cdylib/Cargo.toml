@@ -17,3 +17,5 @@ path = "src/gen_rust_client.rs"
 [dependencies]
 ffier-test-lib = { path = "../lib" }
 ffier = { path = "../../ffier" }
+ffier-gen-c = { path = "../../ffier-gen-c" }
+ffier-gen-rust = { path = "../../ffier-gen-rust" }

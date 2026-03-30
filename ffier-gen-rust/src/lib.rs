@@ -1,25 +1,39 @@
 //! Client code generation from parsed metadata.
 //!
-//! `generate_client_impl` takes a metadata token stream (starting with `@exportable`,
+//! `generate_client` takes a metadata token stream (starting with `@exportable`,
 //! `@error`, or `@implementable`) and produces safe Rust wrapper code that calls
 //! through C ABI extern declarations.
 
-use proc_macro2::TokenStream;
+use proc_macro::TokenStream;
+use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::meta::{
+use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaValueKind, MetaVtableParamType, MetaVtableRetType,
+    camel_to_snake, camel_to_upper_snake, peek_meta_tag,
 };
+
+/// Generates safe Rust client wrappers from ffier metadata.
+#[proc_macro]
+pub fn generate_client(input: TokenStream) -> TokenStream {
+    generate_client_impl(input.into()).into()
+}
+
+/// Like `generate_client`, but outputs the source code as a `&str` literal.
+#[proc_macro]
+pub fn generate_client_source(input: TokenStream) -> TokenStream {
+    generate_client_source_impl(input.into()).into()
+}
 
 /// Generates client code (safe Rust wrappers calling through extern "C") from metadata.
 ///
 /// The input token stream must start with one of:
-/// - `@exportable, ...` — generates wrapper struct with safe methods
-/// - `@error, ...` — generates error enum with `from_ffi`, Display, Error
-/// - `@implementable, ...` — generates vtable struct + handle wrapper
-pub fn generate_client_impl(input: TokenStream) -> TokenStream {
-    let tag = crate::gen_bridge::peek_meta_tag(&input);
+/// - `@exportable, ...` --- generates wrapper struct with safe methods
+/// - `@error, ...` --- generates error enum with `from_ffi`, Display, Error
+/// - `@implementable, ...` --- generates vtable struct + handle wrapper
+fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
+    let tag = peek_meta_tag(&input);
 
     match tag.as_str() {
         "exportable" => {
@@ -58,10 +72,10 @@ pub fn generate_client_impl(input: TokenStream) -> TokenStream {
 ///
 /// Emits: `const FFIER_SRC_{TYPE_UPPER}: &str = "...";`
 /// The const name is derived from the type name in the metadata.
-pub fn generate_client_source_impl(input: TokenStream) -> TokenStream {
-    let tag = crate::gen_bridge::peek_meta_tag(&input);
+fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
+    let tag = peek_meta_tag(&input);
     let type_name = peek_meta_name(&input);
-    let upper_name = crate::camel_to_upper_snake(&type_name);
+    let upper_name = camel_to_upper_snake(&type_name);
     let const_name = if tag == "implementable" {
         format_ident!("FFIER_SRC_VTABLE_{upper_name}")
     } else {
@@ -76,7 +90,7 @@ pub fn generate_client_source_impl(input: TokenStream) -> TokenStream {
 /// Peek at the type/trait name from a metadata token stream.
 ///
 /// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
-fn peek_meta_name(input: &TokenStream) -> String {
+fn peek_meta_name(input: &TokenStream2) -> String {
     let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
     for i in 0..tokens.len().saturating_sub(2) {
         if let proc_macro2::TokenTree::Ident(ref id) = tokens[i] {
@@ -98,16 +112,16 @@ fn peek_meta_name(input: &TokenStream) -> String {
 // Exportable client generation
 // ===========================================================================
 
-fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
+fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
     let struct_name = &meta.struct_name;
     let struct_name_str = struct_name.to_string();
-    let struct_lower = crate::camel_to_snake(&struct_name_str);
+    let struct_lower = camel_to_snake(&struct_name_str);
     let type_pfx = meta.type_pfx();
     let fn_pfx = meta.fn_pfx();
 
     let has_lifetimes = !meta.lifetimes.is_empty();
 
-    // Lifetime tokens prefixed with ' — use mixed_site span so the lifetimes
+    // Lifetime tokens prefixed with ' --- use mixed_site span so the lifetimes
     // resolve in the client crate context, not the library crate where the
     // metadata was originally defined.
     let client_struct_generics_with_tick = if has_lifetimes {
@@ -149,7 +163,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
         quote! {}
     };
 
-    // FfiType impl — only if no lifetimes
+    // FfiType impl --- only if no lifetimes
     let client_ffi_type_impl = if !has_lifetimes {
         quote! {
             impl ffier::FfiType for #struct_name {
@@ -169,7 +183,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
 
     let mut client_extern_decls = Vec::new();
     let mut client_methods = Vec::new();
-    let mut client_dyn_traits: Vec<TokenStream> = Vec::new();
+    let mut client_dyn_traits: Vec<TokenStream2> = Vec::new();
 
     // Destroy extern decl
     client_extern_decls.push(quote! {
@@ -542,7 +556,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream {
 // Error client generation
 // ===========================================================================
 
-fn generate_error_client(meta: MetaError) -> TokenStream {
+fn generate_error_client(meta: MetaError) -> TokenStream2 {
     let name = &meta.name;
     let name_str = name.to_string();
 
@@ -601,7 +615,7 @@ fn generate_error_client(meta: MetaError) -> TokenStream {
 // Implementable client generation
 // ===========================================================================
 
-fn generate_implementable_client(meta: MetaImplementable) -> TokenStream {
+fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // Use plain ident names for client types (not $crate:: paths from bridge)
     let vtable_struct_name = format_ident!("{}", meta.vtable_struct_name.to_string()
         .split("::").last().unwrap_or("VtableStruct").trim());
@@ -678,7 +692,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream {
 
 /// Generate extern "C" parameter tokens for client-side declarations.
 /// Uses CONCRETE types, not `<T as FfiType>::CRepr`.
-fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream {
+fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular {
             bridge_type,
@@ -704,7 +718,7 @@ fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStr
 }
 
 /// Generate extern "C" return type annotation for Value returns.
-fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream {
+fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
     match kind {
         MetaValueKind::Regular {
             bridge_type,
@@ -726,12 +740,12 @@ fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream {
 fn build_client_body(
     ffi_name: &syn::Ident,
     ret: &MetaReturn,
-    handle_arg: &TokenStream,
-    wrapper_args: &[TokenStream],
-    wrapper_pre_bindings: &[TokenStream],
-    rust_ret: &TokenStream,
+    handle_arg: &TokenStream2,
+    wrapper_args: &[TokenStream2],
+    wrapper_pre_bindings: &[TokenStream2],
+    rust_ret: &TokenStream2,
     _type_pfx: &str,
-) -> TokenStream {
+) -> TokenStream2 {
     match ret {
         MetaReturn::Void => {
             quote! {
@@ -773,7 +787,7 @@ fn build_client_body(
 }
 
 /// Convert a raw FFI return value to the Rust type for Value returns.
-fn client_value_from_ffi(vk: &MetaValueKind, rust_ret: &TokenStream) -> TokenStream {
+fn client_value_from_ffi(vk: &MetaValueKind, rust_ret: &TokenStream2) -> TokenStream2 {
     match vk {
         MetaValueKind::Regular { repr, .. } => {
             match repr {
@@ -806,8 +820,8 @@ fn client_value_from_ffi(vk: &MetaValueKind, rust_ret: &TokenStream) -> TokenStr
 /// For Result<T, E> returns, build (out_decl, out_ptr_expr, ok_convert).
 fn client_result_ok_from_ffi(
     vk: &MetaValueKind,
-    rust_ret: &TokenStream,
-) -> (TokenStream, TokenStream, TokenStream) {
+    rust_ret: &TokenStream2,
+) -> (TokenStream2, TokenStream2, TokenStream2) {
     match vk {
         MetaValueKind::Regular { repr, .. } => {
             match repr {
@@ -860,7 +874,7 @@ fn client_result_ok_from_ffi(
 }
 
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
-fn extract_ok_type_from_tokens(tokens: &TokenStream) -> TokenStream {
+fn extract_ok_type_from_tokens(tokens: &TokenStream2) -> TokenStream2 {
     // Parse as a type and extract Result's first generic arg
     if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
         if let syn::Type::Path(tp) = &ty {
@@ -880,7 +894,7 @@ fn extract_ok_type_from_tokens(tokens: &TokenStream) -> TokenStream {
 }
 
 /// Generate C type tokens for vtable parameter types (client side).
-fn vtable_param_c_type(vpt: &MetaVtableParamType) -> TokenStream {
+fn vtable_param_c_type(vpt: &MetaVtableParamType) -> TokenStream2 {
     match vpt {
         MetaVtableParamType::Primitive(ty) => quote! { #ty },
         MetaVtableParamType::Str | MetaVtableParamType::Bytes | MetaVtableParamType::Path => {
@@ -891,7 +905,7 @@ fn vtable_param_c_type(vpt: &MetaVtableParamType) -> TokenStream {
 }
 
 /// Generate C return type annotation for vtable return types (client side).
-fn vtable_ret_c_type(ret: &MetaVtableRetType) -> TokenStream {
+fn vtable_ret_c_type(ret: &MetaVtableRetType) -> TokenStream2 {
     match ret {
         MetaVtableRetType::Void => quote! {},
         MetaVtableRetType::Primitive(ty) => quote! { -> #ty },

@@ -5,11 +5,67 @@
 //! these tokens back into the types defined here, then produce code.
 
 use proc_macro2::TokenStream;
-use quote::quote;
 use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
-// Metadata types — parsed from the metadata macro's token stream
+// String case conversion helpers
+// ---------------------------------------------------------------------------
+
+pub fn camel_to_snake(s: &str) -> String {
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+pub fn camel_to_upper_snake(s: &str) -> String {
+    camel_to_snake(s).to_ascii_uppercase()
+}
+
+pub fn snake_to_pascal(s: &str) -> String {
+    s.split('_')
+        .map(|w| {
+            let mut c = w.chars();
+            match c.next() {
+                Some(first) => {
+                    let mut s = first.to_uppercase().to_string();
+                    s.extend(c);
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Peek helper
+// ---------------------------------------------------------------------------
+
+/// Peek at the `@tag` identifier from a metadata token stream without consuming it.
+pub fn peek_meta_tag(input: &TokenStream) -> String {
+    let mut iter = input.clone().into_iter();
+    // Skip `@` punct
+    if let Some(proc_macro2::TokenTree::Punct(p)) = iter.next() {
+        if p.as_char() == '@' {
+            if let Some(proc_macro2::TokenTree::Ident(id)) = iter.next() {
+                return id.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+// ---------------------------------------------------------------------------
+// Metadata types --- parsed from the metadata macro's token stream
 // ---------------------------------------------------------------------------
 
 pub struct MetaExportable {
@@ -50,22 +106,6 @@ impl MetaExportable {
     }
 }
 
-pub fn snake_to_pascal(s: &str) -> String {
-    s.split('_')
-        .map(|w| {
-            let mut c = w.chars();
-            match c.next() {
-                Some(first) => {
-                    let mut s = first.to_uppercase().to_string();
-                    s.extend(c);
-                    s
-                }
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
 pub struct MetaMethod {
     pub name: Ident,
     pub ffi_name: String,
@@ -94,9 +134,9 @@ pub struct MetaParam {
 /// How a type maps to its C representation.
 #[derive(Clone)]
 pub enum FfiRepr {
-    /// Identity mapping — the type IS the C repr (i32, bool, etc.)
+    /// Identity mapping --- the type IS the C repr (i32, bool, etc.)
     Primitive,
-    /// Opaque handle — CRepr is `*mut c_void`
+    /// Opaque handle --- CRepr is `*mut c_void`
     Handle,
     /// Non-primitive with a known CRepr that differs from the Rust type.
     /// The tokens are the concrete CRepr type (e.g., `i32` for BorrowedFd).
@@ -202,7 +242,7 @@ impl MetaImplementable {
     }
 
     pub fn constructor_name(&self) -> String {
-        format!("{}{}_from_vtable", self.fn_pfx(), crate::camel_to_snake(&self.trait_name.to_string()))
+        format!("{}{}_from_vtable", self.fn_pfx(), camel_to_snake(&self.trait_name.to_string()))
     }
 }
 
@@ -237,7 +277,7 @@ pub enum MetaVtableRetType {
 }
 
 // ---------------------------------------------------------------------------
-// Parsing — from token stream back to metadata types
+// Parsing --- from token stream back to metadata types
 // ---------------------------------------------------------------------------
 
 // Helper: parse `key = value` where key must match expected
@@ -811,66 +851,5 @@ fn parse_ffi_repr(input: ParseStream) -> syn::Result<FfiRepr> {
             kind.span(),
             format!("expected `primitive`, `handle`, or `other(...)`, got `{other}`"),
         )),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Emission helpers — convert internal types to metadata tokens
-// ---------------------------------------------------------------------------
-
-use crate::{ParamKind, ReturnKind, SliceKind, ValueKind};
-
-pub fn emit_param_kind(k: &ParamKind) -> TokenStream {
-    match k {
-        ParamKind::Regular(bridge_type, repr) => {
-            let repr_tokens = crate::ffi_repr_tokens(repr);
-            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens }
-        }
-        ParamKind::Slice(SliceKind::Str) => quote! { slice_str },
-        ParamKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
-        ParamKind::Slice(SliceKind::Path) => quote! { slice_path },
-        ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::HandleRef { inner_ty, is_mut } => {
-            quote! { handle_ref, bridge_type = (#inner_ty), is_mut = #is_mut }
-        }
-        ParamKind::DynDispatch(cfg) => {
-            let c_name_suffix = &cfg.c_name_suffix;
-            let variant_tokens: Vec<_> = cfg.variants.iter().map(|(name, ty)| {
-                quote! { (#name, #ty) }
-            }).collect();
-            quote! { dyn_dispatch, c_name_suffix = #c_name_suffix, variants = [#(#variant_tokens),*] }
-        }
-    }
-}
-
-pub fn emit_value_kind(vk: &ValueKind) -> TokenStream {
-    match vk {
-        ValueKind::Regular(bridge_type, repr) => {
-            let repr_tokens = crate::ffi_repr_tokens(repr);
-            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens, }
-        }
-        ValueKind::Slice(SliceKind::Str) => quote! { slice_str },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
-        ValueKind::Slice(SliceKind::Path) => quote! { slice_path },
-    }
-}
-
-pub fn emit_return_kind(ret: &ReturnKind) -> TokenStream {
-    match ret {
-        ReturnKind::Void => quote! { void },
-        ReturnKind::Value(vk) => {
-            let vk_tokens = emit_value_kind(vk);
-            quote! { value(#vk_tokens) }
-        }
-        ReturnKind::Result { ok_ty, err_ty, err_ident } => {
-            let ok_tokens = match ok_ty {
-                None => quote! { ok = void },
-                Some(vk) => {
-                    let vk_tokens = emit_value_kind(vk);
-                    quote! { ok = some(#vk_tokens) }
-                }
-            };
-            quote! { result(#ok_tokens, err_bridge_type = (#err_ty), err_ident = #err_ident,) }
-        }
     }
 }
