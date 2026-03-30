@@ -5,10 +5,12 @@
 #include <unistd.h>
 #include "ffier_test.h"
 
+static int test_count = 0;
 #define RUN_TEST(fn) do { \
     printf("  %s ... ", #fn); \
     fn(); \
     printf("ok\n"); \
+    test_count++; \
 } while (0)
 
 /* Helper: compare FtStr to C string literal */
@@ -111,6 +113,13 @@ void method_with_str_slice_param(void) {
     FtStr tags[] = { FT_STR("alpha"), FT_STR("beta"), FT_STR("gamma") };
     ft_widget_set_tags(w, tags, 3);
     assert_ft_str_eq(ft_widget_tags_joined(w), "alpha,beta,gamma");
+    ft_widget_destroy(w);
+}
+
+void method_with_bytes_param(void) {
+    FtWidget w = ft_widget_new();
+    uint8_t data[] = { 10, 20, 30, 40 };
+    assert(ft_widget_sum_bytes(w, FT_BYTES(data)) == 100);
     ft_widget_destroy(w);
 }
 
@@ -523,6 +532,7 @@ int main(void) {
 
     printf("\n[str slice param]\n");
     RUN_TEST(method_with_str_slice_param);
+    RUN_TEST(method_with_bytes_param);
 
     printf("\n[file descriptors]\n");
     RUN_TEST(method_with_borrowed_fd_param);
@@ -572,6 +582,6 @@ int main(void) {
     RUN_TEST(destroy_handle);
     RUN_TEST(destroy_null_handle);
 
-    printf("\nAll %d tests passed!\n", 38);
+    printf("\nAll %d tests passed!\n", test_count);
     return 0;
 }

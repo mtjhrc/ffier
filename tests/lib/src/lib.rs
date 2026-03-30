@@ -68,6 +68,11 @@ impl Widget {
         self.name.as_bytes()
     }
 
+    /// Sum the bytes of a byte slice.
+    pub fn sum_bytes(&self, data: &[u8]) -> i32 {
+        data.iter().map(|&b| b as i32).sum()
+    }
+
     /// Echo back the given string (zero-copy borrow passthrough).
     pub fn echo<'a>(&self, s: &'a str) -> &'a str {
         s
