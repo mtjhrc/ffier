@@ -200,7 +200,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
 
     // Destroy extern decl
     client_extern_decls.push(quote! {
-        fn #destroy_ident(handle: *mut core::ffi::c_void);
+        pub fn #destroy_ident(handle: *mut core::ffi::c_void);
     });
 
     for m in &meta.methods {
@@ -247,7 +247,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         };
 
         client_extern_decls.push(quote! {
-            fn #ffi_name(#extern_handle_param #(#extern_params,)* #extern_out_param) #extern_ret;
+            pub fn #ffi_name(#extern_handle_param #(#extern_params,)* #extern_out_param) #extern_ret;
         });
 
         // --- Build safe wrapper method ---
@@ -742,7 +742,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         }
 
         unsafe extern "C" {
-            fn #constructor_name(
+            pub fn #constructor_name(
                 user_data: *mut core::ffi::c_void,
                 vtable: *const #vtable_struct_name,
             ) -> *mut core::ffi::c_void;
@@ -1010,7 +1010,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
                 })
                 .collect();
             let ret = vtable_ret_c_type(&m.ret);
-            quote! { fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
+            quote! { pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
         })
         .collect();
 

@@ -205,4 +205,35 @@ mod tests {
             .add(api::Apple::new(5));
         assert_eq!(m.total(), 15);
     }
+
+    // ================================================================
+    // Dispatch path verification (via-cdylib only)
+    // ================================================================
+
+    #[cfg(feature = "via-cdylib")]
+    mod dispatch_tests {
+        use super::*;
+
+        /// Peek at a handle's dispatch kind. Consumes and destroys the handle.
+        fn dispatch_kind_of(fruit: impl api::Fruit) -> String {
+            let handle = fruit.__into_raw_handle();
+            let kind = unsafe { api::ft_debug_fruit_dispatch_kind(handle) };
+            unsafe { kind.as_str_unchecked() }.to_owned()
+        }
+
+        #[test]
+        fn apple_dispatches_directly() {
+            assert_eq!(dispatch_kind_of(api::Apple::new(5)), "Apple");
+        }
+
+        #[test]
+        fn orange_dispatches_directly() {
+            assert_eq!(dispatch_kind_of(api::Orange::new(3)), "Orange");
+        }
+
+        #[test]
+        fn banana_dispatches_via_vtable() {
+            assert_eq!(dispatch_kind_of(Banana { sweetness: 7 }), "VtableFruit");
+        }
+    }
 }
