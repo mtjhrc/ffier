@@ -38,7 +38,11 @@ impl Calculator {
 
     /// Divide `a` by `b`, returning an error if `b` is zero.
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
-        if b == 0 { Err(CalcError::DivisionByZero) } else { Ok(a / b) }
+        if b == 0 {
+            Err(CalcError::DivisionByZero)
+        } else {
+            Ok(a / b)
+        }
     }
 
     /// Create a new result accumulator.
@@ -58,7 +62,11 @@ impl Calculator {
 
     /// Divide and store the result, or error if divisor is zero.
     pub fn try_divide_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
-        if b == 0 { Err(CalcError::DivisionByZero) } else { Ok(CalcResult(a / b)) }
+        if b == 0 {
+            Err(CalcError::DivisionByZero)
+        } else {
+            Ok(CalcResult(a / b))
+        }
     }
 }
 
@@ -83,7 +91,10 @@ pub struct TextBuffer {
 impl TextBuffer {
     /// Create a text buffer that writes to the given file descriptor.
     pub fn new(output_fd: OwnedFd) -> Self {
-        Self { contents: String::new(), output_fd }
+        Self {
+            contents: String::new(),
+            output_fd,
+        }
     }
 
     /// Get the output file descriptor.

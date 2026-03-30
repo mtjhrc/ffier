@@ -54,12 +54,11 @@ pub fn snake_to_pascal(s: &str) -> String {
 pub fn peek_meta_tag(input: &TokenStream) -> String {
     let mut iter = input.clone().into_iter();
     // Skip `@` punct
-    if let Some(proc_macro2::TokenTree::Punct(p)) = iter.next() {
-        if p.as_char() == '@' {
-            if let Some(proc_macro2::TokenTree::Ident(id)) = iter.next() {
-                return id.to_string();
-            }
-        }
+    if let Some(proc_macro2::TokenTree::Punct(p)) = iter.next()
+        && p.as_char() == '@'
+        && let Some(proc_macro2::TokenTree::Ident(id)) = iter.next()
+    {
+        return id.to_string();
     }
     String::new()
 }
@@ -96,12 +95,27 @@ impl MetaExportable {
 
     pub fn uses_slices(&self) -> bool {
         self.methods.iter().any(|m| {
-            m.params.iter().any(|p| matches!(p.kind,
-                MetaParamKind::SliceStr | MetaParamKind::SliceBytes |
-                MetaParamKind::SlicePath | MetaParamKind::StrSlice))
-            || matches!(&m.ret,
-                MetaReturn::Value(MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath) |
-                MetaReturn::Result { ok: Some(MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath), .. })
+            m.params.iter().any(|p| {
+                matches!(
+                    p.kind,
+                    MetaParamKind::SliceStr
+                        | MetaParamKind::SliceBytes
+                        | MetaParamKind::SlicePath
+                        | MetaParamKind::StrSlice
+                )
+            }) || matches!(
+                &m.ret,
+                MetaReturn::Value(
+                    MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath
+                ) | MetaReturn::Result {
+                    ok: Some(
+                        MetaValueKind::SliceStr
+                            | MetaValueKind::SliceBytes
+                            | MetaValueKind::SlicePath
+                    ),
+                    ..
+                }
+            )
         })
     }
 }
@@ -242,7 +256,11 @@ impl MetaImplementable {
     }
 
     pub fn constructor_name(&self) -> String {
-        format!("{}{}_from_vtable", self.fn_pfx(), camel_to_snake(&self.trait_name.to_string()))
+        format!(
+            "{}{}_from_vtable",
+            self.fn_pfx(),
+            camel_to_snake(&self.trait_name.to_string())
+        )
     }
 }
 
@@ -284,7 +302,10 @@ pub enum MetaVtableRetType {
 fn expect_key(input: ParseStream, expected: &str) -> syn::Result<()> {
     let key: Ident = input.parse()?;
     if key != expected {
-        return Err(syn::Error::new(key.span(), format!("expected `{expected}`, got `{key}`")));
+        return Err(syn::Error::new(
+            key.span(),
+            format!("expected `{expected}`, got `{key}`"),
+        ));
     }
     input.parse::<Token![=]>()?;
     Ok(())
@@ -433,7 +454,12 @@ impl syn::parse::Parse for MetaMethod {
                 "r#ref" | "ref" => MetaReceiver::Ref,
                 "r#mut" | "mut" => MetaReceiver::Mut,
                 "value" => MetaReceiver::Value,
-                other => return Err(syn::Error::new(r.span(), format!("unknown receiver `{other}`"))),
+                other => {
+                    return Err(syn::Error::new(
+                        r.span(),
+                        format!("unknown receiver `{other}`"),
+                    ));
+                }
             }
         };
         parse_comma(input)?;
@@ -511,7 +537,10 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 expect_key(input, "is_mut")?;
                 let is_mut = parse_bool(input)?;
-                MetaParamKind::HandleRef { bridge_type, is_mut }
+                MetaParamKind::HandleRef {
+                    bridge_type,
+                    is_mut,
+                }
             }
             "dyn_dispatch" => {
                 parse_comma(input)?;
@@ -536,9 +565,17 @@ impl syn::parse::Parse for MetaParam {
                     }
                     vs
                 };
-                MetaParamKind::DynDispatch { c_name_suffix, variants }
+                MetaParamKind::DynDispatch {
+                    c_name_suffix,
+                    variants,
+                }
             }
-            other => return Err(syn::Error::new(kind_ident.span(), format!("unknown param kind `{other}`"))),
+            other => {
+                return Err(syn::Error::new(
+                    kind_ident.span(),
+                    format!("unknown param kind `{other}`"),
+                ));
+            }
         };
         parse_comma(input)?;
 
@@ -552,7 +589,11 @@ impl syn::parse::Parse for MetaParam {
             None
         };
 
-        Ok(MetaParam { name, kind, rust_type })
+        Ok(MetaParam {
+            name,
+            kind,
+            rust_type,
+        })
     }
 }
 
@@ -592,9 +633,16 @@ impl syn::parse::Parse for MetaReturn {
                 let err_ident = parse_string(&content)?;
                 parse_comma(&content)?;
 
-                Ok(MetaReturn::Result { ok, err_bridge_type, err_ident })
+                Ok(MetaReturn::Result {
+                    ok,
+                    err_bridge_type,
+                    err_ident,
+                })
             }
-            other => Err(syn::Error::new(kind.span(), format!("unknown return kind `{other}`"))),
+            other => Err(syn::Error::new(
+                kind.span(),
+                format!("unknown return kind `{other}`"),
+            )),
         }
     }
 }
@@ -616,7 +664,10 @@ impl syn::parse::Parse for MetaValueKind {
             "slice_str" => Ok(MetaValueKind::SliceStr),
             "slice_bytes" => Ok(MetaValueKind::SliceBytes),
             "slice_path" => Ok(MetaValueKind::SlicePath),
-            other => Err(syn::Error::new(kind.span(), format!("unknown value kind `{other}`"))),
+            other => Err(syn::Error::new(
+                kind.span(),
+                format!("unknown value kind `{other}`"),
+            )),
         }
     }
 }
@@ -664,7 +715,11 @@ impl syn::parse::Parse for MetaError {
                 expect_key(&inner, "message")?;
                 let message = parse_string(&inner)?;
                 parse_comma(&inner)?;
-                vs.push(MetaErrorVariant { name: vname, code, message });
+                vs.push(MetaErrorVariant {
+                    name: vname,
+                    code,
+                    message,
+                });
                 if !content.is_empty() && content.peek(Token![,]) {
                     content.parse::<Token![,]>()?;
                 }
@@ -673,7 +728,12 @@ impl syn::parse::Parse for MetaError {
         };
         parse_comma(input)?;
 
-        Ok(MetaError { name, path, prefix, variants })
+        Ok(MetaError {
+            name,
+            path,
+            prefix,
+            variants,
+        })
     }
 }
 
@@ -724,7 +784,10 @@ impl syn::parse::Parse for MetaImplementable {
                 expect_key(&inner, "field_type")?;
                 let ftype = parse_parenthesized_tokens(&inner)?;
                 parse_comma(&inner)?;
-                fs.push(MetaVtableField { name: fname, field_type: ftype });
+                fs.push(MetaVtableField {
+                    name: fname,
+                    field_type: ftype,
+                });
                 if !content.is_empty() && content.peek(Token![,]) {
                     content.parse::<Token![,]>()?;
                 }
@@ -766,7 +829,11 @@ impl syn::parse::Parse for MetaImplementable {
                 expect_key(&inner, "ret")?;
                 let ret = parse_vtable_ret_type(&inner)?;
                 parse_comma(&inner)?;
-                ms.push(MetaVtableMethod { name: mname, params, ret });
+                ms.push(MetaVtableMethod {
+                    name: mname,
+                    params,
+                    ret,
+                });
                 if !content.is_empty() && content.peek(Token![,]) {
                     content.parse::<Token![,]>()?;
                 }
@@ -805,7 +872,10 @@ fn parse_vtable_param_type(input: ParseStream) -> syn::Result<MetaVtableParamTyp
             let ty: TokenStream = content.parse()?;
             Ok(MetaVtableParamType::Handle(ty))
         }
-        other => Err(syn::Error::new(kind.span(), format!("unknown vtable param type `{other}`"))),
+        other => Err(syn::Error::new(
+            kind.span(),
+            format!("unknown vtable param type `{other}`"),
+        )),
     }
 }
 
@@ -828,7 +898,10 @@ fn parse_vtable_ret_type(input: ParseStream) -> syn::Result<MetaVtableRetType> {
             let ty: TokenStream = content.parse()?;
             Ok(MetaVtableRetType::Handle(ty))
         }
-        other => Err(syn::Error::new(kind.span(), format!("unknown vtable ret type `{other}`"))),
+        other => Err(syn::Error::new(
+            kind.span(),
+            format!("unknown vtable ret type `{other}`"),
+        )),
     }
 }
 

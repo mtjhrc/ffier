@@ -25,9 +25,7 @@ fn widget_roundtrip() -> i32 {
 }
 
 fn builder_chain() -> (String, i32) {
-    let c = Config::new()
-        .set_name("hello")
-        .set_size(99);
+    let c = Config::new().set_name("hello").set_size(99);
     (c.get_name().to_owned(), c.get_size())
 }
 
@@ -135,10 +133,7 @@ mod tests {
 
     #[test]
     fn test_builder_validated_ok() {
-        let c = Config::new()
-            .set_name("valid")
-            .validated()
-            .unwrap();
+        let c = Config::new().set_name("valid").validated().unwrap();
         assert_eq!(c.get_name(), "valid");
     }
 

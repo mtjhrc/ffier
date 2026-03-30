@@ -203,27 +203,20 @@ mod tests {
 
     #[test]
     fn builder_method_returning_self() {
-        let c = Config::new()
-            .set_name("myconfig")
-            .set_size(42);
+        let c = Config::new().set_name("myconfig").set_size(42);
         assert_eq!(c.get_name(), "myconfig");
         assert_eq!(c.get_size(), 42);
     }
 
     #[test]
     fn builder_method_returning_result_self_ok() {
-        let c = Config::new()
-            .set_name("valid")
-            .validated()
-            .unwrap();
+        let c = Config::new().set_name("valid").validated().unwrap();
         assert_eq!(c.get_name(), "valid");
     }
 
     #[test]
     fn builder_method_returning_result_self_err() {
-        let err = Config::new()
-            .validated()
-            .unwrap_err();
+        let err = Config::new().validated().unwrap_err();
         assert_eq!(err, TestError::InvalidInput);
     }
 
@@ -262,7 +255,10 @@ mod tests {
     #[test]
     fn error_display() {
         assert_eq!(format!("{}", TestError::NotFound), "not found");
-        assert_eq!(format!("{}", TestError::CustomMessage), "custom error message");
+        assert_eq!(
+            format!("{}", TestError::CustomMessage),
+            "custom error message"
+        );
         assert_eq!(format!("{}", TestError::InvalidInput), "invalid input");
     }
 

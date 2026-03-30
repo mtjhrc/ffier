@@ -142,7 +142,10 @@ mod tests {
                 ffier::FfierBytes::from_str("gamma"),
             ];
             ft_widget_set_tags(w, tags.as_ptr(), 3);
-            assert_eq!(ft_widget_tags_joined(w).as_str_unchecked(), "alpha,beta,gamma");
+            assert_eq!(
+                ft_widget_tags_joined(w).as_str_unchecked(),
+                "alpha,beta,gamma"
+            );
             ft_widget_destroy(w);
         }
     }
@@ -425,9 +428,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes.iter().any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes.iter().any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes.iter().any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]
@@ -436,7 +451,9 @@ mod tests {
             let w = ft_widget_new();
             let mut err = ft_widget_fail_always(w);
             assert_eq!(err.code, 2);
-            let msg = CStr::from_ptr(ft_test_error_message(&err)).to_str().unwrap();
+            let msg = CStr::from_ptr(ft_test_error_message(&err))
+                .to_str()
+                .unwrap();
             assert_eq!(msg, "custom error message");
             err.free();
             ft_widget_destroy(w);
@@ -451,7 +468,9 @@ mod tests {
             let mut err =
                 ft_widget_parse_count(w, ffier::FfierBytes::from_str("error"), &mut result);
             assert_eq!(err.code, 1);
-            let msg = CStr::from_ptr(ft_test_error_message(&err)).to_str().unwrap();
+            let msg = CStr::from_ptr(ft_test_error_message(&err))
+                .to_str()
+                .unwrap();
             assert_eq!(msg, "not found");
             err.free();
             ft_widget_destroy(w);
