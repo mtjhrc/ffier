@@ -105,22 +105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "krun-cdylib"
-version = "0.1.0"
-dependencies = [
- "ffier",
- "ffier-gen-c",
- "krun-lib",
-]
-
-[[package]]
-name = "krun-lib"
-version = "0.1.0"
-dependencies = [
- "ffier",
-]
-
-[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
