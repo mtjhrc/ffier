@@ -1,48 +1,34 @@
-use std::os::unix::io::{AsRawFd, BorrowedFd};
+use std::io::Write;
+use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+
+// -- Error types --
 
 #[derive(Clone, Copy, ffier::FfiError)]
 pub enum CalcError {
     #[ffier(code = 1)]
     DivisionByZero,
-    #[ffier(code = 2, message = "integer overflow")]
-    Overflow,
 }
 
-#[derive(Default)]
-pub struct Calculator {
-    precision: u8,
-    label: String,
+#[derive(Clone, Copy, ffier::FfiError)]
+pub enum BufferError {
+    #[ffier(code = 1, message = "write failed")]
+    WriteFailed,
 }
+
+// -- Calculator: primitives, results, handle params --
+
+#[derive(Default)]
+pub struct Calculator;
 
 #[ffier::exportable]
 impl Calculator {
-    /// Create a new calculator.
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
     /// Add two integers.
-    ///
-    /// # Arguments
-    ///
-    /// * `a` - Left operand.
-    /// * `b` - Right operand.
-    ///
-    /// # Returns
-    ///
-    /// The sum of `a` and `b`.
     pub fn add(&self, a: i32, b: i32) -> i32 {
         a + b
-    }
-
-    /// Multiply two integers.
-    pub fn multiply(&self, a: i32, b: i32) -> i32 {
-        a * b
-    }
-
-    /// Negate a 64-bit integer.
-    pub fn negate(&self, value: i64) -> i64 {
-        -value
     }
 
     /// Check whether a value is strictly positive.
@@ -50,173 +36,92 @@ impl Calculator {
         value > 0
     }
 
-    /// Set the internal precision (number of bits).
-    ///
-    /// # Arguments
-    ///
-    /// * `bits` - Precision in bits.
-    pub fn set_precision(&mut self, bits: u8) {
-        self.precision = bits;
-    }
-
-    /// Divide `a` by `b`.
-    ///
-    /// # Arguments
-    ///
-    /// * `a` - Dividend.
-    /// * `b` - Divisor (must not be zero).
-    ///
-    /// # Returns
-    ///
-    /// The quotient, or `DivisionByZero` if `b` is zero.
+    /// Divide `a` by `b`, returning an error if `b` is zero.
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
-        if b == 0 {
-            Err(CalcError::DivisionByZero)
-        } else {
-            Ok(a / b)
-        }
-    }
-
-    /// Add with overflow checking.
-    pub fn checked_add(&self, a: i32, b: i32) -> Result<i32, CalcError> {
-        a.checked_add(b).ok_or(CalcError::Overflow)
-    }
-
-    /// Validate internal state.
-    pub fn validate(&self) -> Result<(), CalcError> {
-        Ok(())
-    }
-
-    /// Get the calculator's display name.
-    ///
-    /// # Returns
-    ///
-    /// A borrowed string referencing the internal label.
-    pub fn name(&self) -> &str {
-        if self.label.is_empty() {
-            "calculator"
-        } else {
-            &self.label
-        }
-    }
-
-    /// Echo back the given string (zero-copy).
-    pub fn echo<'a>(&self, msg: &'a str) -> &'a str {
-        msg
-    }
-
-    /// Get the raw label bytes.
-    pub fn data(&self) -> &[u8] {
-        self.label.as_bytes()
-    }
-
-    /// Look up a human-readable description for an operation code.
-    ///
-    /// # Arguments
-    ///
-    /// * `code` - Operation code (0=ok, 1=addition, 2=subtraction).
-    ///
-    /// # Returns
-    ///
-    /// The description string, or `Overflow` for unknown codes.
-    pub fn describe(&self, code: i32) -> Result<&str, CalcError> {
-        match code {
-            0 => Ok("ok"),
-            1 => Ok("addition"),
-            2 => Ok("subtraction"),
-            _ => Err(CalcError::Overflow),
-        }
-    }
-
-    /// Accept a borrowed file descriptor (returns its raw fd number).
-    pub fn fd_number(&self, fd: BorrowedFd<'_>) -> i32 {
-        fd.as_raw_fd()
-    }
-
-    /// Set the label by joining strings.
-    pub fn set_label(&mut self, parts: &[&str]) {
-        self.label = parts.join("-");
+        if b == 0 { Err(CalcError::DivisionByZero) } else { Ok(a / b) }
     }
 
     /// Create a new result accumulator.
     pub fn create_result(&self) -> CalcResult {
-        CalcResult { value: 0 }
+        CalcResult(0)
     }
 
     /// Add a value into a result accumulator.
     pub fn accumulate(&self, res: &mut CalcResult, n: i32) {
-        res.value += n;
+        res.0 += n;
     }
 
-    /// Read the value from a result accumulator.
+    /// Read the accumulated value.
     pub fn read_result(&self, res: &CalcResult) -> i32 {
-        res.value
+        res.0
     }
 
-    /// Try to create a result with an initial divide.
-    ///
-    /// # Returns
-    ///
-    /// A new result accumulator initialized with the quotient.
-    pub fn try_create_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
-        if b == 0 {
-            Err(CalcError::DivisionByZero)
-        } else {
-            Ok(CalcResult { value: a / b })
-        }
+    /// Divide and store the result, or error if divisor is zero.
+    pub fn try_divide_result(&self, a: i32, b: i32) -> Result<CalcResult, CalcError> {
+        if b == 0 { Err(CalcError::DivisionByZero) } else { Ok(CalcResult(a / b)) }
     }
 }
 
 #[derive(Default)]
-pub struct CalcResult {
-    value: i32,
-}
+pub struct CalcResult(i32);
 
 #[ffier::exportable]
 impl CalcResult {
-    /// Get the accumulated value.
     pub fn get(&self) -> i32 {
-        self.value
+        self.0
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ffier::{FfiHandle, FfiType};
+// -- TextBuffer: strings, bytes, file descriptors --
 
-    #[test]
-    fn type_ids_are_distinct() {
-        let mc_id = <Calculator as FfiHandle>::type_id();
-        let cr_id = <CalcResult as FfiHandle>::type_id();
-        eprintln!("Calculator type_id = {mc_id:?}");
-        eprintln!("CalcResult   type_id = {cr_id:?}");
-        assert_ne!(mc_id, cr_id, "type_ids should be distinct");
+pub struct TextBuffer {
+    contents: String,
+    output_fd: OwnedFd,
+}
+
+#[ffier::exportable]
+impl TextBuffer {
+    /// Create a text buffer that writes to the given file descriptor.
+    pub fn new(output_fd: OwnedFd) -> Self {
+        Self { contents: String::new(), output_fd }
     }
 
-    #[test]
-    fn handle_carries_type_id() {
-        let handle = Calculator::default().into_c();
-        let tid = unsafe { ffier::handle_type_id(handle) };
-        eprintln!("handle type_id = {tid:?}");
-        assert_eq!(tid, <Calculator as FfiHandle>::type_id());
-        // cleanup
-        let _ = Calculator::from_c(handle);
+    /// Get the output file descriptor.
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.output_fd.as_fd()
     }
 
-    #[test]
-    #[should_panic(expected = "is not a")]
-    fn wrong_handle_type_panics() {
-        // Create a CalcResult handle, then pretend it's a Calculator
-        let wrong_handle = CalcResult::default().into_c();
-        let actual = unsafe { ffier::handle_type_id(wrong_handle) };
-        let expected = <Calculator as FfiHandle>::type_id();
-        assert!(
-            actual == expected,
-            "mylib_calculator_add(): `handle` is not a {} (expected type_id={:?}, got {:?})",
-            <Calculator as FfiHandle>::C_HANDLE_NAME,
-            expected,
-            actual,
-        );
+    /// Append text to the buffer.
+    pub fn write(&mut self, text: &str) {
+        self.contents.push_str(text);
+    }
+
+    /// Append multiple strings to the buffer.
+    pub fn write_parts(&mut self, parts: &[&str]) {
+        for part in parts {
+            self.contents.push_str(part);
+        }
+    }
+
+    /// Get the buffer contents.
+    pub fn contents(&self) -> &str {
+        &self.contents
+    }
+
+    /// Get the buffer contents as raw bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.contents.as_bytes()
+    }
+
+    /// Flush the buffer contents to the output file descriptor.
+    pub fn flush(&self) -> Result<(), BufferError> {
+        let mut f = unsafe { std::fs::File::from_raw_fd(self.output_fd.as_raw_fd()) };
+        let result = f.write_all(self.contents.as_bytes());
+        std::mem::forget(f);
+        result.map_err(|_| BufferError::WriteFailed)
+    }
+
+    pub fn clear(&mut self) {
+        self.contents.clear();
     }
 }
