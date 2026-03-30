@@ -350,11 +350,31 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             _ => (false, None),
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
+        let borrow_notes: Vec<String> =
+            if !meta.lifetimes.is_empty() && m.receiver == MetaReceiver::None {
+                m.params
+                    .iter()
+                    .filter_map(|p| {
+                        if matches!(p.kind, MetaParamKind::HandleRef { .. }) {
+                            Some(format!(
+                                "`{}` is borrowed by the returned `{}`. \
+                                 It must not be directly modified or destroyed while the `{}` is alive.",
+                                p.name, handle_c_name, handle_c_name
+                            ))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
         if let Some(doc) = build_doxygen_comment(
             &m.doc,
             &param_name_strs,
             has_out_param,
             err_c_name_for_doc.as_deref(),
+            &borrow_notes,
         ) {
             decl_exprs.push(quote! { #doc });
         }
@@ -1080,8 +1100,9 @@ fn build_doxygen_comment(
     param_names: &[String],
     has_out_param: bool,
     err_c_name: Option<&str>,
+    borrow_notes: &[String],
 ) -> Option<String> {
-    if doc_lines.is_empty() {
+    if doc_lines.is_empty() && borrow_notes.is_empty() {
         return None;
     }
 
@@ -1121,6 +1142,10 @@ fn build_doxygen_comment(
         } else {
             out.push_str(&format!(" * @param {name} {desc}\n"));
         }
+    }
+
+    for note in borrow_notes {
+        out.push_str(&format!(" * @note {note}\n"));
     }
 
     if has_out_param {

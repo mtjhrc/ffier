@@ -467,9 +467,6 @@ void lifetime_type_reading_through_borrow(void) {
     ft_widget_set_count(w, 123);
     FtView v = ft_view_create(w);
     assert(ft_view_source_count(v) == 123);
-    /* Mutate the widget and verify view sees the change */
-    ft_widget_set_count(w, 456);
-    assert(ft_view_source_count(v) == 456);
     ft_view_destroy(v);
     ft_widget_destroy(w);
 }
