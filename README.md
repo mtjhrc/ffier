@@ -20,6 +20,29 @@ code can link against either the original Rust crate (native static linking) or
 the generated C ABI wrapper (dynamic linking) — the only difference is which
 dependency appears in `Cargo.toml`.
 
+## String representation
+
+Strings are represented as a `ptr + len` struct pair (e.g. `MylibStr`) rather than
+null-terminated C strings.
+
+With null-terminated strings, every FFI call that passes a Rust `&str` would
+need to allocate a new `CString`, copy the bytes, and append a null terminator.
+The caller then has to decide who owns this allocation — the FFI layer? the
+callee? — and when to free it. This introduces an intermediary owner that
+neither side of the boundary naturally manages.
+
+With `ptr + len`, the pointer borrows directly from the source (a Rust `&str`
+or a C string literal). No allocation, no copy, no ownership transfer. The
+caller retains ownership and the callee borrows for the duration of the call.
+
+This is especially important for Rust↔C↔Rust round-trips (the via-cdylib
+path) and is also a natural fit for any modern language calling Rust through C
+(Python, Swift, Go, C++ `std::string_view`, etc.) since they all represent
+strings as pointer + length internally.
+
+A convenience macro (`PREFIX_STR(s)`, e.g. `MYLIB_STR(s)`) is generated in
+the C header to construct these from string literals.
+
 ## Crate structure
 
 | Crate | Purpose |
@@ -89,6 +112,10 @@ consumer that works with both linking modes.
 3. Automate the boilerplate further — is it avoidable for the user to list
    every exported type? If unavoidable, at least ensure it only needs to be
    done once, not separately for each generator (gen-c, gen-rust, gen-header)
+4. Support more complex error types — currently only plain enums (unit
+   variants with `#[ffier(code = N)]`) are supported via `#[derive(FfiError)]`.
+   Enums with data-carrying variants, string messages, or structured error
+   payloads are not yet handled.
 
 ## Running tests
 
