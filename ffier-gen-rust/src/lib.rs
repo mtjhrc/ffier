@@ -8,11 +8,21 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
     camel_to_upper_snake, peek_meta_tag,
 };
+
+// Track which dispatch traits have been defined during this compilation,
+// so that `implementable` takes precedence and `trait_impl` only generates
+// the trait definition when no prior definition exists.
+thread_local! {
+    static DEFINED_DISPATCH_TRAITS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
 
 /// Generates Rust client source code as a named `&str` constant.
 #[proc_macro]
@@ -632,8 +642,11 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
-    // Generate trait definition
+    // Generate trait definition — mark as defined so trait_impl doesn't duplicate it.
     let trait_name = &meta.trait_name;
+    DEFINED_DISPATCH_TRAITS.with(|set| {
+        set.borrow_mut().insert(trait_name.to_string());
+    });
     let trait_method_sigs: Vec<_> = meta
         .vtable_methods
         .iter()
@@ -995,6 +1008,45 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
     let struct_name = &meta.struct_name;
     let fn_pfx = meta.fn_pfx();
     let struct_snake = camel_to_snake(&struct_name.to_string());
+
+    // If this trait hasn't been defined yet (no prior `implementable`), generate
+    // a dispatch trait definition with the exported method signatures.
+    let trait_def = DEFINED_DISPATCH_TRAITS.with(|set| {
+        let trait_name_str = trait_name.to_string();
+        if set.borrow().contains(&trait_name_str) {
+            // Already defined by `implementable` — don't duplicate.
+            return quote! {};
+        }
+        set.borrow_mut().insert(trait_name_str);
+
+        let method_sigs: Vec<_> = meta
+            .methods
+            .iter()
+            .map(|m| {
+                let mname = &m.name;
+                let params: Vec<_> = m
+                    .params
+                    .iter()
+                    .map(|(id, vpt)| {
+                        let ty = vtable_param_rust_type(vpt);
+                        quote! { #id: #ty }
+                    })
+                    .collect();
+                let ret = vtable_ret_rust_type(&m.ret);
+                quote! { fn #mname(&self, #(#params),*) #ret; }
+            })
+            .collect();
+
+        quote! {
+            pub trait #trait_name {
+                #(#method_sigs)*
+
+                #[doc(hidden)]
+                fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
+            }
+        }
+    });
+
     // Extern declarations for trait method C functions
     let extern_decls: Vec<_> = meta
         .methods
@@ -1080,6 +1132,8 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
         .collect();
 
     quote! {
+        #trait_def
+
         unsafe extern "C" {
             #(#extern_decls)*
         }

@@ -116,6 +116,12 @@ consumer that works with both linking modes.
    variants with `#[ffier(code = N)]`) are supported via `#[derive(FfiError)]`.
    Enums with data-carrying variants, string messages, or structured error
    payloads are not yet handled.
+5. Unify metadata macro invocations — currently each `ffier_meta_op_*!()` is
+   invoked independently, so generators can't see the full picture (e.g. which
+   traits come from `implementable` vs `trait_impl`). A single combined
+   invocation would let the generator sort/reorder metadata and resolve
+   cross-type dependencies (dispatch trait dedup, correct ordering) without
+   fragile thread-local workarounds.
 
 ## Running tests
 
