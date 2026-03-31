@@ -514,3 +514,43 @@ impl Default for Mixer {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Trait with non-FFI-able methods — tests #[ffier(skip)]
+// ---------------------------------------------------------------------------
+
+/// A type that can't cross FFI (not FfiType, not a handle).
+pub struct InternalState {
+    _data: Vec<u8>,
+}
+
+pub trait Attachment {
+    fn label(&self) -> &str;
+    /// Internal method with non-FFI-able params.
+    fn attach(&self, state: &InternalState) -> bool;
+}
+
+pub struct Sprocket {
+    name: String,
+}
+
+#[ffier::exportable]
+impl Sprocket {
+    pub fn new(name: &str) -> Self {
+        Sprocket {
+            name: name.to_owned(),
+        }
+    }
+}
+
+#[ffier::trait_impl]
+impl Attachment for Sprocket {
+    fn label(&self) -> &str {
+        &self.name
+    }
+
+    #[ffier(skip)]
+    fn attach(&self, state: &InternalState) -> bool {
+        !state._data.is_empty()
+    }
+}

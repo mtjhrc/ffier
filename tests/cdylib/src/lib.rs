@@ -13,6 +13,8 @@ ffier_test_lib::ffier_meta_op_vtable_fruit!("ft", ffier_gen_c_macros::generate_b
 ffier_test_lib::ffier_meta_op_fruit_for_apple!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_fruit_for_orange!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_mixer!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_sprocket!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_attachment_for_sprocket!("ft", ffier_gen_c_macros::generate_bridge);
 
 // ---------------------------------------------------------------------------
 // Manual bridge function — peeks at a handle's TypeId to verify dispatch path.
