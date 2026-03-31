@@ -556,6 +556,10 @@ impl Drop for GizmoBuilder {
 unsafe extern "C" {
     pub fn ft_view_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_view_create(source: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    pub fn ft_view_create_labeled(
+        source: *mut core::ffi::c_void,
+        label: ffier::FfierBytes,
+    ) -> *mut core::ffi::c_void;
     pub fn ft_view_source_count(handle: *mut core::ffi::c_void) -> i32;
     pub fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
     pub fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
@@ -579,9 +583,17 @@ impl<'a> std::fmt::Debug for View<'a> {
 }
 impl<'a> View<'a> {
     #[doc = " Create a view that borrows a widget."]
-    pub fn create(source: &Widget) -> View<'_> {
+    pub fn create(source: &'a Widget) -> View<'a> {
         let __raw = unsafe { ft_view_create(source.0) };
-        <View<'_>>::__from_raw(__raw)
+        <View<'a>>::__from_raw(__raw)
+    }
+    #[doc = " Create a view with a custom label."]
+    #[doc = ""]
+    #[doc = " Takes two reference params so lifetime elision can't resolve `'_`"]
+    #[doc = " in the return type — the struct lifetime must be preserved explicitly."]
+    pub fn create_labeled(source: &'a Widget, label: &str) -> View<'a> {
+        let __raw = unsafe { ft_view_create_labeled(source.0, ffier::FfierBytes::from_str(label)) };
+        <View<'a>>::__from_raw(__raw)
     }
     #[doc = " Read the source widget's count through the borrow."]
     pub fn source_count(&self) -> i32 {
