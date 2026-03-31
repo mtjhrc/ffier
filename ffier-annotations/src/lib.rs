@@ -413,6 +413,14 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
 
+    // Struct-level lifetime names — preserved in metadata so they remain
+    // valid in return-type position (method-level lifetimes are still stripped).
+    let struct_lifetime_names: Vec<String> = input
+        .generics
+        .lifetimes()
+        .map(|lt| lt.lifetime.ident.to_string())
+        .collect();
+
     let reexport_items: Vec<_> = reexport_types
         .iter()
         .zip(reexport_aliases.iter())
@@ -453,7 +461,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .zip(m.param_orig_types.iter())
                 .map(|((id, kind), orig_ty)| {
                     let kind_tokens = emit_param_kind(kind);
-                    let erased_ty = strip_lifetimes_for_metadata(orig_ty);
+                    let erased_ty = strip_lifetimes_for_metadata(orig_ty, &struct_lifetime_names);
                     quote! {
                         {
                             name = #id,
@@ -466,13 +474,13 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let ret_tokens = emit_return_kind(&m.ret);
             // Emit only the type part of the return, not the `->` arrow.
-            // Erase lifetimes to anonymous (`'_`) so method-level lifetimes
-            // (e.g. `'a` in `fn echo<'a>(&self, s: &'a str) -> &'a str`)
-            // don't leak into generated client code as undeclared.
+            // Strip method-level lifetimes from the return type so they don't
+            // leak into generated client code as undeclared, but preserve
+            // struct-level lifetimes which are declared on the impl block.
             let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
                 ReturnType::Default => quote! { () },
                 ReturnType::Type(_, ty) => {
-                    let erased = strip_lifetimes_for_metadata(ty);
+                    let erased = strip_lifetimes_for_metadata(ty, &struct_lifetime_names);
                     quote! { #erased }
                 }
             };
@@ -654,25 +662,32 @@ fn erase_lifetimes(ty: &Type) -> Type {
     ty
 }
 
-/// Strip all explicit lifetimes from a type, turning `&'a T` into `&T`
-/// and `Foo<'a>` into `Foo<'_>`. Used for metadata `rust_type` / `rust_ret`
-/// tokens so that method-level lifetimes don't leak into generated client code.
-fn strip_lifetimes_for_metadata(ty: &Type) -> Type {
-    struct Stripper;
-    impl VisitMut for Stripper {
+/// Strip method-level lifetimes from a type, turning `&'a T` into `&T`
+/// and `Foo<'a>` into `Foo<'_>` — but preserve struct-level lifetimes
+/// (those in `keep`) so they remain valid in return-type position.
+fn strip_lifetimes_for_metadata(ty: &Type, keep: &[String]) -> Type {
+    struct Stripper<'a>(&'a [String]);
+    impl VisitMut for Stripper<'_> {
         fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
             // Remove the explicit lifetime from references: `&'a T` → `&T`
-            r.lifetime = None;
+            // (lifetime elision handles these in both input and output positions)
+            if let Some(lt) = &r.lifetime {
+                if !self.0.iter().any(|k| lt.ident == k) {
+                    r.lifetime = None;
+                }
+            }
             // Continue visiting the inner type
             syn::visit_mut::visit_type_reference_mut(self, r);
         }
         fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
-            // For lifetimes in generic arguments (e.g., `BorrowedFd<'a>`), use `'_`.
-            *lt = syn::Lifetime::new("'_", proc_macro2::Span::call_site());
+            // Only replace lifetimes that are NOT struct-level.
+            if !self.0.iter().any(|k| lt.ident == k) {
+                *lt = syn::Lifetime::new("'_", proc_macro2::Span::call_site());
+            }
         }
     }
     let mut ty = ty.clone();
-    Stripper.visit_type_mut(&mut ty);
+    Stripper(keep).visit_type_mut(&mut ty);
     ty
 }
 

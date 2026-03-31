@@ -347,6 +347,17 @@ impl<'a> View<'a> {
         }
     }
 
+    /// Create a view with a custom label.
+    ///
+    /// Takes two reference params so lifetime elision can't resolve `'_`
+    /// in the return type — the struct lifetime must be preserved explicitly.
+    pub fn create_labeled(source: &'a Widget, label: &str) -> Self {
+        View {
+            source,
+            label: label.to_owned(),
+        }
+    }
+
     /// Read the source widget's count through the borrow.
     pub fn source_count(&self) -> i32 {
         self.source.count
