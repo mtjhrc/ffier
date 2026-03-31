@@ -1032,6 +1032,21 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
     ))
 }
 
+/// Check if an attribute is `#[ffier(skip)]`.
+fn is_ffier_skip(attr: &syn::Attribute) -> bool {
+    if !attr.path().is_ident("ffier") {
+        return false;
+    }
+    let mut found = false;
+    let _ = attr.parse_nested_meta(|meta| {
+        if meta.path.is_ident("skip") {
+            found = true;
+        }
+        Ok(())
+    });
+    found
+}
+
 /// Parse `#[ffier(dyn_param(param_name, "CName", [Type1, Type2]))]` from method attributes.
 ///
 /// Returns `Vec<(param_name, full_c_type_name, [(ident_name, type_tokens)])>`.
@@ -1611,7 +1626,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
-    let original_impl = input.clone();
+
+    // Build the output impl block with #[ffier(skip)] attributes stripped.
+    let mut clean_impl = input.clone();
+    for item in &mut clean_impl.items {
+        if let ImplItem::Fn(method) = item {
+            method.attrs.retain(|a| !is_ffier_skip(a));
+        }
+    }
 
     // Extract trait path and name
     let Some((_, trait_path, _)) = &input.trait_ else {
@@ -1642,7 +1664,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_snake = camel_to_snake(&struct_name);
 
-    // Extract methods using the same classification as implementable
+    // Extract methods using the same classification as implementable,
+    // skipping any marked with #[ffier(skip)].
     let methods: Vec<VtableMethod> = input
         .items
         .iter()
@@ -1650,6 +1673,9 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let ImplItem::Fn(method) = item else {
                 return None;
             };
+            if method.attrs.iter().any(|a| is_ffier_skip(a)) {
+                return None;
+            }
             parse_trait_method_sig(&method.sig, None)
         })
         .collect();
@@ -1692,7 +1718,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_path_tokens = quote! { $crate::#trait_name };
 
     let output = quote! {
-        #original_impl
+        #clean_impl
 
         #[macro_export]
         macro_rules! #meta_macro_name {
