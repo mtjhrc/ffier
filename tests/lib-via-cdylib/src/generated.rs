@@ -997,3 +997,67 @@ impl Drop for Mixer {
         unsafe { ft_mixer_destroy(self.0) }
     }
 }
+unsafe extern "C" {
+    pub fn ft_sprocket_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_sprocket_new(name: ffier::FfierBytes) -> *mut core::ffi::c_void;
+}
+pub struct Sprocket(*mut core::ffi::c_void);
+impl Sprocket {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiType for Sprocket {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &str = "";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Sprocket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Sprocket").field(&self.0).finish()
+    }
+}
+impl Sprocket {
+    pub fn new(name: &str) -> Sprocket {
+        let __raw = unsafe { ft_sprocket_new(ffier::FfierBytes::from_str(name)) };
+        <Sprocket as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Sprocket {
+    fn drop(&mut self) {
+        unsafe { ft_sprocket_destroy(self.0) }
+    }
+}
+pub trait Attachment {
+    fn label(&self) -> &str;
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+}
+unsafe extern "C" {
+    pub fn ft_sprocket_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+}
+impl Attachment for Sprocket {
+    fn label(&self) -> &str {
+        let __raw = unsafe { ft_sprocket_label(self.0) };
+        unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len))
+        }
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
