@@ -298,6 +298,8 @@ mod tests {
         let v = View::create(&w);
         // Verifies impl<'a> Snapshot<'a> for View<'a> generated correctly
         let _: &dyn Snapshot = &v;
+        // Verifies impl Snapshot<'static> for Widget generated correctly
+        let _: &dyn Snapshot = &w;
     }
 
     // ================================================================

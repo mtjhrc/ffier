@@ -1144,3 +1144,23 @@ impl<'a> Snapshot<'a> for View<'a> {
         this.0
     }
 }
+unsafe extern "C" {
+    pub fn ft_widget_snap_description(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_widget_snap_source_count(handle: *mut core::ffi::c_void) -> i32;
+}
+impl Snapshot<'static> for Widget {
+    fn snap_description(&self) -> &str {
+        let __raw = unsafe { ft_widget_snap_description(self.0) };
+        unsafe {
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len))
+        }
+    }
+    fn snap_source_count(&self) -> i32 {
+        let __raw = unsafe { ft_widget_snap_source_count(self.0) };
+        __raw
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}

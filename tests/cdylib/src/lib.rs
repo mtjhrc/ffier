@@ -17,6 +17,7 @@ ffier_test_lib::ffier_meta_op_sprocket!("ft", ffier_gen_c_macros::generate_bridg
 ffier_test_lib::ffier_meta_op_attachment_for_sprocket!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_view_factory!("ft", ffier_gen_c_macros::generate_bridge);
 ffier_test_lib::ffier_meta_op_snapshot_for_view!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::ffier_meta_op_snapshot_for_widget!("ft", ffier_gen_c_macros::generate_bridge);
 
 // ---------------------------------------------------------------------------
 // Manual bridge function — peeks at a handle's TypeId to verify dispatch path.

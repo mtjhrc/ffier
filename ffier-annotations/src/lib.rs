@@ -1661,13 +1661,29 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     };
-    let trait_name = trait_path
+    let trait_last_seg = trait_path
         .segments
         .last()
-        .expect("trait path must have segments")
-        .ident
-        .clone();
+        .expect("trait path must have segments");
+    let trait_name = trait_last_seg.ident.clone();
     let trait_snake = camel_to_snake(&trait_name.to_string());
+
+    // Extract lifetime arguments from the trait path (e.g. 'static from AttachDevice<'static>,
+    // or 'a from AttachDevice<'a>). These may differ from the impl's declared generics.
+    let trait_lt_args: Vec<String> = match &trait_last_seg.arguments {
+        syn::PathArguments::AngleBracketed(ab) => ab
+            .args
+            .iter()
+            .filter_map(|arg| {
+                if let syn::GenericArgument::Lifetime(lt) = arg {
+                    Some(lt.ident.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     // Extract struct type
     let Type::Path(ref struct_type_path) = *input.self_ty else {
@@ -1757,6 +1773,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     trait_path = (#trait_path_tokens),
                     prefix = $prefix,
                     lifetimes = (#(#lifetime_idents),*),
+                    trait_lifetime_args = [#(#trait_lt_args),*],
                     methods = [#(#method_meta),*],
                 }
             };
