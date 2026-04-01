@@ -375,6 +375,37 @@ impl<'a> View<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// ViewFactory — non-lifetime struct returning lifetime-parameterized type
+// Tests method-level lifetime introduction when multiple input refs exist.
+// ---------------------------------------------------------------------------
+
+pub struct ViewFactory;
+
+#[ffier::exportable]
+impl ViewFactory {
+    pub fn new() -> Self {
+        ViewFactory
+    }
+
+    /// Create a view from a source widget with a label.
+    ///
+    /// Multiple reference params + lifetime-parameterized return type forces
+    /// the generator to introduce a method-level lifetime (can't elide).
+    pub fn create_view<'a>(source: &'a Widget, label: &str) -> View<'a> {
+        View {
+            source,
+            label: label.to_owned(),
+        }
+    }
+}
+
+impl Default for ViewFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Implementable trait: Processor (with supertrait Observer)
 // ---------------------------------------------------------------------------
 

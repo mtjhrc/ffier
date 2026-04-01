@@ -94,6 +94,8 @@ struct MethodInfo {
     ret: ReturnKind,
     /// Original Rust return type for client codegen.
     ret_orig_type: ReturnType,
+    /// Method-level lifetime params (e.g. `['a, 'b]` from `fn foo<'a, 'b>(...)`).
+    method_lifetimes: Vec<syn::Ident>,
     doc_lines: Vec<String>,
 }
 
@@ -405,6 +407,12 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
                 out
             },
+            method_lifetimes: method
+                .sig
+                .generics
+                .lifetimes()
+                .map(|lt| lt.lifetime.ident.clone())
+                .collect(),
             doc_lines,
         });
     }
@@ -454,6 +462,12 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let is_builder = m.is_builder;
 
+            // Preserve both struct-level and method-level lifetimes in types.
+            let mut keep_lifetimes = struct_lifetime_names.clone();
+            for lt in &m.method_lifetimes {
+                keep_lifetimes.push(lt.to_string());
+            }
+
             let param_tokens: Vec<_> = m
                 .param_idents
                 .iter()
@@ -461,7 +475,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .zip(m.param_orig_types.iter())
                 .map(|((id, kind), orig_ty)| {
                     let kind_tokens = emit_param_kind(kind);
-                    let erased_ty = strip_lifetimes_for_metadata(orig_ty, &struct_lifetime_names);
+                    let erased_ty = strip_lifetimes_for_metadata(orig_ty, &keep_lifetimes);
                     quote! {
                         {
                             name = #id,
@@ -473,17 +487,22 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .collect();
 
             let ret_tokens = emit_return_kind(&m.ret);
-            // Emit only the type part of the return, not the `->` arrow.
-            // Strip method-level lifetimes from the return type so they don't
-            // leak into generated client code as undeclared, but preserve
-            // struct-level lifetimes which are declared on the impl block.
+            // Strip only unknown lifetimes. Struct-level and method-level
+            // lifetimes are preserved so the generated code can declare them.
             let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
                 ReturnType::Default => quote! { () },
                 ReturnType::Type(_, ty) => {
-                    let erased = strip_lifetimes_for_metadata(ty, &struct_lifetime_names);
+                    let erased = strip_lifetimes_for_metadata(ty, &keep_lifetimes);
                     quote! { #erased }
                 }
             };
+
+            // Method lifetime idents for metadata
+            let method_lt_idents: Vec<_> = m
+                .method_lifetimes
+                .iter()
+                .map(|lt| format_ident!("{}", lt))
+                .collect();
 
             quote! {
                 {
@@ -492,6 +511,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     doc = [#(#doc_tokens),*],
                     receiver = #receiver_ident,
                     is_builder = #is_builder,
+                    method_lifetimes = [#(#method_lt_idents),*],
                     params = [#(#param_tokens),*],
                     ret = #ret_tokens,
                     rust_ret = (#rust_ret),

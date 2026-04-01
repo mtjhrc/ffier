@@ -126,6 +126,8 @@ pub struct MetaMethod {
     pub doc: Vec<String>,
     pub receiver: MetaReceiver,
     pub is_builder: bool,
+    /// Method-level lifetime params (e.g. `[a, b]` from `fn foo<'a, 'b>(...)`).
+    pub method_lifetimes: Vec<Ident>,
     pub params: Vec<MetaParam>,
     pub ret: MetaReturn,
     pub rust_ret: TokenStream,
@@ -491,6 +493,21 @@ impl syn::parse::Parse for MetaMethod {
         let is_builder = parse_bool(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "method_lifetimes")?;
+        let method_lifetimes = {
+            let inner;
+            syn::bracketed!(inner in input);
+            let mut lts = Vec::new();
+            while !inner.is_empty() {
+                lts.push(inner.parse::<Ident>()?);
+                if !inner.is_empty() && inner.peek(Token![,]) {
+                    inner.parse::<Token![,]>()?;
+                }
+            }
+            lts
+        };
+        parse_comma(input)?;
+
         expect_key(input, "params")?;
         let params = {
             let inner;
@@ -520,6 +537,7 @@ impl syn::parse::Parse for MetaMethod {
             doc,
             receiver,
             is_builder,
+            method_lifetimes,
             params,
             ret,
             rust_ret,

@@ -122,6 +122,10 @@ consumer that works with both linking modes.
    invocation would let the generator sort/reorder metadata and resolve
    cross-type dependencies (dispatch trait dedup, correct ordering) without
    fragile thread-local workarounds.
+6. Preserve explicit lifetimes on `SliceStr`/`SliceBytes`/`SlicePath` params in
+   generated Rust client code — currently these param types are hardcoded to
+   bare `&str`/`&[u8]`/`&Path`, dropping any lifetime annotation from the
+   original signature (e.g. `s: &'a str` becomes `s: &str`).
 
 ## Running tests
 
