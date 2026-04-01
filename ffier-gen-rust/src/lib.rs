@@ -1032,11 +1032,11 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
             .collect();
         quote! { <#(#lts),*> }
     };
-    let trait_with_lts = if meta.lifetimes.is_empty() {
+    let trait_with_lts = if meta.trait_lifetime_args.is_empty() {
         quote! { #trait_name }
     } else {
         let lts: Vec<_> = meta
-            .lifetimes
+            .trait_lifetime_args
             .iter()
             .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
             .collect();
@@ -1081,8 +1081,24 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
             })
             .collect();
 
+        // Trait definition generics: use trait_lifetime_args but exclude 'static
+        // (which is concrete, not a generic param).
+        let trait_def_generics = {
+            let lts: Vec<_> = meta
+                .trait_lifetime_args
+                .iter()
+                .filter(|lt| *lt != "static")
+                .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
+                .collect();
+            if lts.is_empty() {
+                quote! {}
+            } else {
+                quote! { <#(#lts),*> }
+            }
+        };
+
         quote! {
-            pub trait #trait_name #impl_generics {
+            pub trait #trait_name #trait_def_generics {
                 #(#method_sigs)*
 
                 #[doc(hidden)]

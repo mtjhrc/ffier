@@ -308,6 +308,9 @@ pub struct MetaTraitImpl {
     pub prefix: String,
     /// Lifetime params from the impl block (e.g. `[a]` from `impl<'a> Trait<'a> for Struct<'a>`).
     pub lifetimes: Vec<Ident>,
+    /// Lifetime arguments on the trait (e.g. `["static"]` from `impl Trait<'static> for Struct`,
+    /// or `["a"]` from `impl<'a> Trait<'a> for Struct<'a>`). May differ from `lifetimes`.
+    pub trait_lifetime_args: Vec<String>,
     pub methods: Vec<MetaVtableMethod>,
 }
 
@@ -996,6 +999,21 @@ impl syn::parse::Parse for MetaTraitImpl {
         };
         parse_comma(input)?;
 
+        expect_key(input, "trait_lifetime_args")?;
+        let trait_lifetime_args = {
+            let content;
+            syn::bracketed!(content in input);
+            let mut args = Vec::new();
+            while !content.is_empty() {
+                args.push(parse_string(&content)?);
+                if !content.is_empty() && content.peek(Token![,]) {
+                    content.parse::<Token![,]>()?;
+                }
+            }
+            args
+        };
+        parse_comma(input)?;
+
         expect_key(input, "methods")?;
         let methods = {
             let content;
@@ -1049,6 +1067,7 @@ impl syn::parse::Parse for MetaTraitImpl {
             trait_path,
             prefix,
             lifetimes,
+            trait_lifetime_args,
             methods,
         })
     }

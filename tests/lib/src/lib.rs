@@ -606,3 +606,16 @@ impl<'a> Snapshot<'a> for View<'a> {
         self.source.count
     }
 }
+
+/// Static impl — tests that `impl Trait<'static> for Struct` preserves
+/// the concrete `'static` lifetime on the trait.
+#[ffier::trait_impl]
+impl Snapshot<'static> for Widget {
+    fn snap_description(&self) -> &str {
+        &self.name
+    }
+
+    fn snap_source_count(&self) -> i32 {
+        self.count
+    }
+}
