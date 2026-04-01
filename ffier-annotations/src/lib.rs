@@ -1733,6 +1733,12 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
+    let lifetime_idents: Vec<_> = input
+        .generics
+        .lifetimes()
+        .map(|lt| format_ident!("{}", lt.lifetime.ident))
+        .collect();
+
     let meta_macro_name = format_ident!("ffier_meta_op_{trait_snake}_for_{struct_snake}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
@@ -1750,6 +1756,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     struct_path = (#struct_path_tokens),
                     trait_path = (#trait_path_tokens),
                     prefix = $prefix,
+                    lifetimes = (#(#lifetime_idents),*),
                     methods = [#(#method_meta),*],
                 }
             };

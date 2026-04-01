@@ -1022,6 +1022,37 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
     let fn_pfx = meta.fn_pfx();
     let struct_snake = camel_to_snake(&struct_name.to_string());
 
+    let impl_generics = if meta.lifetimes.is_empty() {
+        quote! {}
+    } else {
+        let lts: Vec<_> = meta
+            .lifetimes
+            .iter()
+            .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
+            .collect();
+        quote! { <#(#lts),*> }
+    };
+    let trait_with_lts = if meta.lifetimes.is_empty() {
+        quote! { #trait_name }
+    } else {
+        let lts: Vec<_> = meta
+            .lifetimes
+            .iter()
+            .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
+            .collect();
+        quote! { #trait_name<#(#lts),*> }
+    };
+    let struct_with_lts = if meta.lifetimes.is_empty() {
+        quote! { #struct_name }
+    } else {
+        let lts: Vec<_> = meta
+            .lifetimes
+            .iter()
+            .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
+            .collect();
+        quote! { #struct_name<#(#lts),*> }
+    };
+
     // If this trait hasn't been defined yet (no prior `implementable`), generate
     // a dispatch trait definition with the exported method signatures.
     let trait_def = DEFINED_DISPATCH_TRAITS.with(|set| {
@@ -1051,7 +1082,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
             .collect();
 
         quote! {
-            pub trait #trait_name {
+            pub trait #trait_name #impl_generics {
                 #(#method_sigs)*
 
                 #[doc(hidden)]
@@ -1151,7 +1182,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
             #(#extern_decls)*
         }
 
-        impl #trait_name for #struct_name {
+        impl #impl_generics #trait_with_lts for #struct_with_lts {
             #(#trait_method_impls)*
 
             fn __into_raw_handle(self) -> *mut core::ffi::c_void {
