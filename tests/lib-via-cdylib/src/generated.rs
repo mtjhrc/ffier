@@ -150,7 +150,7 @@ impl Widget {
         __raw
     }
     #[doc = " Echo back the given string (zero-copy borrow passthrough)."]
-    pub fn echo(&self, s: &str) -> &str {
+    pub fn echo<'a>(&self, s: &str) -> &'a str {
         let __raw = unsafe { ft_widget_echo(self.0, ffier::FfierBytes::from_str(s)) };
         unsafe {
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len))
@@ -1059,5 +1059,60 @@ impl Attachment for Sprocket {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_view_factory_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_view_factory_new() -> *mut core::ffi::c_void;
+    pub fn ft_view_factory_create_view(
+        source: *mut core::ffi::c_void,
+        label: ffier::FfierBytes,
+    ) -> *mut core::ffi::c_void;
+}
+pub struct ViewFactory(*mut core::ffi::c_void);
+impl ViewFactory {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiType for ViewFactory {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &str = "";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for ViewFactory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ViewFactory").field(&self.0).finish()
+    }
+}
+impl ViewFactory {
+    pub fn new() -> ViewFactory {
+        let __raw = unsafe { ft_view_factory_new() };
+        <ViewFactory as ffier::FfiType>::from_c(__raw)
+    }
+    #[doc = " Create a view from a source widget with a label."]
+    #[doc = ""]
+    #[doc = " Multiple reference params + lifetime-parameterized return type forces"]
+    #[doc = " the generator to introduce a method-level lifetime (can't elide)."]
+    pub fn create_view<'a>(source: &'a Widget, label: &str) -> View<'a> {
+        let __raw =
+            unsafe { ft_view_factory_create_view(source.0, ffier::FfierBytes::from_str(label)) };
+        <View<'a>>::__from_raw(__raw)
+    }
+}
+impl Drop for ViewFactory {
+    fn drop(&mut self) {
+        unsafe { ft_view_factory_destroy(self.0) }
     }
 }

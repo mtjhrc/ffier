@@ -11,6 +11,7 @@ use quote::{format_ident, quote};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
@@ -473,9 +474,21 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             }
         };
 
+        // Method-level lifetime generics (e.g. <'a, 'b>)
+        let method_generics = if m.method_lifetimes.is_empty() {
+            quote! {}
+        } else {
+            let lts: Vec<_> = m
+                .method_lifetimes
+                .iter()
+                .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
+                .collect();
+            quote! { <#(#lts),*> }
+        };
+
         client_methods.push(quote! {
             #(#doc_attrs)*
-            pub fn #method_name(#wrapper_receiver #(#wrapper_params),*) #wrapper_ret_type {
+            pub fn #method_name #method_generics(#wrapper_receiver #(#wrapper_params),*) #wrapper_ret_type {
                 #wrapper_body
             }
         });
