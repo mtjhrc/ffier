@@ -585,3 +585,24 @@ impl Attachment for Sprocket {
         !state._data.is_empty()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Lifetime-parameterized trait_impl — tests that `impl<'a> Trait<'a> for Struct<'a>`
+// preserves lifetimes in generated client code.
+// ---------------------------------------------------------------------------
+
+pub trait Snapshot<'a> {
+    fn snap_description(&self) -> &str;
+    fn snap_source_count(&self) -> i32;
+}
+
+#[ffier::trait_impl]
+impl<'a> Snapshot<'a> for View<'a> {
+    fn snap_description(&self) -> &str {
+        &self.label
+    }
+
+    fn snap_source_count(&self) -> i32 {
+        self.source.count
+    }
+}

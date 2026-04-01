@@ -289,6 +289,18 @@ mod tests {
     }
 
     // ================================================================
+    // Lifetime-parameterized trait_impl
+    // ================================================================
+
+    #[test]
+    fn lifetime_trait_impl_compiles() {
+        let w = Widget::new();
+        let v = View::create(&w);
+        // Verifies impl<'a> Snapshot<'a> for View<'a> generated correctly
+        let _: &dyn Snapshot = &v;
+    }
+
+    // ================================================================
     // Vtable / implementable
     // TODO: VtableProcessor needs `impl Processor` from the generator
     //       before these tests can work. See generated.rs.
