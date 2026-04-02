@@ -11,8 +11,7 @@ use std::collections::HashSet;
 
 use ffier_meta::{
     MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    peek_meta_tag,
+    MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, peek_meta_tag,
 };
 
 /// Generates Rust client source code from batched metadata.
@@ -571,9 +570,17 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(_id, vpt)| vtable_param_c_type(vpt))
+                .map(|p| {
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::CRepr }
+                })
                 .collect();
-            let ret = vtable_ret_c_type(&m.ret);
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                }
+            };
             quote! {
                 pub #mname: unsafe extern "C" fn(
                     *mut core::ffi::c_void
@@ -592,12 +599,16 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let ty = vtable_param_rust_type(vpt);
-                    quote! { #id: #ty }
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { #id: #rt }
                 })
                 .collect();
-            let ret = vtable_ret_rust_type(&m.ret);
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+            };
             quote! { fn #mname(&self, #(#params),*) #ret; }
         })
         .collect();
@@ -611,34 +622,36 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let c_ty = vtable_param_c_type(vpt);
-                    quote! { #id: #c_ty }
+                .map(|p| {
+                    let id = &p.name;
+                    let bt = &p.bridge_type;
+                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
                 })
                 .collect();
-            let ret = vtable_ret_c_type(&m.ret);
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                }
+            };
 
             // Argument conversions: C repr -> Rust type
             let arg_conversions: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| match vpt {
-                    MetaVtableParamType::Primitive(_) => quote! { #id },
-                    MetaVtableParamType::Str => quote! { unsafe { #id.as_str_unchecked() } },
-                    MetaVtableParamType::Bytes => quote! { unsafe { #id.as_bytes() } },
-                    MetaVtableParamType::Path => quote! { unsafe { #id.as_path() } },
-                    MetaVtableParamType::Handle(_) => quote! { #id },
+                .map(|p| {
+                    let id = &p.name;
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::from_c(#id) }
                 })
                 .collect();
 
             // Return conversion: Rust type -> C repr
             let ret_conversion = match &m.ret {
-                MetaVtableRetType::Void => quote! { __result },
-                MetaVtableRetType::Primitive(_) => quote! { __result },
-                MetaVtableRetType::Str => quote! { unsafe { ffier::FfierBytes::from_str(__result) } },
-                MetaVtableRetType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(__result) } },
-                MetaVtableRetType::Path => quote! { unsafe { ffier::FfierBytes::from_path(__result) } },
-                MetaVtableRetType::Handle(_) => quote! { __result },
+                MetaVtableRet::Void => quote! { __result },
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { <#bridge_type as ffier::FfiType>::into_c(__result) }
+                }
             };
 
             quote! {
@@ -807,51 +820,6 @@ fn extract_ok_type_from_tokens(tokens: &TokenStream2) -> TokenStream2 {
     tokens.clone()
 }
 
-/// Generate Rust type tokens for vtable parameter types (trait definition).
-fn vtable_param_rust_type(vpt: &MetaVtableParamType) -> TokenStream2 {
-    match vpt {
-        MetaVtableParamType::Primitive(ty) => quote! { #ty },
-        MetaVtableParamType::Str => quote! { &str },
-        MetaVtableParamType::Bytes => quote! { &[u8] },
-        MetaVtableParamType::Path => quote! { &std::path::Path },
-        MetaVtableParamType::Handle(ty) => quote! { &#ty },
-    }
-}
-
-/// Generate Rust return type annotation for vtable return types (trait definition).
-fn vtable_ret_rust_type(ret: &MetaVtableRetType) -> TokenStream2 {
-    match ret {
-        MetaVtableRetType::Void => quote! {},
-        MetaVtableRetType::Primitive(ty) => quote! { -> #ty },
-        MetaVtableRetType::Str => quote! { -> &str },
-        MetaVtableRetType::Bytes => quote! { -> &[u8] },
-        MetaVtableRetType::Path => quote! { -> &std::path::Path },
-        MetaVtableRetType::Handle(ty) => quote! { -> #ty },
-    }
-}
-
-/// Generate C type tokens for vtable parameter types (client side).
-fn vtable_param_c_type(vpt: &MetaVtableParamType) -> TokenStream2 {
-    match vpt {
-        MetaVtableParamType::Primitive(ty) => quote! { #ty },
-        MetaVtableParamType::Str | MetaVtableParamType::Bytes | MetaVtableParamType::Path => {
-            quote! { ffier::FfierBytes }
-        }
-        MetaVtableParamType::Handle(_) => quote! { *mut core::ffi::c_void },
-    }
-}
-
-/// Generate C return type annotation for vtable return types (client side).
-fn vtable_ret_c_type(ret: &MetaVtableRetType) -> TokenStream2 {
-    match ret {
-        MetaVtableRetType::Void => quote! {},
-        MetaVtableRetType::Primitive(ty) => quote! { -> #ty },
-        MetaVtableRetType::Str | MetaVtableRetType::Bytes | MetaVtableRetType::Path => {
-            quote! { -> ffier::FfierBytes }
-        }
-        MetaVtableRetType::Handle(_) => quote! { -> *mut core::ffi::c_void },
-    }
-}
 
 // ===========================================================================
 // Trait impl client generation
@@ -905,12 +873,16 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
                 let params: Vec<_> = m
                     .params
                     .iter()
-                    .map(|(id, vpt)| {
-                        let ty = vtable_param_rust_type(vpt);
-                        quote! { #id: #ty }
+                    .map(|p| {
+                        let id = &p.name;
+                        let rt = &p.rust_type;
+                        quote! { #id: #rt }
                     })
                     .collect();
-                let ret = vtable_ret_rust_type(&m.ret);
+                let ret = match &m.ret {
+                    MetaVtableRet::Void => quote! {},
+                    MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+                };
                 quote! { fn #mname(&self, #(#params),*) #ret; }
             })
             .collect();
@@ -950,12 +922,18 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let c_ty = vtable_param_c_type(vpt);
-                    quote! { #id: #c_ty }
+                .map(|p| {
+                    let id = &p.name;
+                    let bt = &p.bridge_type;
+                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
                 })
                 .collect();
-            let ret = vtable_ret_c_type(&m.ret);
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                }
+            };
             quote! { pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
         })
         .collect();
@@ -971,49 +949,39 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let ty = vtable_param_rust_type(vpt);
-                    quote! { #id: #ty }
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { #id: #rt }
                 })
                 .collect();
 
-            let ret = vtable_ret_rust_type(&m.ret);
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+            };
 
             // Convert Rust args to C repr for the call
             let call_args: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| match vpt {
-                    MetaVtableParamType::Primitive(_) => quote! { #id },
-                    MetaVtableParamType::Str => quote! { unsafe { ffier::FfierBytes::from_str(#id) } },
-                    MetaVtableParamType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#id) } },
-                    MetaVtableParamType::Path => quote! { unsafe { ffier::FfierBytes::from_path(#id) } },
-                    MetaVtableParamType::Handle(_) => quote! { #id }, // TODO
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
                 })
                 .collect();
 
             // Convert C return to Rust type
-            let ret_conversion = match &m.ret {
-                MetaVtableRetType::Void => quote! {},
-                MetaVtableRetType::Primitive(_) => quote! { __raw },
-                MetaVtableRetType::Str => quote! {
-                    unsafe { core::str::from_utf8_unchecked(
-                        core::slice::from_raw_parts(__raw.data, __raw.len)
-                    ) }
-                },
-                MetaVtableRetType::Bytes => quote! {
-                    unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
-                },
-                MetaVtableRetType::Path => quote! { unsafe { __raw.as_path() } },
-                MetaVtableRetType::Handle(_) => quote! { __raw }, // TODO
-            };
-
-            let body = if matches!(m.ret, MetaVtableRetType::Void) {
-                quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
-            } else {
-                quote! {
-                    let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
-                    #ret_conversion
+            let body = match &m.ret {
+                MetaVtableRet::Void => {
+                    quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
+                }
+                MetaVtableRet::Value { rust_type, .. } => {
+                    quote! {
+                        let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
+                        <#rust_type as ffier::FfiType>::from_c(__raw)
+                    }
                 }
             };
 

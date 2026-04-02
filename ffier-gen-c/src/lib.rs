@@ -9,8 +9,8 @@ use quote::{format_ident, quote};
 
 use ffier_meta::{
     MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType,
-    camel_to_snake, camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag,
+    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, camel_to_upper_snake,
+    peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 fn generate_one(item: TokenStream2) -> TokenStream2 {
@@ -767,48 +767,23 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
         let param_c_types: Vec<_> = m
             .params
             .iter()
-            .map(|(id, vpt)| {
-                let id_str = id.to_string();
-                let type_expr = match vpt {
-                    MetaVtableParamType::Primitive(ty) => {
-                        quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
-                    }
-                    MetaVtableParamType::Str => {
-                        let n = format!("{type_pfx}Str");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Bytes => {
-                        let n = format!("{type_pfx}Bytes");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Path => {
-                        let n = format!("{type_pfx}Path");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Handle(_) => quote! { "void*" },
+            .map(|p| {
+                let id_str = p.name.to_string();
+                let bt = &p.bridge_type;
+                let type_expr = quote! {
+                    &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                 };
                 (id_str, type_expr)
             })
             .collect();
 
         let ret_c_expr = match &m.ret {
-            MetaVtableRetType::Void => quote! { "void" },
-            MetaVtableRetType::Primitive(ty) => {
-                quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
+            MetaVtableRet::Void => quote! { "void" },
+            MetaVtableRet::Value { bridge_type, .. } => {
+                quote! {
+                    &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                }
             }
-            MetaVtableRetType::Str => {
-                let n = format!("{type_pfx}Str");
-                quote! { #n }
-            }
-            MetaVtableRetType::Bytes => {
-                let n = format!("{type_pfx}Bytes");
-                quote! { #n }
-            }
-            MetaVtableRetType::Path => {
-                let n = format!("{type_pfx}Path");
-                quote! { #n }
-            }
-            MetaVtableRetType::Handle(_) => quote! { "void*" },
         };
 
         let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
@@ -1418,60 +1393,19 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
         let mut call_args = Vec::new();
 
-        for (param_name, param_type) in &m.params {
-            let c_type = match param_type {
-                MetaVtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::CRepr },
-                MetaVtableParamType::Str
-                | MetaVtableParamType::Bytes
-                | MetaVtableParamType::Path => {
-                    quote! { ffier::FfierBytes }
-                }
-                MetaVtableParamType::Handle(_) => quote! { *mut core::ffi::c_void },
-            };
-            bridge_params.push(quote! { #param_name: #c_type });
-
-            let conversion = match param_type {
-                MetaVtableParamType::Primitive(ty) => {
-                    quote! { <#ty as ffier::FfiType>::from_c(#param_name) }
-                }
-                MetaVtableParamType::Str => {
-                    quote! { unsafe { #param_name.as_str_unchecked() } }
-                }
-                MetaVtableParamType::Bytes => {
-                    quote! { unsafe { #param_name.as_bytes() } }
-                }
-                MetaVtableParamType::Path => {
-                    quote! { unsafe { #param_name.as_path() } }
-                }
-                MetaVtableParamType::Handle(ty) => {
-                    quote! { <#ty as ffier::FfiType>::from_c(#param_name) }
-                }
-            };
-            call_args.push(conversion);
+        for p in &m.params {
+            let param_name = &p.name;
+            let bt = &p.bridge_type;
+            bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
+            call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
         }
 
         // Return type
         let (ret_type, ret_conversion) = match &m.ret {
-            MetaVtableRetType::Void => (quote! {}, quote! { call_result }),
-            MetaVtableRetType::Primitive(ty) => (
-                quote! { -> <#ty as ffier::FfiType>::CRepr },
-                quote! { <#ty as ffier::FfiType>::into_c(call_result) },
-            ),
-            MetaVtableRetType::Str => (
-                quote! { -> ffier::FfierBytes },
-                quote! { unsafe { ffier::FfierBytes::from_str(call_result) } },
-            ),
-            MetaVtableRetType::Bytes => (
-                quote! { -> ffier::FfierBytes },
-                quote! { unsafe { ffier::FfierBytes::from_bytes(call_result) } },
-            ),
-            MetaVtableRetType::Path => (
-                quote! { -> ffier::FfierBytes },
-                quote! { unsafe { ffier::FfierBytes::from_path(call_result) } },
-            ),
-            MetaVtableRetType::Handle(ty) => (
-                quote! { -> *mut core::ffi::c_void },
-                quote! { <#ty as ffier::FfiType>::into_c(call_result) },
+            MetaVtableRet::Void => (quote! {}, quote! { call_result }),
+            MetaVtableRet::Value { bridge_type, .. } => (
+                quote! { -> <#bridge_type as ffier::FfiType>::CRepr },
+                quote! { <#bridge_type as ffier::FfiType>::into_c(call_result) },
             ),
         };
 
@@ -1488,48 +1422,21 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         let param_c_types: Vec<_> = m
             .params
             .iter()
-            .map(|(id, vpt)| {
-                let id_str = id.to_string();
-                let type_expr = match vpt {
-                    MetaVtableParamType::Primitive(ty) => {
-                        quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
-                    }
-                    MetaVtableParamType::Str => {
-                        let n = format!("{type_pfx}Str");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Bytes => {
-                        let n = format!("{type_pfx}Bytes");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Path => {
-                        let n = format!("{type_pfx}Path");
-                        quote! { #n }
-                    }
-                    MetaVtableParamType::Handle(_) => quote! { "void*" },
+            .map(|p| {
+                let id_str = p.name.to_string();
+                let bt = &p.bridge_type;
+                let type_expr = quote! {
+                    &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                 };
                 (id_str, type_expr)
             })
             .collect();
 
         let ret_c_expr = match &m.ret {
-            MetaVtableRetType::Void => quote! { "void" },
-            MetaVtableRetType::Primitive(ty) => {
-                quote! { <#ty as ffier::FfiType>::C_TYPE_NAME }
-            }
-            MetaVtableRetType::Str => {
-                let n = format!("{type_pfx}Str");
-                quote! { #n }
-            }
-            MetaVtableRetType::Bytes => {
-                let n = format!("{type_pfx}Bytes");
-                quote! { #n }
-            }
-            MetaVtableRetType::Path => {
-                let n = format!("{type_pfx}Path");
-                quote! { #n }
-            }
-            MetaVtableRetType::Handle(_) => quote! { "void*" },
+            MetaVtableRet::Void => quote! { "void" },
+            MetaVtableRet::Value { bridge_type, .. } => quote! {
+                &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+            },
         };
 
         let handle_c_name = format!("{type_pfx}{struct_name_str}");

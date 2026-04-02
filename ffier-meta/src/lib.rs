@@ -280,27 +280,22 @@ pub struct MetaVtableField {
 
 pub struct MetaVtableMethod {
     pub name: Ident,
-    pub params: Vec<(Ident, MetaVtableParamType)>,
-    pub ret: MetaVtableRetType,
+    pub params: Vec<MetaVtableParam>,
+    pub ret: MetaVtableRet,
 }
 
-#[allow(dead_code)]
-pub enum MetaVtableParamType {
-    Primitive(TokenStream),
-    Str,
-    Bytes,
-    Path,
-    Handle(TokenStream),
+pub struct MetaVtableParam {
+    pub name: Ident,
+    pub bridge_type: TokenStream,
+    pub rust_type: TokenStream,
 }
 
-#[allow(dead_code)]
-pub enum MetaVtableRetType {
+pub enum MetaVtableRet {
     Void,
-    Primitive(TokenStream),
-    Str,
-    Bytes,
-    Path,
-    Handle(TokenStream),
+    Value {
+        bridge_type: TokenStream,
+        rust_type: TokenStream,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -842,12 +837,7 @@ impl syn::parse::Parse for MetaImplementable {
                     syn::bracketed!(pinner in inner);
                     let mut ps = Vec::new();
                     while !pinner.is_empty() {
-                        let ppinner;
-                        syn::parenthesized!(ppinner in pinner);
-                        let pname: Ident = ppinner.parse()?;
-                        ppinner.parse::<Token![,]>()?;
-                        let ptype = parse_vtable_param_type(&ppinner)?;
-                        ps.push((pname, ptype));
+                        ps.push(parse_vtable_param(&pinner)?);
                         if !pinner.is_empty() && pinner.peek(Token![,]) {
                             pinner.parse::<Token![,]>()?;
                         }
@@ -856,7 +846,7 @@ impl syn::parse::Parse for MetaImplementable {
                 };
                 parse_comma(&inner)?;
                 expect_key(&inner, "ret")?;
-                let ret = parse_vtable_ret_type(&inner)?;
+                let ret = parse_vtable_ret(&inner)?;
                 parse_comma(&inner)?;
                 ms.push(MetaVtableMethod {
                     name: mname,
@@ -883,49 +873,42 @@ impl syn::parse::Parse for MetaImplementable {
     }
 }
 
-fn parse_vtable_param_type(input: ParseStream) -> syn::Result<MetaVtableParamType> {
-    let kind: Ident = input.parse()?;
-    match kind.to_string().as_str() {
-        "primitive" => {
-            let content;
-            syn::parenthesized!(content in input);
-            let ty: TokenStream = content.parse()?;
-            Ok(MetaVtableParamType::Primitive(ty))
-        }
-        "str" => Ok(MetaVtableParamType::Str),
-        "bytes" => Ok(MetaVtableParamType::Bytes),
-        "path" => Ok(MetaVtableParamType::Path),
-        "handle" => {
-            let content;
-            syn::parenthesized!(content in input);
-            let ty: TokenStream = content.parse()?;
-            Ok(MetaVtableParamType::Handle(ty))
-        }
-        other => Err(syn::Error::new(
-            kind.span(),
-            format!("unknown vtable param type `{other}`"),
-        )),
-    }
+fn parse_vtable_param(input: ParseStream) -> syn::Result<MetaVtableParam> {
+    let content;
+    syn::braced!(content in input);
+    expect_key(&content, "name")?;
+    let name: Ident = content.parse()?;
+    parse_comma(&content)?;
+    expect_key(&content, "bridge_type")?;
+    let bridge_type = parse_parenthesized_tokens(&content)?;
+    parse_comma(&content)?;
+    expect_key(&content, "rust_type")?;
+    let rust_type = parse_parenthesized_tokens(&content)?;
+    parse_comma(&content)?;
+    Ok(MetaVtableParam {
+        name,
+        bridge_type,
+        rust_type,
+    })
 }
 
-fn parse_vtable_ret_type(input: ParseStream) -> syn::Result<MetaVtableRetType> {
+fn parse_vtable_ret(input: ParseStream) -> syn::Result<MetaVtableRet> {
     let kind: Ident = input.parse()?;
     match kind.to_string().as_str() {
-        "void" => Ok(MetaVtableRetType::Void),
-        "primitive" => {
+        "void" => Ok(MetaVtableRet::Void),
+        "value" => {
             let content;
             syn::parenthesized!(content in input);
-            let ty: TokenStream = content.parse()?;
-            Ok(MetaVtableRetType::Primitive(ty))
-        }
-        "str" => Ok(MetaVtableRetType::Str),
-        "bytes" => Ok(MetaVtableRetType::Bytes),
-        "path" => Ok(MetaVtableRetType::Path),
-        "handle" => {
-            let content;
-            syn::parenthesized!(content in input);
-            let ty: TokenStream = content.parse()?;
-            Ok(MetaVtableRetType::Handle(ty))
+            expect_key(&content, "bridge_type")?;
+            let bridge_type = parse_parenthesized_tokens(&content)?;
+            parse_comma(&content)?;
+            expect_key(&content, "rust_type")?;
+            let rust_type = parse_parenthesized_tokens(&content)?;
+            parse_comma(&content)?;
+            Ok(MetaVtableRet::Value {
+                bridge_type,
+                rust_type,
+            })
         }
         other => Err(syn::Error::new(
             kind.span(),
@@ -1014,12 +997,7 @@ impl syn::parse::Parse for MetaTraitImpl {
                     syn::bracketed!(pinner in inner);
                     let mut ps = Vec::new();
                     while !pinner.is_empty() {
-                        let ppinner;
-                        syn::parenthesized!(ppinner in pinner);
-                        let pname: Ident = ppinner.parse()?;
-                        ppinner.parse::<Token![,]>()?;
-                        let ptype = parse_vtable_param_type(&ppinner)?;
-                        ps.push((pname, ptype));
+                        ps.push(parse_vtable_param(&pinner)?);
                         if !pinner.is_empty() && pinner.peek(Token![,]) {
                             pinner.parse::<Token![,]>()?;
                         }
@@ -1028,7 +1006,7 @@ impl syn::parse::Parse for MetaTraitImpl {
                 };
                 parse_comma(&inner)?;
                 expect_key(&inner, "ret")?;
-                let ret = parse_vtable_ret_type(&inner)?;
+                let ret = parse_vtable_ret(&inner)?;
                 parse_comma(&inner)?;
                 ms.push(MetaVtableMethod {
                     name: mname,

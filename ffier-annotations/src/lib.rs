@@ -1081,114 +1081,49 @@ impl Parse for ImplementableArgs {
     }
 }
 
-// Vtable classification helpers — still used by implementable/trait_impl.
-// TODO: Remove when vtable system also moves to trait-based type mapping.
-
-enum SliceKind {
-    Str,
-    Bytes,
-    Path,
-}
-
-fn classify_ref_type(ty: &Type) -> Option<SliceKind> {
-    let Type::Reference(ref_ty) = ty else {
-        return None;
-    };
-    match &*ref_ty.elem {
-        Type::Path(tp) if tp.path.is_ident("str") => Some(SliceKind::Str),
-        Type::Path(tp) => {
-            let last = tp.path.segments.last()?;
-            if last.ident == "Path" {
-                Some(SliceKind::Path)
-            } else {
-                None
-            }
-        }
-        Type::Slice(sl) => {
-            if let Type::Path(tp) = &*sl.elem
-                && tp.path.is_ident("u8")
-            {
-                return Some(SliceKind::Bytes);
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-/// A method signature extracted from a trait, classified for vtable generation.
+/// A method signature extracted from a trait for vtable generation.
 struct VtableMethod {
     name: syn::Ident,
-    /// The trait this method belongs to (None = the annotated trait itself)
     trait_name: Option<syn::Ident>,
-    /// Parameters (excluding &self), as (ident, ffi_type) pairs
-    params: Vec<(syn::Ident, VtableParamType)>,
-    /// Return type
-    ret: VtableRetType,
+    params: Vec<VtableMethodParam>,
+    /// bridge_type for return (None = void)
+    ret_bridge_type: Option<proc_macro2::TokenStream>,
+    /// rust_type for return (None = void)
+    ret_rust_type: Option<proc_macro2::TokenStream>,
 }
 
-enum VtableParamType {
-    Primitive(Type),
-    Str,
-    Bytes,
-    Path,
-    Handle(Type),
+struct VtableMethodParam {
+    ident: syn::Ident,
+    bridge_type: proc_macro2::TokenStream,
+    rust_type: proc_macro2::TokenStream,
 }
 
-enum VtableRetType {
-    Void,
-    Primitive(Type),
-    Str,
-    Bytes,
-    Path,
-    Handle(Type),
-}
-
-fn classify_vtable_param(ty: &Type) -> VtableParamType {
-    if let Some(sk) = classify_ref_type(ty) {
-        return match sk {
-            SliceKind::Str => VtableParamType::Str,
-            SliceKind::Bytes => VtableParamType::Bytes,
-            SliceKind::Path => VtableParamType::Path,
-        };
-    }
-    if let Type::Reference(r) = ty {
-        return VtableParamType::Handle(erase_lifetimes(&r.elem));
-    }
-    VtableParamType::Primitive(erase_lifetimes(ty))
-}
-
-fn classify_vtable_ret(ty: &Type) -> VtableRetType {
-    if let Some(sk) = classify_ref_type(ty) {
-        return match sk {
-            SliceKind::Str => VtableRetType::Str,
-            SliceKind::Bytes => VtableRetType::Bytes,
-            SliceKind::Path => VtableRetType::Path,
-        };
-    }
-    if let Type::Reference(r) = ty {
-        return VtableRetType::Handle(erase_lifetimes(&r.elem));
-    }
-    VtableRetType::Primitive(erase_lifetimes(ty))
-}
-
-fn extract_vtable_methods(trait_item: &ItemTrait, supers: &[SupertraitBlock]) -> Vec<VtableMethod> {
+fn extract_vtable_methods(
+    trait_item: &ItemTrait,
+    supers: &[SupertraitBlock],
+    reexport_types: &mut Vec<Type>,
+    reexport_aliases: &mut Vec<syn::Ident>,
+    alias_counter: &mut u32,
+    helper_mod: &syn::Ident,
+) -> Vec<VtableMethod> {
     let mut methods = Vec::new();
 
-    // Methods from the trait itself
     for item in &trait_item.items {
-        let TraitItem::Fn(method) = item else {
-            continue;
-        };
-        if let Some(vm) = parse_trait_method_sig(&method.sig, None) {
+        let TraitItem::Fn(method) = item else { continue };
+        if let Some(vm) = parse_trait_method_sig(
+            &method.sig, None,
+            reexport_types, reexport_aliases, alias_counter, helper_mod,
+        ) {
             methods.push(vm);
         }
     }
 
-    // Methods from supertrait blocks
     for sup in supers {
         for method in &sup.methods {
-            if let Some(vm) = parse_trait_method_sig(&method.sig, Some(sup.trait_name.clone())) {
+            if let Some(vm) = parse_trait_method_sig(
+                &method.sig, Some(sup.trait_name.clone()),
+                reexport_types, reexport_aliases, alias_counter, helper_mod,
+            ) {
                 methods.push(vm);
             }
         }
@@ -1200,8 +1135,11 @@ fn extract_vtable_methods(trait_item: &ItemTrait, supers: &[SupertraitBlock]) ->
 fn parse_trait_method_sig(
     sig: &syn::Signature,
     trait_name: Option<syn::Ident>,
+    reexport_types: &mut Vec<Type>,
+    reexport_aliases: &mut Vec<syn::Ident>,
+    alias_counter: &mut u32,
+    helper_mod: &syn::Ident,
 ) -> Option<VtableMethod> {
-    // Must have &self receiver
     let first = sig.inputs.first()?;
     if !matches!(first, FnArg::Receiver(_)) {
         return None;
@@ -1213,78 +1151,38 @@ fn parse_trait_method_sig(
         .skip(1)
         .filter_map(|arg| {
             let FnArg::Typed(pt) = arg else { return None };
-            let Pat::Ident(pi) = &*pt.pat else {
-                return None;
-            };
-            Some((pi.ident.clone(), classify_vtable_param(&pt.ty)))
+            let Pat::Ident(pi) = &*pt.pat else { return None };
+            let bridge_type = bridge_tokens_for_type(
+                &pt.ty, reexport_types, reexport_aliases, alias_counter, helper_mod,
+            );
+            let erased = erase_lifetimes(&pt.ty);
+            let rust_type = quote! { #erased };
+            Some(VtableMethodParam {
+                ident: pi.ident.clone(),
+                bridge_type,
+                rust_type,
+            })
         })
         .collect();
 
-    let ret = match &sig.output {
-        ReturnType::Default => VtableRetType::Void,
-        ReturnType::Type(_, ty) => classify_vtable_ret(ty),
+    let (ret_bridge_type, ret_rust_type) = match &sig.output {
+        ReturnType::Default => (None, None),
+        ReturnType::Type(_, ty) => {
+            let bt = bridge_tokens_for_type(
+                ty, reexport_types, reexport_aliases, alias_counter, helper_mod,
+            );
+            let erased = erase_lifetimes(ty);
+            (Some(bt), Some(quote! { #erased }))
+        }
     };
 
     Some(VtableMethod {
         name: sig.ident.clone(),
         trait_name,
         params,
-        ret,
+        ret_bridge_type,
+        ret_rust_type,
     })
-}
-
-/// Generate the C function pointer type for a vtable method parameter
-fn vtable_ffi_param_type(vpt: &VtableParamType) -> proc_macro2::TokenStream {
-    match vpt {
-        VtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::CRepr },
-        VtableParamType::Str | VtableParamType::Bytes | VtableParamType::Path => {
-            quote! { ffier::FfierBytes }
-        }
-        VtableParamType::Handle(_) => quote! { *mut core::ffi::c_void },
-    }
-}
-
-fn vtable_ffi_ret_type(vrt: &VtableRetType) -> proc_macro2::TokenStream {
-    match vrt {
-        VtableRetType::Void => quote! {},
-        VtableRetType::Primitive(ty) => quote! { -> <#ty as ffier::FfiType>::CRepr },
-        VtableRetType::Str | VtableRetType::Bytes | VtableRetType::Path => {
-            quote! { -> ffier::FfierBytes }
-        }
-        VtableRetType::Handle(_) => quote! { -> *mut core::ffi::c_void },
-    }
-}
-
-/// Generate Rust code to convert a vtable call result back to the trait return type
-fn vtable_result_conversion(
-    vrt: &VtableRetType,
-    expr: proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    match vrt {
-        VtableRetType::Void => expr,
-        VtableRetType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::from_c(#expr) },
-        VtableRetType::Str => quote! { unsafe {
-            let __b = #expr;
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(__b.data, __b.len))
-        }},
-        VtableRetType::Bytes => quote! { unsafe {
-            let __b = #expr;
-            core::slice::from_raw_parts(__b.data, __b.len)
-        }},
-        VtableRetType::Path => quote! { unsafe { (#expr).as_path() } },
-        VtableRetType::Handle(ty) => quote! { <#ty as ffier::FfiType>::from_c(#expr) },
-    }
-}
-
-/// Generate Rust code to convert a Rust param value to the vtable call arg
-fn vtable_arg_conversion(vpt: &VtableParamType, ident: &syn::Ident) -> proc_macro2::TokenStream {
-    match vpt {
-        VtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
-        VtableParamType::Str => quote! { unsafe { ffier::FfierBytes::from_str(#ident) } },
-        VtableParamType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#ident) } },
-        VtableParamType::Path => quote! { unsafe { ffier::FfierBytes::from_path(#ident) } },
-        VtableParamType::Handle(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
-    }
 }
 
 #[proc_macro_attribute]
@@ -1301,8 +1199,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
 
+    // Reexport state for bridge_tokens_for_type
+    let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
+    let mut reexport_types: Vec<Type> = Vec::new();
+    let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
+    let mut alias_counter = 0u32;
+
     // Extract all methods (trait + supertraits)
-    let vtable_methods = extract_vtable_methods(&trait_item, &args.supers);
+    let vtable_methods = extract_vtable_methods(
+        &trait_item, &args.supers,
+        &mut reexport_types, &mut reexport_aliases, &mut alias_counter, &helper_mod_name,
+    );
 
     // --- Generate vtable struct fields ---
     let vtable_fields: Vec<_> = vtable_methods
@@ -1312,9 +1219,15 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let params: Vec<_> = m
                 .params
                 .iter()
-                .map(|(_, vpt)| vtable_ffi_param_type(vpt))
+                .map(|p| {
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::CRepr }
+                })
                 .collect();
-            let ret = vtable_ffi_ret_type(&m.ret);
+            let ret = match &m.ret_bridge_type {
+                None => quote! {},
+                Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
+            };
             quote! {
                 pub #name: unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret
             }
@@ -1357,30 +1270,36 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         t
     };
 
+    // Helper: generate vtable call-through body for a method
+    let vtable_call_body = |vm: &VtableMethod, sig: &syn::Signature| -> proc_macro2::TokenStream {
+        let name = &vm.name;
+        let vtable_args: Vec<_> = vm
+            .params
+            .iter()
+            .map(|p| {
+                let id = &p.ident;
+                let bt = &p.bridge_type;
+                quote! { <#bt as ffier::FfiType>::into_c(#id) }
+            })
+            .collect();
+        let call = quote! {
+            unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
+        };
+        let body = match &vm.ret_bridge_type {
+            None => call,
+            Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#call) },
+        };
+        quote! { #sig { #body } }
+    };
+
     let own_method_impls: Vec<_> = trait_item_erased
         .items
         .iter()
         .filter_map(|item| {
-            let TraitItem::Fn(method) = item else {
-                return None;
-            };
+            let TraitItem::Fn(method) = item else { return None };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-
-            let sig = &method.sig;
-            let vtable_args: Vec<_> = vm
-                .params
-                .iter()
-                .map(|(id, vpt)| vtable_arg_conversion(vpt, id))
-                .collect();
-            let call = quote! {
-                unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
-            };
-            let body = vtable_result_conversion(&vm.ret, call);
-
-            Some(quote! {
-                #sig { #body }
-            })
+            Some(vtable_call_body(vm, &method.sig))
         })
         .collect();
 
@@ -1396,19 +1315,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|method| {
                     let name = &method.sig.ident;
                     let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-
-                    let sig = &method.sig;
-                    let vtable_args: Vec<_> = vm
-                        .params
-                        .iter()
-                        .map(|(id, vpt)| vtable_arg_conversion(vpt, id))
-                        .collect();
-                    let call = quote! {
-                        unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
-                    };
-                    let body = vtable_result_conversion(&vm.ret, call);
-
-                    Some(quote! { #sig { #body } })
+                    Some(vtable_call_body(vm, &method.sig))
                 })
                 .collect();
 
@@ -1436,24 +1343,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             let param_meta: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let kind = match vpt {
-                        VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
-                        VtableParamType::Str => quote! { str },
-                        VtableParamType::Bytes => quote! { bytes },
-                        VtableParamType::Path => quote! { path },
-                        VtableParamType::Handle(ty) => quote! { handle(#ty) },
-                    };
-                    quote! { (#id, #kind) }
+                .map(|p| {
+                    let id = &p.ident;
+                    let bt = &p.bridge_type;
+                    let rt = &p.rust_type;
+                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
                 })
                 .collect();
-            let ret = match &m.ret {
-                VtableRetType::Void => quote! { void },
-                VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
-                VtableRetType::Str => quote! { str },
-                VtableRetType::Bytes => quote! { bytes },
-                VtableRetType::Path => quote! { path },
-                VtableRetType::Handle(ty) => quote! { handle(#ty) },
+            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
+                (None, _) => quote! { void },
+                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
+                _ => unreachable!(),
             };
             quote! {
                 { name = #mname, params = [#(#param_meta),*], ret = #ret, }
@@ -1463,8 +1363,22 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
+    let reexport_items: Vec<_> = reexport_types
+        .iter()
+        .zip(reexport_aliases.iter())
+        .map(|(ty, alias)| {
+            let erased = erase_lifetimes(ty);
+            quote! { pub type #alias = super::#erased; }
+        })
+        .collect();
+
     let output = quote! {
         #original_trait
+
+        #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#reexport_items)*
+        }
 
         #[repr(C)]
         pub struct #vtable_struct_name {
@@ -1605,8 +1519,13 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_snake = camel_to_snake(&struct_name);
 
-    // Extract methods using the same classification as implementable,
-    // skipping any marked with #[ffier(skip)].
+    // Reexport state for bridge_tokens_for_type
+    let helper_mod_name = format_ident!("_ffier_impl_{trait_snake}_for_{struct_snake}");
+    let mut reexport_types: Vec<Type> = Vec::new();
+    let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
+    let mut alias_counter = 0u32;
+
+    // Extract methods, skipping any marked with #[ffier(skip)].
     let methods: Vec<VtableMethod> = input
         .items
         .iter()
@@ -1617,7 +1536,19 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if method.attrs.iter().any(|a| is_ffier_skip(a)) {
                 return None;
             }
-            parse_trait_method_sig(&method.sig, None)
+            parse_trait_method_sig(
+                &method.sig, None,
+                &mut reexport_types, &mut reexport_aliases, &mut alias_counter, &helper_mod_name,
+            )
+        })
+        .collect();
+
+    let reexport_items: Vec<_> = reexport_types
+        .iter()
+        .zip(reexport_aliases.iter())
+        .map(|(ty, alias)| {
+            let erased = erase_lifetimes(ty);
+            quote! { pub type #alias = super::#erased; }
         })
         .collect();
 
@@ -1629,24 +1560,17 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let param_meta: Vec<_> = m
                 .params
                 .iter()
-                .map(|(id, vpt)| {
-                    let kind = match vpt {
-                        VtableParamType::Primitive(ty) => quote! { primitive(#ty) },
-                        VtableParamType::Str => quote! { str },
-                        VtableParamType::Bytes => quote! { bytes },
-                        VtableParamType::Path => quote! { path },
-                        VtableParamType::Handle(ty) => quote! { handle(#ty) },
-                    };
-                    quote! { (#id, #kind) }
+                .map(|p| {
+                    let id = &p.ident;
+                    let bt = &p.bridge_type;
+                    let rt = &p.rust_type;
+                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
                 })
                 .collect();
-            let ret = match &m.ret {
-                VtableRetType::Void => quote! { void },
-                VtableRetType::Primitive(ty) => quote! { primitive(#ty) },
-                VtableRetType::Str => quote! { str },
-                VtableRetType::Bytes => quote! { bytes },
-                VtableRetType::Path => quote! { path },
-                VtableRetType::Handle(ty) => quote! { handle(#ty) },
+            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
+                (None, _) => quote! { void },
+                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
+                _ => unreachable!(),
             };
             quote! {
                 { name = #mname, params = [#(#param_meta),*], ret = #ret, }
@@ -1666,6 +1590,11 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let output = quote! {
         #clean_impl
+
+        #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#reexport_items)*
+        }
 
         #[macro_export]
         macro_rules! #meta_macro_name {
