@@ -70,10 +70,66 @@ mod std_impls {
 }
 
 // ---------------------------------------------------------------------------
+// FfiType impls for reference types --- &str, &[u8], &Path → FfierBytes
+// ---------------------------------------------------------------------------
+
+impl<'a> FfiType for &'a str {
+    type CRepr = FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierStr";
+    fn into_c(self) -> FfierBytes {
+        unsafe { FfierBytes::from_str(self) }
+    }
+    fn from_c(repr: FfierBytes) -> Self {
+        // Safety: FfierBytes holds a raw pointer into caller-owned data that
+        // outlives this call. We reconstruct the reference with an unbounded
+        // lifetime — only sound in generated bridge code where the source data
+        // is guaranteed to be alive for the duration of the FFI call.
+        unsafe {
+            let bytes = core::slice::from_raw_parts(repr.data, repr.len);
+            core::str::from_utf8_unchecked(bytes)
+        }
+    }
+}
+
+impl<'a> FfiType for &'a [u8] {
+    type CRepr = FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierBytes";
+    fn into_c(self) -> FfierBytes {
+        unsafe { FfierBytes::from_bytes(self) }
+    }
+    fn from_c(repr: FfierBytes) -> Self {
+        unsafe {
+            if repr.data.is_null() {
+                &[]
+            } else {
+                core::slice::from_raw_parts(repr.data, repr.len)
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<'a> FfiType for &'a std::path::Path {
+    type CRepr = FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierPath";
+    fn into_c(self) -> FfierBytes {
+        unsafe { FfierBytes::from_path(self) }
+    }
+    fn from_c(repr: FfierBytes) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        unsafe {
+            let bytes = core::slice::from_raw_parts(repr.data, repr.len);
+            std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FfiHandle --- marker for types exported via #[ffier::exportable]
 // ---------------------------------------------------------------------------
 
 use core::any::TypeId;
+use core::ffi::c_void;
 
 /// Marker trait for types that are exported as opaque C handles.
 ///
@@ -83,6 +139,13 @@ use core::any::TypeId;
 pub trait FfiHandle: 'static {
     /// The C handle typedef name (e.g. `"ExWidget"`).
     const C_HANDLE_NAME: &'static str;
+
+    /// Returns the raw handle pointer for this value.
+    ///
+    /// - **Client side**: the wrapper struct holds `*mut c_void` directly.
+    /// - **Library side**: recovers the `FfierTaggedBox<T>` pointer via
+    ///   `offset_of!`.
+    fn as_handle(&self) -> *mut c_void;
 
     /// Runtime type identifier.
     fn type_id() -> TypeId {
@@ -104,6 +167,32 @@ pub struct FfierTaggedBox<T> {
 /// `handle` must point to a valid `FfierTaggedBox<_>`.
 pub unsafe fn handle_type_id(handle: *const core::ffi::c_void) -> TypeId {
     unsafe { *(handle as *const TypeId) }
+}
+
+// ---------------------------------------------------------------------------
+// Blanket FfiType impls for handle references
+// ---------------------------------------------------------------------------
+
+impl<'a, T: FfiHandle> FfiType for &'a T {
+    type CRepr = *mut c_void;
+    const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    fn into_c(self) -> *mut c_void {
+        self.as_handle()
+    }
+    fn from_c(repr: *mut c_void) -> Self {
+        unsafe { &(*(repr as *const FfierTaggedBox<T>)).value }
+    }
+}
+
+impl<'a, T: FfiHandle> FfiType for &'a mut T {
+    type CRepr = *mut c_void;
+    const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    fn into_c(self) -> *mut c_void {
+        self.as_handle()
+    }
+    fn from_c(repr: *mut c_void) -> Self {
+        unsafe { &mut (*(repr as *mut FfierTaggedBox<T>)).value }
+    }
 }
 
 // ---------------------------------------------------------------------------

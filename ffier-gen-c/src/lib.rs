@@ -8,10 +8,9 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
 use ffier_meta::{
-    FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
-    MetaReceiver, MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableParamType,
-    MetaVtableRetType, camel_to_snake, camel_to_upper_snake, peek_meta_field, peek_meta_name,
-    peek_meta_tag,
+    MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind, MetaReceiver,
+    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType,
+    camel_to_snake, camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 fn generate_one(item: TokenStream2) -> TokenStream2 {
@@ -348,9 +347,6 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             } else {
                 c_type_exprs.push(meta_param_c_type_expr(
                     &p.kind,
-                    &str_c_name,
-                    &bytes_c_name,
-                    &path_c_name,
                     &type_pfx,
                 ));
                 header_param_names.push(name);
@@ -444,26 +440,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             _ => (false, None),
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
-        let borrow_notes: Vec<String> = if !meta.lifetimes.is_empty()
-            && m.receiver == MetaReceiver::None
-        {
-            m.params
-                    .iter()
-                    .filter_map(|p| {
-                        if matches!(p.kind, MetaParamKind::HandleRef { .. }) {
-                            Some(format!(
-                                "`{}` is borrowed by the returned `{}`. \
-                                 It must not be directly modified or destroyed while the `{}` is alive.",
-                                p.name, handle_c_name, handle_c_name
-                            ))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect()
-        } else {
-            vec![]
-        };
+        // TODO: With trait-based type mapping, detecting handle refs for
+        // borrow notes requires compile-time trait evaluation. Skipped for now.
+        let borrow_notes: Vec<String> = vec![];
         if let Some(doc) = build_doxygen_comment(
             &m.doc,
             &param_name_strs,
@@ -520,7 +499,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             }
             MetaReturn::Value(vk) => {
                 let ret_c =
-                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name, &type_pfx);
+                    meta_value_c_type_expr(vk, &type_pfx);
                 let header_line = build_header_line(
                     ret_c,
                     &ffi_name_str,
@@ -556,7 +535,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                 let err_c_name = format!("{type_pfx}{err_ident}");
 
                 let out_c_type = ok.as_ref().map(|vk| {
-                    meta_value_c_type_expr(vk, &str_c_name, &bytes_c_name, &path_c_name, &type_pfx)
+                    meta_value_c_type_expr(vk, &type_pfx)
                 });
 
                 let header_line = build_header_line(
@@ -591,15 +570,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
                     },
                 };
 
-                let out_ffi_param = ok.as_ref().map(|vk| match vk {
-                    MetaValueKind::Regular { bridge_type, .. } => {
-                        quote! { result: *mut <#bridge_type as ffier::FfiType>::CRepr, }
-                    }
-                    MetaValueKind::SliceStr
-                    | MetaValueKind::SliceBytes
-                    | MetaValueKind::SlicePath => {
-                        quote! { result: *mut ffier::FfierBytes, }
-                    }
+                let out_ffi_param = ok.as_ref().map(|vk| {
+                    let MetaValueKind::Regular { bridge_type } = vk;
+                    quote! { result: *mut <#bridge_type as ffier::FfiType>::CRepr, }
                 });
 
                 let handle_ptr_binding = if handle_is_indirect {
@@ -999,15 +972,10 @@ pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSigna
 /// their extern declarations agree.
 pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular { bridge_type, repr } => match repr {
-            FfiRepr::Primitive => quote! { #bridge_type },
-            FfiRepr::Handle => quote! { *mut core::ffi::c_void },
-            FfiRepr::Other(c_repr) => quote! { #c_repr },
-        },
-        MetaParamKind::SliceStr | MetaParamKind::SliceBytes | MetaParamKind::SlicePath => {
-            quote! { ffier::FfierBytes }
+        MetaParamKind::Regular { bridge_type } => {
+            quote! { <#bridge_type as ffier::FfiType>::CRepr }
         }
-        MetaParamKind::HandleRef { .. } | MetaParamKind::DynDispatch { .. } => {
+        MetaParamKind::DynDispatch { .. } => {
             quote! { *mut core::ffi::c_void }
         }
         MetaParamKind::StrSlice => {
@@ -1020,16 +988,8 @@ pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
 
 /// Produce the concrete C return type tokens for a value kind.
 pub fn c_return_type(kind: &MetaValueKind) -> TokenStream2 {
-    match kind {
-        MetaValueKind::Regular { bridge_type, repr } => match repr {
-            FfiRepr::Primitive => quote! { #bridge_type },
-            FfiRepr::Handle => quote! { *mut core::ffi::c_void },
-            FfiRepr::Other(c_repr) => quote! { #c_repr },
-        },
-        MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath => {
-            quote! { ffier::FfierBytes }
-        }
-    }
+    let MetaValueKind::Regular { bridge_type } = kind;
+    quote! { <#bridge_type as ffier::FfiType>::CRepr }
 }
 
 /// Produce the concrete C type for a Result ok-value out-parameter.
@@ -1044,18 +1004,14 @@ pub fn c_out_param_type(kind: &MetaValueKind) -> TokenStream2 {
 
 fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular {
-            bridge_type,
-            repr: _,
-        } => quote! { #id: <#bridge_type as ffier::FfiType>::CRepr },
-        MetaParamKind::SliceStr | MetaParamKind::SliceBytes | MetaParamKind::SlicePath => {
-            quote! { #id: ffier::FfierBytes }
+        MetaParamKind::Regular { bridge_type } => {
+            quote! { #id: <#bridge_type as ffier::FfiType>::CRepr }
         }
         MetaParamKind::StrSlice => {
             let len_id = format_ident!("{id}_len");
             quote! { #id: *const ffier::FfierBytes, #len_id: usize }
         }
-        MetaParamKind::HandleRef { .. } | MetaParamKind::DynDispatch { .. } => {
+        MetaParamKind::DynDispatch { .. } => {
             quote! { #id: *mut core::ffi::c_void }
         }
     }
@@ -1063,18 +1019,9 @@ fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 
 
 fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular {
-            bridge_type,
-            repr: _,
-        } => quote! { <#bridge_type as ffier::FfiType>::from_c(#id) },
-        MetaParamKind::SliceStr => quote! { unsafe {
-            core::str::from_utf8_unchecked(
-                core::slice::from_raw_parts(#id.data, #id.len))
-        } },
-        MetaParamKind::SliceBytes => quote! { unsafe {
-            core::slice::from_raw_parts(#id.data, #id.len)
-        } },
-        MetaParamKind::SlicePath => quote! { unsafe { #id.as_path() } },
+        MetaParamKind::Regular { bridge_type } => {
+            quote! { <#bridge_type as ffier::FfiType>::from_c(#id) }
+        }
         MetaParamKind::StrSlice => {
             let len_id = format_ident!("{id}_len");
             quote! { {
@@ -1086,22 +1033,6 @@ fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 
                 __strs
             } }
         }
-        MetaParamKind::HandleRef {
-            bridge_type,
-            is_mut: true,
-        } => {
-            quote! { unsafe {
-                &mut (*(#id as *mut ffier::FfierTaggedBox<#bridge_type>)).value
-            } }
-        }
-        MetaParamKind::HandleRef {
-            bridge_type,
-            is_mut: false,
-        } => {
-            quote! { unsafe {
-                &(*(#id as *const ffier::FfierTaggedBox<#bridge_type>)).value
-            } }
-        }
         MetaParamKind::DynDispatch { .. } => {
             quote! { compile_error!("DynDispatch should not use param_conversion") }
         }
@@ -1110,35 +1041,14 @@ fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 
 
 fn meta_param_c_type_expr(
     kind: &MetaParamKind,
-    str_name: &str,
-    bytes_name: &str,
-    path_name: &str,
     type_pfx: &str,
 ) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular {
-            bridge_type, repr, ..
-        } => {
-            match repr {
-                FfiRepr::Handle => {
-                    // Handle types: prepend type_pfx to the struct name at runtime
-                    quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
-                }
-                _ => {
-                    // Primitives & Other: C_TYPE_NAME already correct
-                    quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
-                }
-            }
+        MetaParamKind::Regular { bridge_type } => {
+            quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
         }
-        MetaParamKind::SliceStr => quote! { #str_name },
-        MetaParamKind::SliceBytes => quote! { #bytes_name },
-        MetaParamKind::SlicePath => quote! { #path_name },
         MetaParamKind::StrSlice => {
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
-        }
-        MetaParamKind::HandleRef { bridge_type, .. } => {
-            // Handle ref: prepend type_pfx at runtime
-            quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiHandle>::C_HANDLE_NAME) }
         }
         MetaParamKind::DynDispatch { c_name_suffix, .. } => {
             let full_name = format!("{type_pfx}{c_name_suffix}");
@@ -1147,50 +1057,34 @@ fn meta_param_c_type_expr(
     }
 }
 
-fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
-    match kind {
-        MetaValueKind::Regular { bridge_type, .. } => {
-            quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
-        }
-        MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath => {
-            quote! { -> ffier::FfierBytes }
-        }
+/// Format a C type name with the library prefix.
+///
+/// - Names starting with "Ffier" (e.g. "FfierStr") → replace prefix: "ExStr"
+/// - Names starting with uppercase (e.g. "Widget") → prepend prefix: "ExWidget"
+/// - Everything else (e.g. "int32_t", "bool") → use as-is
+pub fn format_c_type_name(c_type_name: &str, type_pfx: &str) -> String {
+    if let Some(suffix) = c_type_name.strip_prefix("Ffier") {
+        format!("{type_pfx}{suffix}")
+    } else if c_type_name.starts_with(|c: char| c.is_uppercase()) {
+        format!("{type_pfx}{c_type_name}")
+    } else {
+        c_type_name.to_string()
     }
+}
+
+fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
+    let MetaValueKind::Regular { bridge_type } = kind;
+    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
 }
 
 fn meta_value_into_c(kind: &MetaValueKind, var: &syn::Ident) -> TokenStream2 {
-    match kind {
-        MetaValueKind::Regular { bridge_type, .. } => {
-            quote! { <#bridge_type as ffier::FfiType>::into_c(#var) }
-        }
-        MetaValueKind::SliceStr => quote! { unsafe { ffier::FfierBytes::from_str(#var) } },
-        MetaValueKind::SliceBytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#var) } },
-        MetaValueKind::SlicePath => quote! { unsafe { ffier::FfierBytes::from_path(#var) } },
-    }
+    let MetaValueKind::Regular { bridge_type } = kind;
+    quote! { <#bridge_type as ffier::FfiType>::into_c(#var) }
 }
 
-fn meta_value_c_type_expr(
-    kind: &MetaValueKind,
-    str_name: &str,
-    bytes_name: &str,
-    path_name: &str,
-    type_pfx: &str,
-) -> TokenStream2 {
-    match kind {
-        MetaValueKind::Regular {
-            bridge_type, repr, ..
-        } => match repr {
-            FfiRepr::Handle => {
-                quote! { &format!("{}{}", #type_pfx, <#bridge_type as ffier::FfiType>::C_TYPE_NAME) }
-            }
-            _ => {
-                quote! { <#bridge_type as ffier::FfiType>::C_TYPE_NAME }
-            }
-        },
-        MetaValueKind::SliceStr => quote! { #str_name },
-        MetaValueKind::SliceBytes => quote! { #bytes_name },
-        MetaValueKind::SlicePath => quote! { #path_name },
-    }
+fn meta_value_c_type_expr(kind: &MetaValueKind, type_pfx: &str) -> TokenStream2 {
+    let MetaValueKind::Regular { bridge_type } = kind;
+    quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
 }
 
 // ---------------------------------------------------------------------------

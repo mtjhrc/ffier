@@ -10,7 +10,7 @@ use quote::{format_ident, quote};
 use std::collections::HashSet;
 
 use ffier_meta::{
-    FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
+    MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
     peek_meta_tag,
 };
@@ -161,12 +161,17 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         quote! {}
     };
 
-    // FfiType impl --- only if no lifetimes
+    // FfiType + FfiHandle impls --- only if no lifetimes
     let client_ffi_type_impl = if !has_lifetimes {
         quote! {
+            impl ffier::FfiHandle for #struct_name {
+                const C_HANDLE_NAME: &str = #struct_name_str;
+                fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+            }
+
             impl ffier::FfiType for #struct_name {
                 type CRepr = *mut core::ffi::c_void;
-                const C_TYPE_NAME: &str = "";
+                const C_TYPE_NAME: &str = #struct_name_str;
                 fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
                 fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
             }
@@ -227,27 +232,12 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             .map(|p| {
                 let id = &p.name;
                 match &p.kind {
-                    MetaParamKind::SliceStr => quote! { #id: &str },
-                    MetaParamKind::SliceBytes => quote! { #id: &[u8] },
-                    MetaParamKind::SlicePath => quote! { #id: &std::path::Path },
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
-                    MetaParamKind::HandleRef { .. } => {
-                        let rust_type =
-                            p.rust_type.as_ref().expect("HandleRef must have rust_type");
-                        quote! { #id: #rust_type }
-                    }
-                    MetaParamKind::DynDispatch { .. } => {
+                    _ => {
                         let rust_type = p
                             .rust_type
                             .as_ref()
-                            .expect("DynDispatch param must have rust_type");
-                        quote! { #id: #rust_type }
-                    }
-                    MetaParamKind::Regular { .. } => {
-                        let rust_type = p
-                            .rust_type
-                            .as_ref()
-                            .expect("Regular param must have rust_type");
+                            .expect("param must have rust_type");
                         quote! { #id: #rust_type }
                     }
                 }
@@ -261,27 +251,16 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             .map(|p| {
                 let id = &p.name;
                 match &p.kind {
-                    MetaParamKind::SliceStr => quote! { ffier::FfierBytes::from_str(#id) },
-                    MetaParamKind::SliceBytes => quote! { ffier::FfierBytes::from_bytes(#id) },
-                    MetaParamKind::SlicePath => quote! { ffier::FfierBytes::from_path(#id) },
                     MetaParamKind::StrSlice => {
                         quote! { __ffi_strs.as_ptr(), __ffi_strs.len() }
                     }
-                    MetaParamKind::HandleRef { .. } => quote! { #id.0 },
                     MetaParamKind::DynDispatch { .. } => {
                         quote! { #id.__into_raw_handle() }
                     }
-                    MetaParamKind::Regular { repr, .. } => match repr {
-                        FfiRepr::Primitive => quote! { #id },
-                        FfiRepr::Handle => {
-                            let rust_type = p.rust_type.as_ref().unwrap();
-                            quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
-                        }
-                        FfiRepr::Other(_) => {
-                            let rust_type = p.rust_type.as_ref().unwrap();
-                            quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
-                        }
-                    },
+                    MetaParamKind::Regular { .. } => {
+                        let rust_type = p.rust_type.as_ref().unwrap();
+                        quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
+                    }
                 }
             })
             .collect();
@@ -795,87 +774,21 @@ fn build_client_body(
 }
 
 /// Convert a raw FFI return value to the Rust type for Value returns.
-fn client_value_from_ffi(vk: &MetaValueKind, rust_ret: &TokenStream2) -> TokenStream2 {
-    match vk {
-        MetaValueKind::Regular { repr, .. } => match repr {
-            FfiRepr::Primitive => quote! { __raw },
-            FfiRepr::Handle => {
-                let rust_ret_str = rust_ret.to_string();
-                if rust_ret_str.contains('\'') {
-                    quote! { <#rust_ret>::__from_raw(__raw) }
-                } else {
-                    quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
-                }
-            }
-            FfiRepr::Other(_) => {
-                quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
-            }
-        },
-        MetaValueKind::SliceStr => quote! {
-            unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len)) }
-        },
-        MetaValueKind::SliceBytes => quote! {
-            unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
-        },
-        MetaValueKind::SlicePath => quote! {
-            unsafe { __raw.as_path() }
-        },
-    }
+fn client_value_from_ffi(_vk: &MetaValueKind, rust_ret: &TokenStream2) -> TokenStream2 {
+    quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
 }
 
 /// For Result<T, E> returns, build (out_decl, out_ptr_expr, ok_convert).
 fn client_result_ok_from_ffi(
-    vk: &MetaValueKind,
+    _vk: &MetaValueKind,
     rust_ret: &TokenStream2,
 ) -> (TokenStream2, TokenStream2, TokenStream2) {
-    match vk {
-        MetaValueKind::Regular { repr, .. } => match repr {
-            FfiRepr::Primitive => (
-                quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                quote! { __out.as_mut_ptr() },
-                quote! { unsafe { __out.assume_init() } },
-            ),
-            FfiRepr::Handle => {
-                let ok_type = extract_ok_type_from_tokens(rust_ret);
-                let ok_type_str = ok_type.to_string();
-                let convert = if ok_type_str.contains('\'') {
-                    quote! { <#ok_type>::__from_raw(unsafe { __out.assume_init() }) }
-                } else {
-                    quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) }
-                };
-                (
-                    quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                    quote! { __out.as_mut_ptr() },
-                    convert,
-                )
-            }
-            FfiRepr::Other(_) => {
-                let ok_type = extract_ok_type_from_tokens(rust_ret);
-                let convert =
-                    quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) };
-                (
-                    quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
-                    quote! { __out.as_mut_ptr() },
-                    convert,
-                )
-            }
-        },
-        MetaValueKind::SliceStr => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { core::str::from_utf8_unchecked(core::slice::from_raw_parts(__out.data, __out.len)) } },
-        ),
-        MetaValueKind::SliceBytes => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { core::slice::from_raw_parts(__out.data, __out.len) } },
-        ),
-        MetaValueKind::SlicePath => (
-            quote! { let mut __out = ffier::FfierBytes::EMPTY; },
-            quote! { &mut __out },
-            quote! { unsafe { __out.as_path() } },
-        ),
-    }
+    let ok_type = extract_ok_type_from_tokens(rust_ret);
+    (
+        quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
+        quote! { __out.as_mut_ptr() },
+        quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) },
+    )
 }
 
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
