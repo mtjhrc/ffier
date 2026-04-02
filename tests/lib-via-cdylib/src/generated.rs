@@ -563,6 +563,7 @@ unsafe extern "C" {
     pub fn ft_view_source_count(handle: *mut core::ffi::c_void) -> i32;
     pub fn ft_view_set_label(handle: *mut core::ffi::c_void, label: ffier::FfierBytes);
     pub fn ft_view_label(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn ft_view_copy_label(handle: *mut core::ffi::c_void, other: *mut core::ffi::c_void);
 }
 pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<(&'a ())>);
 impl<'a> View<'a> {
@@ -610,6 +611,10 @@ impl<'a> View<'a> {
         unsafe {
             core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len))
         }
+    }
+    #[doc = " Copy label from another snapshot (tests dyn_param with lifetime-parameterized trait)."]
+    pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
+        unsafe { ft_view_copy_label(self.0, other.__into_raw_handle()) }
     }
 }
 impl<'a> Drop for View<'a> {

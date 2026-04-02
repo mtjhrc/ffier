@@ -372,6 +372,12 @@ impl<'a> View<'a> {
     pub fn label(&self) -> &str {
         &self.label
     }
+
+    /// Copy label from another snapshot (tests dyn_param with lifetime-parameterized trait).
+    #[ffier(dyn_param(other, "Snapshot", [View<'a>, Widget]))]
+    pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
+        self.label = other.snap_description().to_owned();
+    }
 }
 
 // ---------------------------------------------------------------------------

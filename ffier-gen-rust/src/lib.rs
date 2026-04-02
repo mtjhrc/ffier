@@ -290,9 +290,12 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                             p.rust_type.as_ref().expect("HandleRef must have rust_type");
                         quote! { #id: #rust_type }
                     }
-                    MetaParamKind::DynDispatch { c_name_suffix, .. } => {
-                        let trait_name = format_ident!("{c_name_suffix}");
-                        quote! { #id: impl #trait_name }
+                    MetaParamKind::DynDispatch { .. } => {
+                        let rust_type = p
+                            .rust_type
+                            .as_ref()
+                            .expect("DynDispatch param must have rust_type");
+                        quote! { #id: #rust_type }
                     }
                     MetaParamKind::Regular { .. } => {
                         let rust_type = p
