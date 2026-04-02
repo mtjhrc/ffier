@@ -48,11 +48,11 @@ impl std::fmt::Display for BufferError {
 }
 impl std::error::Error for BufferError {}
 unsafe extern "C" {
-    fn mylib_calculator_destroy(handle: *mut core::ffi::c_void);
-    fn mylib_calculator_new() -> *mut core::ffi::c_void;
-    fn mylib_calculator_add(handle: *mut core::ffi::c_void, a: i32, b: i32) -> i32;
-    fn mylib_calculator_is_positive(handle: *mut core::ffi::c_void, value: i32) -> bool;
-    fn mylib_calculator_divide(
+    pub fn mylib_calculator_destroy(handle: *mut core::ffi::c_void);
+    pub fn mylib_calculator_new() -> *mut core::ffi::c_void;
+    pub fn mylib_calculator_add(handle: *mut core::ffi::c_void, a: i32, b: i32) -> i32;
+    pub fn mylib_calculator_is_positive(handle: *mut core::ffi::c_void, value: i32) -> bool;
+    pub fn mylib_calculator_divide(
         handle: *mut core::ffi::c_void,
         a: i32,
         b: i32,
@@ -118,19 +118,19 @@ impl Drop for Calculator {
     }
 }
 unsafe extern "C" {
-    fn mylib_text_buffer_destroy(handle: *mut core::ffi::c_void);
-    fn mylib_text_buffer_new(output_fd: i32) -> *mut core::ffi::c_void;
-    fn mylib_text_buffer_fd(handle: *mut core::ffi::c_void) -> i32;
-    fn mylib_text_buffer_write(handle: *mut core::ffi::c_void, text: ffier::FfierBytes);
-    fn mylib_text_buffer_write_parts(
+    pub fn mylib_text_buffer_destroy(handle: *mut core::ffi::c_void);
+    pub fn mylib_text_buffer_new(output_fd: i32) -> *mut core::ffi::c_void;
+    pub fn mylib_text_buffer_fd(handle: *mut core::ffi::c_void) -> i32;
+    pub fn mylib_text_buffer_write(handle: *mut core::ffi::c_void, text: ffier::FfierBytes);
+    pub fn mylib_text_buffer_write_parts(
         handle: *mut core::ffi::c_void,
         parts: *const ffier::FfierBytes,
         parts_len: usize,
     );
-    fn mylib_text_buffer_contents(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn mylib_text_buffer_as_bytes(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierError;
-    fn mylib_text_buffer_clear(handle: *mut core::ffi::c_void);
+    pub fn mylib_text_buffer_contents(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn mylib_text_buffer_as_bytes(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn mylib_text_buffer_clear(handle: *mut core::ffi::c_void);
 }
 pub struct TextBuffer(*mut core::ffi::c_void);
 impl TextBuffer {
@@ -179,7 +179,7 @@ impl TextBuffer {
     pub fn write_parts(&mut self, parts: &[&str]) {
         let __ffi_strs: Vec<ffier::FfierBytes> = parts
             .iter()
-            .map(|s| ffier::FfierBytes::from_str(s))
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
             .collect();
         unsafe { mylib_text_buffer_write_parts(self.0, __ffi_strs.as_ptr(), __ffi_strs.len()) }
     }

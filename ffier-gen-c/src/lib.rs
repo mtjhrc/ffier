@@ -1002,9 +1002,9 @@ fn meta_value_into_c(kind: &MetaValueKind, var: &syn::Ident) -> TokenStream2 {
         MetaValueKind::Regular { bridge_type, .. } => {
             quote! { <#bridge_type as ffier::FfiType>::into_c(#var) }
         }
-        MetaValueKind::SliceStr => quote! { ffier::FfierBytes::from_str(#var) },
-        MetaValueKind::SliceBytes => quote! { ffier::FfierBytes::from_bytes(#var) },
-        MetaValueKind::SlicePath => quote! { ffier::FfierBytes::from_path(#var) },
+        MetaValueKind::SliceStr => quote! { unsafe { ffier::FfierBytes::from_str(#var) } },
+        MetaValueKind::SliceBytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#var) } },
+        MetaValueKind::SlicePath => quote! { unsafe { ffier::FfierBytes::from_path(#var) } },
     }
 }
 
@@ -1404,15 +1404,15 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
             ),
             MetaVtableRetType::Str => (
                 quote! { -> ffier::FfierBytes },
-                quote! { ffier::FfierBytes::from_str(call_result) },
+                quote! { unsafe { ffier::FfierBytes::from_str(call_result) } },
             ),
             MetaVtableRetType::Bytes => (
                 quote! { -> ffier::FfierBytes },
-                quote! { ffier::FfierBytes::from_bytes(call_result) },
+                quote! { unsafe { ffier::FfierBytes::from_bytes(call_result) } },
             ),
             MetaVtableRetType::Path => (
                 quote! { -> ffier::FfierBytes },
-                quote! { ffier::FfierBytes::from_path(call_result) },
+                quote! { unsafe { ffier::FfierBytes::from_path(call_result) } },
             ),
             MetaVtableRetType::Handle(ty) => (
                 quote! { -> *mut core::ffi::c_void },

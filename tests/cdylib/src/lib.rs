@@ -44,7 +44,8 @@ pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     } else {
         "unknown"
     };
-    ffier::FfierBytes::from_str(name)
+    // SAFETY: returned FfierBytes points to a static string literal — outlives the call.
+    unsafe { ffier::FfierBytes::from_str(name) }
 }
 
 #[cfg(test)]
@@ -542,7 +543,8 @@ mod tests {
     unsafe extern "C" fn test_processor_name(
         _self_data: *mut core::ffi::c_void,
     ) -> ffier::FfierBytes {
-        ffier::FfierBytes::from_str("test_proc")
+        // SAFETY: points to a static string literal — outlives the call.
+        unsafe { ffier::FfierBytes::from_str("test_proc") }
     }
 
     unsafe extern "C" fn test_on_notify(_self_data: *mut core::ffi::c_void, code: i32) {
