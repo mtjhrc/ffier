@@ -556,12 +556,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#reexport_items)*
         }
 
-        /// Metadata macro — passes structured type info to a generator proc macro.
-        ///
-        /// Usage:
-        /// ```ignore
-        /// my_crate::__ffier_meta_widget!("ft", ffier::generate_bridge);
-        /// ```
+        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -939,12 +934,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        /// Metadata macro for this error type.
-        ///
-        /// Accepts a prefix and a callback:
-        /// ```ignore
-        /// my_crate::__ffier_meta_test_error!("ft", ffier::generate_bridge);
-        /// ```
+        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -1570,7 +1560,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        /// Metadata macro for this implementable trait.
+        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {

@@ -1,7 +1,7 @@
 //! Metadata types for ffier's reflection-based architecture.
 //!
 //! `#[ffier::exportable]` emits a metadata macro containing structured tokens.
-//! Generator proc macros (`generate_bridge`, `generate_client`, etc.) parse
+//! Generator proc macros (`generate`) parse
 //! these tokens back into the types defined here, then produce code.
 
 use proc_macro2::TokenStream;
@@ -49,18 +49,6 @@ pub fn snake_to_pascal(s: &str) -> String {
 // ---------------------------------------------------------------------------
 // Peek helper
 // ---------------------------------------------------------------------------
-
-/// If the input is a single `{ ... }` brace group, unwrap and return the inner tokens.
-/// Otherwise return the input unchanged.
-pub fn unwrap_braces(input: TokenStream) -> TokenStream {
-    let mut iter = input.clone().into_iter();
-    if let Some(proc_macro2::TokenTree::Group(g)) = iter.next() {
-        if g.delimiter() == proc_macro2::Delimiter::Brace && iter.next().is_none() {
-            return g.stream();
-        }
-    }
-    input
-}
 
 /// Peek at the `@tag` identifier from a metadata token stream without consuming it.
 pub fn peek_meta_tag(input: &TokenStream) -> String {
