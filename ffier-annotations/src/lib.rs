@@ -8,27 +8,6 @@ use syn::{
 
 use ffier_meta::FfiRepr;
 
-struct ReflectArgs {
-    _prefix: Option<String>,
-}
-
-impl Parse for ReflectArgs {
-    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        if input.is_empty() {
-            return Ok(Self { _prefix: None });
-        }
-        let ident: syn::Ident = input.parse()?;
-        if ident != "prefix" {
-            return Err(syn::Error::new(ident.span(), "expected `prefix`"));
-        }
-        input.parse::<Token![=]>()?;
-        let lit: LitStr = input.parse()?;
-        Ok(Self {
-            _prefix: Some(lit.value()),
-        })
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Type classification for params and return values
 // ---------------------------------------------------------------------------
@@ -70,13 +49,11 @@ enum ReturnKind {
     Value(ValueKind),
     Result {
         ok_ty: Option<ValueKind>,
-        #[allow(dead_code)]
         err_ty: proc_macro2::TokenStream,
         err_ident: String,
     },
 }
 
-#[allow(dead_code)]
 struct MethodInfo {
     method_name: syn::Ident,
     ffi_name_str: String,
@@ -169,8 +146,7 @@ fn classify_value(
 // ---------------------------------------------------------------------------
 
 #[proc_macro_attribute]
-pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let _args = parse_macro_input!(attr as ReflectArgs);
+pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
 
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
@@ -197,12 +173,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_ident = &last_seg.ident;
     let self_ty = &input.self_ty;
     let self_ty_static = erase_lifetimes(self_ty);
-    let impl_generics = &input.generics;
-    let _ = impl_generics; // used later for lifetime detection
     let struct_name = struct_ident.to_string();
     let struct_lower = camel_to_snake(&struct_name);
-
-    let _trait_path = input.trait_.as_ref().map(|(_, path, _)| path);
 
     let mut reexport_types: Vec<Type> = Vec::new();
     let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
