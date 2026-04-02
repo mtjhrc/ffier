@@ -564,8 +564,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($prefix:literal, $callback:path) => {
-                $callback! {
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
                     @exportable,
                     name = #struct_ident,
                     struct_path = (#struct_path_tokens),
@@ -573,7 +573,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     lifetimes = (#(#lifetime_idents),*),
                     type_aliases = [#(#alias_meta_tokens),*],
                     methods = [#(#method_meta_tokens),*],
-                }
+                } $(, $($rest)*)? }
             };
         }
     };
@@ -947,14 +947,14 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($prefix:literal, $callback:path) => {
-                $callback! {
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
                     @error,
                     name = #name,
                     path = (#error_path),
                     prefix = $prefix,
                     variants = [#(#variant_meta_tokens),*],
-                }
+                } $(, $($rest)*)? }
             };
         }
     };
@@ -1573,8 +1573,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// Metadata macro for this implementable trait.
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($prefix:literal, $callback:path) => {
-                $callback! {
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
                     @implementable,
                     trait_name = #trait_name,
                     trait_path = (#trait_path_tokens),
@@ -1583,7 +1583,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_fields = [#(#vtable_field_meta),*],
                     vtable_methods = [#(#vtable_method_meta),*],
-                }
+                } $(, $($rest)*)? }
             };
         }
     };
@@ -1716,8 +1716,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #[macro_export]
         macro_rules! #meta_macro_name {
-            ($prefix:literal, $callback:path) => {
-                $callback! {
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
                     @trait_impl,
                     trait_name = #trait_name,
                     struct_name = #struct_ident,
@@ -1727,7 +1727,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     lifetimes = (#(#lifetime_idents),*),
                     trait_lifetime_args = [#(#trait_lt_args),*],
                     methods = [#(#method_meta),*],
-                }
+                } $(, $($rest)*)? }
             };
         }
     };

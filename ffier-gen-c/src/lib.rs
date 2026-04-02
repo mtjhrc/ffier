@@ -10,7 +10,7 @@ use quote::{format_ident, quote};
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_tag,
+    camel_to_upper_snake, peek_meta_tag, unwrap_braces,
 };
 
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
@@ -20,6 +20,8 @@ use ffier_meta::{
 /// - `@error, ...` --- generates error message/free helpers and header
 /// - `@implementable, ...` --- generates vtable constructor and header
 pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
+    // Unwrap outer braces if present (new calling convention wraps metadata in {})
+    let input = unwrap_braces(input);
     // Peek at the tag to decide which parser to use.
     let tag = peek_meta_tag(&input);
 
