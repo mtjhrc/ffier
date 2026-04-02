@@ -49,17 +49,16 @@ exposes your Rust API as C functions. It contains very little hand-written
 code — just macro invocations that tell ffier which types to export and what
 C name prefix to use:
 
-**`src/lib.rs`** — each line generates the `extern "C"` bridge functions for
-one type:
+**`src/lib.rs`** — one line generates all `extern "C"` bridge functions:
 
 ```rust
-mylib::__ffier_meta_calculator!("mylib", ffier_gen_c_macros::generate_bridge);
-mylib::__ffier_meta_calc_error!("mylib", ffier_gen_c_macros::generate_bridge);
+mylib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
 ```
 
-The prefix `"mylib"` controls the C naming: `Calculator::divide` becomes
-`mylib_calculator_divide`. The bridge functions handle type conversion,
-handle boxing/unboxing, and error marshalling automatically.
+The prefix `"mylib"` (set in `define_lib!` in the library crate) controls the
+C naming: `Calculator::divide` becomes `mylib_calculator_divide`. The bridge
+functions handle type conversion, handle boxing/unboxing, and error marshalling
+automatically.
 
 This crate also contains two small binaries for generating source artifacts:
 
@@ -69,11 +68,7 @@ that type:
 
 ```rust
 fn main() {
-    let header = ffier_gen_c::HeaderBuilder::new("MYLIB_H")
-        .add(mylib_calculator__header())
-        .add(mylib_calc_error__header())
-        .build();
-    print!("{header}");
+    print!("{}", __ffier_header("MYLIB_H"));
 }
 ```
 

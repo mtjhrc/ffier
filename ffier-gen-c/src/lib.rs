@@ -1,8 +1,8 @@
 //! Bridge code generation from parsed metadata.
 //!
-//! `generate_bridge` takes a metadata token stream (starting with `@exportable`,
-//! `@error`, or `@implementable`) and produces the corresponding `extern "C"` FFI
-//! functions plus a `__header()` function returning a `HeaderSection`.
+//! `generate_batch_impl` takes batched metadata token streams and produces
+//! the corresponding `extern "C"` FFI functions plus a unified `__ffier_header()`
+//! function.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -10,54 +10,42 @@ use quote::{format_ident, quote};
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag, unwrap_braces,
+    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
-/// Generates bridge code (extern "C" FFI functions + header function) from metadata.
-///
-/// The input token stream must start with one of:
-/// - `@exportable, ...` --- generates method FFI functions, destroy, and header
-/// - `@error, ...` --- generates error message/free helpers and header
-/// - `@implementable, ...` --- generates vtable constructor and header
-pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
-    // Unwrap outer braces if present (new calling convention wraps metadata in {})
-    let input = unwrap_braces(input);
-    // Peek at the tag to decide which parser to use.
-    let tag = peek_meta_tag(&input);
-
+fn generate_one(item: TokenStream2) -> TokenStream2 {
+    let tag = peek_meta_tag(&item);
     match tag.as_str() {
         "exportable" => {
-            let meta: MetaExportable = match syn::parse2(input) {
+            let meta: MetaExportable = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_exportable_bridge(meta)
         }
         "error" => {
-            let meta: MetaError = match syn::parse2(input) {
+            let meta: MetaError = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_error_bridge(meta)
         }
         "implementable" => {
-            let meta: MetaImplementable = match syn::parse2(input) {
+            let meta: MetaImplementable = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_implementable_bridge(meta)
         }
         "trait_impl" => {
-            let meta: MetaTraitImpl = match syn::parse2(input) {
+            let meta: MetaTraitImpl = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_trait_impl_bridge(meta)
         }
         _ => {
-            let msg = format!(
-                "unknown metadata tag `@{tag}`: expected @exportable, @error, @implementable, or @trait_impl"
-            );
+            let msg = format!("unknown metadata tag `@{tag}`");
             quote! { compile_error!(#msg); }
         }
     }
@@ -128,7 +116,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         };
         header_fn_names.push(header_fn);
 
-        all_code.push(generate_bridge_impl(item.clone()));
+        all_code.push(generate_one(item.clone()));
     }
 
     // Generate unified header function

@@ -1,34 +1,19 @@
 //! Client code generation from parsed metadata.
 //!
-//! `generate_client` takes a metadata token stream (starting with `@exportable`,
-//! `@error`, or `@implementable`) and produces safe Rust wrapper code that calls
-//! through C ABI extern declarations.
+//! `generate` takes batched metadata token streams and produces safe Rust
+//! wrapper code that calls through C ABI extern declarations.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use std::cell::RefCell;
 use std::collections::HashSet;
 
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag, unwrap_braces,
+    peek_meta_tag,
 };
-
-// Track which dispatch traits have been defined during this compilation,
-// so that `implementable` takes precedence and `trait_impl` only generates
-// the trait definition when no prior definition exists.
-thread_local! {
-    static DEFINED_DISPATCH_TRAITS: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
-}
-
-/// Generates Rust client source code as a named `&str` constant.
-#[proc_macro]
-pub fn generate_client_source(input: TokenStream) -> TokenStream {
-    generate_client_source_impl(input.into()).into()
-}
 
 /// Generates Rust client source code from batched metadata.
 ///
@@ -41,7 +26,6 @@ pub fn generate(input: TokenStream) -> TokenStream {
 }
 
 fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
-    // Split into brace groups
     let mut errors = Vec::new();
     let mut exportables = Vec::new();
     let mut implementables = Vec::new();
@@ -65,18 +49,35 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         }
     }
 
-    // Process in sorted order: errors → exportables → implementables → trait_impls.
-    // This ensures implementable defines the trait before trait_impl references it,
-    // so the DEFINED_DISPATCH_TRAITS thread-local correctly deduplicates.
+    // Track which traits have been defined to avoid duplicate definitions.
+    let mut defined_traits = HashSet::new();
     let mut all_source = String::new();
 
-    for item in errors
-        .iter()
-        .chain(exportables.iter())
-        .chain(implementables.iter())
-        .chain(trait_impls.iter())
-    {
-        let code = generate_client_impl(item.clone());
+    // Process in sorted order: errors → exportables → implementables → trait_impls.
+    for item in errors.iter().chain(exportables.iter()) {
+        let code = generate_one(item.clone());
+        all_source.push_str(&code.to_string());
+        all_source.push('\n');
+    }
+
+    for item in &implementables {
+        let meta: MetaImplementable = match syn::parse2(item.clone()) {
+            Ok(m) => m,
+            Err(e) => return e.to_compile_error(),
+        };
+        defined_traits.insert(meta.trait_name.to_string());
+        let code = generate_implementable_client(meta);
+        all_source.push_str(&code.to_string());
+        all_source.push('\n');
+    }
+
+    for item in &trait_impls {
+        let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
+            Ok(m) => m,
+            Err(e) => return e.to_compile_error(),
+        };
+        let emit_trait_def = defined_traits.insert(meta.trait_name.to_string());
+        let code = generate_trait_impl_client(meta, emit_trait_def);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
@@ -84,16 +85,8 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
     quote! { const FFIER_ALL_CLIENT_SRC: &str = #all_source; }
 }
 
-/// Generates client code (safe Rust wrappers calling through extern "C") from metadata.
-///
-/// The input token stream must start with one of:
-/// - `@exportable, ...` --- generates wrapper struct with safe methods
-/// - `@error, ...` --- generates error enum with `from_ffi`, Display, Error
-/// - `@implementable, ...` --- generates vtable struct + handle wrapper
-fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
-    let input = unwrap_braces(input);
+fn generate_one(input: TokenStream2) -> TokenStream2 {
     let tag = peek_meta_tag(&input);
-
     match tag.as_str() {
         "exportable" => {
             let meta: MetaExportable = match syn::parse2(input) {
@@ -109,53 +102,11 @@ fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
             };
             generate_error_client(meta)
         }
-        "implementable" => {
-            let meta: MetaImplementable = match syn::parse2(input) {
-                Ok(m) => m,
-                Err(e) => return e.to_compile_error(),
-            };
-            generate_implementable_client(meta)
-        }
-        "trait_impl" => {
-            let meta: MetaTraitImpl = match syn::parse2(input) {
-                Ok(m) => m,
-                Err(e) => return e.to_compile_error(),
-            };
-            generate_trait_impl_client(meta)
-        }
         _ => {
-            let msg = format!(
-                "unknown metadata tag `@{tag}`: expected @exportable, @error, @implementable, or @trait_impl"
-            );
+            let msg = format!("unknown metadata tag `@{tag}`");
             quote! { compile_error!(#msg); }
         }
     }
-}
-
-/// Same as `generate_client_impl` but wraps the output in a string literal.
-/// Like `generate_client_impl`, but wraps the output in a `const` declaration
-/// containing the source code as a string literal.
-///
-/// Emits: `const FFIER_SRC_{TYPE_UPPER}: &str = "...";`
-/// The const name is derived from the type name in the metadata.
-fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
-    let input = unwrap_braces(input);
-    let tag = peek_meta_tag(&input);
-    let type_name = peek_meta_name(&input);
-    let upper_name = camel_to_upper_snake(&type_name);
-    let const_name = if tag == "implementable" {
-        format_ident!("FFIER_SRC_VTABLE_{upper_name}")
-    } else if tag == "trait_impl" {
-        let struct_name = peek_meta_field(&input, "struct_name");
-        let upper_struct = camel_to_upper_snake(&struct_name);
-        format_ident!("FFIER_SRC_{upper_name}_FOR_{upper_struct}")
-    } else {
-        format_ident!("FFIER_SRC_{upper_name}")
-    };
-
-    let code = generate_client_impl(input);
-    let source = code.to_string();
-    quote! { const #const_name: &str = #source; }
 }
 
 
@@ -680,11 +631,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
-    // Generate trait definition — mark as defined so trait_impl doesn't duplicate it.
     let trait_name = &meta.trait_name;
-    DEFINED_DISPATCH_TRAITS.with(|set| {
-        set.borrow_mut().insert(trait_name.to_string());
-    });
     let trait_method_sigs: Vec<_> = meta
         .vtable_methods
         .iter()
@@ -1041,7 +988,7 @@ fn vtable_ret_c_type(ret: &MetaVtableRetType) -> TokenStream2 {
 // Trait impl client generation
 // ===========================================================================
 
-fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
+fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> TokenStream2 {
     let trait_name = &meta.trait_name;
     let struct_name = &meta.struct_name;
     let fn_pfx = meta.fn_pfx();
@@ -1078,16 +1025,9 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
         quote! { #struct_name<#(#lts),*> }
     };
 
-    // If this trait hasn't been defined yet (no prior `implementable`), generate
-    // a dispatch trait definition with the exported method signatures.
-    let trait_def = DEFINED_DISPATCH_TRAITS.with(|set| {
-        let trait_name_str = trait_name.to_string();
-        if set.borrow().contains(&trait_name_str) {
-            // Already defined by `implementable` — don't duplicate.
-            return quote! {};
-        }
-        set.borrow_mut().insert(trait_name_str);
-
+    let trait_def = if !emit_trait_def {
+        quote! {}
+    } else {
         let method_sigs: Vec<_> = meta
             .methods
             .iter()
@@ -1106,8 +1046,8 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
             })
             .collect();
 
-        // Trait definition generics: use trait_lifetime_args but exclude 'static
-        // (which is concrete, not a generic param).
+        // Trait definition generics: only declared lifetime params, not concrete
+        // ones like 'static.
         let trait_def_generics = {
             let lts: Vec<_> = meta
                 .trait_lifetime_args
@@ -1130,7 +1070,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
                 fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
             }
         }
-    });
+    };
 
     // Extern declarations for trait method C functions
     let extern_decls: Vec<_> = meta

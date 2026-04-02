@@ -1,11 +1,5 @@
 use proc_macro::TokenStream;
 
-/// Generates C FFI bridge functions from ffier metadata (single item).
-#[proc_macro]
-pub fn generate_bridge(input: TokenStream) -> TokenStream {
-    ffier_gen_c::generate_bridge_impl(input.into()).into()
-}
-
 /// Generates C FFI bridge functions from batched ffier metadata.
 ///
 /// Receives `{ @tag, ... } { @tag, ... } ...` — multiple metadata items
