@@ -75,6 +75,57 @@ pub fn peek_meta_tag(input: &TokenStream) -> String {
     String::new()
 }
 
+/// Peek at the type/trait name from a metadata token stream.
+///
+/// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
+pub fn peek_meta_name(input: &TokenStream) -> String {
+    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
+    for i in 0..tokens.len().saturating_sub(2) {
+        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
+            && (id == "name" || id == "trait_name")
+            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
+            && p.as_char() == '='
+            && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
+        {
+            return name.to_string();
+        }
+    }
+    "Unknown".to_string()
+}
+
+/// Peek at a specific `field = VALUE` from a metadata token stream.
+/// VALUE can be an ident or a string literal.
+pub fn peek_meta_field(input: &TokenStream, field: &str) -> String {
+    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
+    for i in 0..tokens.len().saturating_sub(2) {
+        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
+            && id == field
+            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
+            && p.as_char() == '='
+        {
+            // The value might be wrapped in a Delimiter::None group
+            // (macro_rules! replayed captures produce these).
+            let val = match &tokens[i + 2] {
+                proc_macro2::TokenTree::Group(g)
+                    if g.delimiter() == proc_macro2::Delimiter::None =>
+                {
+                    g.stream().into_iter().next()
+                }
+                other => Some(other.clone()),
+            };
+            match val {
+                Some(proc_macro2::TokenTree::Ident(name)) => return name.to_string(),
+                Some(proc_macro2::TokenTree::Literal(lit)) => {
+                    let s = lit.to_string();
+                    return s.trim_matches('"').to_string();
+                }
+                _ => {}
+            }
+        }
+    }
+    "Unknown".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // Metadata types --- parsed from the metadata macro's token stream
 // ---------------------------------------------------------------------------
