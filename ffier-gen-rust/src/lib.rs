@@ -11,11 +11,10 @@ use quote::{format_ident, quote};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
-
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_tag,
+    camel_to_upper_snake, peek_meta_tag, unwrap_braces,
 };
 
 // Track which dispatch traits have been defined during this compilation,
@@ -38,6 +37,7 @@ pub fn generate_client_source(input: TokenStream) -> TokenStream {
 /// - `@error, ...` --- generates error enum with `from_ffi`, Display, Error
 /// - `@implementable, ...` --- generates vtable struct + handle wrapper
 fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
+    let input = unwrap_braces(input);
     let tag = peek_meta_tag(&input);
 
     match tag.as_str() {
@@ -85,6 +85,7 @@ fn generate_client_impl(input: TokenStream2) -> TokenStream2 {
 /// Emits: `const FFIER_SRC_{TYPE_UPPER}: &str = "...";`
 /// The const name is derived from the type name in the metadata.
 fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
+    let input = unwrap_braces(input);
     let tag = peek_meta_tag(&input);
     let type_name = peek_meta_name(&input);
     let upper_name = camel_to_upper_snake(&type_name);
