@@ -145,29 +145,9 @@ impl MetaExportable {
     }
 
     pub fn uses_slices(&self) -> bool {
-        self.methods.iter().any(|m| {
-            m.params.iter().any(|p| {
-                matches!(
-                    p.kind,
-                    MetaParamKind::SliceStr
-                        | MetaParamKind::SliceBytes
-                        | MetaParamKind::SlicePath
-                        | MetaParamKind::StrSlice
-                )
-            }) || matches!(
-                &m.ret,
-                MetaReturn::Value(
-                    MetaValueKind::SliceStr | MetaValueKind::SliceBytes | MetaValueKind::SlicePath
-                ) | MetaReturn::Result {
-                    ok: Some(
-                        MetaValueKind::SliceStr
-                            | MetaValueKind::SliceBytes
-                            | MetaValueKind::SlicePath
-                    ),
-                    ..
-                }
-            )
-        })
+        // With trait-based type mapping, we can't detect slice usage at parse
+        // time. Always emit the shared types — unused typedefs are harmless.
+        true
     }
 }
 
@@ -198,31 +178,11 @@ pub struct MetaParam {
     pub rust_type: Option<TokenStream>,
 }
 
-/// How a type maps to its C representation.
-#[derive(Clone)]
-pub enum FfiRepr {
-    /// Identity mapping --- the type IS the C repr (i32, bool, etc.)
-    Primitive,
-    /// Opaque handle --- CRepr is `*mut c_void`
-    Handle,
-    /// Non-primitive with a known CRepr that differs from the Rust type.
-    /// The tokens are the concrete CRepr type (e.g., `i32` for BorrowedFd).
-    Other(TokenStream),
-}
-
 pub enum MetaParamKind {
     Regular {
         bridge_type: TokenStream,
-        repr: FfiRepr,
     },
-    SliceStr,
-    SliceBytes,
-    SlicePath,
     StrSlice,
-    HandleRef {
-        bridge_type: TokenStream,
-        is_mut: bool,
-    },
     DynDispatch {
         c_name_suffix: String,
         variants: Vec<(String, TokenStream)>,
@@ -243,11 +203,7 @@ pub enum MetaReturn {
 pub enum MetaValueKind {
     Regular {
         bridge_type: TokenStream,
-        repr: FfiRepr,
     },
-    SliceStr,
-    SliceBytes,
-    SlicePath,
 }
 
 // ---------------------------------------------------------------------------
@@ -618,27 +574,9 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 expect_key(input, "bridge_type")?;
                 let bridge_type = parse_parenthesized_tokens(input)?;
-                parse_comma(input)?;
-                expect_key(input, "repr")?;
-                let repr = parse_ffi_repr(input)?;
-                MetaParamKind::Regular { bridge_type, repr }
+                MetaParamKind::Regular { bridge_type }
             }
-            "slice_str" => MetaParamKind::SliceStr,
-            "slice_bytes" => MetaParamKind::SliceBytes,
-            "slice_path" => MetaParamKind::SlicePath,
             "str_slice" => MetaParamKind::StrSlice,
-            "handle_ref" => {
-                parse_comma(input)?;
-                expect_key(input, "bridge_type")?;
-                let bridge_type = parse_parenthesized_tokens(input)?;
-                parse_comma(input)?;
-                expect_key(input, "is_mut")?;
-                let is_mut = parse_bool(input)?;
-                MetaParamKind::HandleRef {
-                    bridge_type,
-                    is_mut,
-                }
-            }
             "dyn_dispatch" => {
                 parse_comma(input)?;
                 expect_key(input, "c_name_suffix")?;
@@ -753,14 +691,8 @@ impl syn::parse::Parse for MetaValueKind {
                 expect_key(input, "bridge_type")?;
                 let bridge_type = parse_parenthesized_tokens(input)?;
                 parse_comma(input)?;
-                expect_key(input, "repr")?;
-                let repr = parse_ffi_repr(input)?;
-                parse_comma(input)?;
-                Ok(MetaValueKind::Regular { bridge_type, repr })
+                Ok(MetaValueKind::Regular { bridge_type })
             }
-            "slice_str" => Ok(MetaValueKind::SliceStr),
-            "slice_bytes" => Ok(MetaValueKind::SliceBytes),
-            "slice_path" => Ok(MetaValueKind::SlicePath),
             other => Err(syn::Error::new(
                 kind.span(),
                 format!("unknown value kind `{other}`"),
@@ -1124,24 +1056,3 @@ impl syn::parse::Parse for MetaTraitImpl {
     }
 }
 
-// ---------------------------------------------------------------------------
-// FfiRepr parsing helper
-// ---------------------------------------------------------------------------
-
-/// Parse `repr = primitive` / `repr = handle` / `repr = other(TYPE_TOKENS)`.
-/// Called after `expect_key(input, "repr")` has consumed `repr =`.
-fn parse_ffi_repr(input: ParseStream) -> syn::Result<FfiRepr> {
-    let kind: Ident = input.parse()?;
-    match kind.to_string().as_str() {
-        "primitive" => Ok(FfiRepr::Primitive),
-        "handle" => Ok(FfiRepr::Handle),
-        "other" => {
-            let tokens = parse_parenthesized_tokens(input)?;
-            Ok(FfiRepr::Other(tokens))
-        }
-        other => Err(syn::Error::new(
-            kind.span(),
-            format!("expected `primitive`, `handle`, or `other(...)`, got `{other}`"),
-        )),
-    }
-}

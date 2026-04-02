@@ -6,28 +6,15 @@ use syn::{
     visit_mut::VisitMut,
 };
 
-use ffier_meta::FfiRepr;
-
 // ---------------------------------------------------------------------------
 // Type classification for params and return values
 // ---------------------------------------------------------------------------
 
-enum SliceKind {
-    Str,
-    Bytes,
-    Path,
-}
-
 enum ParamKind {
-    Regular(proc_macro2::TokenStream, FfiRepr),
-    Slice(SliceKind),
+    /// Uniform: bridge_type resolves via `<T as FfiType>::CRepr`.
+    Regular(proc_macro2::TokenStream),
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
-    /// `&ExportedType` — borrows an opaque handle.
-    HandleRef {
-        inner_ty: proc_macro2::TokenStream,
-        is_mut: bool,
-    },
     /// `impl Trait` param with runtime dispatch over listed concrete types.
     DynDispatch(DynParamConfig),
 }
@@ -40,8 +27,7 @@ struct DynParamConfig {
 }
 
 enum ValueKind {
-    Regular(proc_macro2::TokenStream, FfiRepr),
-    Slice(SliceKind),
+    Regular(proc_macro2::TokenStream),
 }
 
 enum ReturnKind {
@@ -90,33 +76,6 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
-/// Detect `&str`, `&[u8]`, `&Path` reference types.
-fn classify_ref_type(ty: &Type) -> Option<SliceKind> {
-    let Type::Reference(ref_ty) = ty else {
-        return None;
-    };
-    match &*ref_ty.elem {
-        Type::Path(tp) if tp.path.is_ident("str") => Some(SliceKind::Str),
-        Type::Path(tp) => {
-            let last = tp.path.segments.last()?;
-            if last.ident == "Path" {
-                Some(SliceKind::Path)
-            } else {
-                None
-            }
-        }
-        Type::Slice(sl) => {
-            if let Type::Path(tp) = &*sl.elem
-                && tp.path.is_ident("u8")
-            {
-                return Some(SliceKind::Bytes);
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
 fn classify_value(
     ty: &Type,
     reexport_types: &mut Vec<Type>,
@@ -124,21 +83,13 @@ fn classify_value(
     alias_counter: &mut u32,
     helper_mod: &syn::Ident,
 ) -> ValueKind {
-    if let Some(sk) = classify_ref_type(ty) {
-        ValueKind::Slice(sk)
-    } else {
-        let repr = ffi_repr_for_type(ty);
-        ValueKind::Regular(
-            type_tokens_for_macro(
-                ty,
-                reexport_types,
-                reexport_aliases,
-                alias_counter,
-                helper_mod,
-            ),
-            repr,
-        )
-    }
+    ValueKind::Regular(bridge_tokens_for_type(
+        ty,
+        reexport_types,
+        reexport_aliases,
+        alias_counter,
+        helper_mod,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -260,33 +211,14 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             let kind = if is_str_slice(&param_ty) {
                 ParamKind::StrSlice
-            } else if let Some(sk) = classify_ref_type(&param_ty) {
-                ParamKind::Slice(sk)
-            } else if let Type::Reference(ref_ty) = &param_ty {
-                // &SomeType / &mut SomeType that isn't str/[u8]/Path → handle ref
-                let inner_ty = type_tokens_for_macro(
-                    &ref_ty.elem,
+            } else {
+                ParamKind::Regular(bridge_tokens_for_type(
+                    &param_ty,
                     &mut reexport_types,
                     &mut reexport_aliases,
                     &mut alias_counter,
                     &helper_mod_name,
-                );
-                ParamKind::HandleRef {
-                    inner_ty,
-                    is_mut: ref_ty.mutability.is_some(),
-                }
-            } else {
-                let repr = ffi_repr_for_type(&param_ty);
-                ParamKind::Regular(
-                    type_tokens_for_macro(
-                        &param_ty,
-                        &mut reexport_types,
-                        &mut reexport_aliases,
-                        &mut alias_counter,
-                        &helper_mod_name,
-                    ),
-                    repr,
-                )
+                ))
             };
             param_kinds.push(kind);
         }
@@ -499,6 +431,14 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl ffier::FfiHandle for #self_ty_static {
             const C_HANDLE_NAME: &str = #struct_name_lit;
+            fn as_handle(&self) -> *mut core::ffi::c_void {
+                let value_offset = core::mem::offset_of!(
+                    ffier::FfierTaggedBox<Self>, value
+                );
+                let box_ptr = (self as *const Self as *const u8)
+                    .wrapping_sub(value_offset);
+                box_ptr as *mut core::ffi::c_void
+            }
         }
 
         impl ffier::FfiType for #self_ty_static {
@@ -685,27 +625,55 @@ fn is_primitive(ty: &Type) -> bool {
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
 }
 
-/// Known fd type names that map to `FfiRepr::Other(i32)` instead of Handle.
-const FD_TYPES: &[&str] = &["BorrowedFd", "OwnedFd"];
-
-/// Determine the `FfiRepr` for a Rust type (before aliasing).
+/// Produce bridge_type tokens for any Rust type, including references.
 ///
-/// - Primitives (i32, bool, etc.) → `Primitive`
-/// - Fd types (BorrowedFd, OwnedFd) → `Other(i32)`
-/// - Everything else → `Handle`
-fn ffi_repr_for_type(ty: &Type) -> FfiRepr {
-    if is_primitive(ty) {
-        return FfiRepr::Primitive;
-    }
-    if let Type::Path(tp) = ty
-        && let Some(last) = tp.path.segments.last()
-    {
-        let name = last.ident.to_string();
-        if FD_TYPES.contains(&name.as_str()) {
-            return FfiRepr::Other(quote! { i32 });
+/// This recursively handles reference and slice types, producing tokens
+/// that resolve via `<T as FfiType>::CRepr` in the cdylib context:
+/// - `&str` → `& str` (str is a keyword, always in scope)
+/// - `&[u8]` → `& [u8]`
+/// - `&Widget` → `& $crate::_ffier_mod::_Type0` (aliased for cross-crate)
+/// - `i32` → `i32` (primitives emitted directly)
+/// - `Widget` → `$crate::_ffier_mod::_Type0` (aliased)
+fn bridge_tokens_for_type(
+    ty: &Type,
+    reexport_types: &mut Vec<Type>,
+    reexport_aliases: &mut Vec<syn::Ident>,
+    counter: &mut u32,
+    helper_mod: &syn::Ident,
+) -> proc_macro2::TokenStream {
+    match ty {
+        Type::Reference(ref_ty) => {
+            let inner = bridge_tokens_for_type(
+                &ref_ty.elem,
+                reexport_types,
+                reexport_aliases,
+                counter,
+                helper_mod,
+            );
+            // Use 'static lifetime so generated code like
+            // `<&'static str as FfiType>::CRepr` doesn't trigger E0106.
+            if ref_ty.mutability.is_some() {
+                quote! { &'static mut #inner }
+            } else {
+                quote! { &'static #inner }
+            }
         }
+        Type::Slice(sl) => {
+            let elem = bridge_tokens_for_type(
+                &sl.elem,
+                reexport_types,
+                reexport_aliases,
+                counter,
+                helper_mod,
+            );
+            quote! { [#elem] }
+        }
+        // `str` is a keyword type — can't be aliased via `super::`, but
+        // always resolves everywhere.
+        Type::Path(tp) if tp.path.is_ident("str") => quote! { str },
+        // Everything else goes through the standard aliasing.
+        _ => type_tokens_for_macro(ty, reexport_types, reexport_aliases, counter, helper_mod),
     }
-    FfiRepr::Handle
 }
 
 // ---------------------------------------------------------------------------
@@ -714,17 +682,10 @@ fn ffi_repr_for_type(ty: &Type) -> FfiRepr {
 
 fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
     match k {
-        ParamKind::Regular(bridge_type, repr) => {
-            let repr_tokens = ffi_repr_tokens(repr);
-            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens }
+        ParamKind::Regular(bridge_type) => {
+            quote! { regular, bridge_type = (#bridge_type) }
         }
-        ParamKind::Slice(SliceKind::Str) => quote! { slice_str },
-        ParamKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
-        ParamKind::Slice(SliceKind::Path) => quote! { slice_path },
         ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::HandleRef { inner_ty, is_mut } => {
-            quote! { handle_ref, bridge_type = (#inner_ty), is_mut = #is_mut }
-        }
         ParamKind::DynDispatch(cfg) => {
             let c_name_suffix = &cfg.c_name_suffix;
             let variant_tokens: Vec<_> = cfg
@@ -741,13 +702,9 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
 
 fn emit_value_kind(vk: &ValueKind) -> proc_macro2::TokenStream {
     match vk {
-        ValueKind::Regular(bridge_type, repr) => {
-            let repr_tokens = ffi_repr_tokens(repr);
-            quote! { regular, bridge_type = (#bridge_type), repr = #repr_tokens, }
+        ValueKind::Regular(bridge_type) => {
+            quote! { regular, bridge_type = (#bridge_type), }
         }
-        ValueKind::Slice(SliceKind::Str) => quote! { slice_str },
-        ValueKind::Slice(SliceKind::Bytes) => quote! { slice_bytes },
-        ValueKind::Slice(SliceKind::Path) => quote! { slice_path },
     }
 }
 
@@ -772,15 +729,6 @@ fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
             };
             quote! { result(#ok_tokens, err_bridge_type = (#err_ty), err_ident = #err_ident,) }
         }
-    }
-}
-
-/// Emit `FfiRepr` as metadata tokens for the macro output.
-fn ffi_repr_tokens(repr: &FfiRepr) -> proc_macro2::TokenStream {
-    match repr {
-        FfiRepr::Primitive => quote! { primitive },
-        FfiRepr::Handle => quote! { handle },
-        FfiRepr::Other(ts) => quote! { other(#ts) },
     }
 }
 
@@ -1130,6 +1078,41 @@ impl Parse for ImplementableArgs {
             _prefix: prefix,
             supers,
         })
+    }
+}
+
+// Vtable classification helpers — still used by implementable/trait_impl.
+// TODO: Remove when vtable system also moves to trait-based type mapping.
+
+enum SliceKind {
+    Str,
+    Bytes,
+    Path,
+}
+
+fn classify_ref_type(ty: &Type) -> Option<SliceKind> {
+    let Type::Reference(ref_ty) = ty else {
+        return None;
+    };
+    match &*ref_ty.elem {
+        Type::Path(tp) if tp.path.is_ident("str") => Some(SliceKind::Str),
+        Type::Path(tp) => {
+            let last = tp.path.segments.last()?;
+            if last.ident == "Path" {
+                Some(SliceKind::Path)
+            } else {
+                None
+            }
+        }
+        Type::Slice(sl) => {
+            if let Type::Path(tp) = &*sl.elem
+                && tp.path.is_ident("u8")
+            {
+                return Some(SliceKind::Bytes);
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -1510,6 +1493,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl ffier::FfiHandle for #wrapper_name {
             const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
+            fn as_handle(&self) -> *mut core::ffi::c_void {
+                let value_offset = core::mem::offset_of!(
+                    ffier::FfierTaggedBox<Self>, value
+                );
+                let box_ptr = (self as *const Self as *const u8)
+                    .wrapping_sub(value_offset);
+                box_ptr as *mut core::ffi::c_void
+            }
         }
 
         impl ffier::FfiType for #wrapper_name {
