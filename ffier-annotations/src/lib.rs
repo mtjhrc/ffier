@@ -15,15 +15,8 @@ enum ParamKind {
     Regular(proc_macro2::TokenStream),
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
-    /// `impl Trait` param with runtime dispatch over listed concrete types.
-    DynDispatch(DynParamConfig),
-}
-
-struct DynParamConfig {
-    /// C type name suffix (e.g. "Device") — generator prepends TypePfx
-    c_name_suffix: String,
-    /// Concrete types to dispatch over, as token streams (cross-crate safe)
-    variants: Vec<(String, proc_macro2::TokenStream)>, // (ident_name, tokens)
+    /// `impl Trait` parameter — generator resolves dispatch types from trait map.
+    ImplTrait { trait_name: String },
 }
 
 enum ValueKind {
@@ -100,17 +93,12 @@ fn classify_value(
 pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
 
-    // Strip #[ffier(...)] attributes from methods and params before emitting the impl block
+    // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
         for item in &mut block.items {
             if let ImplItem::Fn(method) = item {
                 method.attrs.retain(|a| !a.path().is_ident("ffier"));
-                for arg in &mut method.sig.inputs {
-                    if let FnArg::Typed(pat_ty) = arg {
-                        pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
-                    }
-                }
             }
         }
         block
@@ -192,20 +180,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let param_ty_orig = replace_self_type(&pat_ty.ty, self_ty);
             param_orig_types.push(param_ty_orig);
 
-            // Check for #[ffier(dyn(Type1, Type2))] on the parameter
-            if let Some(variants) = parse_param_dyn_attr(
-                &pat_ty.attrs,
-                &mut reexport_types,
-                &mut reexport_aliases,
-                &mut alias_counter,
-                &helper_mod_name,
-            ) {
-                let c_name_suffix = extract_impl_trait_name(&pat_ty.ty)
-                    .unwrap_or_else(|| pat_ident.ident.to_string());
-                param_kinds.push(ParamKind::DynDispatch(DynParamConfig {
-                    c_name_suffix,
-                    variants,
-                }));
+            // Auto-detect `impl Trait` params — generator resolves dispatch types
+            if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
+                param_kinds.push(ParamKind::ImplTrait { trait_name });
                 continue;
             }
 
@@ -694,16 +671,8 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
             quote! { regular, bridge_type = (#bridge_type) }
         }
         ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::DynDispatch(cfg) => {
-            let c_name_suffix = &cfg.c_name_suffix;
-            let variant_tokens: Vec<_> = cfg
-                .variants
-                .iter()
-                .map(|(name, ty)| {
-                    quote! { (#name, #ty) }
-                })
-                .collect();
-            quote! { dyn_dispatch, c_name_suffix = #c_name_suffix, variants = [#(#variant_tokens),*] }
+        ParamKind::ImplTrait { trait_name } => {
+            quote! { impl_trait, trait_name = #trait_name }
         }
     }
 }
@@ -940,52 +909,6 @@ fn is_ffier_skip(attr: &syn::Attribute) -> bool {
         Ok(())
     });
     found
-}
-
-/// Parse `#[ffier(dyn(Type1, Type2))]` from a parameter's attributes.
-fn parse_param_dyn_attr(
-    attrs: &[syn::Attribute],
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    alias_counter: &mut u32,
-    helper_mod: &syn::Ident,
-) -> Option<Vec<(String, proc_macro2::TokenStream)>> {
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
-            continue;
-        }
-        let mut result = None;
-        let _ = attr.parse_nested_meta(|meta| {
-            if !meta.path.is_ident("dyn") {
-                return Ok(());
-            }
-            let content;
-            syn::parenthesized!(content in meta.input);
-            let variant_types: syn::punctuated::Punctuated<Type, Token![,]> =
-                content.parse_terminated(Type::parse, Token![,])?;
-            let variants: Vec<_> = variant_types
-                .iter()
-                .map(|ty| {
-                    let ident_name = type_ident_name(ty);
-                    let erased = erase_lifetimes(ty);
-                    let tokens = type_tokens_for_macro(
-                        &erased,
-                        reexport_types,
-                        reexport_aliases,
-                        alias_counter,
-                        helper_mod,
-                    );
-                    (ident_name, tokens)
-                })
-                .collect();
-            result = Some(variants);
-            Ok(())
-        });
-        if result.is_some() {
-            return result;
-        }
-    }
-    None
 }
 
 /// Extract the trait name from an `impl Trait` type.

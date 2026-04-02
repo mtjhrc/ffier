@@ -373,8 +373,8 @@ impl<'a> View<'a> {
         &self.label
     }
 
-    /// Copy label from another snapshot (tests dyn with lifetime-parameterized trait).
-    pub fn copy_label(&mut self, #[ffier(dyn(View<'a>, Widget))] other: impl Snapshot<'a>) {
+    /// Copy label from another snapshot (tests impl Trait auto-dispatch).
+    pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
         self.label = other.snap_description().to_owned();
     }
 }
@@ -454,7 +454,7 @@ impl Pipeline {
     }
 
     /// Run a processor on the given input.
-    pub fn run(&mut self, #[ffier(dyn(VtableProcessor))] proc: impl Processor, input: i32) {
+    pub fn run(&mut self, proc: impl Processor, input: i32) {
         let result = proc.process(input);
         proc.on_notify(result);
         self.results.push(result);
@@ -533,7 +533,7 @@ impl Mixer {
         Mixer { total: 0 }
     }
 
-    pub fn add(mut self, #[ffier(dyn(Apple, Orange, VtableFruit))] fruit: impl Fruit) -> Self {
+    pub fn add(mut self, fruit: impl Fruit) -> Self {
         self.total += fruit.value();
         self
     }

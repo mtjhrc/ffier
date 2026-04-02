@@ -7,13 +7,67 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
+use std::collections::HashMap;
+
 use ffier_meta::{
     MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind, MetaReceiver,
     MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, camel_to_upper_snake,
     peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
-fn generate_one(item: TokenStream2) -> TokenStream2 {
+/// Maps trait names to their concrete dispatch variants.
+///
+/// Built from `@trait_impl` entries (concrete types) and `@implementable`
+/// entries (vtable wrapper types). Used to resolve `impl Trait` params
+/// in exportable methods.
+pub type TraitMap = HashMap<String, Vec<TraitVariant>>;
+
+pub struct TraitVariant {
+    pub name: String,
+    pub bridge_type: TokenStream2,
+}
+
+/// Build the trait-to-impls map from parsed implementable and trait_impl metadata.
+fn build_trait_map(
+    implementables: &[TokenStream2],
+    trait_impls: &[TokenStream2],
+) -> TraitMap {
+    let mut map = TraitMap::new();
+
+    // trait_impl entries: "Fruit for Apple" → Apple is a concrete implementor
+    for item in trait_impls {
+        if let Ok(meta) = syn::parse2::<MetaTraitImpl>(item.clone()) {
+            let trait_name = meta.trait_name.to_string();
+            let struct_name = meta.struct_name.to_string();
+            let struct_path = meta.struct_path;
+            map.entry(trait_name)
+                .or_default()
+                .push(TraitVariant {
+                    name: struct_name,
+                    bridge_type: struct_path,
+                });
+        }
+    }
+
+    // implementable entries: "trait Fruit" → adds VtableFruit wrapper
+    for item in implementables {
+        if let Ok(meta) = syn::parse2::<MetaImplementable>(item.clone()) {
+            let trait_name = meta.trait_name.to_string();
+            let wrapper_name = format!("Vtable{trait_name}");
+            let wrapper_path = meta.wrapper_name;
+            map.entry(trait_name)
+                .or_default()
+                .push(TraitVariant {
+                    name: wrapper_name,
+                    bridge_type: wrapper_path,
+                });
+        }
+    }
+
+    map
+}
+
+fn generate_one(item: TokenStream2, trait_map: &TraitMap) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
     match tag.as_str() {
         "exportable" => {
@@ -21,7 +75,7 @@ fn generate_one(item: TokenStream2) -> TokenStream2 {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_exportable_bridge(meta)
+            generate_exportable_bridge(meta, trait_map)
         }
         "error" => {
             let meta: MetaError = match syn::parse2(item) {
@@ -86,7 +140,11 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
     }
 
-    // Generate bridge code for each item in sorted order
+    // Pass 1: Build trait-to-impls map from trait_impl and implementable entries.
+    // This allows resolving `impl Trait` params automatically.
+    let trait_map = build_trait_map(&implementables, &trait_impls);
+
+    // Pass 2: Generate bridge code for each item in sorted order
     let mut all_code = Vec::new();
     let mut header_fn_names = Vec::new();
 
@@ -116,7 +174,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         };
         header_fn_names.push(header_fn);
 
-        all_code.push(generate_one(item.clone()));
+        all_code.push(generate_one(item.clone(), &trait_map));
     }
 
     // Generate unified header function
@@ -135,7 +193,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 // Exportable bridge generation
 // ===========================================================================
 
-fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
+fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
     let fn_pfx = meta.fn_pfx();
@@ -232,29 +290,27 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         shared_types_exprs.push(quote! { "#endif" });
     }
 
-    // Generate typedefs for dyn_param dispatch types
+    // Generate typedefs for impl Trait dispatch types (resolved from trait map)
     let mut generated_dyn_types: Vec<String> = Vec::new();
     for m in &meta.methods {
         for p in &m.params {
-            if let MetaParamKind::DynDispatch {
-                c_name_suffix,
-                variants,
-            } = &p.kind
-            {
-                let c_name = format!("{type_pfx}{c_name_suffix}");
+            if let MetaParamKind::ImplTrait { trait_name } = &p.kind {
+                let c_name = format!("{type_pfx}{trait_name}");
                 if generated_dyn_types.contains(&c_name) {
                     continue;
                 }
                 generated_dyn_types.push(c_name.clone());
 
-                let variant_names: Vec<String> = variants
-                    .iter()
-                    .map(|(name, _)| format!("{type_pfx}{name}"))
-                    .collect();
-                let variants_comment = variant_names.join(" | ");
-                decl_exprs.push(quote! {
-                    format!("typedef void* {}; /* {} */", #c_name, #variants_comment)
-                });
+                if let Some(variants) = trait_map.get(trait_name) {
+                    let variant_names: Vec<String> = variants
+                        .iter()
+                        .map(|v| format!("{type_pfx}{}", v.name))
+                        .collect();
+                    let variants_comment = variant_names.join(" | ");
+                    decl_exprs.push(quote! {
+                        format!("typedef void* {}; /* {} */", #c_name, #variants_comment)
+                    });
+                }
             }
         }
     }
@@ -354,17 +410,19 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         }
         let param_name_str_refs: Vec<_> = header_param_names.iter().collect();
 
-        // Check for DynDispatch params
-        let dyn_dispatch = m.params.iter().find_map(|p| match &p.kind {
-            MetaParamKind::DynDispatch {
-                c_name_suffix,
-                variants,
-            } => Some((
-                p.name.clone(),
-                format!("{type_pfx}{c_name_suffix}"),
-                variants.clone(),
-            )),
-            _ => None,
+        // Resolve impl Trait dispatch from trait map
+        let impl_trait_dispatch = m.params.iter().find_map(|p| {
+            if let MetaParamKind::ImplTrait { trait_name } = &p.kind {
+                trait_map.get(trait_name).map(|variants| {
+                    let variant_data: Vec<(String, TokenStream2)> = variants
+                        .iter()
+                        .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                        .collect();
+                    (p.name.clone(), trait_name.clone(), variant_data)
+                })
+            } else {
+                None
+            }
         });
 
         // Pre-bindings for multi-param types
@@ -375,7 +433,7 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
             .map(|p| {
                 let id = &p.name;
                 match &p.kind {
-                    MetaParamKind::DynDispatch { .. } => quote! { #id },
+                    MetaParamKind::ImplTrait { .. } => quote! { #id },
                     MetaParamKind::StrSlice => {
                         let binding = meta_param_conversion(id, &p.kind);
                         let vec_id = format_ident!("__{id}_vec");
@@ -395,7 +453,9 @@ fn generate_exportable_bridge(meta: MetaExportable) -> TokenStream2 {
         };
 
         // Wrap in dispatch match if needed
-        let method_call = if let Some((ref dyn_id, ref _c_name, ref variants)) = dyn_dispatch {
+        let method_call = if let Some((ref dyn_id, ref _trait_name, ref variants)) =
+            impl_trait_dispatch
+        {
             let if_branches: Vec<_> = variants
                 .iter()
                 .map(|(_, ty_tokens)| {
@@ -950,7 +1010,7 @@ pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
         MetaParamKind::Regular { bridge_type } => {
             quote! { <#bridge_type as ffier::FfiType>::CRepr }
         }
-        MetaParamKind::DynDispatch { .. } => {
+        MetaParamKind::ImplTrait { .. } => {
             quote! { *mut core::ffi::c_void }
         }
         MetaParamKind::StrSlice => {
@@ -986,7 +1046,7 @@ fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 
             let len_id = format_ident!("{id}_len");
             quote! { #id: *const ffier::FfierBytes, #len_id: usize }
         }
-        MetaParamKind::DynDispatch { .. } => {
+        MetaParamKind::ImplTrait { .. } => {
             quote! { #id: *mut core::ffi::c_void }
         }
     }
@@ -1008,8 +1068,8 @@ fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 
                 __strs
             } }
         }
-        MetaParamKind::DynDispatch { .. } => {
-            quote! { compile_error!("DynDispatch should not use param_conversion") }
+        MetaParamKind::ImplTrait { .. } => {
+            quote! { compile_error!("ImplTrait should not use param_conversion") }
         }
     }
 }
@@ -1025,8 +1085,8 @@ fn meta_param_c_type_expr(
         MetaParamKind::StrSlice => {
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
         }
-        MetaParamKind::DynDispatch { c_name_suffix, .. } => {
-            let full_name = format!("{type_pfx}{c_name_suffix}");
+        MetaParamKind::ImplTrait { trait_name } => {
+            let full_name = format!("{type_pfx}{trait_name}");
             quote! { #full_name }
         }
     }
