@@ -373,9 +373,8 @@ impl<'a> View<'a> {
         &self.label
     }
 
-    /// Copy label from another snapshot (tests dyn_param with lifetime-parameterized trait).
-    #[ffier(dyn_param(other, "Snapshot", [View<'a>, Widget]))]
-    pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
+    /// Copy label from another snapshot (tests dyn with lifetime-parameterized trait).
+    pub fn copy_label(&mut self, #[ffier(dyn(View<'a>, Widget))] other: impl Snapshot<'a>) {
         self.label = other.snap_description().to_owned();
     }
 }
@@ -455,8 +454,7 @@ impl Pipeline {
     }
 
     /// Run a processor on the given input.
-    #[ffier(dyn_param(proc, "Processor", [VtableProcessor]))]
-    pub fn run(&mut self, proc: impl Processor, input: i32) {
+    pub fn run(&mut self, #[ffier(dyn(VtableProcessor))] proc: impl Processor, input: i32) {
         let result = proc.process(input);
         proc.on_notify(result);
         self.results.push(result);
@@ -535,8 +533,7 @@ impl Mixer {
         Mixer { total: 0 }
     }
 
-    #[ffier(dyn_param(fruit, "Fruit", [Apple, Orange, VtableFruit]))]
-    pub fn add(mut self, fruit: impl Fruit) -> Self {
+    pub fn add(mut self, #[ffier(dyn(Apple, Orange, VtableFruit))] fruit: impl Fruit) -> Self {
         self.total += fruit.value();
         self
     }
@@ -630,25 +627,20 @@ impl Snapshot<'static> for Widget {
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
-ffier::define_lib!("ft", [
-    __ffier_meta_test_error,
-    __ffier_meta_widget,
-    __ffier_meta_gadget,
-    __ffier_meta_config,
-    __ffier_meta_gizmo,
-    __ffier_meta_gizmo_builder,
-    __ffier_meta_view,
-    __ffier_meta_pipeline,
-    __ffier_meta_vtable_processor,
-    __ffier_meta_apple,
-    __ffier_meta_orange,
-    __ffier_meta_vtable_fruit,
-    __ffier_meta_fruit_for_apple,
-    __ffier_meta_fruit_for_orange,
-    __ffier_meta_mixer,
-    __ffier_meta_sprocket,
-    __ffier_meta_attachment_for_sprocket,
-    __ffier_meta_view_factory,
-    __ffier_meta_snapshot_for_view,
-    __ffier_meta_snapshot_for_widget,
-]);
+ffier::library_definition!("ft",
+    TestError,
+    Widget, Gadget, Config,
+    Gizmo, GizmoBuilder,
+    View, ViewFactory,
+    Pipeline,
+    trait Processor,
+    Apple, Orange,
+    trait Fruit,
+    Fruit for Apple,
+    Fruit for Orange,
+    Mixer,
+    Sprocket,
+    Attachment for Sprocket,
+    Snapshot for View,
+    Snapshot for Widget,
+);

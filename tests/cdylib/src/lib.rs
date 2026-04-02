@@ -1,4 +1,4 @@
-ffier_test_lib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
+ffier_test_lib::__ffier_ft_library!(ffier_gen_c_macros::generate);
 
 // ---------------------------------------------------------------------------
 // Manual bridge function — peeks at a handle's TypeId to verify dispatch path.

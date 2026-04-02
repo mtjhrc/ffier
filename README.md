@@ -79,16 +79,15 @@ impl Calculator {
 Register types in the library (from [`example/mylib`](example/mylib/src/lib.rs)):
 
 ```rust
-ffier::define_lib!("mylib", [
-    __ffier_meta_calc_error,
-    __ffier_meta_calculator,
-]);
+ffier::library_definition!("mylib",
+    Calculator, CalcError,
+);
 ```
 
 Generate the C bridge in your cdylib crate (from [`example/mylib-cdylib`](example/mylib-cdylib/src/lib.rs)):
 
 ```rust
-mylib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
+mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
 ```
 
 Call from C:

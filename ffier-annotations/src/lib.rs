@@ -100,12 +100,17 @@ fn classify_value(
 pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as ItemImpl);
 
-    // Strip #[ffier(...)] attributes from methods before emitting the impl block
+    // Strip #[ffier(...)] attributes from methods and params before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
         for item in &mut block.items {
             if let ImplItem::Fn(method) = item {
                 method.attrs.retain(|a| !a.path().is_ident("ffier"));
+                for arg in &mut method.sig.inputs {
+                    if let FnArg::Typed(pat_ty) = arg {
+                        pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
+                    }
+                }
             }
         }
         block
@@ -169,15 +174,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             (false, false)
         };
 
-        // Parse #[ffier(dyn_param(param, "CName", [Type1, Type2]))] on this method
-        let dyn_params = parse_dyn_param_attrs(
-            &method.attrs,
-            &mut reexport_types,
-            &mut reexport_aliases,
-            &mut alias_counter,
-            &helper_mod_name,
-        );
-
         let mut param_idents = Vec::new();
         let mut param_name_strs = Vec::new();
         let mut param_kinds = Vec::new();
@@ -189,19 +185,26 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let Pat::Ident(pat_ident) = &*pat_ty.pat else {
                 continue;
             };
-            let param_name = pat_ident.ident.to_string();
             param_idents.push(pat_ident.ident.clone());
-            param_name_strs.push(param_name.clone());
+            param_name_strs.push(pat_ident.ident.to_string());
 
             // Capture original type (Self-replaced, lifetimes preserved) for client codegen
             let param_ty_orig = replace_self_type(&pat_ty.ty, self_ty);
             param_orig_types.push(param_ty_orig);
 
-            // Check if this param has a dyn_param annotation
-            if let Some(cfg) = dyn_params.iter().find(|d| d.0 == param_name) {
+            // Check for #[ffier(dyn(Type1, Type2))] on the parameter
+            if let Some(variants) = parse_param_dyn_attr(
+                &pat_ty.attrs,
+                &mut reexport_types,
+                &mut reexport_aliases,
+                &mut alias_counter,
+                &helper_mod_name,
+            ) {
+                let c_name_suffix = extract_impl_trait_name(&pat_ty.ty)
+                    .unwrap_or_else(|| pat_ident.ident.to_string());
                 param_kinds.push(ParamKind::DynDispatch(DynParamConfig {
-                    c_name_suffix: cfg.1.clone(),
-                    variants: cfg.2.clone(),
+                    c_name_suffix,
+                    variants,
                 }));
                 continue;
             }
@@ -335,7 +338,8 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_{struct_lower}");
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{struct_ident}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{struct_ident}");
 
     // Build method metadata tokens
     let method_meta_tokens: Vec<_> = methods
@@ -468,7 +472,11 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#reexport_items)*
         }
 
-        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -811,7 +819,8 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let name_str = name.to_string();
     let err_snake = camel_to_snake(&name_str);
 
-    let meta_macro_name = format_ident!("__ffier_meta_{err_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{name}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{name}");
 
     // Build variant metadata tokens
     let variant_meta_tokens: Vec<_> = data_enum
@@ -854,7 +863,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -929,47 +942,27 @@ fn is_ffier_skip(attr: &syn::Attribute) -> bool {
     found
 }
 
-/// Parse `#[ffier(dyn_param(param_name, "CName", [Type1, Type2]))]` from method attributes.
-///
-/// Returns `Vec<(param_name, full_c_type_name, [(ident_name, type_tokens)])>`.
-fn parse_dyn_param_attrs(
+/// Parse `#[ffier(dyn(Type1, Type2))]` from a parameter's attributes.
+fn parse_param_dyn_attr(
     attrs: &[syn::Attribute],
     reexport_types: &mut Vec<Type>,
     reexport_aliases: &mut Vec<syn::Ident>,
     alias_counter: &mut u32,
     helper_mod: &syn::Ident,
-) -> Vec<(String, String, Vec<(String, proc_macro2::TokenStream)>)> {
-    let mut result = Vec::new();
-
+) -> Option<Vec<(String, proc_macro2::TokenStream)>> {
     for attr in attrs {
         if !attr.path().is_ident("ffier") {
             continue;
         }
-
-        // Parse: ffier(dyn_param(dev, "Device", [NetDevice, BlockDevice]))
+        let mut result = None;
         let _ = attr.parse_nested_meta(|meta| {
-            if !meta.path.is_ident("dyn_param") {
+            if !meta.path.is_ident("dyn") {
                 return Ok(());
             }
-
             let content;
             syn::parenthesized!(content in meta.input);
-
-            // param name
-            let param_ident: syn::Ident = content.parse()?;
-            content.parse::<Token![,]>()?;
-
-            // C type name suffix
-            let c_name_lit: LitStr = content.parse()?;
-            content.parse::<Token![,]>()?;
-
-            // [Type1, Type2, ...]
-            let types_content;
-            syn::bracketed!(types_content in content);
             let variant_types: syn::punctuated::Punctuated<Type, Token![,]> =
-                types_content.parse_terminated(Type::parse, Token![,])?;
-
-            let c_name = c_name_lit.value();
+                content.parse_terminated(Type::parse, Token![,])?;
             let variants: Vec<_> = variant_types
                 .iter()
                 .map(|ty| {
@@ -985,13 +978,28 @@ fn parse_dyn_param_attrs(
                     (ident_name, tokens)
                 })
                 .collect();
-
-            result.push((param_ident.to_string(), c_name, variants));
+            result = Some(variants);
             Ok(())
         });
+        if result.is_some() {
+            return result;
+        }
     }
+    None
+}
 
-    result
+/// Extract the trait name from an `impl Trait` type.
+fn extract_impl_trait_name(ty: &Type) -> Option<String> {
+    if let Type::ImplTrait(impl_trait) = ty {
+        for bound in &impl_trait.bounds {
+            if let syn::TypeParamBound::Trait(trait_bound) = bound {
+                if let Some(seg) = trait_bound.path.segments.last() {
+                    return Some(seg.ident.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 /// `DivisionByZero` → `"division by zero"`
@@ -1328,7 +1336,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Metadata emission ---
-    let meta_macro_name = format_ident!("__ffier_meta_vtable_{trait_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}");
 
     // Build vtable field metadata — currently no extra data fields are supported,
     // so this is always empty. Method function pointer fields are handled by
@@ -1437,7 +1446,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        /// Metadata macro — used indirectly via `define_lib!` and `__ffier_meta_lib!`.
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -1584,7 +1597,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_{trait_snake}_for_{struct_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_ident}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -1596,6 +1610,11 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#reexport_items)*
         }
 
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
@@ -1618,77 +1637,59 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ===========================================================================
-// ffier::define_lib! — define a library's metadata macro list
+// ffier::library_definition! — define a library's exported types
 // ===========================================================================
 
 /// Define the list of exported types for a library.
 ///
-/// Generates `__ffier_meta_lib!` and `__ffier_chain!` macros that implement
-/// a recursive fold over all per-type metadata macros. When invoked with a
-/// generator callback, expands all metadata and passes the batched result
-/// to the callback in a single proc macro call.
-///
 /// ```ignore
-/// ffier::define_lib!("mylib", [
-///     __ffier_meta_calc_error,
-///     __ffier_meta_calculator,
-///     __ffier_meta_text_buffer,
-/// ]);
+/// ffier::library_definition!("mylib",
+///     Calculator, CalcError,
+///     TextBuffer, BufferError,
+/// );
 ///
 /// // In cdylib:
-/// mylib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
+/// mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
 /// ```
+///
+/// Supports three entry kinds:
+/// - `TypeName` — exportable struct or error enum
+/// - `trait TraitName` — implementable trait
+/// - `TraitName for StructName` — trait impl bridge
 #[proc_macro]
-pub fn define_lib(input: TokenStream) -> TokenStream {
-    let input2: proc_macro2::TokenStream = input.into();
-    let mut iter = input2.into_iter();
+pub fn library_definition(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as LibraryInput);
+    let prefix_lit = &parsed.prefix;
+    let prefix_str = parsed.prefix.value();
 
-    // Parse prefix string literal
-    let prefix_lit = match iter.next() {
-        Some(proc_macro2::TokenTree::Literal(lit)) => lit,
-        _ => {
-            return quote! { compile_error!("define_lib! expects a string literal prefix"); }
-                .into();
-        }
-    };
-
-    // Skip comma
-    match iter.next() {
-        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',' => {}
-        _ => {
-            return quote! { compile_error!("define_lib! expects: \"prefix\", [macros...]"); }
-                .into();
-        }
-    }
-
-    // Parse bracketed list of macro idents
-    let group = match iter.next() {
-        Some(proc_macro2::TokenTree::Group(g))
-            if g.delimiter() == proc_macro2::Delimiter::Bracket =>
-        {
-            g
-        }
-        _ => {
-            return quote! { compile_error!("define_lib! expects a bracketed list of macro names"); }
-                .into();
-        }
-    };
-
-    // Parse comma-separated idents from the bracket group
     let mut macro_idents: Vec<syn::Ident> = Vec::new();
-    for tt in group.stream() {
-        match tt {
-            proc_macro2::TokenTree::Ident(id) => macro_idents.push(id),
-            proc_macro2::TokenTree::Punct(p) if p.as_char() == ',' => {}
-            other => {
-                let msg = format!("unexpected token in define_lib! macro list: {other}");
-                return quote! { compile_error!(#msg); }.into();
-            }
-        }
+    let mut check_consts: Vec<syn::Ident> = Vec::new();
+
+    for entry in &parsed.entries {
+        let (macro_name, const_name) = match entry {
+            LibraryEntry::Plain(name) => (
+                format_ident!("__ffier_meta_annotation_{name}"),
+                format_ident!("__ffier_library_has_defined_{name}"),
+            ),
+            LibraryEntry::Trait(name) => (
+                format_ident!("__ffier_meta_annotation_{name}"),
+                format_ident!("__ffier_library_has_defined_{name}"),
+            ),
+            LibraryEntry::TraitImpl {
+                trait_name,
+                struct_name,
+            } => (
+                format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_name}"),
+                format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_name}"),
+            ),
+        };
+        macro_idents.push(macro_name);
+        check_consts.push(const_name);
     }
 
     if macro_idents.is_empty() {
-        return quote! { compile_error!("define_lib! macro list is empty"); }.into();
+        return quote! { compile_error!("library_definition! requires at least one type"); }
+            .into();
     }
 
     let first = &macro_idents[0];
@@ -1698,7 +1699,14 @@ pub fn define_lib(input: TokenStream) -> TokenStream {
         .map(|id| quote! { $crate::#id })
         .collect();
 
+    let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
+
     let output = quote! {
+        #(
+            #[doc(hidden)]
+            pub const #check_consts: () = ();
+        )*
+
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
@@ -1728,7 +1736,7 @@ pub fn define_lib(input: TokenStream) -> TokenStream {
         }
 
         #[macro_export]
-        macro_rules! __ffier_meta_lib {
+        macro_rules! #entry_macro_name {
             ($callback:path) => {
                 $crate::#first! { #prefix_lit, $crate::__ffier_chain,
                     #prefix_lit, $callback,
@@ -1740,4 +1748,54 @@ pub fn define_lib(input: TokenStream) -> TokenStream {
     };
 
     output.into()
+}
+
+struct LibraryInput {
+    prefix: LitStr,
+    entries: Vec<LibraryEntry>,
+}
+
+enum LibraryEntry {
+    Plain(syn::Ident),
+    Trait(syn::Ident),
+    TraitImpl {
+        trait_name: syn::Ident,
+        struct_name: syn::Ident,
+    },
+}
+
+impl Parse for LibraryInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let prefix: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        let mut entries = Vec::new();
+        while !input.is_empty() {
+            if input.peek(Token![trait]) {
+                // `trait TraitName`
+                input.parse::<Token![trait]>()?;
+                let name: syn::Ident = input.parse()?;
+                entries.push(LibraryEntry::Trait(name));
+            } else {
+                let first: syn::Ident = input.parse()?;
+                if input.peek(Token![for]) {
+                    // `TraitName for StructName`
+                    input.parse::<Token![for]>()?;
+                    let second: syn::Ident = input.parse()?;
+                    entries.push(LibraryEntry::TraitImpl {
+                        trait_name: first,
+                        struct_name: second,
+                    });
+                } else {
+                    // Plain type name
+                    entries.push(LibraryEntry::Plain(first));
+                }
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        Ok(LibraryInput { prefix, entries })
+    }
 }

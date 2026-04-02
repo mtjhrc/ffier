@@ -52,10 +52,10 @@ C name prefix to use:
 **`src/lib.rs`** — one line generates all `extern "C"` bridge functions:
 
 ```rust
-mylib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
+mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
 ```
 
-The prefix `"mylib"` (set in `define_lib!` in the library crate) controls the
+The prefix `"mylib"` (set in `library_definition!` in the library crate) controls the
 C naming: `Calculator::divide` becomes `mylib_calculator_divide`. The bridge
 functions handle type conversion, handle boxing/unboxing, and error marshalling
 automatically.
