@@ -1,4 +1,4 @@
-ffier_test_lib::__ffier_library!(ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::__ffier_ft_library!(ffier_gen_c_macros::generate_bridge);
 
 fn main() {
     let header = ffier_gen_c::HeaderBuilder::new("FFIER_TEST_H")

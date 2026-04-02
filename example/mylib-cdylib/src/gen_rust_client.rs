@@ -1,4 +1,4 @@
-mylib::__ffier_library!(ffier_gen_rust::generate_client_source);
+mylib::__ffier_mylib_library!(ffier_gen_rust::generate_client_source);
 
 fn main() {
     println!("// Auto-generated. Regenerate with: just gen-rust-client");

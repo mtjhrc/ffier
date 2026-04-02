@@ -431,8 +431,8 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_{struct_lower}");
-    let check_const_name = format_ident!("__FFIER_LISTED_{}", camel_to_upper_snake(&struct_name));
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{struct_ident}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{struct_ident}");
 
     // Build method metadata tokens
     let method_meta_tokens: Vec<_> = methods
@@ -557,13 +557,15 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#reexport_items)*
         }
 
-        const _: () = #check_const_name;
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
 
         /// Metadata macro — passes structured type info to a generator proc macro.
         ///
         /// Usage:
         /// ```ignore
-        /// my_crate::__ffier_meta_widget!("ft", ffier::generate_bridge);
+        /// my_crate::__ffier_meta_annotation_Widget!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
@@ -899,8 +901,8 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let name_str = name.to_string();
     let err_snake = camel_to_snake(&name_str);
 
-    let meta_macro_name = format_ident!("__ffier_meta_{err_snake}");
-    let check_const_name = format_ident!("__FFIER_LISTED_{}", camel_to_upper_snake(&name_str));
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{name}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{name}");
 
     // Build variant metadata tokens
     let variant_meta_tokens: Vec<_> = data_enum
@@ -943,13 +945,15 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        const _: () = #check_const_name;
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
 
         /// Metadata macro for this error type.
         ///
         /// Accepts a prefix and a callback:
         /// ```ignore
-        /// my_crate::__ffier_meta_test_error!("ft", ffier::generate_bridge);
+        /// my_crate::__ffier_meta_annotation_TestError!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
@@ -1482,8 +1486,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Metadata emission ---
-    let meta_macro_name = format_ident!("__ffier_meta_vtable_{trait_snake}");
-    let check_const_name = format_ident!("__FFIER_LISTED_TRAIT_{}", camel_to_upper_snake(&trait_name_str));
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}");
 
     // Build vtable field metadata — currently no extra data fields are supported,
     // so this is always empty. Method function pointer fields are handled by
@@ -1577,7 +1581,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        const _: () = #check_const_name;
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
 
         /// Metadata macro for this implementable trait.
         #[macro_export]
@@ -1716,17 +1722,17 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_{trait_snake}_for_{struct_snake}");
-    let trait_upper = camel_to_upper_snake(&trait_name.to_string());
-    let struct_upper = camel_to_upper_snake(&struct_name);
-    let check_const_name = format_ident!("__FFIER_LISTED_{trait_upper}_FOR_{struct_upper}");
+    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_ident}");
+    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
 
     let output = quote! {
         #clean_impl
 
-        const _: () = #check_const_name;
+        /// If you see an error about this constant not being found in the crate root,
+        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
+        const _: () = crate::#check_const_name;
 
         #[macro_export]
         macro_rules! #meta_macro_name {
@@ -1756,13 +1762,13 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// An entry in the library definition.
 enum LibraryEntry {
     /// Plain type (exportable or error): `Widget`, `TestError`
-    /// → `__ffier_meta_{snake}`
+    /// → `__ffier_meta_annotation_{Name}`
     Plain(syn::Ident),
-    /// Implementable trait: `impl Processor`
-    /// → `__ffier_meta_vtable_{snake}`
+    /// Implementable trait: `trait Processor`
+    /// → `__ffier_meta_annotation_{Name}`
     Implementable(syn::Ident),
     /// Trait impl: `Fruit for Apple`
-    /// → `__ffier_meta_{trait_snake}_for_{struct_snake}`
+    /// → `__ffier_meta_annotation_{Trait}_for_{Struct}`
     TraitImpl {
         trait_name: syn::Ident,
         struct_name: syn::Ident,
@@ -1809,55 +1815,45 @@ impl Parse for LibraryInput {
 /// Define the full FFI library in one place.
 ///
 /// ```ignore
-/// ffier::library!("mylib",
+/// ffier::library_definition!("mylib",
 ///     Calculator, CalcError, TextBuffer, BufferError,
 ///     trait MyCallback,
 ///     MyCallback for Calculator,
 /// );
 /// ```
 ///
-/// Generates a `__ffier_library!` macro that forwards each type's metadata
-/// to any generator callback:
+/// Generates a `__ffier_{prefix}_library!` macro that forwards each type's
+/// metadata to any generator callback:
 ///
 /// ```ignore
-/// mylib::__ffier_library!(ffier_gen_c_macros::generate_bridge);
+/// mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate_bridge);
 /// ```
 #[proc_macro]
-pub fn library(input: TokenStream) -> TokenStream {
+pub fn library_definition(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as LibraryInput);
 
     let prefix = &input.prefix;
+    let library_macro_name = format_ident!("__ffier_{}_library", prefix.value());
     let mut meta_calls = Vec::new();
     let mut check_names = Vec::new();
 
     for entry in &input.entries {
         let (meta_name, check_name) = match entry {
-            LibraryEntry::Plain(ty) => {
-                let upper = camel_to_upper_snake(&ty.to_string());
-                (
-                    format_ident!("__ffier_meta_{}", camel_to_snake(&ty.to_string())),
-                    format_ident!("__FFIER_LISTED_{upper}"),
-                )
-            }
-            LibraryEntry::Implementable(ty) => {
-                let upper = camel_to_upper_snake(&ty.to_string());
-                (
-                    format_ident!("__ffier_meta_vtable_{}", camel_to_snake(&ty.to_string())),
-                    format_ident!("__FFIER_LISTED_TRAIT_{upper}"),
-                )
-            }
+            LibraryEntry::Plain(ty) => (
+                format_ident!("__ffier_meta_annotation_{ty}"),
+                format_ident!("__ffier_library_has_defined_{ty}"),
+            ),
+            LibraryEntry::Implementable(ty) => (
+                format_ident!("__ffier_meta_annotation_{ty}"),
+                format_ident!("__ffier_library_has_defined_{ty}"),
+            ),
             LibraryEntry::TraitImpl {
                 trait_name,
                 struct_name,
-            } => {
-                let trait_snake = camel_to_snake(&trait_name.to_string());
-                let trait_upper = camel_to_upper_snake(&trait_name.to_string());
-                let struct_upper = camel_to_upper_snake(&struct_name.to_string());
-                (
-                    format_ident!("__ffier_meta_{trait_snake}_for_{}", camel_to_snake(&struct_name.to_string())),
-                    format_ident!("__FFIER_LISTED_{trait_upper}_FOR_{struct_upper}"),
-                )
-            }
+            } => (
+                format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_name}"),
+                format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_name}"),
+            ),
         };
         meta_calls.push(quote! { $crate::#meta_name!(#prefix, $callback $(, $($rest)*)?); });
         check_names.push(check_name);
@@ -1865,8 +1861,8 @@ pub fn library(input: TokenStream) -> TokenStream {
 
     quote! {
         // Define consts that annotations reference. If an annotated type
-        // is NOT listed here, its `const _: () = __FFIER_LISTED_*;`
-        // will fail to resolve → compile error.
+        // is NOT listed here, its forward reference will fail to resolve
+        // with an error like: "cannot find value `__ffier_library_has_defined_Foo`".
         #(
             #[doc(hidden)]
             const #check_names: () = ();
@@ -1874,7 +1870,7 @@ pub fn library(input: TokenStream) -> TokenStream {
 
         /// Collect all FFI metadata and forward to a generator.
         #[macro_export]
-        macro_rules! __ffier_library {
+        macro_rules! #library_macro_name {
             ($callback:path $(, $($rest:tt)*)?) => {
                 #(#meta_calls)*
             };

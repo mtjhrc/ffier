@@ -626,7 +626,7 @@ impl Snapshot<'static> for Widget {
     }
 }
 
-ffier::library!("ft",
+ffier::library_definition!("ft",
     Widget, Gadget, Config, Gizmo, GizmoBuilder, View, Pipeline,
     TestError, Apple, Orange, Mixer, Sprocket, ViewFactory,
     trait Processor,
