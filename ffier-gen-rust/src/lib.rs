@@ -14,7 +14,7 @@ use std::collections::HashSet;
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_tag, unwrap_braces,
+    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag, unwrap_braces,
 };
 
 // Track which dispatch traits have been defined during this compilation,
@@ -28,6 +28,60 @@ thread_local! {
 #[proc_macro]
 pub fn generate_client_source(input: TokenStream) -> TokenStream {
     generate_client_source_impl(input.into()).into()
+}
+
+/// Generates Rust client source code from batched metadata.
+///
+/// Receives `{ @tag, ... } { @tag, ... } ...` — multiple metadata items.
+/// Sorts by category, generates all client code, and emits it as a single
+/// `const FFIER_ALL_CLIENT_SRC: &str = "..."`.
+#[proc_macro]
+pub fn generate(input: TokenStream) -> TokenStream {
+    generate_batch_client_impl(input.into()).into()
+}
+
+fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
+    // Split into brace groups
+    let mut errors = Vec::new();
+    let mut exportables = Vec::new();
+    let mut implementables = Vec::new();
+    let mut trait_impls = Vec::new();
+
+    for tt in input {
+        if let proc_macro2::TokenTree::Group(g) = tt {
+            if g.delimiter() == proc_macro2::Delimiter::Brace {
+                let stream = g.stream();
+                match peek_meta_tag(&stream).as_str() {
+                    "error" => errors.push(stream),
+                    "exportable" => exportables.push(stream),
+                    "implementable" => implementables.push(stream),
+                    "trait_impl" => trait_impls.push(stream),
+                    tag => {
+                        let msg = format!("unknown metadata tag `@{tag}` in batch");
+                        return quote! { compile_error!(#msg); };
+                    }
+                }
+            }
+        }
+    }
+
+    // Process in sorted order: errors → exportables → implementables → trait_impls.
+    // This ensures implementable defines the trait before trait_impl references it,
+    // so the DEFINED_DISPATCH_TRAITS thread-local correctly deduplicates.
+    let mut all_source = String::new();
+
+    for item in errors
+        .iter()
+        .chain(exportables.iter())
+        .chain(implementables.iter())
+        .chain(trait_impls.iter())
+    {
+        let code = generate_client_impl(item.clone());
+        all_source.push_str(&code.to_string());
+        all_source.push('\n');
+    }
+
+    quote! { const FFIER_ALL_CLIENT_SRC: &str = #all_source; }
 }
 
 /// Generates client code (safe Rust wrappers calling through extern "C") from metadata.
@@ -104,39 +158,6 @@ fn generate_client_source_impl(input: TokenStream2) -> TokenStream2 {
     quote! { const #const_name: &str = #source; }
 }
 
-/// Peek at the type/trait name from a metadata token stream.
-///
-/// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
-fn peek_meta_name(input: &TokenStream2) -> String {
-    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
-    for i in 0..tokens.len().saturating_sub(2) {
-        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
-            && (id == "name" || id == "trait_name")
-            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
-            && p.as_char() == '='
-            && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
-        {
-            return name.to_string();
-        }
-    }
-    "Unknown".to_string()
-}
-
-/// Peek at a specific `field = IDENT` from a metadata token stream.
-fn peek_meta_field(input: &TokenStream2, field: &str) -> String {
-    let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
-    for i in 0..tokens.len().saturating_sub(2) {
-        if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
-            && id == field
-            && let proc_macro2::TokenTree::Punct(ref p) = tokens[i + 1]
-            && p.as_char() == '='
-            && let proc_macro2::TokenTree::Ident(ref name) = tokens[i + 2]
-        {
-            return name.to_string();
-        }
-    }
-    "Unknown".to_string()
-}
 
 // ===========================================================================
 // Exportable client generation

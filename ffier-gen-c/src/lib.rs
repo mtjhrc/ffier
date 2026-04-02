@@ -10,7 +10,7 @@ use quote::{format_ident, quote};
 use ffier_meta::{
     FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
     MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_tag, unwrap_braces,
+    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag, unwrap_braces,
 };
 
 /// Generates bridge code (extern "C" FFI functions + header function) from metadata.
@@ -59,6 +59,86 @@ pub fn generate_bridge_impl(input: TokenStream2) -> TokenStream2 {
                 "unknown metadata tag `@{tag}`: expected @exportable, @error, @implementable, or @trait_impl"
             );
             quote! { compile_error!(#msg); }
+        }
+    }
+}
+
+/// Generates bridge code from batched metadata items.
+///
+/// Input: `{ @tag, ... } { @tag, ... } ...` — multiple brace-delimited items.
+/// Sorts into errors → exportables → implementables → trait_impls, generates
+/// bridge code for each, and emits a unified `__ffier_header()` function.
+pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
+    // Split input into individual brace groups
+    let mut items: Vec<TokenStream2> = Vec::new();
+    for tt in input {
+        if let proc_macro2::TokenTree::Group(g) = tt {
+            if g.delimiter() == proc_macro2::Delimiter::Brace {
+                items.push(g.stream());
+            }
+        }
+    }
+
+    // Sort by category for correct ordering
+    let mut errors = Vec::new();
+    let mut exportables = Vec::new();
+    let mut implementables = Vec::new();
+    let mut trait_impls = Vec::new();
+
+    for item in &items {
+        match peek_meta_tag(item).as_str() {
+            "error" => errors.push(item.clone()),
+            "exportable" => exportables.push(item.clone()),
+            "implementable" => implementables.push(item.clone()),
+            "trait_impl" => trait_impls.push(item.clone()),
+            tag => {
+                let msg = format!("unknown metadata tag `@{tag}` in batch");
+                return quote! { compile_error!(#msg); };
+            }
+        }
+    }
+
+    // Generate bridge code for each item in sorted order
+    let mut all_code = Vec::new();
+    let mut header_fn_names = Vec::new();
+
+    for item in errors
+        .iter()
+        .chain(exportables.iter())
+        .chain(implementables.iter())
+        .chain(trait_impls.iter())
+    {
+        // Collect header function name before generating
+        let name = peek_meta_name(item);
+        let tag = peek_meta_tag(item);
+        let prefix = peek_meta_field(item, "prefix");
+        let fn_pfx = format!("{prefix}_");
+
+        let header_fn = if tag == "implementable" {
+            let trait_snake = camel_to_snake(&name);
+            format_ident!("{fn_pfx}vtable_{trait_snake}__header")
+        } else if tag == "trait_impl" {
+            let trait_snake = camel_to_snake(&name);
+            let struct_name = peek_meta_field(item, "struct_name");
+            let struct_snake = camel_to_snake(&struct_name);
+            format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header")
+        } else {
+            let type_snake = camel_to_snake(&name);
+            format_ident!("{fn_pfx}{type_snake}__header")
+        };
+        header_fn_names.push(header_fn);
+
+        all_code.push(generate_bridge_impl(item.clone()));
+    }
+
+    // Generate unified header function
+    quote! {
+        #(#all_code)*
+
+        pub fn __ffier_header(guard: &str) -> String {
+            ffier_gen_c::HeaderBuilder::new(guard)
+                #(.add(#header_fn_names()))*
+                .build()
         }
     }
 }

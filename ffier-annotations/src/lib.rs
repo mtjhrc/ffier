@@ -1734,3 +1734,128 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     output.into()
 }
+
+// ===========================================================================
+// ffier::define_lib! — define a library's metadata macro list
+// ===========================================================================
+
+/// Define the list of exported types for a library.
+///
+/// Generates `__ffier_meta_lib!` and `__ffier_chain!` macros that implement
+/// a recursive fold over all per-type metadata macros. When invoked with a
+/// generator callback, expands all metadata and passes the batched result
+/// to the callback in a single proc macro call.
+///
+/// ```ignore
+/// ffier::define_lib!("mylib", [
+///     __ffier_meta_calc_error,
+///     __ffier_meta_calculator,
+///     __ffier_meta_text_buffer,
+/// ]);
+///
+/// // In cdylib:
+/// mylib::__ffier_meta_lib!(ffier_gen_c_macros::generate);
+/// ```
+#[proc_macro]
+pub fn define_lib(input: TokenStream) -> TokenStream {
+    let input2: proc_macro2::TokenStream = input.into();
+    let mut iter = input2.into_iter();
+
+    // Parse prefix string literal
+    let prefix_lit = match iter.next() {
+        Some(proc_macro2::TokenTree::Literal(lit)) => lit,
+        _ => {
+            return quote! { compile_error!("define_lib! expects a string literal prefix"); }
+                .into();
+        }
+    };
+
+    // Skip comma
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',' => {}
+        _ => {
+            return quote! { compile_error!("define_lib! expects: \"prefix\", [macros...]"); }
+                .into();
+        }
+    }
+
+    // Parse bracketed list of macro idents
+    let group = match iter.next() {
+        Some(proc_macro2::TokenTree::Group(g))
+            if g.delimiter() == proc_macro2::Delimiter::Bracket =>
+        {
+            g
+        }
+        _ => {
+            return quote! { compile_error!("define_lib! expects a bracketed list of macro names"); }
+                .into();
+        }
+    };
+
+    // Parse comma-separated idents from the bracket group
+    let mut macro_idents: Vec<syn::Ident> = Vec::new();
+    for tt in group.stream() {
+        match tt {
+            proc_macro2::TokenTree::Ident(id) => macro_idents.push(id),
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ',' => {}
+            other => {
+                let msg = format!("unexpected token in define_lib! macro list: {other}");
+                return quote! { compile_error!(#msg); }.into();
+            }
+        }
+    }
+
+    if macro_idents.is_empty() {
+        return quote! { compile_error!("define_lib! macro list is empty"); }.into();
+    }
+
+    let first = &macro_idents[0];
+    let rest = &macro_idents[1..];
+    let rest_paths: Vec<proc_macro2::TokenStream> = rest
+        .iter()
+        .map(|id| quote! { $crate::#id })
+        .collect();
+
+    let output = quote! {
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! __ffier_chain {
+            // Recursive: append metadata, expand next
+            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+             [$($acc:tt)*], [$next:path, $($remaining:path),*]) => {
+                $next! { $prefix, $crate::__ffier_chain,
+                    $prefix, $final_cb,
+                    [$($acc)* { $($meta)* }],
+                    [$($remaining),*]
+                }
+            };
+            // Recursive: append metadata, expand last item
+            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+             [$($acc:tt)*], [$next:path]) => {
+                $next! { $prefix, $crate::__ffier_chain,
+                    $prefix, $final_cb,
+                    [$($acc)* { $($meta)* }],
+                    []
+                }
+            };
+            // Base case: call the final callback with everything
+            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+             [$($acc:tt)*], []) => {
+                $final_cb! { $($acc)* { $($meta)* } }
+            };
+        }
+
+        #[macro_export]
+        macro_rules! __ffier_meta_lib {
+            ($callback:path) => {
+                $crate::#first! { #prefix_lit, $crate::__ffier_chain,
+                    #prefix_lit, $callback,
+                    [],
+                    [#(#rest_paths),*]
+                }
+            };
+        }
+    };
+
+    output.into()
+}

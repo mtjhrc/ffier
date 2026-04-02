@@ -625,3 +625,30 @@ impl Snapshot<'static> for Widget {
         self.count
     }
 }
+
+// ---------------------------------------------------------------------------
+// Library metadata — lists all exported types for batched generation
+// ---------------------------------------------------------------------------
+
+ffier::define_lib!("ft", [
+    __ffier_meta_test_error,
+    __ffier_meta_widget,
+    __ffier_meta_gadget,
+    __ffier_meta_config,
+    __ffier_meta_gizmo,
+    __ffier_meta_gizmo_builder,
+    __ffier_meta_view,
+    __ffier_meta_pipeline,
+    __ffier_meta_vtable_processor,
+    __ffier_meta_apple,
+    __ffier_meta_orange,
+    __ffier_meta_vtable_fruit,
+    __ffier_meta_fruit_for_apple,
+    __ffier_meta_fruit_for_orange,
+    __ffier_meta_mixer,
+    __ffier_meta_sprocket,
+    __ffier_meta_attachment_for_sprocket,
+    __ffier_meta_view_factory,
+    __ffier_meta_snapshot_for_view,
+    __ffier_meta_snapshot_for_widget,
+]);

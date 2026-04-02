@@ -102,3 +102,10 @@ impl TextBuffer {
         self.contents.clear();
     }
 }
+
+ffier::define_lib!("mylib", [
+    __ffier_meta_calc_error,
+    __ffier_meta_buffer_error,
+    __ffier_meta_calculator,
+    __ffier_meta_text_buffer,
+]);
