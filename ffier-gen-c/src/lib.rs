@@ -8,9 +8,10 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
 use ffier_meta::{
-    FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaTraitImpl, MetaValueKind, MetaVtableParamType, MetaVtableRetType, camel_to_snake,
-    camel_to_upper_snake, peek_meta_field, peek_meta_name, peek_meta_tag,
+    FfiRepr, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
+    MetaReceiver, MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableParamType,
+    MetaVtableRetType, camel_to_snake, camel_to_upper_snake, peek_meta_field, peek_meta_name,
+    peek_meta_tag,
 };
 
 fn generate_one(item: TokenStream2) -> TokenStream2 {
@@ -900,6 +901,96 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 // ===========================================================================
 // Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
 // ===========================================================================
+
+/// A single parameter in a C extern signature.
+pub struct CExternParam {
+    pub name: syn::Ident,
+    pub c_type: TokenStream2,
+}
+
+/// Complete C extern function signature for a method.
+///
+/// Contains all the information needed to emit an `unsafe extern "C" { fn ... }`
+/// declaration. The parameters include handle, regular params, and out-param
+/// (for Result returns) in the order they appear.
+pub struct CExternSignature {
+    /// Fully qualified extern function name (e.g. "mylib_calculator_add").
+    pub fn_name: String,
+    /// All parameters in declaration order.
+    pub params: Vec<CExternParam>,
+    /// Return type tokens (empty for void).
+    pub ret: TokenStream2,
+}
+
+/// Compute the full C extern signature for a method.
+///
+/// This is the single source of truth for "what does this method look like
+/// as an `extern "C"` function". Both the C bridge generator and the Rust
+/// client generator should agree on this.
+pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSignature {
+    let fn_name = format!("{}_{}", prefix, method.ffi_name);
+    let mut params = Vec::new();
+
+    // Handle param (receiver)
+    let has_receiver = method.receiver != MetaReceiver::None;
+    let is_by_value = method.receiver == MetaReceiver::Value;
+    let handle_is_indirect = method.is_builder && is_by_value;
+
+    if has_receiver {
+        let c_type = if handle_is_indirect {
+            quote! { *mut *mut core::ffi::c_void }
+        } else {
+            quote! { *mut core::ffi::c_void }
+        };
+        params.push(CExternParam {
+            name: format_ident!("handle"),
+            c_type,
+        });
+    }
+
+    // Regular params
+    for p in &method.params {
+        if matches!(p.kind, MetaParamKind::StrSlice) {
+            params.push(CExternParam {
+                name: p.name.clone(),
+                c_type: c_param_type(&p.kind),
+            });
+            params.push(CExternParam {
+                name: format_ident!("{}_len", p.name),
+                c_type: quote! { usize },
+            });
+        } else {
+            params.push(CExternParam {
+                name: p.name.clone(),
+                c_type: c_param_type(&p.kind),
+            });
+        }
+    }
+
+    // Return type + out-param for Result
+    let ret = match &method.ret {
+        MetaReturn::Void => quote! {},
+        MetaReturn::Value(vk) => {
+            let ty = c_return_type(vk);
+            quote! { -> #ty }
+        }
+        MetaReturn::Result { ok, .. } => {
+            if let Some(vk) = ok {
+                params.push(CExternParam {
+                    name: format_ident!("result"),
+                    c_type: c_out_param_type(vk),
+                });
+            }
+            quote! { -> ffier::FfierError }
+        }
+    };
+
+    CExternSignature {
+        fn_name,
+        params,
+        ret,
+    }
+}
 
 /// Produce the concrete C type tokens for a parameter kind.
 ///
