@@ -222,7 +222,7 @@ impl Widget {
     pub fn set_tags(&mut self, tags: &[&str]) {
         let __ffi_strs: Vec<ffier::FfierBytes> = tags
             .iter()
-            .map(|s| ffier::FfierBytes::from_str(s))
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
             .collect();
         unsafe { ft_widget_set_tags(self.0, __ffi_strs.as_ptr(), __ffi_strs.len()) }
     }
@@ -726,7 +726,7 @@ pub trait Processor {
                 ) -> ffier::FfierBytes {
                     let __obj = unsafe { &*(__ud as *const __T) };
                     let __result = __obj.name();
-                    ffier::FfierBytes::from_str(__result)
+                    unsafe { ffier::FfierBytes::from_str(__result) }
                 }
                 __trampoline::<Self>
             },

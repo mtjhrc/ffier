@@ -1335,9 +1335,9 @@ fn vtable_result_conversion(
 fn vtable_arg_conversion(vpt: &VtableParamType, ident: &syn::Ident) -> proc_macro2::TokenStream {
     match vpt {
         VtableParamType::Primitive(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
-        VtableParamType::Str => quote! { ffier::FfierBytes::from_str(#ident) },
-        VtableParamType::Bytes => quote! { ffier::FfierBytes::from_bytes(#ident) },
-        VtableParamType::Path => quote! { ffier::FfierBytes::from_path(#ident) },
+        VtableParamType::Str => quote! { unsafe { ffier::FfierBytes::from_str(#ident) } },
+        VtableParamType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#ident) } },
+        VtableParamType::Path => quote! { unsafe { ffier::FfierBytes::from_path(#ident) } },
         VtableParamType::Handle(ty) => quote! { <#ty as ffier::FfiType>::into_c(#ident) },
     }
 }

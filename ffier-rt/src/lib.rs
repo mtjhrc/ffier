@@ -148,21 +148,39 @@ impl FfierBytes {
         std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe { self.as_bytes() }))
     }
 
-    pub fn from_bytes(b: &[u8]) -> Self {
+    /// Create from a byte slice. The returned `FfierBytes` holds a raw pointer
+    /// into `b`'s data — no copy is made.
+    ///
+    /// # Safety
+    /// The caller must ensure the source data outlives the `FfierBytes` and any
+    /// FFI call that receives it.
+    pub unsafe fn from_bytes(b: &[u8]) -> Self {
         Self {
             data: b.as_ptr(),
             len: b.len(),
         }
     }
 
-    pub fn from_str(s: &str) -> Self {
-        Self::from_bytes(s.as_bytes())
+    /// Create from a string slice. The returned `FfierBytes` holds a raw pointer
+    /// into `s`'s data — no copy is made.
+    ///
+    /// # Safety
+    /// The caller must ensure the source string outlives the `FfierBytes` and any
+    /// FFI call that receives it.
+    pub unsafe fn from_str(s: &str) -> Self {
+        unsafe { Self::from_bytes(s.as_bytes()) }
     }
 
+    /// Create from a path. The returned `FfierBytes` holds a raw pointer
+    /// into `p`'s data — no copy is made.
+    ///
+    /// # Safety
+    /// The caller must ensure the source path outlives the `FfierBytes` and any
+    /// FFI call that receives it.
     #[cfg(unix)]
-    pub fn from_path(p: &std::path::Path) -> Self {
+    pub unsafe fn from_path(p: &std::path::Path) -> Self {
         use std::os::unix::ffi::OsStrExt;
-        Self::from_bytes(p.as_os_str().as_bytes())
+        unsafe { Self::from_bytes(p.as_os_str().as_bytes()) }
     }
 }
 

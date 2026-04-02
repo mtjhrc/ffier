@@ -349,7 +349,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 if matches!(p.kind, MetaParamKind::StrSlice) {
                     Some(quote! {
                         let __ffi_strs: Vec<ffier::FfierBytes> = #id.iter()
-                            .map(|s| ffier::FfierBytes::from_str(s))
+                            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
                             .collect();
                     })
                 } else {
@@ -714,9 +714,9 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             let ret_conversion = match &m.ret {
                 MetaVtableRetType::Void => quote! { __result },
                 MetaVtableRetType::Primitive(_) => quote! { __result },
-                MetaVtableRetType::Str => quote! { ffier::FfierBytes::from_str(__result) },
-                MetaVtableRetType::Bytes => quote! { ffier::FfierBytes::from_bytes(__result) },
-                MetaVtableRetType::Path => quote! { ffier::FfierBytes::from_path(__result) },
+                MetaVtableRetType::Str => quote! { unsafe { ffier::FfierBytes::from_str(__result) } },
+                MetaVtableRetType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(__result) } },
+                MetaVtableRetType::Path => quote! { unsafe { ffier::FfierBytes::from_path(__result) } },
                 MetaVtableRetType::Handle(_) => quote! { __result },
             };
 
@@ -1154,9 +1154,9 @@ fn generate_trait_impl_client(meta: MetaTraitImpl) -> TokenStream2 {
                 .iter()
                 .map(|(id, vpt)| match vpt {
                     MetaVtableParamType::Primitive(_) => quote! { #id },
-                    MetaVtableParamType::Str => quote! { ffier::FfierBytes::from_str(#id) },
-                    MetaVtableParamType::Bytes => quote! { ffier::FfierBytes::from_bytes(#id) },
-                    MetaVtableParamType::Path => quote! { ffier::FfierBytes::from_path(#id) },
+                    MetaVtableParamType::Str => quote! { unsafe { ffier::FfierBytes::from_str(#id) } },
+                    MetaVtableParamType::Bytes => quote! { unsafe { ffier::FfierBytes::from_bytes(#id) } },
+                    MetaVtableParamType::Path => quote! { unsafe { ffier::FfierBytes::from_path(#id) } },
                     MetaVtableParamType::Handle(_) => quote! { #id }, // TODO
                 })
                 .collect();
