@@ -79,8 +79,8 @@ impl Calculator {
 Generate the C bridge in your cdylib crate (from [`example/mylib-cdylib`](example/mylib-cdylib/src/lib.rs)):
 
 ```rust
-mylib::ffier_meta_op_calculator!("mylib", ffier_gen_c::generate_bridge);
-mylib::ffier_meta_op_calc_error!("mylib", ffier_gen_c::generate_bridge);
+mylib::__ffier_meta_calculator!("mylib", ffier_gen_c::generate_bridge);
+mylib::__ffier_meta_calc_error!("mylib", ffier_gen_c::generate_bridge);
 ```
 
 Call from C:
@@ -116,7 +116,7 @@ consumer that works with both linking modes.
    variants with `#[ffier(code = N)]`) are supported via `#[derive(FfiError)]`.
    Enums with data-carrying variants, string messages, or structured error
    payloads are not yet handled.
-5. Unify metadata macro invocations — currently each `ffier_meta_op_*!()` is
+5. Unify metadata macro invocations — currently each `__ffier_meta_*!()` is
    invoked independently, so generators can't see the full picture (e.g. which
    traits come from `implementable` vs `trait_impl`). A single combined
    invocation would let the generator sort/reorder metadata and resolve
