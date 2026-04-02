@@ -431,7 +431,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let meta_macro_name = format_ident!("ffier_meta_op_{struct_lower}");
+    let meta_macro_name = format_ident!("__ffier_meta_{struct_lower}");
 
     // Build method metadata tokens
     let method_meta_tokens: Vec<_> = methods
@@ -560,7 +560,7 @@ pub fn exportable(attr: TokenStream, item: TokenStream) -> TokenStream {
         ///
         /// Usage:
         /// ```ignore
-        /// my_crate::ffier_meta_op_widget!("ft", ffier::generate_bridge);
+        /// my_crate::__ffier_meta_widget!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
@@ -896,7 +896,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let name_str = name.to_string();
     let err_snake = camel_to_snake(&name_str);
 
-    let meta_macro_name = format_ident!("ffier_meta_op_{err_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_{err_snake}");
 
     // Build variant metadata tokens
     let variant_meta_tokens: Vec<_> = data_enum
@@ -943,7 +943,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         ///
         /// Accepts a prefix and a callback:
         /// ```ignore
-        /// my_crate::ffier_meta_op_test_error!("ft", ffier::generate_bridge);
+        /// my_crate::__ffier_meta_test_error!("ft", ffier::generate_bridge);
         /// ```
         #[macro_export]
         macro_rules! #meta_macro_name {
@@ -1476,7 +1476,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Metadata emission ---
-    let meta_macro_name = format_ident!("ffier_meta_op_vtable_{trait_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_vtable_{trait_snake}");
 
     // Build vtable field metadata — currently no extra data fields are supported,
     // so this is always empty. Method function pointer fields are handled by
@@ -1707,7 +1707,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
-    let meta_macro_name = format_ident!("ffier_meta_op_{trait_snake}_for_{struct_snake}");
+    let meta_macro_name = format_ident!("__ffier_meta_{trait_snake}_for_{struct_snake}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
 

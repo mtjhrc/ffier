@@ -53,8 +53,8 @@ C name prefix to use:
 one type:
 
 ```rust
-mylib::ffier_meta_op_calculator!("mylib", ffier_gen_c_macros::generate_bridge);
-mylib::ffier_meta_op_calc_error!("mylib", ffier_gen_c_macros::generate_bridge);
+mylib::__ffier_meta_calculator!("mylib", ffier_gen_c_macros::generate_bridge);
+mylib::__ffier_meta_calc_error!("mylib", ffier_gen_c_macros::generate_bridge);
 ```
 
 The prefix `"mylib"` controls the C naming: `Calculator::divide` becomes
