@@ -183,9 +183,10 @@ pub enum MetaParamKind {
         bridge_type: TokenStream,
     },
     StrSlice,
-    DynDispatch {
-        c_name_suffix: String,
-        variants: Vec<(String, TokenStream)>,
+    /// `impl Trait` parameter — the generator resolves concrete dispatch
+    /// types from the trait map built from `@trait_impl`/`@implementable` entries.
+    ImplTrait {
+        trait_name: String,
     },
 }
 
@@ -572,33 +573,11 @@ impl syn::parse::Parse for MetaParam {
                 MetaParamKind::Regular { bridge_type }
             }
             "str_slice" => MetaParamKind::StrSlice,
-            "dyn_dispatch" => {
+            "impl_trait" => {
                 parse_comma(input)?;
-                expect_key(input, "c_name_suffix")?;
-                let c_name_suffix = parse_string(input)?;
-                parse_comma(input)?;
-                expect_key(input, "variants")?;
-                let variants = {
-                    let inner;
-                    syn::bracketed!(inner in input);
-                    let mut vs = Vec::new();
-                    while !inner.is_empty() {
-                        let vinner;
-                        syn::parenthesized!(vinner in inner);
-                        let vname = parse_string(&vinner)?;
-                        vinner.parse::<Token![,]>()?;
-                        let vtype: TokenStream = vinner.parse()?;
-                        vs.push((vname, vtype));
-                        if !inner.is_empty() && inner.peek(Token![,]) {
-                            inner.parse::<Token![,]>()?;
-                        }
-                    }
-                    vs
-                };
-                MetaParamKind::DynDispatch {
-                    c_name_suffix,
-                    variants,
-                }
+                expect_key(input, "trait_name")?;
+                let trait_name = parse_string(input)?;
+                MetaParamKind::ImplTrait { trait_name }
             }
             other => {
                 return Err(syn::Error::new(

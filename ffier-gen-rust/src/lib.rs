@@ -253,7 +253,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     MetaParamKind::StrSlice => {
                         quote! { __ffi_strs.as_ptr(), __ffi_strs.len() }
                     }
-                    MetaParamKind::DynDispatch { .. } => {
+                    MetaParamKind::ImplTrait { .. } => {
                         quote! { #id.__into_raw_handle() }
                     }
                     MetaParamKind::Regular { .. } => {
