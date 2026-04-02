@@ -1,7 +1,4 @@
-mylib::__ffier_meta_calculator!("mylib", ffier_gen_rust::generate_client_source);
-mylib::__ffier_meta_calc_error!("mylib", ffier_gen_rust::generate_client_source);
-mylib::__ffier_meta_text_buffer!("mylib", ffier_gen_rust::generate_client_source);
-mylib::__ffier_meta_buffer_error!("mylib", ffier_gen_rust::generate_client_source);
+mylib::__ffier_library!(ffier_gen_rust::generate_client_source);
 
 fn main() {
     println!("// Auto-generated. Regenerate with: just gen-rust-client");

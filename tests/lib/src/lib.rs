@@ -625,3 +625,15 @@ impl Snapshot<'static> for Widget {
         self.count
     }
 }
+
+ffier::library!("ft",
+    Widget, Gadget, Config, Gizmo, GizmoBuilder, View, Pipeline,
+    TestError, Apple, Orange, Mixer, Sprocket, ViewFactory,
+    trait Processor,
+    trait Fruit,
+    Fruit for Apple,
+    Fruit for Orange,
+    Attachment for Sprocket,
+    Snapshot for View,
+    Snapshot for Widget,
+);

@@ -1,18 +1,4 @@
-ffier_test_lib::__ffier_meta_widget!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_gadget!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_config!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_gizmo!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_gizmo_builder!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_view!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_pipeline!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_test_error!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_vtable_processor!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_apple!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_orange!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_vtable_fruit!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_fruit_for_apple!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_fruit_for_orange!("ft", ffier_gen_c_macros::generate_bridge);
-ffier_test_lib::__ffier_meta_mixer!("ft", ffier_gen_c_macros::generate_bridge);
+ffier_test_lib::__ffier_library!(ffier_gen_c_macros::generate_bridge);
 
 fn main() {
     let header = ffier_gen_c::HeaderBuilder::new("FFIER_TEST_H")

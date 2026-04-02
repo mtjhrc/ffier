@@ -102,3 +102,5 @@ impl TextBuffer {
         self.contents.clear();
     }
 }
+
+ffier::library!("mylib", Calculator, CalcError, TextBuffer, BufferError);
