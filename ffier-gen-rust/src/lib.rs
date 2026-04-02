@@ -188,7 +188,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
     });
 
     for m in &meta.methods {
-        let ffi_name = format_ident!("{}{}", fn_pfx, m.ffi_name);
         let method_name = &m.name;
 
         let has_receiver = m.receiver != MetaReceiver::None;
@@ -197,41 +196,15 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         let is_builder = m.is_builder;
         let handle_is_indirect = is_builder && is_by_value;
 
-        // --- Build extern "C" declaration ---
-        let extern_handle_param = if has_receiver {
-            if handle_is_indirect {
-                Some(quote! { handle: *mut *mut core::ffi::c_void, })
-            } else {
-                Some(quote! { handle: *mut core::ffi::c_void, })
-            }
-        } else {
-            None
-        };
-
-        let extern_params: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| client_extern_param_tokens(&p.name, &p.kind))
-            .collect();
-
-        // Return type + out param for extern decl
-        let (extern_ret, extern_out_param) = match &m.ret {
-            MetaReturn::Void => (quote! {}, None),
-            MetaReturn::Value(vk) => {
-                let ann = client_extern_value_ret_annotation(vk);
-                (ann, None)
-            }
-            MetaReturn::Result { ok, .. } => {
-                let out = ok.as_ref().map(|vk| {
-                    let ty = ffier_gen_c::c_out_param_type(vk);
-                    quote! { result: #ty, }
-                });
-                (quote! { -> ffier::FfierError }, out)
-            }
-        };
+        // --- Build extern "C" declaration from C generator's signature ---
+        let c_sig = ffier_gen_c::c_signature_for_method(m, &meta.prefix);
+        let ffi_name = format_ident!("{}", c_sig.fn_name);
+        let sig_param_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
+        let sig_param_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
+        let sig_ret = &c_sig.ret;
 
         client_extern_decls.push(quote! {
-            pub fn #ffi_name(#extern_handle_param #(#extern_params,)* #extern_out_param) #extern_ret;
+            pub fn #ffi_name(#(#sig_param_names: #sig_param_types),*) #sig_ret;
         });
 
         // --- Build safe wrapper method ---
@@ -771,23 +744,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 // ===========================================================================
 // Client codegen helpers
 // ===========================================================================
-
-/// Generate extern "C" parameter tokens for client-side declarations.
-/// Uses CONCRETE types, not `<T as FfiType>::CRepr`.
-fn client_extern_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
-    let ty = ffier_gen_c::c_param_type(kind);
-    if matches!(kind, MetaParamKind::StrSlice) {
-        let len_id = format_ident!("{id}_len");
-        quote! { #id: #ty, #len_id: usize }
-    } else {
-        quote! { #id: #ty }
-    }
-}
-
-fn client_extern_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
-    let ty = ffier_gen_c::c_return_type(kind);
-    quote! { -> #ty }
-}
 
 /// Build the method body for a non-builder static or instance method.
 fn build_client_body(
