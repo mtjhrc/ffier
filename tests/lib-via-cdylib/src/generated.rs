@@ -123,7 +123,7 @@ impl Widget {
     }
 }
 impl ffier::FfiHandle for Widget {
-    const C_HANDLE_NAME: &str = "Widget";
+    const C_HANDLE_NAME: &'static str = "Widget";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -354,7 +354,7 @@ impl Gadget {
     }
 }
 impl ffier::FfiHandle for Gadget {
-    const C_HANDLE_NAME: &str = "Gadget";
+    const C_HANDLE_NAME: &'static str = "Gadget";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -416,7 +416,7 @@ impl Config {
     }
 }
 impl ffier::FfiHandle for Config {
-    const C_HANDLE_NAME: &str = "Config";
+    const C_HANDLE_NAME: &'static str = "Config";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -508,7 +508,7 @@ impl Gizmo {
     }
 }
 impl ffier::FfiHandle for Gizmo {
-    const C_HANDLE_NAME: &str = "Gizmo";
+    const C_HANDLE_NAME: &'static str = "Gizmo";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -577,7 +577,7 @@ impl GizmoBuilder {
     }
 }
 impl ffier::FfiHandle for GizmoBuilder {
-    const C_HANDLE_NAME: &str = "GizmoBuilder";
+    const C_HANDLE_NAME: &'static str = "GizmoBuilder";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -672,6 +672,12 @@ impl<'a> View<'a> {
         this.0
     }
 }
+impl<'a> ffier::FfiHandle for View<'a> {
+    const C_HANDLE_NAME: &'static str = "View";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
 impl<'a> ffier::FfiType for View<'a> {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "View";
@@ -751,7 +757,7 @@ impl ViewFactory {
     }
 }
 impl ffier::FfiHandle for ViewFactory {
-    const C_HANDLE_NAME: &str = "ViewFactory";
+    const C_HANDLE_NAME: &'static str = "ViewFactory";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -824,7 +830,7 @@ impl Pipeline {
     }
 }
 impl ffier::FfiHandle for Pipeline {
-    const C_HANDLE_NAME: &str = "Pipeline";
+    const C_HANDLE_NAME: &'static str = "Pipeline";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -901,7 +907,7 @@ impl Apple {
     }
 }
 impl ffier::FfiHandle for Apple {
-    const C_HANDLE_NAME: &str = "Apple";
+    const C_HANDLE_NAME: &'static str = "Apple";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -951,7 +957,7 @@ impl Orange {
     }
 }
 impl ffier::FfiHandle for Orange {
-    const C_HANDLE_NAME: &str = "Orange";
+    const C_HANDLE_NAME: &'static str = "Orange";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1001,7 +1007,7 @@ impl Mixer {
     }
 }
 impl ffier::FfiHandle for Mixer {
-    const C_HANDLE_NAME: &str = "Mixer";
+    const C_HANDLE_NAME: &'static str = "Mixer";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1063,7 +1069,7 @@ impl Sprocket {
     }
 }
 impl ffier::FfiHandle for Sprocket {
-    const C_HANDLE_NAME: &str = "Sprocket";
+    const C_HANDLE_NAME: &'static str = "Sprocket";
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
