@@ -602,9 +602,14 @@ impl Mixer {
         fruit.value()
     }
 
-    /// Peek via dyn ref (auto dyn coerce, no concrete branching).
+    /// Peek two fruits by ref without consuming.
+    /// Peek via dyn ref.
     pub fn peek_dyn(&self, fruit: &dyn Fruit) -> i32 {
         fruit.value()
+    }
+
+    pub fn peek_sum(&self, #[ffier(dispatch = concrete)] a: &impl Fruit, #[ffier(dispatch = concrete)] b: &impl Fruit) -> i32 {
+        a.value() + b.value()
     }
 
     pub fn total(&self) -> i32 {

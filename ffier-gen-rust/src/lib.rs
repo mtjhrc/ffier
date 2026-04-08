@@ -234,9 +234,24 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let id = &p.name;
                 match &p.kind {
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
-                    MetaParamKind::ImplTrait { .. } => {
+                    MetaParamKind::ImplTrait { trait_name, passing, .. } => {
+                        // &dyn Trait on the client becomes &impl Trait
+                        // (all client dyn objects are known Sized types)
                         let rust_type = p.rust_type.as_ref().unwrap();
-                        quote! { #id: #rust_type }
+                        if *passing != ffier_meta::TraitParamPassing::Value
+                            && rust_type.to_string().contains("dyn")
+                        {
+                            let trait_ident = format_ident!("{trait_name}");
+                            match passing {
+                                ffier_meta::TraitParamPassing::Ref =>
+                                    quote! { #id: &impl #trait_ident },
+                                ffier_meta::TraitParamPassing::MutRef =>
+                                    quote! { #id: &mut impl #trait_ident },
+                                _ => unreachable!(),
+                            }
+                        } else {
+                            quote! { #id: #rust_type }
+                        }
                     }
                     _ => {
                         let rust_type = p
@@ -249,6 +264,9 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             })
             .collect();
 
+        // Pre-bindings (bound before the FFI call for lifetime reasons)
+        let mut wrapper_pre_bindings = Vec::new();
+
         // Arg conversions (Rust value -> FFI call arg)
         let wrapper_args: Vec<_> = m
             .params
@@ -257,16 +275,25 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let id = &p.name;
                 match &p.kind {
                     MetaParamKind::StrSlice => {
+                        wrapper_pre_bindings.push(quote! {
+                            let __ffi_strs: Vec<ffier::FfierBytes> = #id.iter()
+                                .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+                                .collect();
+                        });
                         quote! { __ffi_strs.as_ptr(), __ffi_strs.len() }
                     }
-                    MetaParamKind::ImplTrait { passing, .. } => {
+                    MetaParamKind::ImplTrait { passing, dispatch, .. } => {
                         match passing {
                             ffier_meta::TraitParamPassing::Value => {
                                 quote! { #id.__into_raw_handle() }
                             }
                             ffier_meta::TraitParamPassing::Ref
                             | ffier_meta::TraitParamPassing::MutRef => {
-                                quote! { #id.__as_handle() }
+                                let href_id = format_ident!("__{id}_href");
+                                wrapper_pre_bindings.push(quote! {
+                                    let #href_id = #id.__as_handle();
+                                });
+                                quote! { #href_id.as_ptr() }
                             }
                         }
                     }
@@ -278,23 +305,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             })
             .collect();
 
-        // Pre-bindings for StrSlice
-        let wrapper_pre_bindings: Vec<_> = m
-            .params
-            .iter()
-            .filter_map(|p| {
-                let id = &p.name;
-                if matches!(p.kind, MetaParamKind::StrSlice) {
-                    Some(quote! {
-                        let __ffi_strs: Vec<ffier::FfierBytes> = #id.iter()
-                            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-                            .collect();
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
 
         // Handle arg for calling FFI
         let handle_arg = if !has_receiver {
@@ -689,6 +699,8 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
+
+
     quote! {
         pub trait #trait_name {
             #(#trait_method_sigs)*
@@ -716,10 +728,19 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             }
 
             #[doc(hidden)]
-            fn __as_handle(&self) -> *mut core::ffi::c_void {
-                panic!("__as_handle not available for this type")
+            fn __as_handle(&self) -> ffier::FfierHandleRef where Self: Sized {
+                let __vtable: &'static #vtable_struct_name = &#vtable_struct_name {
+                    #(#vtable_trampoline_fields,)*
+                    drop: None, // borrowed — not owned
+                };
+                ffier::FfierHandleRef::Tagged(ffier::FfierTaggedRef {
+                    type_id: core::any::TypeId::of::<#wrapper_name>(),
+                    user_data: self as *const Self as *const core::ffi::c_void,
+                    vtable: __vtable as *const #vtable_struct_name as *const core::ffi::c_void,
+                })
             }
         }
+
 
         #[repr(C)]
         pub struct #vtable_struct_name {
@@ -754,6 +775,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 // vtable handles are consumed by dyn_param methods, no separate destroy
             }
         }
+
     }
 }
 
@@ -919,9 +941,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
                 fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
 
                 #[doc(hidden)]
-                fn __as_handle(&self) -> *mut core::ffi::c_void {
-                    panic!("__as_handle not available for this type")
-                }
+                fn __as_handle(&self) -> ffier::FfierHandleRef where Self: Sized;
             }
         }
     };
@@ -1021,8 +1041,8 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
                 this.0
             }
 
-            fn __as_handle(&self) -> *mut core::ffi::c_void {
-                self.0
+            fn __as_handle(&self) -> ffier::FfierHandleRef {
+                ffier::FfierHandleRef::Handle(self.0)
             }
         }
     }

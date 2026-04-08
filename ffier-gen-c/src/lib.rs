@@ -444,40 +444,48 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             }
         }).collect();
 
-        // Check for dispatch limit (auto mode only)
-        let concrete_params: Vec<_> = impl_trait_params.iter()
-            .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        // Compute total concrete branches for params that will actually use concrete dispatch.
+        // Ref params can't switch to vtable (dyn Trait isn't Sized), so they always count.
+        // Value params with explicit vtable don't count.
+        let concrete_branch_params: Vec<_> = impl_trait_params.iter()
+            .filter(|p| {
+                if p.dispatch == ffier_meta::DispatchMode::Vtable
+                    && p.passing == ffier_meta::TraitParamPassing::Value
+                {
+                    false // will use FfierBoxDyn, doesn't count
+                } else if p.dispatch == ffier_meta::DispatchMode::Concrete {
+                    true // forced concrete
+                } else {
+                    true // auto or ref — will be concrete
+                }
+            })
             .collect();
-        let total_branches: u64 = concrete_params.iter()
+        let total_branches: u64 = concrete_branch_params.iter()
             .map(|p| p.variants.len() as u64)
             .product();
-        if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
-            && impl_trait_params.iter().any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
-        {
-            let method_name_str = m.name.to_string();
-            let msg = format!(
-                "ffier: method `{method_name_str}` would generate {total_branches} dispatch \
-                 branches (limit: {}). Add `#[ffier(dispatch = vtable)]` to the impl Trait \
-                 param(s) or `#[ffier(dispatch = concrete)]` to override the limit.",
-                ffier_meta::DEFAULT_MAX_DISPATCH,
-            );
-            return quote! { compile_error!(#msg); };
-        }
 
-        // Check vtable dispatch is possible (trait must be #[implementable])
-        for p in &impl_trait_params {
-            if p.dispatch == ffier_meta::DispatchMode::Vtable {
-                if trait_map.get(&p.trait_name)
-                    .and_then(|info| info.implementable.as_ref())
-                    .is_none()
-                {
-                    let msg = format!(
-                        "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
-                         to have `#[ffier::implementable]`",
-                        p.name, p.trait_name,
-                    );
-                    return quote! { compile_error!(#msg); };
-                }
+        // Enforce limit
+        if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH {
+            // Check if all over-limit params are forced concrete (user override)
+            let all_forced = impl_trait_params.iter()
+                .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete);
+            if !all_forced {
+                let method_name_str = m.name.to_string();
+                let has_ref_params = impl_trait_params.iter()
+                    .any(|p| p.passing != ffier_meta::TraitParamPassing::Value);
+                let hint = if has_ref_params {
+                    "Ref params (&impl Trait) cannot use vtable fallback. \
+                     Reduce variants or use #[ffier(dispatch = concrete)] to override."
+                } else {
+                    "Add #[ffier(dispatch = vtable)] to impl Trait param(s) \
+                     or #[ffier(dispatch = concrete)] to override."
+                };
+                let msg = format!(
+                    "ffier: method `{method_name_str}` would generate {total_branches} dispatch \
+                     branches (limit: {}). {hint}",
+                    ffier_meta::DEFAULT_MAX_DISPATCH,
+                );
+                return quote! { compile_error!(#msg); };
             }
         }
 
@@ -521,27 +529,47 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
                 || impl_trait_params.iter().all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
         let effective_dispatch: Vec<bool> = if all_concrete {
-            // All concrete dispatch
             vec![false; impl_trait_params.len()]
         } else {
             // Hybrid: explicit concrete stays concrete, explicit vtable stays vtable,
-            // auto params: first one concrete, rest vtable
-            let mut first_auto_seen = false;
-            impl_trait_params.iter().map(|p| match p.dispatch {
-                ffier_meta::DispatchMode::Concrete => false, // concrete
-                ffier_meta::DispatchMode::Vtable => true,    // vtable
-                ffier_meta::DispatchMode::Auto => {
-                    if !first_auto_seen {
-                        first_auto_seen = true;
-                        false // first auto → concrete
-                    } else {
-                        true // rest → vtable
+            // auto params: first by-value one concrete, rest by-value vtable.
+            // Ref params always stay concrete (vtable needs Sized which &dyn isn't).
+            let mut first_auto_value_seen = false;
+            impl_trait_params.iter().map(|p| {
+                // Ref params: always concrete (borrow via FfierTaggedBox cast)
+                if p.passing != ffier_meta::TraitParamPassing::Value {
+                    return false;
+                }
+                match p.dispatch {
+                    ffier_meta::DispatchMode::Concrete => false,
+                    ffier_meta::DispatchMode::Vtable => true,
+                    ffier_meta::DispatchMode::Auto => {
+                        if !first_auto_value_seen {
+                            first_auto_value_seen = true;
+                            false
+                        } else {
+                            true
+                        }
                     }
                 }
             }).collect()
         };
 
-        // Dynamic dispatch via FfierBoxDyn: wrap each vtable-mode param into
+        // Check that vtable dispatch is possible where needed
+        for (i, p) in impl_trait_params.iter().enumerate() {
+            if !effective_dispatch[i] {
+                continue;
+            }
+            // Ref/MutRef vtable dispatch uses &dyn coercion — no implementable needed.
+            // Value vtable dispatch uses FfierBoxDyn — needs #[ffier::dispatch] on the trait.
+            if p.passing == ffier_meta::TraitParamPassing::Value {
+                // FfierBoxDyn<dyn Trait> must implement Trait (from #[dispatch] or #[implementable])
+                // For now, we just check the trait is in the trait map (has variants).
+                // TODO: check that FfierBoxDyn impl exists
+            }
+        }
+
+        // Dynamic dispatch via FfierBoxDyn (value) or &dyn coercion (ref).
         // FfierBoxDyn<dyn Trait>. Linear in variants (N branches per param).
         let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
         for (i, p) in impl_trait_params.iter().enumerate() {

@@ -447,11 +447,13 @@ int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a, FtFruit b);
  */
 int32_t ft_mixer_peek(FtMixer handle, FtFruit fruit);
 /**
- * Peek via dyn ref (auto dyn coerce, no concrete branching).
+ * Peek two fruits by ref without consuming.
+ * Peek via dyn ref.
  *
  * @param fruit
  */
 int32_t ft_mixer_peek_dyn(FtMixer handle, FtFruit fruit);
+int32_t ft_mixer_peek_sum(FtMixer handle, FtFruit a, FtFruit b);
 int32_t ft_mixer_total(FtMixer handle);
 void ft_mixer_destroy(FtMixer handle);
 

@@ -138,6 +138,49 @@ impl<'a> FfiType for &'a std::path::Path {
 pub struct FfierBoxDyn<T: ?Sized>(pub Box<T>);
 
 // ---------------------------------------------------------------------------
+// FfierTaggedRef / FfierHandleRef --- zero-alloc borrowed trait dispatch
+// ---------------------------------------------------------------------------
+
+/// Stack-allocated tagged reference for borrowed trait dispatch.
+///
+/// Same prefix layout as `FfierTaggedBox<VtableWrapper>` (type_id first,
+/// then user_data + vtable). The bridge's `handle_type_id()` and
+/// `FfierTaggedBox` casts work unchanged.
+#[repr(C)]
+pub struct FfierTaggedRef {
+    pub type_id: TypeId,
+    pub user_data: *const c_void,
+    pub vtable: *const c_void,
+}
+
+/// Return type of `__as_handle()`. Either an existing handle pointer
+/// (known types, zero cost) or a stack-allocated tagged ref (user types).
+pub enum FfierHandleRef {
+    /// Existing heap handle — pointer to a `FfierTaggedBox<T>`.
+    Handle(*mut c_void),
+    /// Stack-allocated tagged ref with vtable wrapper fields inline.
+    Tagged(FfierTaggedRef),
+}
+
+impl FfierHandleRef {
+    pub fn as_ptr(&self) -> *mut c_void {
+        match self {
+            FfierHandleRef::Handle(p) => *p,
+            FfierHandleRef::Tagged(t) => t as *const FfierTaggedRef as *mut c_void,
+        }
+    }
+}
+
+/// Helper trait for `&dyn Trait` params to get a handle reference.
+///
+/// Generated impls delegate to dyn dispatch — each trampoline calls
+/// the trait method through Rust's native vtable, then the C bridge
+/// dispatches by type_id as usual.
+pub trait FfierDynHandle {
+    fn __as_handle(&self) -> FfierHandleRef;
+}
+
+// ---------------------------------------------------------------------------
 // FfiHandle --- marker for types exported via #[ffier::exportable]
 // ---------------------------------------------------------------------------
 

@@ -1303,6 +1303,11 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         fruit: *mut core::ffi::c_void,
     ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn ft_mixer_peek_sum(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
     pub fn ft_mixer_total(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
 }
 pub struct Mixer(*mut core::ffi::c_void);
@@ -1372,12 +1377,21 @@ impl Mixer {
     }
     #[doc = " Peek via borrowed impl Trait (concrete dispatch, borrow)."]
     pub fn peek(&self, fruit: &impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_peek(self.0, fruit.__as_handle()) };
+        let __fruit_href = fruit.__as_handle();
+        let __raw = unsafe { ft_mixer_peek(self.0, __fruit_href.as_ptr()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    #[doc = " Peek via dyn ref (auto dyn coerce, no concrete branching)."]
-    pub fn peek_dyn(&self, fruit: &dyn Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_peek_dyn(self.0, fruit.__as_handle()) };
+    #[doc = " Peek two fruits by ref without consuming."]
+    #[doc = " Peek via dyn ref."]
+    pub fn peek_dyn(&self, fruit: &impl Fruit) -> i32 {
+        let __fruit_href = fruit.__as_handle();
+        let __raw = unsafe { ft_mixer_peek_dyn(self.0, __fruit_href.as_ptr()) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    pub fn peek_sum(&self, a: &impl Fruit, b: &impl Fruit) -> i32 {
+        let __a_href = a.__as_handle();
+        let __b_href = b.__as_handle();
+        let __raw = unsafe { ft_mixer_peek_sum(self.0, __a_href.as_ptr(), __b_href.as_ptr()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     pub fn total(&self) -> i32 {
@@ -1498,8 +1512,50 @@ pub trait Processor {
         VtableProcessor::new(__ud, __vtable).__into_raw()
     }
     #[doc(hidden)]
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        panic!("__as_handle not available for this type")
+    fn __as_handle(&self) -> ffier::FfierHandleRef
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ProcessorVtable = &ProcessorVtable {
+            process: {
+                unsafe extern "C" fn __trampoline<__T: Processor>(
+                    __ud: *mut core::ffi::c_void,
+                    input: <i32 as ffier::FfiType>::CRepr,
+                ) -> <i32 as ffier::FfiType>::CRepr {
+                    let __obj = unsafe { &*(__ud as *const __T) };
+                    let __result = __obj.process(<i32 as ffier::FfiType>::from_c(input));
+                    <i32 as ffier::FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            },
+            name: {
+                unsafe extern "C" fn __trampoline<__T: Processor>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> <&'static str as ffier::FfiType>::CRepr {
+                    let __obj = unsafe { &*(__ud as *const __T) };
+                    let __result = __obj.name();
+                    <&str as ffier::FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            },
+            on_notify: {
+                unsafe extern "C" fn __trampoline<__T: Processor>(
+                    __ud: *mut core::ffi::c_void,
+                    code: <i32 as ffier::FfiType>::CRepr,
+                ) {
+                    let __obj = unsafe { &*(__ud as *const __T) };
+                    let __result = __obj.on_notify(<i32 as ffier::FfiType>::from_c(code));
+                    __result
+                }
+                __trampoline::<Self>
+            },
+            drop: None,
+        };
+        ffier::FfierHandleRef::Tagged(ffier::FfierTaggedRef {
+            type_id: core::any::TypeId::of::<VtableProcessor>(),
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
+        })
     }
 }
 #[repr(C)]
@@ -1567,8 +1623,28 @@ pub trait Fruit {
         VtableFruit::new(__ud, __vtable).__into_raw()
     }
     #[doc(hidden)]
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        panic!("__as_handle not available for this type")
+    fn __as_handle(&self) -> ffier::FfierHandleRef
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static FruitVtable = &FruitVtable {
+            value: {
+                unsafe extern "C" fn __trampoline<__T: Fruit>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> <i32 as ffier::FfiType>::CRepr {
+                    let __obj = unsafe { &*(__ud as *const __T) };
+                    let __result = __obj.value();
+                    <i32 as ffier::FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            },
+            drop: None,
+        };
+        ffier::FfierHandleRef::Tagged(ffier::FfierTaggedRef {
+            type_id: core::any::TypeId::of::<VtableFruit>(),
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable: __vtable as *const FruitVtable as *const core::ffi::c_void,
+        })
     }
 }
 #[repr(C)]
@@ -1608,8 +1684,8 @@ impl Fruit for Apple {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1624,8 +1700,8 @@ impl Fruit for Orange {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1640,8 +1716,8 @@ impl Fruit for Banana {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1656,8 +1732,8 @@ impl Fruit for Mango {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1672,8 +1748,8 @@ impl Fruit for Peach {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1688,8 +1764,8 @@ impl Fruit for Plum {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1704,8 +1780,8 @@ impl Fruit for Grape {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1720,8 +1796,8 @@ impl Fruit for Lemon {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 pub trait Attachment {
@@ -1731,9 +1807,9 @@ pub trait Attachment {
     where
         Self: Sized;
     #[doc(hidden)]
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        panic!("__as_handle not available for this type")
-    }
+    fn __as_handle(&self) -> ffier::FfierHandleRef
+    where
+        Self: Sized;
 }
 unsafe extern "C" {
     pub fn ft_sprocket_label(
@@ -1749,8 +1825,8 @@ impl Attachment for Sprocket {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 pub trait Snapshot<'a> {
@@ -1761,9 +1837,9 @@ pub trait Snapshot<'a> {
     where
         Self: Sized;
     #[doc(hidden)]
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        panic!("__as_handle not available for this type")
-    }
+    fn __as_handle(&self) -> ffier::FfierHandleRef
+    where
+        Self: Sized;
 }
 unsafe extern "C" {
     pub fn ft_view_snap_description(
@@ -1786,8 +1862,8 @@ impl<'a> Snapshot<'a> for View<'a> {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }
 unsafe extern "C" {
@@ -1811,7 +1887,7 @@ impl Snapshot<'static> for Widget {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
-    fn __as_handle(&self) -> *mut core::ffi::c_void {
-        self.0
+    fn __as_handle(&self) -> ffier::FfierHandleRef {
+        ffier::FfierHandleRef::Handle(self.0)
     }
 }

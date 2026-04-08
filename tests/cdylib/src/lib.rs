@@ -663,10 +663,23 @@ mod tests {
     fn mixer_peek_dyn_ref() {
         unsafe {
             let m = ft_mixer_new();
-            let a = ft_orange_new(99);
-            assert_eq!(ft_mixer_peek_dyn(m, a), 99);
-            // Handle not consumed
-            ft_orange_destroy(a);
+            let a = ft_apple_new(77);
+            assert_eq!(ft_mixer_peek_dyn(m, a), 77);
+            ft_apple_destroy(a);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_peek_sum_ref() {
+        unsafe {
+            let m = ft_mixer_new();
+            let a = ft_apple_new(10);
+            let b = ft_orange_new(20);
+            assert_eq!(ft_mixer_peek_sum(m, a, b), 30);
+            // Handles not consumed
+            ft_apple_destroy(a);
+            ft_orange_destroy(b);
             ft_mixer_destroy(m);
         }
     }
