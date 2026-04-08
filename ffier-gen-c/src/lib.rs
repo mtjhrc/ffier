@@ -909,6 +909,36 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 // Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
 // ===========================================================================
 
+/// Erase named lifetimes from a token stream by parsing as a type,
+/// replacing all lifetimes with `'static`, and re-quoting.
+/// Used for extern fn signatures where lifetimes aren't in scope.
+/// Erase lifetimes from type tokens for extern fn signatures.
+/// Replaces named lifetimes with `'static` and adds `'static` to
+/// bare references (`&str` → `&'static str`).
+fn erase_lifetimes_tokens(tokens: &TokenStream2) -> TokenStream2 {
+    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
+        struct Eraser;
+        impl syn::visit_mut::VisitMut for Eraser {
+            fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+                *lt = syn::Lifetime::new("'static", lt.apostrophe);
+            }
+            fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
+                // Add 'static to bare references (elided lifetimes)
+                if r.lifetime.is_none() {
+                    r.lifetime =
+                        Some(syn::Lifetime::new("'static", proc_macro2::Span::call_site()));
+                }
+                syn::visit_mut::visit_type_reference_mut(self, r);
+            }
+        }
+        let mut ty = ty;
+        syn::visit_mut::VisitMut::visit_type_mut(&mut Eraser, &mut ty);
+        quote! { #ty }
+    } else {
+        tokens.clone()
+    }
+}
+
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
 fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
@@ -1046,6 +1076,7 @@ pub fn c_param_type(
         MetaParamKind::Regular { bridge_type } => {
             if for_client {
                 let rt = rust_type.expect("Regular param must have rust_type for client");
+                let rt = erase_lifetimes_tokens(rt);
                 quote! { <#rt as ffier::FfiType>::CRepr }
             } else {
                 quote! { <#bridge_type as ffier::FfiType>::CRepr }
@@ -1074,6 +1105,7 @@ pub fn c_return_type(
     let MetaValueKind::Regular { bridge_type } = kind;
     if for_client {
         let rt = rust_ret.expect("Value return must have rust_ret for client");
+        let rt = erase_lifetimes_tokens(rt);
         quote! { <#rt as ffier::FfiType>::CRepr }
     } else {
         quote! { <#bridge_type as ffier::FfiType>::CRepr }
