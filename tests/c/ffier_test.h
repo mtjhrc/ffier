@@ -383,6 +383,13 @@ void ft_orange_destroy(FtOrange handle);
 typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */
 FtMixer ft_mixer_new(void);
 void ft_mixer_add(FtMixer* handle, FtFruit fruit);
+/**
+ * Blend two fruits together — tests multiple impl Trait params.
+ *
+ * @param a
+ * @param b
+ */
+int32_t ft_mixer_blend(FtMixer handle, FtFruit a, FtFruit b);
 int32_t ft_mixer_total(FtMixer handle);
 void ft_mixer_destroy(FtMixer handle);
 

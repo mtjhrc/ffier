@@ -614,6 +614,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mixer_blend_two_impl_trait_params() {
+        unsafe {
+            let m = ft_mixer_new();
+            let a = ft_apple_new(10);
+            let o = ft_orange_new(20);
+            let sum = ft_mixer_blend(m, a, o);
+            assert_eq!(sum, 30);
+            assert_eq!(ft_mixer_total(m), 30);
+            ft_mixer_destroy(m);
+        }
+    }
+
     // ================================================================
     // Lifetime-parameterized types
     // ================================================================

@@ -538,6 +538,13 @@ impl Mixer {
         self
     }
 
+    /// Blend two fruits together — tests multiple impl Trait params.
+    pub fn blend(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
+        let sum = a.value() + b.value();
+        self.total += sum;
+        sum
+    }
+
     pub fn total(&self) -> i32 {
         self.total
     }

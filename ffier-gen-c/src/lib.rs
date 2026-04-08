@@ -396,20 +396,20 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         }
         let param_name_str_refs: Vec<_> = header_param_names.iter().collect();
 
-        // Resolve impl Trait dispatch from trait map
-        let impl_trait_dispatch = m.params.iter().find_map(|p| {
+        // Collect all impl Trait params with their dispatch variants
+        let impl_trait_params: Vec<_> = m.params.iter().filter_map(|p| {
             if let MetaParamKind::ImplTrait { trait_name } = &p.kind {
                 trait_map.get(trait_name).map(|variants| {
                     let variant_data: Vec<(String, TokenStream2)> = variants
                         .iter()
                         .map(|v| (v.name.clone(), v.bridge_type.clone()))
                         .collect();
-                    (p.name.clone(), trait_name.clone(), variant_data)
+                    (p.name.clone(), variant_data)
                 })
             } else {
                 None
             }
-        });
+        }).collect();
 
         // Pre-bindings for multi-param types
         let mut pre_bindings = Vec::new();
@@ -421,7 +421,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 match &p.kind {
                     MetaParamKind::ImplTrait { .. } => quote! { #id },
                     MetaParamKind::StrSlice => {
-                        // Look up the _len ident from c_sig (same hygiene as signature)
                         let len_name = format!("{}_len", p.name);
                         let len_id = &c_sig.params.iter()
                             .find(|cp| cp.name == len_name)
@@ -444,45 +443,46 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             quote! { <#struct_path>::#method_name(#(#converted_args),*) }
         };
 
-        // Wrap in dispatch match if needed
-        let method_call = if let Some((ref dyn_id, ref _trait_name, ref variants)) =
-            impl_trait_dispatch
-        {
-            let if_branches: Vec<_> = variants
-                .iter()
-                .map(|(_, ty_tokens)| {
-                    quote! {
-                        if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
-                            let #dyn_id = unsafe {
-                                (*Box::from_raw(
-                                    #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
-                                )).value
-                            };
-                            #base_method_call
+        // Wrap in nested dispatch for each impl Trait param.
+        // Each layer unboxes one param by type_id, so N impl Trait params
+        // produce N nested dispatch levels.
+        let method_call = impl_trait_params.iter().rev().fold(
+            base_method_call,
+            |inner, (dyn_id, variants)| {
+                let if_branches: Vec<_> = variants
+                    .iter()
+                    .map(|(_, ty_tokens)| {
+                        quote! {
+                            if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
+                                let #dyn_id = unsafe {
+                                    (*Box::from_raw(
+                                        #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
+                                    )).value
+                                };
+                                #inner
+                            }
                         }
+                    })
+                    .collect();
+
+                let variant_names: Vec<_> = variants.iter().map(|(name, _)| name.as_str()).collect();
+                let accepted_list = variant_names.join(" | ");
+
+                quote! {{
+                    let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                    #(#if_branches else)* {
+                        panic!(
+                            "{}(): parameter `{}` expected an object of type: {}, \
+                             but got unknown handle (type_id={:?})",
+                            #ffi_name_str,
+                            stringify!(#dyn_id),
+                            #accepted_list,
+                            __type_id,
+                        );
                     }
-                })
-                .collect();
-
-            let variant_names: Vec<_> = variants.iter().map(|(name, _)| name.as_str()).collect();
-            let accepted_list = variant_names.join(" | ");
-
-            quote! {{
-                let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
-                #(#if_branches else)* {
-                    panic!(
-                        "{}(): parameter `{}` expected an object of type: {}, \
-                         but got unknown handle (type_id={:?})",
-                        #ffi_name_str,
-                        stringify!(#dyn_id),
-                        #accepted_list,
-                        __type_id,
-                    );
-                }
-            }}
-        } else {
-            base_method_call
-        };
+                }}
+            },
+        );
 
         // Doxygen comment
         let (has_out_param, err_c_name_for_doc) = match &m.ret {
@@ -510,6 +510,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         } else {
             None
         };
+
+        // Extern fn signature from c_sig (shared across all return variants)
+        let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
+        let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
+        let sig_ret = &c_sig.ret;
 
         match &m.ret {
             MetaReturn::Void => {
@@ -539,17 +544,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     }
                 };
 
-                // All three return variants use c_sig for the extern fn signature
-                let sig_params = &c_sig.params;
-                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
-                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
-                let sig_ret = &c_sig.ret;
-
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
                         #(#sig_names: #sig_types),*
-                    ) {
+                    ) #sig_ret {
                         #body
                     }
                 });
@@ -568,11 +567,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     None,
                 );
                 decl_exprs.push(header_line);
-
-                let sig_params = &c_sig.params;
-                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
-                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
-                let sig_ret = &c_sig.ret;
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
@@ -636,11 +630,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 } else {
                     quote! {}
                 };
-
-                let sig_params = &c_sig.params;
-                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
-                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
-                let sig_ret = &c_sig.ret;
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
