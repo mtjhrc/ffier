@@ -15,6 +15,12 @@ typedef void* FtViewFactory;
 typedef void* FtPipeline;
 typedef void* FtApple;
 typedef void* FtOrange;
+typedef void* FtBanana;
+typedef void* FtMango;
+typedef void* FtPeach;
+typedef void* FtPlum;
+typedef void* FtGrape;
+typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtSprocket;
 
@@ -378,13 +384,43 @@ void ft_apple_destroy(FtApple handle);
 FtOrange ft_orange_new(int32_t juice);
 void ft_orange_destroy(FtOrange handle);
 
+/* Banana ------------------------------------------------------------ */
+
+FtBanana ft_banana_new(int32_t v);
+void ft_banana_destroy(FtBanana handle);
+
+/* Mango ------------------------------------------------------------- */
+
+FtMango ft_mango_new(int32_t v);
+void ft_mango_destroy(FtMango handle);
+
+/* Peach ------------------------------------------------------------- */
+
+FtPeach ft_peach_new(int32_t v);
+void ft_peach_destroy(FtPeach handle);
+
+/* Plum -------------------------------------------------------------- */
+
+FtPlum ft_plum_new(int32_t v);
+void ft_plum_destroy(FtPlum handle);
+
+/* Grape ------------------------------------------------------------- */
+
+FtGrape ft_grape_new(int32_t v);
+void ft_grape_destroy(FtGrape handle);
+
+/* Lemon ------------------------------------------------------------- */
+
+FtLemon ft_lemon_new(int32_t v);
+void ft_lemon_destroy(FtLemon handle);
+
 /* Mixer ------------------------------------------------------------- */
 
-typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */
+typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 FtMixer ft_mixer_new(void);
 void ft_mixer_add(FtMixer* handle, FtFruit fruit);
 /**
- * Blend two fruits together — tests multiple impl Trait params.
+ * Blend two fruits — concrete dispatch override (81 branches > 64 limit).
  *
  * @param a
  * @param b
@@ -425,6 +461,30 @@ int32_t ft_apple_value(FtApple handle);
 /* Fruit for Orange -------------------------------------------------- */
 
 int32_t ft_orange_value(FtOrange handle);
+
+/* Fruit for Banana -------------------------------------------------- */
+
+int32_t ft_banana_value(FtBanana handle);
+
+/* Fruit for Mango --------------------------------------------------- */
+
+int32_t ft_mango_value(FtMango handle);
+
+/* Fruit for Peach --------------------------------------------------- */
+
+int32_t ft_peach_value(FtPeach handle);
+
+/* Fruit for Plum ---------------------------------------------------- */
+
+int32_t ft_plum_value(FtPlum handle);
+
+/* Fruit for Grape --------------------------------------------------- */
+
+int32_t ft_grape_value(FtGrape handle);
+
+/* Fruit for Lemon --------------------------------------------------- */
+
+int32_t ft_lemon_value(FtLemon handle);
 
 /* Attachment for Sprocket ------------------------------------------- */
 
