@@ -201,7 +201,9 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
 
         // --- Build extern "C" declaration from C generator's signature ---
         // for_client=true uses rust_type instead of bridge_type ($crate:: paths)
-        let c_sig = ffier_gen_c::c_signature_for_method(m, &meta.prefix, true);
+        let c_sig = ffier_gen_c::c_signature_for_method(
+            m, &meta.prefix, ffier_gen_c::SignatureContext::Client,
+        );
         let ffi_name = format_ident!("{}", c_sig.fn_name);
         let sig_param_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
         let sig_param_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();

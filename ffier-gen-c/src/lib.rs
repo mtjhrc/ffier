@@ -331,31 +331,9 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         } else {
             format!("{handle_c_name} handle")
         };
-        let handle_ffi_param = if has_receiver {
-            if handle_is_indirect {
-                Some(quote! { handle: *mut *mut core::ffi::c_void, })
-            } else {
-                Some(quote! { handle: *mut core::ffi::c_void, })
-            }
-        } else {
-            None
-        };
 
-        // Extern fn param types via c_param_type (same logic as c_signature_for_method)
-        let ffi_params: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| {
-                let id = &p.name;
-                let c_ty = c_param_type(&p.kind, p.rust_type.as_ref(), false);
-                if matches!(p.kind, MetaParamKind::StrSlice) {
-                    let len_id = format_ident!("{id}_len");
-                    quote! { #id: #c_ty, #len_id: usize }
-                } else {
-                    quote! { #id: #c_ty }
-                }
-            })
-            .collect();
+        // Single source of truth: the extern "C" fn signature.
+        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge);
 
         // Self cast via FfierTaggedBox (instance methods only)
         let obj_binding = if has_receiver {
@@ -443,12 +421,18 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 match &p.kind {
                     MetaParamKind::ImplTrait { .. } => quote! { #id },
                     MetaParamKind::StrSlice => {
-                        let binding = meta_param_conversion(id, &p.kind);
+                        // Look up the _len ident from c_sig (same hygiene as signature)
+                        let len_name = format!("{}_len", p.name);
+                        let len_id = &c_sig.params.iter()
+                            .find(|cp| cp.name == len_name)
+                            .expect("StrSlice must have _len param in c_sig")
+                            .name;
+                        let binding = meta_param_conversion(id, &p.kind, Some(len_id));
                         let vec_id = format_ident!("__{id}_vec");
                         pre_bindings.push(quote! { let #vec_id = #binding; });
                         quote! { &#vec_id }
                     }
-                    other => meta_param_conversion(id, other),
+                    other => meta_param_conversion(id, other, None),
                 }
             })
             .collect();
@@ -555,11 +539,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     }
                 };
 
+                // All three return variants use c_sig for the extern fn signature
+                let sig_params = &c_sig.params;
+                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
+                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
+                let sig_ret = &c_sig.ret;
+
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params),*
+                        #(#sig_names: #sig_types),*
                     ) {
                         #body
                     }
@@ -580,12 +569,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 );
                 decl_exprs.push(header_line);
 
+                let sig_params = &c_sig.params;
+                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
+                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
+                let sig_ret = &c_sig.ret;
+
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params),*
-                    ) -> <#bridge_type as ffier::FfiType>::CRepr {
+                        #(#sig_names: #sig_types),*
+                    ) #sig_ret {
                         #obj_binding
                         #(#pre_bindings)*
                         let result = #method_call;
@@ -644,18 +637,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     quote! {}
                 };
 
-                let out_ffi_param = ok.as_ref().map(|vk| {
-                    let MetaValueKind::Regular { bridge_type } = vk;
-                    quote! { result: *mut <#bridge_type as ffier::FfiType>::CRepr, }
-                });
+                let sig_params = &c_sig.params;
+                let sig_names: Vec<_> = sig_params.iter().map(|p| &p.name).collect();
+                let sig_types: Vec<_> = sig_params.iter().map(|p| &p.c_type).collect();
+                let sig_ret = &c_sig.ret;
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
-                        #handle_ffi_param
-                        #(#ffi_params,)*
-                        #out_ffi_param
-                    ) -> ffier::FfierError {
+                        #(#sig_names: #sig_types),*
+                    ) #sig_ret {
                         #handle_ptr_binding
                         #obj_binding
                         #(#pre_bindings)*
@@ -962,6 +953,19 @@ pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     tokens.clone()
 }
 
+/// Context for type resolution in extern fn signatures.
+///
+/// Both contexts resolve to the same C types via `<T as FfiType>::CRepr`,
+/// but use different token streams for the type `T`:
+/// - `Bridge`: uses `bridge_type` ($crate:: paths that resolve in cdylib)
+/// - `Client`: uses `rust_type` (plain types for standalone source)
+pub enum SignatureContext {
+    /// C bridge in cdylib — types via $crate:: paths
+    Bridge,
+    /// Standalone Rust client source — types via original names
+    Client,
+}
+
 /// A single parameter in a C extern signature.
 pub struct CExternParam {
     pub name: syn::Ident,
@@ -988,14 +992,10 @@ pub struct CExternSignature {
 /// as an `extern "C"` function". Both the C bridge generator and the Rust
 /// client generator should agree on this.
 ///
-/// When `for_client` is true, uses `rust_type` (original user types like `&str`,
-/// `i32`) instead of `bridge_type` (`$crate::` paths). Both resolve to the same
-/// `CRepr` via `FfiType`, but `rust_type` works in standalone source while
-/// `bridge_type` requires macro context.
 pub fn c_signature_for_method(
     method: &MetaMethod,
     prefix: &str,
-    for_client: bool,
+    ctx: SignatureContext,
 ) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name);
     let mut params = Vec::new();
@@ -1022,7 +1022,7 @@ pub fn c_signature_for_method(
         if matches!(p.kind, MetaParamKind::StrSlice) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), for_client),
+                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), &ctx),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -1031,30 +1031,24 @@ pub fn c_signature_for_method(
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), for_client),
+                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), &ctx),
             });
         }
     }
 
     // Return type + out-param for Result
-    let rust_ret_ref = if for_client {
-        Some(&method.rust_ret)
-    } else {
-        None
-    };
     let ret = match &method.ret {
         MetaReturn::Void => quote! {},
         MetaReturn::Value(vk) => {
-            let ty = c_return_type(vk, rust_ret_ref, for_client);
+            let ty = c_return_type(vk, &method.rust_ret, &ctx);
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
             if let Some(vk) = ok {
-                // For client, extract the Ok type from Result<T, E>
-                let ok_rust_type = rust_ret_ref.map(|rt| extract_result_ok_type(rt));
+                let ok_rust_type = extract_result_ok_type(&method.rust_ret);
                 params.push(CExternParam {
                     name: format_ident!("result"),
-                    c_type: c_out_param_type(vk, ok_rust_type.as_ref(), for_client),
+                    c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
                 });
             }
             quote! { -> ffier::FfierError }
@@ -1074,74 +1068,63 @@ pub fn c_signature_for_method(
 /// Both the bridge generator and the client generator use it to ensure
 /// their extern declarations agree.
 ///
-/// When `for_client` is true, uses `rust_type` instead of `bridge_type`
-/// to avoid `$crate::` paths in standalone source.
+/// Produce the C type tokens for a parameter.
 pub fn c_param_type(
     kind: &MetaParamKind,
     rust_type: Option<&TokenStream2>,
-    for_client: bool,
+    ctx: &SignatureContext,
 ) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type } => {
-            if for_client {
-                let rt = rust_type.expect("Regular param must have rust_type for client");
-                let rt = erase_lifetimes_tokens(rt);
-                quote! { <#rt as ffier::FfiType>::CRepr }
-            } else {
-                quote! { <#bridge_type as ffier::FfiType>::CRepr }
-            }
+            let ty = match ctx {
+                SignatureContext::Client => {
+                    let rt = rust_type.expect("Regular param must have rust_type");
+                    erase_lifetimes_tokens(rt)
+                }
+                SignatureContext::Bridge => bridge_type.clone(),
+            };
+            quote! { <#ty as ffier::FfiType>::CRepr }
         }
-        MetaParamKind::ImplTrait { .. } => {
-            quote! { *mut core::ffi::c_void }
-        }
-        MetaParamKind::StrSlice => {
-            // StrSlice expands to two params — this returns the type of the first one.
-            // Callers must handle the second (len: usize) separately.
-            quote! { *const ffier::FfierBytes }
-        }
+        MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
+        MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
     }
 }
 
-/// Produce the concrete C return type tokens for a value kind.
-///
-/// When `for_client`, uses `rust_ret` (the method's original return type)
-/// to avoid `$crate::` paths.
+/// Produce the C return type tokens for a value kind.
 pub fn c_return_type(
     kind: &MetaValueKind,
-    rust_ret: Option<&TokenStream2>,
-    for_client: bool,
+    rust_ret: &TokenStream2,
+    ctx: &SignatureContext,
 ) -> TokenStream2 {
     let MetaValueKind::Regular { bridge_type } = kind;
-    if for_client {
-        let rt = rust_ret.expect("Value return must have rust_ret for client");
-        let rt = erase_lifetimes_tokens(rt);
-        quote! { <#rt as ffier::FfiType>::CRepr }
-    } else {
-        quote! { <#bridge_type as ffier::FfiType>::CRepr }
-    }
+    let ty = match ctx {
+        SignatureContext::Client => erase_lifetimes_tokens(rust_ret),
+        SignatureContext::Bridge => bridge_type.clone(),
+    };
+    quote! { <#ty as ffier::FfiType>::CRepr }
 }
 
-/// Produce the concrete C type for a Result ok-value out-parameter.
+/// Produce the C type for a Result ok-value out-parameter.
 pub fn c_out_param_type(
     kind: &MetaValueKind,
-    rust_ret: Option<&TokenStream2>,
-    for_client: bool,
+    rust_ret: &TokenStream2,
+    ctx: &SignatureContext,
 ) -> TokenStream2 {
-    let inner = c_return_type(kind, rust_ret, for_client);
+    let inner = c_return_type(kind, rust_ret, ctx);
     quote! { *mut #inner }
 }
 
-// ===========================================================================
-// Bridge-specific helpers
-// ===========================================================================
-
-fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
+fn meta_param_conversion(
+    id: &syn::Ident,
+    kind: &MetaParamKind,
+    len_ident: Option<&syn::Ident>,
+) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type } => {
             quote! { <#bridge_type as ffier::FfiType>::from_c(#id) }
         }
         MetaParamKind::StrSlice => {
-            let len_id = format_ident!("{id}_len");
+            let len_id = len_ident.expect("StrSlice conversion needs len_ident");
             quote! { {
                 let __slice = unsafe { core::slice::from_raw_parts(#id, #len_id) };
                 let __strs: Vec<&str> = __slice.iter().map(|b| unsafe {
