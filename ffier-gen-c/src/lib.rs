@@ -325,7 +325,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         let is_by_value = m.receiver == MetaReceiver::Value;
         let is_builder = m.is_builder;
 
-        // Handle parameter
         let handle_is_indirect = is_builder && is_by_value;
         let handle_type = if handle_is_indirect {
             format!("{handle_c_name}* handle")
@@ -341,6 +340,22 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         } else {
             None
         };
+
+        // Extern fn param types via c_param_type (same logic as c_signature_for_method)
+        let ffi_params: Vec<_> = m
+            .params
+            .iter()
+            .map(|p| {
+                let id = &p.name;
+                let c_ty = c_param_type(&p.kind, p.rust_type.as_ref(), false);
+                if matches!(p.kind, MetaParamKind::StrSlice) {
+                    let len_id = format_ident!("{id}_len");
+                    quote! { #id: #c_ty, #len_id: usize }
+                } else {
+                    quote! { #id: #c_ty }
+                }
+            })
+            .collect();
 
         // Self cast via FfierTaggedBox (instance methods only)
         let obj_binding = if has_receiver {
@@ -382,12 +397,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         } else {
             None
         };
-
-        let ffi_params: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| meta_ffi_param_tokens(&p.name, &p.kind))
-            .collect();
 
         let mut c_type_exprs = Vec::new();
         let mut header_param_names: Vec<String> = Vec::new();
@@ -557,10 +566,12 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 });
             }
             MetaReturn::Value(vk) => {
-                let ret_c =
-                    meta_value_c_type_expr(vk, &type_pfx);
+                let MetaValueKind::Regular { bridge_type } = vk;
+                let ret_c_header = quote! {
+                    &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                };
                 let header_line = build_header_line(
-                    ret_c,
+                    ret_c_header,
                     &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
@@ -569,20 +580,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 );
                 decl_exprs.push(header_line);
 
-                let ret_ann = meta_value_ret_annotation(vk);
-                let result_ident = format_ident!("result");
-                let into_c = meta_value_into_c(vk, &result_ident);
-
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
                     pub unsafe extern "C" fn #ffi_name(
                         #handle_ffi_param
                         #(#ffi_params),*
-                    ) #ret_ann {
+                    ) -> <#bridge_type as ffier::FfiType>::CRepr {
                         #obj_binding
                         #(#pre_bindings)*
                         let result = #method_call;
-                        #into_c
+                        <#bridge_type as ffier::FfiType>::into_c(result)
                     }
                 });
             }
@@ -594,7 +601,10 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 let err_c_name = format!("{type_pfx}{err_ident}");
 
                 let out_c_type = ok.as_ref().map(|vk| {
-                    meta_value_c_type_expr(vk, &type_pfx)
+                    let MetaValueKind::Regular { bridge_type } = vk;
+                    quote! {
+                        &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                    }
                 });
 
                 let header_line = build_header_line(
@@ -609,11 +619,10 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
                 let ok_branch = match ok {
                     Some(vk) => {
-                        let ok_val_ident = format_ident!("ok_val");
-                        let into_c = meta_value_into_c(vk, &ok_val_ident);
+                        let MetaValueKind::Regular { bridge_type } = vk;
                         quote! {
                             Ok(ok_val) => {
-                                unsafe { result.write(#into_c) };
+                                unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
                                 ffier::FfierError::ok()
                             }
                         }
@@ -629,16 +638,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     },
                 };
 
-                let out_ffi_param = ok.as_ref().map(|vk| {
-                    let MetaValueKind::Regular { bridge_type } = vk;
-                    quote! { result: *mut <#bridge_type as ffier::FfiType>::CRepr, }
-                });
-
                 let handle_ptr_binding = if handle_is_indirect {
                     quote! { let handle_ptr = handle; }
                 } else {
                     quote! {}
                 };
+
+                let out_ffi_param = ok.as_ref().map(|vk| {
+                    let MetaValueKind::Regular { bridge_type } = vk;
+                    quote! { result: *mut <#bridge_type as ffier::FfiType>::CRepr, }
+                });
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
@@ -940,7 +949,7 @@ fn erase_lifetimes_tokens(tokens: &TokenStream2) -> TokenStream2 {
 }
 
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
-fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
+pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
         && let syn::Type::Path(tp) = &ty
         && let Some(last) = tp.path.segments.last()
@@ -1126,21 +1135,6 @@ pub fn c_out_param_type(
 // Bridge-specific helpers
 // ===========================================================================
 
-fn meta_ffi_param_tokens(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
-    match kind {
-        MetaParamKind::Regular { bridge_type } => {
-            quote! { #id: <#bridge_type as ffier::FfiType>::CRepr }
-        }
-        MetaParamKind::StrSlice => {
-            let len_id = format_ident!("{id}_len");
-            quote! { #id: *const ffier::FfierBytes, #len_id: usize }
-        }
-        MetaParamKind::ImplTrait { .. } => {
-            quote! { #id: *mut core::ffi::c_void }
-        }
-    }
-}
-
 fn meta_param_conversion(id: &syn::Ident, kind: &MetaParamKind) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type } => {
@@ -1194,21 +1188,6 @@ pub fn format_c_type_name(c_type_name: &str, type_pfx: &str) -> String {
     } else {
         c_type_name.to_string()
     }
-}
-
-fn meta_value_ret_annotation(kind: &MetaValueKind) -> TokenStream2 {
-    let MetaValueKind::Regular { bridge_type } = kind;
-    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
-}
-
-fn meta_value_into_c(kind: &MetaValueKind, var: &syn::Ident) -> TokenStream2 {
-    let MetaValueKind::Regular { bridge_type } = kind;
-    quote! { <#bridge_type as ffier::FfiType>::into_c(#var) }
-}
-
-fn meta_value_c_type_expr(kind: &MetaValueKind, type_pfx: &str) -> TokenStream2 {
-    let MetaValueKind::Regular { bridge_type } = kind;
-    quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
 }
 
 // ---------------------------------------------------------------------------
