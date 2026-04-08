@@ -597,6 +597,16 @@ impl Mixer {
         sum
     }
 
+    /// Peek via generic ref (concrete dispatch, borrow).
+    pub fn peek<F: Fruit>(&self, fruit: &F) -> i32 {
+        fruit.value()
+    }
+
+    /// Peek via dyn ref (auto dyn coerce, no concrete branching).
+    pub fn peek_dyn(&self, fruit: &dyn Fruit) -> i32 {
+        fruit.value()
+    }
+
     pub fn total(&self) -> i32 {
         self.total
     }

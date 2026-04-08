@@ -165,6 +165,17 @@ pub enum DispatchMode {
     Vtable,
 }
 
+/// How a trait-dispatched param is passed across FFI.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TraitParamPassing {
+    /// `impl Trait` — consumed by value
+    Value,
+    /// `&impl Trait`, `&dyn Trait`, `&F: Trait` — immutable borrow
+    Ref,
+    /// `&mut impl Trait`, `&mut dyn Trait`, `&mut F: Trait` — mutable borrow
+    MutRef,
+}
+
 pub struct MetaMethod {
     pub name: Ident,
     pub ffi_name: String,
@@ -197,11 +208,14 @@ pub enum MetaParamKind {
         bridge_type: TokenStream,
     },
     StrSlice,
-    /// `impl Trait` parameter — the generator resolves concrete dispatch
-    /// types from the trait map built from `@trait_impl`/`@implementable` entries.
+    /// Trait-dispatched parameter. Covers:
+    /// - `impl Trait` (by value, concrete dispatch)
+    /// - `&dyn Trait` / `&mut dyn Trait` (by ref, auto-coerce to trait object)
+    /// - `&F where F: Trait` (by ref, concrete dispatch)
     ImplTrait {
         trait_name: String,
         dispatch: DispatchMode,
+        passing: TraitParamPassing,
     },
 }
 
@@ -606,7 +620,21 @@ impl syn::parse::Parse for MetaParam {
                         ));
                     }
                 };
-                MetaParamKind::ImplTrait { trait_name, dispatch }
+                parse_comma(input)?;
+                expect_key(input, "passing")?;
+                let passing_ident: Ident = input.parse()?;
+                let passing = match passing_ident.to_string().as_str() {
+                    "value" => TraitParamPassing::Value,
+                    "ref" | "r#ref" => TraitParamPassing::Ref,
+                    "mut_ref" => TraitParamPassing::MutRef,
+                    other => {
+                        return Err(syn::Error::new(
+                            passing_ident.span(),
+                            format!("unknown passing mode `{other}`"),
+                        ));
+                    }
+                };
+                MetaParamKind::ImplTrait { trait_name, dispatch, passing }
             }
             other => {
                 return Err(syn::Error::new(

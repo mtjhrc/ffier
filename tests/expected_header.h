@@ -440,6 +440,18 @@ int32_t ft_mixer_blend_hybrid(FtMixer handle, FtFruit a, FtFruit b);
  * @param b
  */
 int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a, FtFruit b);
+/**
+ * Peek via generic ref (concrete dispatch, borrow).
+ *
+ * @param fruit
+ */
+int32_t ft_mixer_peek(FtMixer handle, FtFruit fruit);
+/**
+ * Peek via dyn ref (auto dyn coerce, no concrete branching).
+ *
+ * @param fruit
+ */
+int32_t ft_mixer_peek_dyn(FtMixer handle, FtFruit fruit);
 int32_t ft_mixer_total(FtMixer handle);
 void ft_mixer_destroy(FtMixer handle);
 

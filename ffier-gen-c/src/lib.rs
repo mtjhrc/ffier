@@ -424,14 +424,16 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         struct ImplTraitParam {
             name: syn::Ident,
             dispatch: ffier_meta::DispatchMode,
+            passing: ffier_meta::TraitParamPassing,
             trait_name: String,
             variants: Vec<(String, TokenStream2)>,
         }
         let impl_trait_params: Vec<_> = m.params.iter().filter_map(|p| {
-            if let MetaParamKind::ImplTrait { trait_name, dispatch } = &p.kind {
+            if let MetaParamKind::ImplTrait { trait_name, dispatch, passing } = &p.kind {
                 trait_map.get(trait_name).map(|info| ImplTraitParam {
                     name: p.name.clone(),
                     dispatch: *dispatch,
+                    passing: *passing,
                     trait_name: trait_name.clone(),
                     variants: info.variants.iter()
                         .map(|v| (v.name.clone(), v.bridge_type.clone()))
@@ -565,21 +567,51 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             let mut branches = Vec::new();
             for v in &info.variants {
                 let ty = &v.bridge_type;
-                branches.push(quote! {
-                    if __type_id == <#ty as ffier::FfiHandle>::type_id() {
-                        let __val = unsafe {
-                            (*Box::from_raw(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value
-                        };
-                        ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
+                match p.passing {
+                    ffier_meta::TraitParamPassing::Value => {
+                        branches.push(quote! {
+                            if __type_id == <#ty as ffier::FfiHandle>::type_id() {
+                                let __val = unsafe {
+                                    (*Box::from_raw(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value
+                                };
+                                ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
+                            }
+                        });
                     }
-                });
+                    ffier_meta::TraitParamPassing::Ref => {
+                        branches.push(quote! {
+                            if __type_id == <#ty as ffier::FfiHandle>::type_id() {
+                                unsafe { &(*(#dyn_id as *const ffier::FfierTaggedBox<#ty>)).value as &dyn #trait_ident }
+                            }
+                        });
+                    }
+                    ffier_meta::TraitParamPassing::MutRef => {
+                        branches.push(quote! {
+                            if __type_id == <#ty as ffier::FfiHandle>::type_id() {
+                                unsafe { &mut (*(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value as &mut dyn #trait_ident }
+                            }
+                        });
+                    }
+                }
             }
 
             let variant_names: Vec<_> = info.variants.iter().map(|v| v.name.as_str()).collect();
             let accepted_list = variant_names.join(" | ");
 
+            let let_binding = match p.passing {
+                ffier_meta::TraitParamPassing::Value => {
+                    quote! { let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> }
+                }
+                ffier_meta::TraitParamPassing::Ref => {
+                    quote! { let #dyn_id: &dyn #trait_ident }
+                }
+                ffier_meta::TraitParamPassing::MutRef => {
+                    quote! { let #dyn_id: &mut dyn #trait_ident }
+                }
+            };
+
             vtable_pre_bindings.push(quote! {
-                let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> = {
+                #let_binding = {
                     let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
                     #(#branches else)* {
                         panic!(
@@ -602,16 +634,26 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             |inner, p| {
                 let dyn_id = &p.name;
                 let variants = &p.variants;
+                let passing = p.passing;
                 let if_branches: Vec<_> = variants
                     .iter()
                     .map(|(_, ty_tokens)| {
+                        let unbox = match passing {
+                            ffier_meta::TraitParamPassing::Value => quote! {
+                                unsafe { (*Box::from_raw(
+                                    #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
+                                )).value }
+                            },
+                            ffier_meta::TraitParamPassing::Ref => quote! {
+                                unsafe { &(*(#dyn_id as *const ffier::FfierTaggedBox<#ty_tokens>)).value }
+                            },
+                            ffier_meta::TraitParamPassing::MutRef => quote! {
+                                unsafe { &mut (*(#dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>)).value }
+                            },
+                        };
                         quote! {
                             if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
-                                let #dyn_id = unsafe {
-                                    (*Box::from_raw(
-                                        #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
-                                    )).value
-                                };
+                                let #dyn_id = #unbox;
                                 #inner
                             }
                         }

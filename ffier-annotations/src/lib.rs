@@ -16,7 +16,7 @@ enum ParamKind {
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
-    ImplTrait { trait_name: String, dispatch: String },
+    ImplTrait { trait_name: String, dispatch: String, passing: String },
 }
 
 enum ValueKind {
@@ -189,7 +189,27 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
                 let dispatch = parse_ffier_dispatch(&pat_ty.attrs)
                     .unwrap_or_else(|| "auto".to_string());
-                param_kinds.push(ParamKind::ImplTrait { trait_name, dispatch });
+                param_kinds.push(ParamKind::ImplTrait {
+                    trait_name, dispatch, passing: "value".to_string(),
+                });
+                continue;
+            }
+
+            // Detect `&dyn Trait`/`&mut dyn Trait` or `&F`/`&mut F` where F: Trait
+            if let Some((trait_name, is_mut, is_dyn)) = extract_trait_ref(
+                &pat_ty.ty, &method.sig.generics,
+            ) {
+                // &dyn Trait always uses dyn coerce (no concrete branching needed)
+                let dispatch = if is_dyn {
+                    "vtable".to_string()
+                } else {
+                    parse_ffier_dispatch(&pat_ty.attrs)
+                        .unwrap_or_else(|| "auto".to_string())
+                };
+                let passing = if is_mut { "mut_ref" } else { "r#ref" };
+                param_kinds.push(ParamKind::ImplTrait {
+                    trait_name, dispatch, passing: passing.to_string(),
+                });
                 continue;
             }
 
@@ -678,9 +698,10 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
             quote! { regular, bridge_type = (#bridge_type) }
         }
         ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::ImplTrait { trait_name, dispatch } => {
+        ParamKind::ImplTrait { trait_name, dispatch, passing } => {
             let dispatch_ident = format_ident!("{dispatch}");
-            quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
+            let passing_ident = format_ident!("{passing}");
+            quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, passing = #passing_ident }
         }
     }
 }
@@ -938,6 +959,48 @@ fn parse_ffier_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
             return result;
         }
     }
+    None
+}
+
+/// Detect trait-dispatched reference params:
+/// - `&F` / `&mut F` where `F: Trait` (generic with trait bound)
+/// - `&dyn Trait` / `&mut dyn Trait` (trait object reference)
+///
+/// Returns `(trait_name, is_mut, is_dyn)`.
+fn extract_trait_ref(
+    ty: &Type,
+    generics: &syn::Generics,
+) -> Option<(String, bool, bool)> {
+    let Type::Reference(ref_ty) = ty else { return None };
+    let is_mut = ref_ty.mutability.is_some();
+
+    // &dyn Trait / &mut dyn Trait
+    if let Type::TraitObject(to) = &*ref_ty.elem {
+        for bound in &to.bounds {
+            if let syn::TypeParamBound::Trait(tb) = bound {
+                if let Some(seg) = tb.path.segments.last() {
+                    return Some((seg.ident.to_string(), is_mut, true));
+                }
+            }
+        }
+    }
+
+    // &F / &mut F where F: Trait
+    if let Type::Path(tp) = &*ref_ty.elem {
+        if tp.path.segments.len() != 1 { return None; }
+        let param_name = tp.path.segments[0].ident.to_string();
+        for param in generics.type_params() {
+            if param.ident != param_name { continue; }
+            for bound in &param.bounds {
+                if let syn::TypeParamBound::Trait(tb) = bound {
+                    if let Some(seg) = tb.path.segments.last() {
+                        return Some((seg.ident.to_string(), is_mut, false));
+                    }
+                }
+            }
+        }
+    }
+
     None
 }
 

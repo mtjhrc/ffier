@@ -1295,6 +1295,14 @@ unsafe extern "C" {
         a: *mut core::ffi::c_void,
         b: *mut core::ffi::c_void,
     ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn ft_mixer_peek(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn ft_mixer_peek_dyn(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
     pub fn ft_mixer_total(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
 }
 pub struct Mixer(*mut core::ffi::c_void);
@@ -1360,6 +1368,16 @@ impl Mixer {
     pub fn blend_dynamic(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
         let __raw =
             unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    #[doc = " Peek via generic ref (concrete dispatch, borrow)."]
+    pub fn peek(&self, fruit: &F) -> i32 {
+        let __raw = unsafe { ft_mixer_peek(self.0, fruit.__into_raw_handle()) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    #[doc = " Peek via dyn ref (auto dyn coerce, no concrete branching)."]
+    pub fn peek_dyn(&self, fruit: &dyn Fruit) -> i32 {
+        let __raw = unsafe { ft_mixer_peek_dyn(self.0, fruit.__into_raw_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     pub fn total(&self) -> i32 {

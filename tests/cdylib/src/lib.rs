@@ -635,6 +635,43 @@ mod tests {
     }
 
     #[test]
+    fn mixer_peek_ref_impl_trait() {
+        unsafe {
+            let m = ft_mixer_new();
+            let a = ft_apple_new(42);
+            assert_eq!(ft_mixer_peek(m, a), 42);
+            // a is NOT consumed — it was borrowed
+            ft_apple_destroy(a);
+            ft_mixer_destroy(m);
+        }
+    }
+
+
+    #[test]
+    fn mixer_peek_generic_ref() {
+        unsafe {
+            let m = ft_mixer_new();
+            let a = ft_apple_new(42);
+            assert_eq!(ft_mixer_peek(m, a), 42);
+            // Handle not consumed — still valid
+            ft_apple_destroy(a);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_peek_dyn_ref() {
+        unsafe {
+            let m = ft_mixer_new();
+            let a = ft_orange_new(99);
+            assert_eq!(ft_mixer_peek_dyn(m, a), 99);
+            // Handle not consumed
+            ft_orange_destroy(a);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
     fn mixer_blend_dynamic() {
         unsafe {
             let m = ft_mixer_new();
