@@ -11,10 +11,12 @@ typedef void* FtConfig;
 typedef void* FtGizmo;
 typedef void* FtGizmoBuilder;
 typedef void* FtView;
+typedef void* FtViewFactory;
 typedef void* FtPipeline;
 typedef void* FtApple;
 typedef void* FtOrange;
 typedef void* FtMixer;
+typedef void* FtSprocket;
 
 /* Caller must ensure data is valid UTF-8 */
 typedef struct {
@@ -285,13 +287,23 @@ void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
 
+typedef void* FtSnapshot; /* FtView | FtWidget */
 /**
  * Create a view that borrows a widget.
  *
  * @param source
- * @note `source` is borrowed by the returned `FtView`. It must not be directly modified or destroyed while the `FtView` is alive.
  */
 FtView ft_view_create(FtWidget source);
+/**
+ * Create a view with a custom label.
+ *
+ * Takes two reference params so lifetime elision can't resolve `'_`
+ * in the return type — the struct lifetime must be preserved explicitly.
+ *
+ * @param source
+ * @param label
+ */
+FtView ft_view_create_labeled(FtWidget source, FtStr label);
 /**
  * Read the source widget's count through the borrow.
  */
@@ -306,7 +318,28 @@ void ft_view_set_label(FtView handle, FtStr label);
  * Get the view label.
  */
 FtStr ft_view_label(FtView handle);
+/**
+ * Copy label from another snapshot (tests impl Trait auto-dispatch).
+ *
+ * @param other
+ */
+void ft_view_copy_label(FtView handle, FtSnapshot other);
 void ft_view_destroy(FtView handle);
+
+/* ViewFactory ------------------------------------------------------- */
+
+FtViewFactory ft_view_factory_new(void);
+/**
+ * Create a view from a source widget with a label.
+ *
+ * Multiple reference params + lifetime-parameterized return type forces
+ * the generator to introduce a method-level lifetime (can't elide).
+ *
+ * @param source
+ * @param label
+ */
+FtView ft_view_factory_create_view(FtWidget source, FtStr label);
+void ft_view_factory_destroy(FtViewFactory handle);
 
 /* Pipeline ---------------------------------------------------------- */
 
@@ -335,6 +368,29 @@ int32_t ft_pipeline_result_count(FtPipeline handle);
 FtTestError ft_pipeline_last_result(FtPipeline handle, int32_t* result);
 void ft_pipeline_destroy(FtPipeline handle);
 
+/* Apple ------------------------------------------------------------- */
+
+FtApple ft_apple_new(int32_t weight);
+void ft_apple_destroy(FtApple handle);
+
+/* Orange ------------------------------------------------------------ */
+
+FtOrange ft_orange_new(int32_t juice);
+void ft_orange_destroy(FtOrange handle);
+
+/* Mixer ------------------------------------------------------------- */
+
+typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */
+FtMixer ft_mixer_new(void);
+void ft_mixer_add(FtMixer* handle, FtFruit fruit);
+int32_t ft_mixer_total(FtMixer handle);
+void ft_mixer_destroy(FtMixer handle);
+
+/* Sprocket ---------------------------------------------------------- */
+
+FtSprocket ft_sprocket_new(FtStr name);
+void ft_sprocket_destroy(FtSprocket handle);
+
 /* VtableProcessor --------------------------------------------------- */
 
 typedef struct {
@@ -345,16 +401,6 @@ typedef struct {
 } FtProcessorVtable;
 
 void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable);
-
-/* Apple ------------------------------------------------------------- */
-
-FtApple ft_apple_new(int32_t weight);
-void ft_apple_destroy(FtApple handle);
-
-/* Orange ------------------------------------------------------------ */
-
-FtOrange ft_orange_new(int32_t juice);
-void ft_orange_destroy(FtOrange handle);
 
 /* VtableFruit ------------------------------------------------------- */
 
@@ -373,11 +419,17 @@ int32_t ft_apple_value(FtApple handle);
 
 int32_t ft_orange_value(FtOrange handle);
 
-/* Mixer ------------------------------------------------------------- */
+/* Attachment for Sprocket ------------------------------------------- */
 
-typedef void* FtFruit; /* FtApple | FtOrange | FtVtableFruit */
-FtMixer ft_mixer_new(void);
-void ft_mixer_add(FtMixer* handle, FtFruit fruit);
-int32_t ft_mixer_total(FtMixer handle);
-void ft_mixer_destroy(FtMixer handle);
+FtStr ft_sprocket_label(FtSprocket handle);
+
+/* Snapshot for View ------------------------------------------------- */
+
+FtStr ft_view_snap_description(FtView handle);
+int32_t ft_view_snap_source_count(FtView handle);
+
+/* Snapshot for Widget ----------------------------------------------- */
+
+FtStr ft_widget_snap_description(FtWidget handle);
+int32_t ft_widget_snap_source_count(FtWidget handle);
 #endif /* FFIER_TEST_H */
