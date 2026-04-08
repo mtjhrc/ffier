@@ -160,16 +160,12 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         quote! {}
     };
 
-    // FfiHandle (only non-lifetime types — FfiHandle requires 'static)
-    let client_ffi_handle_impl = if !has_lifetimes {
-        quote! {
-            impl ffier::FfiHandle for #struct_name {
-                const C_HANDLE_NAME: &str = #struct_name_str;
-                fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
-            }
+    // FfiHandle for all types (including lifetime-parameterized)
+    let client_ffi_handle_impl = quote! {
+        impl #client_struct_generics_with_tick ffier::FfiHandle for #struct_name #client_struct_generics_with_tick {
+            const C_HANDLE_NAME: &'static str = #struct_name_str;
+            fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
         }
-    } else {
-        quote! {}
     };
 
     // FfiType for all types (including lifetime-parameterized)

@@ -136,7 +136,7 @@ use core::ffi::c_void;
 /// Automatically implemented by `#[ffier::exportable]`. Enables using
 /// `&Widget` as a parameter type (borrows the handle) and `Widget` as
 /// a return type (creates a new handle).
-pub trait FfiHandle: 'static {
+pub trait FfiHandle {
     /// The C handle typedef name (e.g. `"ExWidget"`).
     const C_HANDLE_NAME: &'static str;
 
@@ -147,8 +147,11 @@ pub trait FfiHandle: 'static {
     ///   `offset_of!`.
     fn as_handle(&self) -> *mut c_void;
 
-    /// Runtime type identifier.
-    fn type_id() -> TypeId {
+    /// Runtime type identifier. Only available for `'static` types.
+    fn type_id() -> TypeId
+    where
+        Self: 'static,
+    {
         TypeId::of::<Self>()
     }
 }
