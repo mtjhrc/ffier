@@ -1146,6 +1146,52 @@ fn parse_trait_method_sig(
     })
 }
 
+/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` for dynamic dispatch fallback.
+///
+/// This enables the generator to wrap concrete handles into `FfierBoxDyn`
+/// when the combinatorial dispatch exceeds the branch limit.
+///
+/// `#[ffier::implementable]` implies `#[ffier::dispatch]` — use this
+/// annotation alone when you want dynamic dispatch fallback without
+/// exporting the trait's vtable to C.
+#[proc_macro_attribute]
+pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let trait_item = parse_macro_input!(item as ItemTrait);
+    let original_trait = trait_item.clone();
+    let trait_name = &trait_item.ident;
+
+    let method_impls: Vec<_> = trait_item
+        .items
+        .iter()
+        .filter_map(|item| {
+            let TraitItem::Fn(method) = item else { return None };
+            let sig = &method.sig;
+            // Must have &self receiver
+            if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
+                return None;
+            }
+            let name = &sig.ident;
+            let params: Vec<_> = sig.inputs.iter().skip(1).filter_map(|arg| {
+                let FnArg::Typed(pt) = arg else { return None };
+                let Pat::Ident(pi) = &*pt.pat else { return None };
+                Some(pi.ident.clone())
+            }).collect();
+            let call = quote! { self.0.#name(#(#params),*) };
+            Some(quote! { #sig { #call } })
+        })
+        .collect();
+
+    let output = quote! {
+        #original_trait
+
+        impl #trait_name for ffier::FfierBoxDyn<dyn #trait_name> {
+            #(#method_impls)*
+        }
+    };
+
+    output.into()
+}
+
 #[proc_macro_attribute]
 pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ImplementableArgs);
@@ -1334,8 +1380,45 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
+    // For traits with supertraits, we also need to delegate the supertrait methods.
+    let has_supertraits = !args.supers.is_empty()
+        || trait_item.supertraits.iter().any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
+
+    let boxdyn_impl = if !has_supertraits {
+        let boxdyn_method_impls: Vec<_> = trait_item
+            .items
+            .iter()
+            .filter_map(|item| {
+                let TraitItem::Fn(method) = item else { return None };
+                let sig = &method.sig;
+                if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
+                    return None;
+                }
+                let name = &sig.ident;
+                let params: Vec<_> = sig.inputs.iter().skip(1).filter_map(|arg| {
+                    let FnArg::Typed(pt) = arg else { return None };
+                    let Pat::Ident(pi) = &*pt.pat else { return None };
+                    Some(pi.ident.clone())
+                }).collect();
+                Some(quote! { #sig { self.0.#name(#(#params),*) } })
+            })
+            .collect();
+
+        quote! {
+            impl #trait_name for ffier::FfierBoxDyn<dyn #trait_name> {
+                #(#boxdyn_method_impls)*
+            }
+        }
+    } else {
+        // TODO: generate supertrait delegation for FfierBoxDyn
+        quote! {}
+    };
+
     let output = quote! {
         #original_trait
+
+        #boxdyn_impl
 
         #[doc(hidden)]
         pub mod #helper_mod_name {

@@ -540,16 +540,55 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         };
 
         // Dynamic dispatch via FfierBoxDyn: wrap each vtable-mode param into
-        // FfierBoxDyn<dyn Trait> (linear in variants, not combinatorial).
-        // TODO: implement once #[ffier::dispatch] and FfierBoxDyn land.
-        let vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
-        if impl_trait_params.iter().enumerate().any(|(i, _)| effective_dispatch[i]) {
-            let method_name_str = m.name.to_string();
-            let msg = format!(
-                "ffier: dynamic dispatch via FfierBoxDyn is not yet implemented for method \
-                 `{method_name_str}`. Use `#[ffier(dispatch = concrete)]` to force static dispatch.",
-            );
-            return quote! { compile_error!(#msg); };
+        // FfierBoxDyn<dyn Trait>. Linear in variants (N branches per param).
+        let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
+        for (i, p) in impl_trait_params.iter().enumerate() {
+            if !effective_dispatch[i] {
+                continue;
+            }
+            let dyn_id = &p.name;
+            let info = trait_map.get(&p.trait_name).unwrap();
+
+            // Check that the trait has dispatch support (implementable or dispatch)
+            // The trait map has implementable info if #[ffier::implementable] was used.
+            // For #[ffier::dispatch]-only traits, we don't need implementable info —
+            // we just need FfierBoxDyn<dyn Trait> to implement Trait.
+            // Either way, the codegen is the same: unbox and wrap in FfierBoxDyn.
+
+            let trait_ident = if let Some(imp) = &info.implementable {
+                imp.trait_path.clone()
+            } else {
+                let ident = format_ident!("{}", p.trait_name);
+                quote! { #ident }
+            };
+
+            let mut branches = Vec::new();
+            for v in &info.variants {
+                let ty = &v.bridge_type;
+                branches.push(quote! {
+                    if __type_id == <#ty as ffier::FfiHandle>::type_id() {
+                        let __val = unsafe {
+                            (*Box::from_raw(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value
+                        };
+                        ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
+                    }
+                });
+            }
+
+            let variant_names: Vec<_> = info.variants.iter().map(|v| v.name.as_str()).collect();
+            let accepted_list = variant_names.join(" | ");
+
+            vtable_pre_bindings.push(quote! {
+                let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> = {
+                    let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                    #(#branches else)* {
+                        panic!(
+                            "{}(): parameter `{}` expected: {}, got unknown (type_id={:?})",
+                            #ffi_name_str, stringify!(#dyn_id), #accepted_list, __type_id,
+                        );
+                    }
+                };
+            });
         }
 
         // Concrete nested dispatch for non-vtable impl Trait params.

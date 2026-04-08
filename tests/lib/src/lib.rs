@@ -576,8 +576,22 @@ impl Mixer {
         self
     }
 
-    /// Blend two fruits — concrete dispatch override (81 branches > 64 limit).
-    pub fn blend(&mut self, #[ffier(dispatch = concrete)] a: impl Fruit, #[ffier(dispatch = concrete)] b: impl Fruit) -> i32 {
+    /// Both concrete (9^2=81 > 64, override with annotation).
+    pub fn blend_concrete(&mut self, #[ffier(dispatch = concrete)] a: impl Fruit, #[ffier(dispatch = concrete)] b: impl Fruit) -> i32 {
+        let sum = a.value() + b.value();
+        self.total += sum;
+        sum
+    }
+
+    /// First concrete, second vtable (hybrid: 9+9=18 branches).
+    pub fn blend_hybrid(&mut self, a: impl Fruit, #[ffier(dispatch = vtable)] b: impl Fruit) -> i32 {
+        let sum = a.value() + b.value();
+        self.total += sum;
+        sum
+    }
+
+    /// Both vtable (9+9=18 branches).
+    pub fn blend_dynamic(&mut self, #[ffier(dispatch = vtable)] a: impl Fruit, #[ffier(dispatch = vtable)] b: impl Fruit) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
         sum
