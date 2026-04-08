@@ -68,7 +68,7 @@ that type:
 
 ```rust
 fn main() {
-    print!("{}", __ffier_header("MYLIB_H"));
+    print!("{}", __ffier_header("MYLIB_H").build());
 }
 ```
 

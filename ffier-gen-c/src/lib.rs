@@ -181,10 +181,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     quote! {
         #(#all_code)*
 
-        pub fn __ffier_header(guard: &str) -> String {
+        pub fn __ffier_header(guard: &str) -> ffier_gen_c::HeaderBuilder {
             ffier_gen_c::HeaderBuilder::new(guard)
                 #(.add(#header_fn_names()))*
-                .build()
         }
     }
 }
