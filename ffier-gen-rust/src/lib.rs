@@ -160,23 +160,26 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         quote! {}
     };
 
-    // FfiType + FfiHandle impls --- only if no lifetimes
-    let client_ffi_type_impl = if !has_lifetimes {
+    // FfiHandle (only non-lifetime types — FfiHandle requires 'static)
+    let client_ffi_handle_impl = if !has_lifetimes {
         quote! {
             impl ffier::FfiHandle for #struct_name {
                 const C_HANDLE_NAME: &str = #struct_name_str;
                 fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
             }
-
-            impl ffier::FfiType for #struct_name {
-                type CRepr = *mut core::ffi::c_void;
-                const C_TYPE_NAME: &str = #struct_name_str;
-                fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-                fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
-            }
         }
     } else {
         quote! {}
+    };
+
+    // FfiType for all types (including lifetime-parameterized)
+    let client_ffi_type_impl = quote! {
+        impl #client_struct_generics_with_tick ffier::FfiType for #struct_name #client_struct_generics_with_tick {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &'static str = #struct_name_str;
+            fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+        }
     };
 
     // Destroy function
@@ -233,6 +236,10 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let id = &p.name;
                 match &p.kind {
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
+                    MetaParamKind::ImplTrait { .. } => {
+                        let rust_type = p.rust_type.as_ref().unwrap();
+                        quote! { #id: #rust_type }
+                    }
                     _ => {
                         let rust_type = p
                             .rust_type
@@ -445,6 +452,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             }
         }
 
+        #client_ffi_handle_impl
         #client_ffi_type_impl
 
         impl #client_struct_generics_with_tick std::fmt::Debug for #struct_name #client_struct_generics_with_tick {
@@ -620,6 +628,10 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         .iter()
         .map(|m| {
             let mname = &m.name;
+            // Trampoline fn signature uses bridge_type ('static lifetimes)
+            // for the CRepr types, since it's a standalone extern fn.
+            // Conversions (from_c/into_c) use rust_type (actual lifetimes)
+            // so the trait method's lifetimes are preserved.
             let params: Vec<_> = m
                 .params
                 .iter()
@@ -636,22 +648,22 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 }
             };
 
-            // Argument conversions: C repr -> Rust type
+            // Argument conversions use rust_type (actual lifetimes)
             let arg_conversions: Vec<_> = m
                 .params
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let bt = &p.bridge_type;
-                    quote! { <#bt as ffier::FfiType>::from_c(#id) }
+                    let rt = &p.rust_type;
+                    quote! { <#rt as ffier::FfiType>::from_c(#id) }
                 })
                 .collect();
 
-            // Return conversion: Rust type -> C repr
+            // Return conversion uses rust_type (actual lifetimes)
             let ret_conversion = match &m.ret {
                 MetaVtableRet::Void => quote! { __result },
-                MetaVtableRet::Value { bridge_type, .. } => {
-                    quote! { <#bridge_type as ffier::FfiType>::into_c(__result) }
+                MetaVtableRet::Value { rust_type, .. } => {
+                    quote! { <#rust_type as ffier::FfiType>::into_c(__result) }
                 }
             };
 
