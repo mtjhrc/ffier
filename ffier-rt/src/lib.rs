@@ -154,19 +154,39 @@ pub struct FfierTaggedRef {
 }
 
 /// Return type of `__as_handle()`. Either an existing handle pointer
-/// (known types, zero cost) or a stack-allocated tagged ref (user types).
+/// (known types, zero cost) or a stack-allocated tagged ref (user types),
+/// or a heap-allocated dyn ref (user types via &dyn Trait).
 pub enum FfierHandleRef {
     /// Existing heap handle — pointer to a `FfierTaggedBox<T>`.
     Handle(*mut c_void),
-    /// Stack-allocated tagged ref with vtable wrapper fields inline.
+    /// Stack-allocated tagged ref for `&impl Trait` user types.
     Tagged(FfierTaggedRef),
+    /// Heap-allocated wrapper for `&dyn Trait` user types.
+    /// The `Box<&dyn Trait>` is stored as `boxed_fat_ptr` and freed on drop.
+    DynRef {
+        /// Handle pointer (points to a FfierTaggedRef on the heap).
+        handle: *mut c_void,
+        /// The boxed fat pointer — freed on drop.
+        boxed_fat_ptr: *mut c_void,
+        /// Cleanup function that frees both allocations.
+        cleanup: unsafe fn(*mut c_void, *mut c_void),
+    },
 }
 
 impl FfierHandleRef {
-    pub fn as_ptr(&self) -> *mut c_void {
+    pub fn as_ptr(&mut self) -> *mut c_void {
         match self {
             FfierHandleRef::Handle(p) => *p,
             FfierHandleRef::Tagged(t) => t as *const FfierTaggedRef as *mut c_void,
+            FfierHandleRef::DynRef { handle, .. } => *handle,
+        }
+    }
+}
+
+impl Drop for FfierHandleRef {
+    fn drop(&mut self) {
+        if let FfierHandleRef::DynRef { handle, boxed_fat_ptr, cleanup } = self {
+            unsafe { (cleanup)(*handle, *boxed_fat_ptr) };
         }
     }
 }

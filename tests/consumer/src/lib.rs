@@ -206,6 +206,21 @@ mod tests {
         assert_eq!(m.total(), 15);
     }
 
+    #[test]
+    fn test_peek_with_known_type_ref() {
+        let m = Mixer::new();
+        let apple = api::Apple::new(42);
+        assert_eq!(m.peek(&apple), 42);
+    }
+
+    #[test]
+    fn test_peek_dyn_with_known_type() {
+        let m = Mixer::new();
+        let apple = api::Apple::new(99);
+        let fruit: &dyn api::Fruit = &apple;
+        assert_eq!(m.peek_dyn(fruit), 99);
+    }
+
     // ================================================================
     // Dispatch path verification (via-cdylib only)
     // ================================================================

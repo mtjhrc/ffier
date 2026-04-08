@@ -234,24 +234,9 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 let id = &p.name;
                 match &p.kind {
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
-                    MetaParamKind::ImplTrait { trait_name, passing, .. } => {
-                        // &dyn Trait on the client becomes &impl Trait
-                        // (all client dyn objects are known Sized types)
+                    MetaParamKind::ImplTrait { .. } => {
                         let rust_type = p.rust_type.as_ref().unwrap();
-                        if *passing != ffier_meta::TraitParamPassing::Value
-                            && rust_type.to_string().contains("dyn")
-                        {
-                            let trait_ident = format_ident!("{trait_name}");
-                            match passing {
-                                ffier_meta::TraitParamPassing::Ref =>
-                                    quote! { #id: &impl #trait_ident },
-                                ffier_meta::TraitParamPassing::MutRef =>
-                                    quote! { #id: &mut impl #trait_ident },
-                                _ => unreachable!(),
-                            }
-                        } else {
-                            quote! { #id: #rust_type }
-                        }
+                        quote! { #id: #rust_type }
                     }
                     _ => {
                         let rust_type = p
@@ -290,8 +275,17 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                             ffier_meta::TraitParamPassing::Ref
                             | ffier_meta::TraitParamPassing::MutRef => {
                                 let href_id = format_ident!("__{id}_href");
+                                // &dyn Trait uses __as_handle_dyn (object-safe)
+                                // &impl Trait uses __as_handle (needs Sized)
+                                let rust_type = p.rust_type.as_ref().unwrap();
+                                let is_dyn = rust_type.to_string().contains("dyn");
+                                let call = if is_dyn {
+                                    quote! { #id.__as_handle_dyn() }
+                                } else {
+                                    quote! { #id.__as_handle() }
+                                };
                                 wrapper_pre_bindings.push(quote! {
-                                    let #href_id = #id.__as_handle();
+                                    let mut #href_id = #call;
                                 });
                                 quote! { #href_id.as_ptr() }
                             }
@@ -701,6 +695,54 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 
 
 
+    // Dyn trampolines for __as_handle_dyn: reconstruct &dyn Trait from fat pointer halves
+    let vtable_dyn_trampoline_fields: Vec<_> = meta
+        .vtable_methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let params: Vec<_> = m.params.iter().map(|p| {
+                let id = &p.name;
+                let bt = &p.bridge_type;
+                quote! { #id: <#bt as ffier::FfiType>::CRepr }
+            }).collect();
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } =>
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr },
+            };
+            let arg_conversions: Vec<_> = m.params.iter().map(|p| {
+                let id = &p.name;
+                let rt = &p.rust_type;
+                quote! { <#rt as ffier::FfiType>::from_c(#id) }
+            }).collect();
+            let ret_conversion = match &m.ret {
+                MetaVtableRet::Void => quote! { __result },
+                MetaVtableRet::Value { rust_type, .. } =>
+                    quote! { <#rust_type as ffier::FfiType>::into_c(__result) },
+            };
+            quote! {
+                #mname: {
+                    unsafe extern "C" fn __dyn_trampoline(
+                        __ud: *mut core::ffi::c_void
+                        #(, #params)*
+                    ) #ret {
+                        // __ud points to [*const c_void; 2] = (data_ptr, rust_vtable)
+                        let __fat_parts = unsafe { &*(__ud as *const [*const core::ffi::c_void; 2]) };
+                        let __obj: &dyn #trait_name = unsafe {
+                            core::mem::transmute::<(*const core::ffi::c_void, *const core::ffi::c_void), &dyn #trait_name>(
+                                (__fat_parts[0], __fat_parts[1])
+                            )
+                        };
+                        let __result = __obj.#mname(#(#arg_conversions),*);
+                        #ret_conversion
+                    }
+                    __dyn_trampoline
+                }
+            }
+        })
+        .collect();
+
     quote! {
         pub trait #trait_name {
             #(#trait_method_sigs)*
@@ -737,6 +779,36 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     type_id: core::any::TypeId::of::<#wrapper_name>(),
                     user_data: self as *const Self as *const core::ffi::c_void,
                     vtable: __vtable as *const #vtable_struct_name as *const core::ffi::c_void,
+                })
+            }
+
+            /// Object-safe version for &dyn Trait dispatch.
+            /// Builds a FfierDynRef with C vtable trampolines that call through
+            /// Rust's native dyn dispatch. Known types override with Handle(self.0).
+            #[doc(hidden)]
+            fn __as_handle_dyn(&self) -> ffier::FfierHandleRef {
+                let __c_vtable: &'static #vtable_struct_name = &#vtable_struct_name {
+                    #(#vtable_dyn_trampoline_fields,)*
+                    drop: None,
+                };
+                // self is &Self — transmute the reference itself to get fat pointer halves.
+                // This works for both Sized types (thin ptr, vtable is garbage but won't
+                // be used since known types override this method) and dyn types (fat ptr).
+                let __fat: [*const core::ffi::c_void; 2] = unsafe {
+                    let mut parts = [core::ptr::null(); 2];
+                    // Copy the raw bytes of &self (1 or 2 pointers depending on Sized)
+                    let src = &self as *const &Self as *const *const core::ffi::c_void;
+                    parts[0] = *src;
+                    if core::mem::size_of::<&Self>() == 2 * core::mem::size_of::<*const ()>() {
+                        parts[1] = *src.add(1);
+                    }
+                    parts
+                };
+                ffier::FfierHandleRef::DynRef(ffier::FfierDynRef {
+                    type_id: core::any::TypeId::of::<#wrapper_name>(),
+                    user_data: core::ptr::null(),
+                    c_vtable: __c_vtable as *const #vtable_struct_name as *const core::ffi::c_void,
+                    fat_ptr: __fat,
                 })
             }
         }
@@ -942,6 +1014,11 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
 
                 #[doc(hidden)]
                 fn __as_handle(&self) -> ffier::FfierHandleRef where Self: Sized;
+
+                #[doc(hidden)]
+                fn __as_handle_dyn(&self) -> ffier::FfierHandleRef {
+                    unimplemented!("&dyn dispatch requires #[ffier::implementable] on the trait")
+                }
             }
         }
     };
@@ -1042,6 +1119,10 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
             }
 
             fn __as_handle(&self) -> ffier::FfierHandleRef {
+                ffier::FfierHandleRef::Handle(self.0)
+            }
+
+            fn __as_handle_dyn(&self) -> ffier::FfierHandleRef {
                 ffier::FfierHandleRef::Handle(self.0)
             }
         }
