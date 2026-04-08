@@ -16,15 +16,24 @@ use ffier_meta::{
 };
 
 /// Maps trait names to their concrete dispatch variants.
-///
-/// Built from `@trait_impl` entries (concrete types) and `@implementable`
-/// entries (vtable wrapper types). Used to resolve `impl Trait` params
-/// in exportable methods.
-pub type TraitMap = HashMap<String, Vec<TraitVariant>>;
+pub type TraitMap = HashMap<String, TraitDispatchInfo>;
+
+pub struct TraitDispatchInfo {
+    pub variants: Vec<TraitVariant>,
+    /// If the trait is `#[implementable]`, the wrapper type path and vtable struct path.
+    pub implementable: Option<ImplementableInfo>,
+}
 
 pub struct TraitVariant {
     pub name: String,
     pub bridge_type: TokenStream2,
+}
+
+pub struct ImplementableInfo {
+    pub trait_path: TokenStream2,
+    pub wrapper_path: TokenStream2,
+    pub vtable_struct_path: TokenStream2,
+    pub methods: Vec<ffier_meta::MetaVtableMethod>,
 }
 
 /// Build the trait-to-impls map from parsed implementable and trait_impl metadata.
@@ -41,7 +50,11 @@ fn build_trait_map(
             let struct_name = meta.struct_name.to_string();
             let struct_path = meta.struct_path;
             map.entry(trait_name)
-                .or_default()
+                .or_insert_with(|| TraitDispatchInfo {
+                    variants: Vec::new(),
+                    implementable: None,
+                })
+                .variants
                 .push(TraitVariant {
                     name: struct_name,
                     bridge_type: struct_path,
@@ -49,18 +62,29 @@ fn build_trait_map(
         }
     }
 
-    // implementable entries: "trait Fruit" → adds VtableFruit wrapper
+    // implementable entries: "trait Fruit" → adds VtableFruit wrapper + stores vtable info
     for item in implementables {
         if let Ok(meta) = syn::parse2::<MetaImplementable>(item.clone()) {
             let trait_name = meta.trait_name.to_string();
             let wrapper_name = format!("Vtable{trait_name}");
-            let wrapper_path = meta.wrapper_name;
-            map.entry(trait_name)
-                .or_default()
-                .push(TraitVariant {
-                    name: wrapper_name,
-                    bridge_type: wrapper_path,
-                });
+            let wrapper_path = meta.wrapper_name.clone();
+            let vtable_struct_path = meta.vtable_struct_name.clone();
+            let methods = meta.vtable_methods;
+
+            let info = map.entry(trait_name).or_insert_with(|| TraitDispatchInfo {
+                variants: Vec::new(),
+                implementable: None,
+            });
+            info.variants.push(TraitVariant {
+                name: wrapper_name,
+                bridge_type: wrapper_path.clone(),
+            });
+            info.implementable = Some(ImplementableInfo {
+                trait_path: meta.trait_path,
+                wrapper_path,
+                vtable_struct_path,
+                methods,
+            });
         }
     }
 
@@ -293,15 +317,15 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
     let mut generated_dyn_types: Vec<String> = Vec::new();
     for m in &meta.methods {
         for p in &m.params {
-            if let MetaParamKind::ImplTrait { trait_name } = &p.kind {
+            if let MetaParamKind::ImplTrait { trait_name, .. } = &p.kind {
                 let c_name = format!("{type_pfx}{trait_name}");
                 if generated_dyn_types.contains(&c_name) {
                     continue;
                 }
                 generated_dyn_types.push(c_name.clone());
 
-                if let Some(variants) = trait_map.get(trait_name) {
-                    let variant_names: Vec<String> = variants
+                if let Some(info) = trait_map.get(trait_name) {
+                    let variant_names: Vec<String> = info.variants
                         .iter()
                         .map(|v| format!("{type_pfx}{}", v.name))
                         .collect();
@@ -396,20 +420,64 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         }
         let param_name_str_refs: Vec<_> = header_param_names.iter().collect();
 
-        // Collect all impl Trait params with their dispatch variants
+        // Collect all impl Trait params with their dispatch info
+        struct ImplTraitParam {
+            name: syn::Ident,
+            dispatch: ffier_meta::DispatchMode,
+            trait_name: String,
+            variants: Vec<(String, TokenStream2)>,
+        }
         let impl_trait_params: Vec<_> = m.params.iter().filter_map(|p| {
-            if let MetaParamKind::ImplTrait { trait_name } = &p.kind {
-                trait_map.get(trait_name).map(|variants| {
-                    let variant_data: Vec<(String, TokenStream2)> = variants
-                        .iter()
+            if let MetaParamKind::ImplTrait { trait_name, dispatch } = &p.kind {
+                trait_map.get(trait_name).map(|info| ImplTraitParam {
+                    name: p.name.clone(),
+                    dispatch: *dispatch,
+                    trait_name: trait_name.clone(),
+                    variants: info.variants.iter()
                         .map(|v| (v.name.clone(), v.bridge_type.clone()))
-                        .collect();
-                    (p.name.clone(), variant_data)
+                        .collect(),
                 })
             } else {
                 None
             }
         }).collect();
+
+        // Check for dispatch limit (auto mode only)
+        let concrete_params: Vec<_> = impl_trait_params.iter()
+            .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+            .collect();
+        let total_branches: u64 = concrete_params.iter()
+            .map(|p| p.variants.len() as u64)
+            .product();
+        if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
+            && impl_trait_params.iter().any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
+        {
+            let method_name_str = m.name.to_string();
+            let msg = format!(
+                "ffier: method `{method_name_str}` would generate {total_branches} dispatch \
+                 branches (limit: {}). Add `#[ffier(dispatch = vtable)]` to the impl Trait \
+                 param(s) or `#[ffier(dispatch = concrete)]` to override the limit.",
+                ffier_meta::DEFAULT_MAX_DISPATCH,
+            );
+            return quote! { compile_error!(#msg); };
+        }
+
+        // Check vtable dispatch is possible (trait must be #[implementable])
+        for p in &impl_trait_params {
+            if p.dispatch == ffier_meta::DispatchMode::Vtable {
+                if trait_map.get(&p.trait_name)
+                    .and_then(|info| info.implementable.as_ref())
+                    .is_none()
+                {
+                    let msg = format!(
+                        "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
+                         to have `#[ffier::implementable]`",
+                        p.name, p.trait_name,
+                    );
+                    return quote! { compile_error!(#msg); };
+                }
+            }
+        }
 
         // Pre-bindings for multi-param types
         let mut pre_bindings = Vec::new();
@@ -443,12 +511,58 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             quote! { <#struct_path>::#method_name(#(#converted_args),*) }
         };
 
-        // Wrap in nested dispatch for each impl Trait param.
-        // Each layer unboxes one param by type_id, so N impl Trait params
-        // produce N nested dispatch levels.
-        let method_call = impl_trait_params.iter().rev().fold(
+        // Determine effective dispatch mode for each param.
+        // Auto mode: if total branches ≤ limit, all concrete. Otherwise,
+        // first auto param stays concrete, rest become vtable.
+        let all_concrete = impl_trait_params.iter()
+            .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+            && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
+                || impl_trait_params.iter().all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
+        let effective_dispatch: Vec<bool> = if all_concrete {
+            // All concrete dispatch
+            vec![false; impl_trait_params.len()]
+        } else {
+            // Hybrid: explicit concrete stays concrete, explicit vtable stays vtable,
+            // auto params: first one concrete, rest vtable
+            let mut first_auto_seen = false;
+            impl_trait_params.iter().map(|p| match p.dispatch {
+                ffier_meta::DispatchMode::Concrete => false, // concrete
+                ffier_meta::DispatchMode::Vtable => true,    // vtable
+                ffier_meta::DispatchMode::Auto => {
+                    if !first_auto_seen {
+                        first_auto_seen = true;
+                        false // first auto → concrete
+                    } else {
+                        true // rest → vtable
+                    }
+                }
+            }).collect()
+        };
+
+        // Dynamic dispatch via FfierBoxDyn: wrap each vtable-mode param into
+        // FfierBoxDyn<dyn Trait> (linear in variants, not combinatorial).
+        // TODO: implement once #[ffier::dispatch] and FfierBoxDyn land.
+        let vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
+        if impl_trait_params.iter().enumerate().any(|(i, _)| effective_dispatch[i]) {
+            let method_name_str = m.name.to_string();
+            let msg = format!(
+                "ffier: dynamic dispatch via FfierBoxDyn is not yet implemented for method \
+                 `{method_name_str}`. Use `#[ffier(dispatch = concrete)]` to force static dispatch.",
+            );
+            return quote! { compile_error!(#msg); };
+        }
+
+        // Concrete nested dispatch for non-vtable impl Trait params.
+        let concrete_impl_trait_params: Vec<_> = impl_trait_params.iter()
+            .enumerate()
+            .filter(|(i, _)| !effective_dispatch[*i])
+            .map(|(_, p)| p)
+            .collect();
+        let method_call = concrete_impl_trait_params.iter().rev().fold(
             base_method_call,
-            |inner, (dyn_id, variants)| {
+            |inner, p| {
+                let dyn_id = &p.name;
+                let variants = &p.variants;
                 let if_branches: Vec<_> = variants
                     .iter()
                     .map(|(_, ty_tokens)| {
@@ -532,6 +646,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     quote! {
                         let handle_ptr = handle;
                         #obj_binding
+                        #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
                         unsafe { *handle_ptr = <#struct_path as ffier::FfiType>::into_c(result) };
@@ -539,6 +654,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 } else {
                     quote! {
                         #obj_binding
+                        #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         #method_call;
                     }
@@ -574,6 +690,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                         #(#sig_names: #sig_types),*
                     ) #sig_ret {
                         #obj_binding
+                        #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
                         <#bridge_type as ffier::FfiType>::into_c(result)
@@ -638,6 +755,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     ) #sig_ret {
                         #handle_ptr_binding
                         #obj_binding
+                        #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         match #method_call {
                             #ok_branch
@@ -1140,7 +1258,7 @@ fn meta_param_c_type_expr(
         MetaParamKind::StrSlice => {
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
         }
-        MetaParamKind::ImplTrait { trait_name } => {
+        MetaParamKind::ImplTrait { trait_name, .. } => {
             let full_name = format!("{type_pfx}{trait_name}");
             quote! { #full_name }
         }

@@ -151,6 +151,20 @@ impl MetaExportable {
     }
 }
 
+/// Default max dispatch branches before compile error (auto mode).
+pub const DEFAULT_MAX_DISPATCH: u64 = 64;
+
+/// How `impl Trait` params are dispatched across concrete types.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DispatchMode {
+    /// Concrete dispatch with default branch limit. Over the limit → compile error.
+    Auto,
+    /// Force concrete dispatch, no branch limit.
+    Concrete,
+    /// Force vtable dispatch (requires `#[ffier::implementable]` on the trait).
+    Vtable,
+}
+
 pub struct MetaMethod {
     pub name: Ident,
     pub ffi_name: String,
@@ -187,6 +201,7 @@ pub enum MetaParamKind {
     /// types from the trait map built from `@trait_impl`/`@implementable` entries.
     ImplTrait {
         trait_name: String,
+        dispatch: DispatchMode,
     },
 }
 
@@ -577,7 +592,21 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 expect_key(input, "trait_name")?;
                 let trait_name = parse_string(input)?;
-                MetaParamKind::ImplTrait { trait_name }
+                parse_comma(input)?;
+                expect_key(input, "dispatch")?;
+                let dispatch_ident: Ident = input.parse()?;
+                let dispatch = match dispatch_ident.to_string().as_str() {
+                    "auto" => DispatchMode::Auto,
+                    "concrete" => DispatchMode::Concrete,
+                    "vtable" => DispatchMode::Vtable,
+                    other => {
+                        return Err(syn::Error::new(
+                            dispatch_ident.span(),
+                            format!("unknown dispatch mode `{other}`"),
+                        ));
+                    }
+                };
+                MetaParamKind::ImplTrait { trait_name, dispatch }
             }
             other => {
                 return Err(syn::Error::new(

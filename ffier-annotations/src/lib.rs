@@ -16,7 +16,7 @@ enum ParamKind {
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
-    ImplTrait { trait_name: String },
+    ImplTrait { trait_name: String, dispatch: String },
 }
 
 enum ValueKind {
@@ -99,6 +99,11 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         for item in &mut block.items {
             if let ImplItem::Fn(method) = item {
                 method.attrs.retain(|a| !a.path().is_ident("ffier"));
+                for arg in &mut method.sig.inputs {
+                    if let FnArg::Typed(pat_ty) = arg {
+                        pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
+                    }
+                }
             }
         }
         block
@@ -182,7 +187,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             // Auto-detect `impl Trait` params — generator resolves dispatch types
             if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
-                param_kinds.push(ParamKind::ImplTrait { trait_name });
+                let dispatch = parse_ffier_dispatch(&pat_ty.attrs)
+                    .unwrap_or_else(|| "auto".to_string());
+                param_kinds.push(ParamKind::ImplTrait { trait_name, dispatch });
                 continue;
             }
 
@@ -671,8 +678,9 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
             quote! { regular, bridge_type = (#bridge_type) }
         }
         ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::ImplTrait { trait_name } => {
-            quote! { impl_trait, trait_name = #trait_name }
+        ParamKind::ImplTrait { trait_name, dispatch } => {
+            let dispatch_ident = format_ident!("{dispatch}");
+            quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
         }
     }
 }
@@ -909,6 +917,28 @@ fn is_ffier_skip(attr: &syn::Attribute) -> bool {
         Ok(())
     });
     found
+}
+
+/// Parse `#[ffier(dispatch = concrete)]` or `#[ffier(dispatch = vtable)]` from method attrs.
+fn parse_ffier_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+        let mut result = None;
+        let _ = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("dispatch") {
+                let value = meta.value()?;
+                let mode: syn::Ident = value.parse()?;
+                result = Some(mode.to_string());
+            }
+            Ok(())
+        });
+        if result.is_some() {
+            return result;
+        }
+    }
+    None
 }
 
 /// Extract the trait name from an `impl Trait` type.
