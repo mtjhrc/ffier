@@ -805,28 +805,12 @@ fn client_result_ok_from_ffi(
     _vk: &MetaValueKind,
     rust_ret: &TokenStream2,
 ) -> (TokenStream2, TokenStream2, TokenStream2) {
-    let ok_type = extract_ok_type_from_tokens(rust_ret);
+    let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
     (
         quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
         quote! { __out.as_mut_ptr() },
         quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) },
     )
-}
-
-/// Extract the Ok type from `Result<OkType, ErrType>` tokens.
-fn extract_ok_type_from_tokens(tokens: &TokenStream2) -> TokenStream2 {
-    // Parse as a type and extract Result's first generic arg
-    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
-        && let syn::Type::Path(tp) = &ty
-        && let Some(last) = tp.path.segments.last()
-        && last.ident == "Result"
-        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
-        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
-    {
-        return quote! { #ok_ty };
-    }
-    // Fallback: return the whole thing (shouldn't happen)
-    tokens.clone()
 }
 
 
