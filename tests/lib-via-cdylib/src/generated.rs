@@ -989,6 +989,294 @@ impl Drop for Orange {
     }
 }
 unsafe extern "C" {
+    pub fn ft_banana_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_banana_new(v: <i32 as ffier::FfiType>::CRepr) -> <Banana as ffier::FfiType>::CRepr;
+}
+pub struct Banana(*mut core::ffi::c_void);
+impl Banana {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Banana {
+    const C_HANDLE_NAME: &'static str = "Banana";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Banana {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Banana";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Banana {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Banana").field(&self.0).finish()
+    }
+}
+impl Banana {
+    pub fn new(v: i32) -> Banana {
+        let __raw = unsafe { ft_banana_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Banana as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Banana {
+    fn drop(&mut self) {
+        unsafe { ft_banana_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    pub fn ft_mango_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_mango_new(v: <i32 as ffier::FfiType>::CRepr) -> <Mango as ffier::FfiType>::CRepr;
+}
+pub struct Mango(*mut core::ffi::c_void);
+impl Mango {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Mango {
+    const C_HANDLE_NAME: &'static str = "Mango";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Mango {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Mango";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Mango {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Mango").field(&self.0).finish()
+    }
+}
+impl Mango {
+    pub fn new(v: i32) -> Mango {
+        let __raw = unsafe { ft_mango_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Mango as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Mango {
+    fn drop(&mut self) {
+        unsafe { ft_mango_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    pub fn ft_peach_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_peach_new(v: <i32 as ffier::FfiType>::CRepr) -> <Peach as ffier::FfiType>::CRepr;
+}
+pub struct Peach(*mut core::ffi::c_void);
+impl Peach {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Peach {
+    const C_HANDLE_NAME: &'static str = "Peach";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Peach {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Peach";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Peach {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Peach").field(&self.0).finish()
+    }
+}
+impl Peach {
+    pub fn new(v: i32) -> Peach {
+        let __raw = unsafe { ft_peach_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Peach as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Peach {
+    fn drop(&mut self) {
+        unsafe { ft_peach_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    pub fn ft_plum_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_plum_new(v: <i32 as ffier::FfiType>::CRepr) -> <Plum as ffier::FfiType>::CRepr;
+}
+pub struct Plum(*mut core::ffi::c_void);
+impl Plum {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Plum {
+    const C_HANDLE_NAME: &'static str = "Plum";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Plum {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Plum";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Plum {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Plum").field(&self.0).finish()
+    }
+}
+impl Plum {
+    pub fn new(v: i32) -> Plum {
+        let __raw = unsafe { ft_plum_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Plum as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Plum {
+    fn drop(&mut self) {
+        unsafe { ft_plum_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    pub fn ft_grape_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_grape_new(v: <i32 as ffier::FfiType>::CRepr) -> <Grape as ffier::FfiType>::CRepr;
+}
+pub struct Grape(*mut core::ffi::c_void);
+impl Grape {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Grape {
+    const C_HANDLE_NAME: &'static str = "Grape";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Grape {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Grape";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Grape {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Grape").field(&self.0).finish()
+    }
+}
+impl Grape {
+    pub fn new(v: i32) -> Grape {
+        let __raw = unsafe { ft_grape_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Grape as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Grape {
+    fn drop(&mut self) {
+        unsafe { ft_grape_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
+    pub fn ft_lemon_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_lemon_new(v: <i32 as ffier::FfiType>::CRepr) -> <Lemon as ffier::FfiType>::CRepr;
+}
+pub struct Lemon(*mut core::ffi::c_void);
+impl Lemon {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+impl ffier::FfiHandle for Lemon {
+    const C_HANDLE_NAME: &'static str = "Lemon";
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl ffier::FfiType for Lemon {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "Lemon";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+impl std::fmt::Debug for Lemon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Lemon").field(&self.0).finish()
+    }
+}
+impl Lemon {
+    pub fn new(v: i32) -> Lemon {
+        let __raw = unsafe { ft_lemon_new(<i32 as ffier::FfiType>::into_c(v)) };
+        <Lemon as ffier::FfiType>::from_c(__raw)
+    }
+}
+impl Drop for Lemon {
+    fn drop(&mut self) {
+        unsafe { ft_lemon_destroy(self.0) }
+    }
+}
+unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as ffier::FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
@@ -1045,7 +1333,7 @@ impl Mixer {
         unsafe { ft_mixer_add(&mut __handle, fruit.__into_raw_handle()) };
         Self(__handle)
     }
-    #[doc = " Blend two fruits together — tests multiple impl Trait params."]
+    #[doc = " Blend two fruits — concrete dispatch override (81 branches > 64 limit)."]
     pub fn blend(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
         let __raw = unsafe { ft_mixer_blend(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
@@ -1277,6 +1565,84 @@ unsafe extern "C" {
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_orange_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_banana_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Banana {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_banana_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_mango_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Mango {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_mango_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_peach_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Peach {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_peach_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_plum_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Plum {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_plum_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_grape_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Grape {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_grape_value(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+unsafe extern "C" {
+    pub fn ft_lemon_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl Fruit for Lemon {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_lemon_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {

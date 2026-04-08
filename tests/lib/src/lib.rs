@@ -523,6 +523,44 @@ impl Fruit for Orange {
     }
 }
 
+// Extra fruit types so that blend(a: impl Fruit, b: impl Fruit) has
+// 9 variants (8 concrete + VtableFruit). 9^2 = 81 > 64 dispatch limit.
+pub struct Banana(i32);
+#[ffier::exportable]
+impl Banana { pub fn new(v: i32) -> Self { Banana(v) } }
+#[ffier::trait_impl]
+impl Fruit for Banana { fn value(&self) -> i32 { self.0 } }
+
+pub struct Mango(i32);
+#[ffier::exportable]
+impl Mango { pub fn new(v: i32) -> Self { Mango(v) } }
+#[ffier::trait_impl]
+impl Fruit for Mango { fn value(&self) -> i32 { self.0 } }
+
+pub struct Peach(i32);
+#[ffier::exportable]
+impl Peach { pub fn new(v: i32) -> Self { Peach(v) } }
+#[ffier::trait_impl]
+impl Fruit for Peach { fn value(&self) -> i32 { self.0 } }
+
+pub struct Plum(i32);
+#[ffier::exportable]
+impl Plum { pub fn new(v: i32) -> Self { Plum(v) } }
+#[ffier::trait_impl]
+impl Fruit for Plum { fn value(&self) -> i32 { self.0 } }
+
+pub struct Grape(i32);
+#[ffier::exportable]
+impl Grape { pub fn new(v: i32) -> Self { Grape(v) } }
+#[ffier::trait_impl]
+impl Fruit for Grape { fn value(&self) -> i32 { self.0 } }
+
+pub struct Lemon(i32);
+#[ffier::exportable]
+impl Lemon { pub fn new(v: i32) -> Self { Lemon(v) } }
+#[ffier::trait_impl]
+impl Fruit for Lemon { fn value(&self) -> i32 { self.0 } }
+
 pub struct Mixer {
     total: i32,
 }
@@ -538,8 +576,8 @@ impl Mixer {
         self
     }
 
-    /// Blend two fruits together — tests multiple impl Trait params.
-    pub fn blend(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
+    /// Blend two fruits — concrete dispatch override (81 branches > 64 limit).
+    pub fn blend(&mut self, #[ffier(dispatch = concrete)] a: impl Fruit, #[ffier(dispatch = concrete)] b: impl Fruit) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
         sum
@@ -641,10 +679,16 @@ ffier::library_definition!("ft",
     View, ViewFactory,
     Pipeline,
     trait Processor,
-    Apple, Orange,
+    Apple, Orange, Banana, Mango, Peach, Plum, Grape, Lemon,
     trait Fruit,
     Fruit for Apple,
     Fruit for Orange,
+    Fruit for Banana,
+    Fruit for Mango,
+    Fruit for Peach,
+    Fruit for Plum,
+    Fruit for Grape,
+    Fruit for Lemon,
     Mixer,
     Sprocket,
     Attachment for Sprocket,
