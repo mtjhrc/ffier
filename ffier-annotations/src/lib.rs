@@ -974,6 +974,17 @@ fn extract_trait_ref(
     let Type::Reference(ref_ty) = ty else { return None };
     let is_mut = ref_ty.mutability.is_some();
 
+    // &impl Trait / &mut impl Trait
+    if let Type::ImplTrait(impl_trait) = &*ref_ty.elem {
+        for bound in &impl_trait.bounds {
+            if let syn::TypeParamBound::Trait(tb) = bound {
+                if let Some(seg) = tb.path.segments.last() {
+                    return Some((seg.ident.to_string(), is_mut, false));
+                }
+            }
+        }
+    }
+
     // &dyn Trait / &mut dyn Trait
     if let Type::TraitObject(to) = &*ref_ty.elem {
         for bound in &to.bounds {

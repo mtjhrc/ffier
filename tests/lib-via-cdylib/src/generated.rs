@@ -1370,14 +1370,14 @@ impl Mixer {
             unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    #[doc = " Peek via generic ref (concrete dispatch, borrow)."]
-    pub fn peek(&self, fruit: &F) -> i32 {
-        let __raw = unsafe { ft_mixer_peek(self.0, fruit.__into_raw_handle()) };
+    #[doc = " Peek via borrowed impl Trait (concrete dispatch, borrow)."]
+    pub fn peek(&self, fruit: &impl Fruit) -> i32 {
+        let __raw = unsafe { ft_mixer_peek(self.0, fruit.__as_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Peek via dyn ref (auto dyn coerce, no concrete branching)."]
     pub fn peek_dyn(&self, fruit: &dyn Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_peek_dyn(self.0, fruit.__into_raw_handle()) };
+        let __raw = unsafe { ft_mixer_peek_dyn(self.0, fruit.__as_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     pub fn total(&self) -> i32 {
@@ -1497,6 +1497,10 @@ pub trait Processor {
         let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
         VtableProcessor::new(__ud, __vtable).__into_raw()
     }
+    #[doc(hidden)]
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        panic!("__as_handle not available for this type")
+    }
 }
 #[repr(C)]
 pub struct ProcessorVtable {
@@ -1562,6 +1566,10 @@ pub trait Fruit {
         let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
         VtableFruit::new(__ud, __vtable).__into_raw()
     }
+    #[doc(hidden)]
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        panic!("__as_handle not available for this type")
+    }
 }
 #[repr(C)]
 pub struct FruitVtable {
@@ -1600,6 +1608,9 @@ impl Fruit for Apple {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 unsafe extern "C" {
     pub fn ft_orange_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
@@ -1612,6 +1623,9 @@ impl Fruit for Orange {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 unsafe extern "C" {
@@ -1626,6 +1640,9 @@ impl Fruit for Banana {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 unsafe extern "C" {
     pub fn ft_mango_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
@@ -1638,6 +1655,9 @@ impl Fruit for Mango {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 unsafe extern "C" {
@@ -1652,6 +1672,9 @@ impl Fruit for Peach {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 unsafe extern "C" {
     pub fn ft_plum_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
@@ -1664,6 +1687,9 @@ impl Fruit for Plum {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 unsafe extern "C" {
@@ -1678,6 +1704,9 @@ impl Fruit for Grape {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 unsafe extern "C" {
     pub fn ft_lemon_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
@@ -1691,6 +1720,9 @@ impl Fruit for Lemon {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 pub trait Attachment {
     fn label(&self) -> &str;
@@ -1698,6 +1730,10 @@ pub trait Attachment {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized;
+    #[doc(hidden)]
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        panic!("__as_handle not available for this type")
+    }
 }
 unsafe extern "C" {
     pub fn ft_sprocket_label(
@@ -1713,6 +1749,9 @@ impl Attachment for Sprocket {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 pub trait Snapshot<'a> {
     fn snap_description(&self) -> &str;
@@ -1721,6 +1760,10 @@ pub trait Snapshot<'a> {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized;
+    #[doc(hidden)]
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        panic!("__as_handle not available for this type")
+    }
 }
 unsafe extern "C" {
     pub fn ft_view_snap_description(
@@ -1743,6 +1786,9 @@ impl<'a> Snapshot<'a> for View<'a> {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 unsafe extern "C" {
     pub fn ft_widget_snap_description(
@@ -1764,5 +1810,8 @@ impl Snapshot<'static> for Widget {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }

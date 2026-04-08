@@ -441,7 +441,7 @@ int32_t ft_mixer_blend_hybrid(FtMixer handle, FtFruit a, FtFruit b);
  */
 int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a, FtFruit b);
 /**
- * Peek via generic ref (concrete dispatch, borrow).
+ * Peek via borrowed impl Trait (concrete dispatch, borrow).
  *
  * @param fruit
  */

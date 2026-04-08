@@ -597,8 +597,8 @@ impl Mixer {
         sum
     }
 
-    /// Peek via generic ref (concrete dispatch, borrow).
-    pub fn peek<F: Fruit>(&self, fruit: &F) -> i32 {
+    /// Peek via borrowed impl Trait (concrete dispatch, borrow).
+    pub fn peek(&self, fruit: &impl Fruit) -> i32 {
         fruit.value()
     }
 

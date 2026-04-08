@@ -259,8 +259,16 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     MetaParamKind::StrSlice => {
                         quote! { __ffi_strs.as_ptr(), __ffi_strs.len() }
                     }
-                    MetaParamKind::ImplTrait { .. } => {
-                        quote! { #id.__into_raw_handle() }
+                    MetaParamKind::ImplTrait { passing, .. } => {
+                        match passing {
+                            ffier_meta::TraitParamPassing::Value => {
+                                quote! { #id.__into_raw_handle() }
+                            }
+                            ffier_meta::TraitParamPassing::Ref
+                            | ffier_meta::TraitParamPassing::MutRef => {
+                                quote! { #id.__as_handle() }
+                            }
+                        }
                     }
                     MetaParamKind::Regular { .. } => {
                         let rust_type = p.rust_type.as_ref().unwrap();
@@ -706,6 +714,11 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
                 #wrapper_name::new(__ud, __vtable).__into_raw()
             }
+
+            #[doc(hidden)]
+            fn __as_handle(&self) -> *mut core::ffi::c_void {
+                panic!("__as_handle not available for this type")
+            }
         }
 
         #[repr(C)]
@@ -904,6 +917,11 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
 
                 #[doc(hidden)]
                 fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
+
+                #[doc(hidden)]
+                fn __as_handle(&self) -> *mut core::ffi::c_void {
+                    panic!("__as_handle not available for this type")
+                }
             }
         }
     };
@@ -1001,6 +1019,10 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
             fn __into_raw_handle(self) -> *mut core::ffi::c_void {
                 let this = std::mem::ManuallyDrop::new(self);
                 this.0
+            }
+
+            fn __as_handle(&self) -> *mut core::ffi::c_void {
+                self.0
             }
         }
     }
