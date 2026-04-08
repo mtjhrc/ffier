@@ -909,6 +909,20 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 // Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
 // ===========================================================================
 
+/// Extract the Ok type from `Result<OkType, ErrType>` tokens.
+fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
+    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
+        && let syn::Type::Path(tp) = &ty
+        && let Some(last) = tp.path.segments.last()
+        && last.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+    {
+        return quote! { #ok_ty };
+    }
+    tokens.clone()
+}
+
 /// A single parameter in a C extern signature.
 pub struct CExternParam {
     pub name: syn::Ident,
@@ -934,7 +948,16 @@ pub struct CExternSignature {
 /// This is the single source of truth for "what does this method look like
 /// as an `extern "C"` function". Both the C bridge generator and the Rust
 /// client generator should agree on this.
-pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSignature {
+///
+/// When `for_client` is true, uses `rust_type` (original user types like `&str`,
+/// `i32`) instead of `bridge_type` (`$crate::` paths). Both resolve to the same
+/// `CRepr` via `FfiType`, but `rust_type` works in standalone source while
+/// `bridge_type` requires macro context.
+pub fn c_signature_for_method(
+    method: &MetaMethod,
+    prefix: &str,
+    for_client: bool,
+) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name);
     let mut params = Vec::new();
 
@@ -960,7 +983,7 @@ pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSigna
         if matches!(p.kind, MetaParamKind::StrSlice) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind),
+                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), for_client),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -969,23 +992,30 @@ pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSigna
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind),
+                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), for_client),
             });
         }
     }
 
     // Return type + out-param for Result
+    let rust_ret_ref = if for_client {
+        Some(&method.rust_ret)
+    } else {
+        None
+    };
     let ret = match &method.ret {
         MetaReturn::Void => quote! {},
         MetaReturn::Value(vk) => {
-            let ty = c_return_type(vk);
+            let ty = c_return_type(vk, rust_ret_ref, for_client);
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
             if let Some(vk) = ok {
+                // For client, extract the Ok type from Result<T, E>
+                let ok_rust_type = rust_ret_ref.map(|rt| extract_result_ok_type(rt));
                 params.push(CExternParam {
                     name: format_ident!("result"),
-                    c_type: c_out_param_type(vk),
+                    c_type: c_out_param_type(vk, ok_rust_type.as_ref(), for_client),
                 });
             }
             quote! { -> ffier::FfierError }
@@ -1004,10 +1034,22 @@ pub fn c_signature_for_method(method: &MetaMethod, prefix: &str) -> CExternSigna
 /// This is the canonical "what C type does this parameter have?" function.
 /// Both the bridge generator and the client generator use it to ensure
 /// their extern declarations agree.
-pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
+///
+/// When `for_client` is true, uses `rust_type` instead of `bridge_type`
+/// to avoid `$crate::` paths in standalone source.
+pub fn c_param_type(
+    kind: &MetaParamKind,
+    rust_type: Option<&TokenStream2>,
+    for_client: bool,
+) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type } => {
-            quote! { <#bridge_type as ffier::FfiType>::CRepr }
+            if for_client {
+                let rt = rust_type.expect("Regular param must have rust_type for client");
+                quote! { <#rt as ffier::FfiType>::CRepr }
+            } else {
+                quote! { <#bridge_type as ffier::FfiType>::CRepr }
+            }
         }
         MetaParamKind::ImplTrait { .. } => {
             quote! { *mut core::ffi::c_void }
@@ -1021,14 +1063,30 @@ pub fn c_param_type(kind: &MetaParamKind) -> TokenStream2 {
 }
 
 /// Produce the concrete C return type tokens for a value kind.
-pub fn c_return_type(kind: &MetaValueKind) -> TokenStream2 {
+///
+/// When `for_client`, uses `rust_ret` (the method's original return type)
+/// to avoid `$crate::` paths.
+pub fn c_return_type(
+    kind: &MetaValueKind,
+    rust_ret: Option<&TokenStream2>,
+    for_client: bool,
+) -> TokenStream2 {
     let MetaValueKind::Regular { bridge_type } = kind;
-    quote! { <#bridge_type as ffier::FfiType>::CRepr }
+    if for_client {
+        let rt = rust_ret.expect("Value return must have rust_ret for client");
+        quote! { <#rt as ffier::FfiType>::CRepr }
+    } else {
+        quote! { <#bridge_type as ffier::FfiType>::CRepr }
+    }
 }
 
 /// Produce the concrete C type for a Result ok-value out-parameter.
-pub fn c_out_param_type(kind: &MetaValueKind) -> TokenStream2 {
-    let inner = c_return_type(kind);
+pub fn c_out_param_type(
+    kind: &MetaValueKind,
+    rust_ret: Option<&TokenStream2>,
+    for_client: bool,
+) -> TokenStream2 {
+    let inner = c_return_type(kind, rust_ret, for_client);
     quote! { *mut #inner }
 }
 
