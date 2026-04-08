@@ -125,6 +125,19 @@ impl<'a> FfiType for &'a std::path::Path {
 }
 
 // ---------------------------------------------------------------------------
+// FfierBoxDyn --- newtype for dynamic dispatch of impl Trait params
+// ---------------------------------------------------------------------------
+
+/// Newtype around `Box<dyn T>` used for dynamic dispatch fallback.
+///
+/// When the combinatorial explosion of concrete `impl Trait` dispatch
+/// exceeds the limit, params are wrapped into `FfierBoxDyn<dyn Trait>`
+/// instead. `#[ffier::dispatch]` or `#[ffier::implementable]` generates
+/// `impl Trait for FfierBoxDyn<dyn Trait>` which delegates to the inner
+/// trait object.
+pub struct FfierBoxDyn<T: ?Sized>(pub Box<T>);
+
+// ---------------------------------------------------------------------------
 // FfiHandle --- marker for types exported via #[ffier::exportable]
 // ---------------------------------------------------------------------------
 

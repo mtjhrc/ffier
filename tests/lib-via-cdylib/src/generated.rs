@@ -1280,7 +1280,17 @@ unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as ffier::FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
-    pub fn ft_mixer_blend(
+    pub fn ft_mixer_blend_concrete(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn ft_mixer_blend_hybrid(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn ft_mixer_blend_dynamic(
         handle: *mut core::ffi::c_void,
         a: *mut core::ffi::c_void,
         b: *mut core::ffi::c_void,
@@ -1333,9 +1343,23 @@ impl Mixer {
         unsafe { ft_mixer_add(&mut __handle, fruit.__into_raw_handle()) };
         Self(__handle)
     }
-    #[doc = " Blend two fruits — concrete dispatch override (81 branches > 64 limit)."]
-    pub fn blend(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_blend(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+    #[doc = " Both concrete (9^2=81 > 64, override with annotation)."]
+    pub fn blend_concrete(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
+        let __raw = unsafe {
+            ft_mixer_blend_concrete(self.0, a.__into_raw_handle(), b.__into_raw_handle())
+        };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    #[doc = " First concrete, second vtable (hybrid: 9+9=18 branches)."]
+    pub fn blend_hybrid(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
+        let __raw =
+            unsafe { ft_mixer_blend_hybrid(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    #[doc = " Both vtable (9+9=18 branches)."]
+    pub fn blend_dynamic(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
+        let __raw =
+            unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     pub fn total(&self) -> i32 {

@@ -420,12 +420,26 @@ typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | Ft
 FtMixer ft_mixer_new(void);
 void ft_mixer_add(FtMixer* handle, FtFruit fruit);
 /**
- * Blend two fruits — concrete dispatch override (81 branches > 64 limit).
+ * Both concrete (9^2=81 > 64, override with annotation).
  *
  * @param a
  * @param b
  */
-int32_t ft_mixer_blend(FtMixer handle, FtFruit a, FtFruit b);
+int32_t ft_mixer_blend_concrete(FtMixer handle, FtFruit a, FtFruit b);
+/**
+ * First concrete, second vtable (hybrid: 9+9=18 branches).
+ *
+ * @param a
+ * @param b
+ */
+int32_t ft_mixer_blend_hybrid(FtMixer handle, FtFruit a, FtFruit b);
+/**
+ * Both vtable (9+9=18 branches).
+ *
+ * @param a
+ * @param b
+ */
+int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a, FtFruit b);
 int32_t ft_mixer_total(FtMixer handle);
 void ft_mixer_destroy(FtMixer handle);
 
