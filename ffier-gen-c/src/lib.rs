@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use ffier_meta::{
     MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind, MetaReceiver,
     MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, camel_to_upper_snake,
-    peek_meta_field, peek_meta_name, peek_meta_tag,
+    erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -37,10 +37,7 @@ pub struct ImplementableInfo {
 }
 
 /// Build the trait-to-impls map from parsed implementable and trait_impl metadata.
-fn build_trait_map(
-    implementables: &[TokenStream2],
-    trait_impls: &[TokenStream2],
-) -> TraitMap {
+fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]) -> TraitMap {
     let mut map = TraitMap::new();
 
     // trait_impl entries: "Fruit for Apple" → Apple is a concrete implementor
@@ -138,10 +135,10 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Split input into individual brace groups
     let mut items: Vec<TokenStream2> = Vec::new();
     for tt in input {
-        if let proc_macro2::TokenTree::Group(g) = tt {
-            if g.delimiter() == proc_macro2::Delimiter::Brace {
-                items.push(g.stream());
-            }
+        if let proc_macro2::TokenTree::Group(g) = tt
+            && g.delimiter() == proc_macro2::Delimiter::Brace
+        {
+            items.push(g.stream());
         }
     }
 
@@ -207,7 +204,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         pub fn __ffier_header(guard: &str) -> ffier_gen_c::HeaderBuilder {
             ffier_gen_c::HeaderBuilder::new(guard)
-                #(.add(#header_fn_names()))*
+                #(.push(#header_fn_names()))*
         }
     }
 }
@@ -231,22 +228,13 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
     let struct_lower = camel_to_snake(struct_name);
 
-    // Type aliases: emit `use` statements for bridge types
-    let _type_alias_uses: Vec<_> = meta
-        .type_aliases
-        .iter()
-        .map(|(alias, path)| {
-            quote! { use #path as #alias; }
-        })
-        .collect();
-
     let mut ffi_fns = Vec::new();
     let handle_typedef_expr = quote! { concat!("typedef void* ", #handle_c_name, ";") };
     let mut shared_types_exprs: Vec<TokenStream2> = Vec::new();
     let mut decl_exprs: Vec<TokenStream2> = Vec::new();
 
-    // Bytes/Str/Path struct + typedefs
-    if meta.uses_slices() {
+    // Bytes/Str/Path struct + typedefs (always emitted — unused typedefs are harmless)
+    {
         let bytes_macro_name = format!("{upper_pfx}BYTES");
 
         shared_types_exprs.push(quote! {
@@ -325,7 +313,8 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 generated_dyn_types.push(c_name.clone());
 
                 if let Some(info) = trait_map.get(trait_name) {
-                    let variant_names: Vec<String> = info.variants
+                    let variant_names: Vec<String> = info
+                        .variants
                         .iter()
                         .map(|v| format!("{type_pfx}{}", v.name))
                         .collect();
@@ -411,10 +400,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 c_type_exprs.push(quote! { "uintptr_t" });
                 header_param_names.push(format!("{name}_len"));
             } else {
-                c_type_exprs.push(meta_param_c_type_expr(
-                    &p.kind,
-                    &type_pfx,
-                ));
+                c_type_exprs.push(meta_param_c_type_expr(&p.kind, &type_pfx));
                 header_param_names.push(name);
             }
         }
@@ -427,30 +413,44 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             trait_name: String,
             variants: Vec<(String, TokenStream2)>,
         }
-        let impl_trait_params: Vec<_> = m.params.iter().filter_map(|p| {
-            if let MetaParamKind::ImplTrait { trait_name, dispatch } = &p.kind {
-                trait_map.get(trait_name).map(|info| ImplTraitParam {
-                    name: p.name.clone(),
-                    dispatch: *dispatch,
-                    trait_name: trait_name.clone(),
-                    variants: info.variants.iter()
-                        .map(|v| (v.name.clone(), v.bridge_type.clone()))
-                        .collect(),
-                })
-            } else {
-                None
-            }
-        }).collect();
+        let impl_trait_params: Vec<_> = m
+            .params
+            .iter()
+            .filter_map(|p| {
+                if let MetaParamKind::ImplTrait {
+                    trait_name,
+                    dispatch,
+                } = &p.kind
+                {
+                    trait_map.get(trait_name).map(|info| ImplTraitParam {
+                        name: p.name.clone(),
+                        dispatch: *dispatch,
+                        trait_name: trait_name.clone(),
+                        variants: info
+                            .variants
+                            .iter()
+                            .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                            .collect(),
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // Check for dispatch limit (auto mode only)
-        let concrete_params: Vec<_> = impl_trait_params.iter()
+        let concrete_params: Vec<_> = impl_trait_params
+            .iter()
             .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
             .collect();
-        let total_branches: u64 = concrete_params.iter()
+        let total_branches: u64 = concrete_params
+            .iter()
             .map(|p| p.variants.len() as u64)
             .product();
         if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
-            && impl_trait_params.iter().any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
+            && impl_trait_params
+                .iter()
+                .any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
         {
             let method_name_str = m.name.to_string();
             let msg = format!(
@@ -464,18 +464,18 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
         // Check vtable dispatch is possible (trait must be #[implementable])
         for p in &impl_trait_params {
-            if p.dispatch == ffier_meta::DispatchMode::Vtable {
-                if trait_map.get(&p.trait_name)
+            if p.dispatch == ffier_meta::DispatchMode::Vtable
+                && trait_map
+                    .get(&p.trait_name)
                     .and_then(|info| info.implementable.as_ref())
                     .is_none()
-                {
-                    let msg = format!(
-                        "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
-                         to have `#[ffier::implementable]`",
-                        p.name, p.trait_name,
-                    );
-                    return quote! { compile_error!(#msg); };
-                }
+            {
+                let msg = format!(
+                    "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
+                     to have `#[ffier::implementable]`",
+                    p.name, p.trait_name,
+                );
+                return quote! { compile_error!(#msg); };
             }
         }
 
@@ -490,7 +490,9 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     MetaParamKind::ImplTrait { .. } => quote! { #id },
                     MetaParamKind::StrSlice => {
                         let len_name = format!("{}_len", p.name);
-                        let len_id = &c_sig.params.iter()
+                        let len_id = &c_sig
+                            .params
+                            .iter()
                             .find(|cp| cp.name == len_name)
                             .expect("StrSlice must have _len param in c_sig")
                             .name;
@@ -514,10 +516,13 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         // Determine effective dispatch mode for each param.
         // Auto mode: if total branches ≤ limit, all concrete. Otherwise,
         // first auto param stays concrete, rest become vtable.
-        let all_concrete = impl_trait_params.iter()
+        let all_concrete = impl_trait_params
+            .iter()
             .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
             && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
-                || impl_trait_params.iter().all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
+                || impl_trait_params
+                    .iter()
+                    .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
         let effective_dispatch: Vec<bool> = if all_concrete {
             // All concrete dispatch
             vec![false; impl_trait_params.len()]
@@ -525,18 +530,21 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             // Hybrid: explicit concrete stays concrete, explicit vtable stays vtable,
             // auto params: first one concrete, rest vtable
             let mut first_auto_seen = false;
-            impl_trait_params.iter().map(|p| match p.dispatch {
-                ffier_meta::DispatchMode::Concrete => false, // concrete
-                ffier_meta::DispatchMode::Vtable => true,    // vtable
-                ffier_meta::DispatchMode::Auto => {
-                    if !first_auto_seen {
-                        first_auto_seen = true;
-                        false // first auto → concrete
-                    } else {
-                        true // rest → vtable
+            impl_trait_params
+                .iter()
+                .map(|p| match p.dispatch {
+                    ffier_meta::DispatchMode::Concrete => false, // concrete
+                    ffier_meta::DispatchMode::Vtable => true,    // vtable
+                    ffier_meta::DispatchMode::Auto => {
+                        if !first_auto_seen {
+                            first_auto_seen = true;
+                            false // first auto → concrete
+                        } else {
+                            true // rest → vtable
+                        }
                     }
-                }
-            }).collect()
+                })
+                .collect()
         };
 
         // Dynamic dispatch via FfierBoxDyn: wrap each vtable-mode param into
@@ -592,50 +600,53 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         }
 
         // Concrete nested dispatch for non-vtable impl Trait params.
-        let concrete_impl_trait_params: Vec<_> = impl_trait_params.iter()
+        let concrete_impl_trait_params: Vec<_> = impl_trait_params
+            .iter()
             .enumerate()
             .filter(|(i, _)| !effective_dispatch[*i])
             .map(|(_, p)| p)
             .collect();
-        let method_call = concrete_impl_trait_params.iter().rev().fold(
-            base_method_call,
-            |inner, p| {
-                let dyn_id = &p.name;
-                let variants = &p.variants;
-                let if_branches: Vec<_> = variants
-                    .iter()
-                    .map(|(_, ty_tokens)| {
-                        quote! {
-                            if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
-                                let #dyn_id = unsafe {
-                                    (*Box::from_raw(
-                                        #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
-                                    )).value
-                                };
-                                #inner
+        let method_call =
+            concrete_impl_trait_params
+                .iter()
+                .rev()
+                .fold(base_method_call, |inner, p| {
+                    let dyn_id = &p.name;
+                    let variants = &p.variants;
+                    let if_branches: Vec<_> = variants
+                        .iter()
+                        .map(|(_, ty_tokens)| {
+                            quote! {
+                                if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
+                                    let #dyn_id = unsafe {
+                                        (*Box::from_raw(
+                                            #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
+                                        )).value
+                                    };
+                                    #inner
+                                }
                             }
+                        })
+                        .collect();
+
+                    let variant_names: Vec<_> =
+                        variants.iter().map(|(name, _)| name.as_str()).collect();
+                    let accepted_list = variant_names.join(" | ");
+
+                    quote! {{
+                        let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                        #(#if_branches else)* {
+                            panic!(
+                                "{}(): parameter `{}` expected an object of type: {}, \
+                                 but got unknown handle (type_id={:?})",
+                                #ffi_name_str,
+                                stringify!(#dyn_id),
+                                #accepted_list,
+                                __type_id,
+                            );
                         }
-                    })
-                    .collect();
-
-                let variant_names: Vec<_> = variants.iter().map(|(name, _)| name.as_str()).collect();
-                let accepted_list = variant_names.join(" | ");
-
-                quote! {{
-                    let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
-                    #(#if_branches else)* {
-                        panic!(
-                            "{}(): parameter `{}` expected an object of type: {}, \
-                             but got unknown handle (type_id={:?})",
-                            #ffi_name_str,
-                            stringify!(#dyn_id),
-                            #accepted_list,
-                            __type_id,
-                        );
-                    }
-                }}
-            },
-        );
+                    }}
+                });
 
         // Doxygen comment
         let (has_out_param, err_c_name_for_doc) = match &m.ret {
@@ -709,7 +720,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 });
             }
             MetaReturn::Value(vk) => {
-                let MetaValueKind::Regular { bridge_type } = vk;
+                let bridge_type = &vk.bridge_type;
                 let ret_c_header = quote! {
                     &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                 };
@@ -736,15 +747,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     }
                 });
             }
-            MetaReturn::Result {
-                ok,
-                err_bridge_type: _,
-                err_ident,
-            } => {
+            MetaReturn::Result { ok, err_ident } => {
                 let err_c_name = format!("{type_pfx}{err_ident}");
 
                 let out_c_type = ok.as_ref().map(|vk| {
-                    let MetaValueKind::Regular { bridge_type } = vk;
+                    let bridge_type = &vk.bridge_type;
                     quote! {
                         &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                     }
@@ -762,7 +769,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
                 let ok_branch = match ok {
                     Some(vk) => {
-                        let MetaValueKind::Regular { bridge_type } = vk;
+                        let bridge_type = &vk.bridge_type;
                         quote! {
                             Ok(ok_val) => {
                                 unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
@@ -950,9 +957,6 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     let vtable_c_name = meta.vtable_c_name();
     let type_pfx = meta.type_pfx();
     let fn_pfx = meta.fn_pfx();
-    let trait_path = &meta.trait_path;
-    let _ = trait_path; // available if needed for qualified paths
-
     let constructor_name_str = meta.constructor_name();
     let constructor_name = format_ident!("{}", constructor_name_str);
 
@@ -1054,36 +1058,6 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 // ===========================================================================
 // Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
 // ===========================================================================
-
-/// Erase named lifetimes from a token stream by parsing as a type,
-/// replacing all lifetimes with `'static`, and re-quoting.
-/// Used for extern fn signatures where lifetimes aren't in scope.
-/// Erase lifetimes from type tokens for extern fn signatures.
-/// Replaces named lifetimes with `'static` and adds `'static` to
-/// bare references (`&str` → `&'static str`).
-fn erase_lifetimes_tokens(tokens: &TokenStream2) -> TokenStream2 {
-    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
-        struct Eraser;
-        impl syn::visit_mut::VisitMut for Eraser {
-            fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
-                *lt = syn::Lifetime::new("'static", lt.apostrophe);
-            }
-            fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
-                // Add 'static to bare references (elided lifetimes)
-                if r.lifetime.is_none() {
-                    r.lifetime =
-                        Some(syn::Lifetime::new("'static", proc_macro2::Span::call_site()));
-                }
-                syn::visit_mut::visit_type_reference_mut(self, r);
-            }
-        }
-        let mut ty = ty;
-        syn::visit_mut::VisitMut::visit_type_mut(&mut Eraser, &mut ty);
-        quote! { #ty }
-    } else {
-        tokens.clone()
-    }
-}
 
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
 pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
@@ -1242,7 +1216,7 @@ pub fn c_return_type(
     rust_ret: &TokenStream2,
     ctx: &SignatureContext,
 ) -> TokenStream2 {
-    let MetaValueKind::Regular { bridge_type } = kind;
+    let bridge_type = &kind.bridge_type;
     let ty = match ctx {
         SignatureContext::Client => erase_lifetimes_tokens(rust_ret),
         SignatureContext::Bridge => bridge_type.clone(),
@@ -1286,10 +1260,7 @@ fn meta_param_conversion(
     }
 }
 
-fn meta_param_c_type_expr(
-    kind: &MetaParamKind,
-    type_pfx: &str,
-) -> TokenStream2 {
+fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular { bridge_type } => {
             quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
@@ -1557,7 +1528,7 @@ impl HeaderBuilder {
         }
     }
 
-    pub fn add(mut self, section: HeaderSection) -> Self {
+    pub fn push(mut self, section: HeaderSection) -> Self {
         self.sections.push(section);
         self
     }

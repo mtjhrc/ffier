@@ -1,5 +1,4 @@
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
-use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -426,16 +425,6 @@ pub trait Processor: Observer {
     fn name(&self) -> &str;
 }
 
-pub trait IntoProcessor {
-    fn into_processor(self) -> Arc<dyn Processor>;
-}
-
-impl<T: Processor + 'static> IntoProcessor for T {
-    fn into_processor(self) -> Arc<dyn Processor> {
-        Arc::new(self)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline — uses dyn_param with Processor
 // ---------------------------------------------------------------------------
@@ -527,45 +516,94 @@ impl Fruit for Orange {
 // 9 variants (8 concrete + VtableFruit). 9^2 = 81 > 64 dispatch limit.
 pub struct Banana(i32);
 #[ffier::exportable]
-impl Banana { pub fn new(v: i32) -> Self { Banana(v) } }
+impl Banana {
+    pub fn new(v: i32) -> Self {
+        Banana(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Banana { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Banana {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Mango(i32);
 #[ffier::exportable]
-impl Mango { pub fn new(v: i32) -> Self { Mango(v) } }
+impl Mango {
+    pub fn new(v: i32) -> Self {
+        Mango(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Mango { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Mango {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Peach(i32);
 #[ffier::exportable]
-impl Peach { pub fn new(v: i32) -> Self { Peach(v) } }
+impl Peach {
+    pub fn new(v: i32) -> Self {
+        Peach(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Peach { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Peach {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Plum(i32);
 #[ffier::exportable]
-impl Plum { pub fn new(v: i32) -> Self { Plum(v) } }
+impl Plum {
+    pub fn new(v: i32) -> Self {
+        Plum(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Plum { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Plum {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Grape(i32);
 #[ffier::exportable]
-impl Grape { pub fn new(v: i32) -> Self { Grape(v) } }
+impl Grape {
+    pub fn new(v: i32) -> Self {
+        Grape(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Grape { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Grape {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Lemon(i32);
 #[ffier::exportable]
-impl Lemon { pub fn new(v: i32) -> Self { Lemon(v) } }
+impl Lemon {
+    pub fn new(v: i32) -> Self {
+        Lemon(v)
+    }
+}
 #[ffier::trait_impl]
-impl Fruit for Lemon { fn value(&self) -> i32 { self.0 } }
+impl Fruit for Lemon {
+    fn value(&self) -> i32 {
+        self.0
+    }
+}
 
 pub struct Mixer {
     total: i32,
 }
 
 #[ffier::exportable]
+#[allow(clippy::should_implement_trait)]
 impl Mixer {
     pub fn new() -> Self {
         Mixer { total: 0 }
@@ -577,21 +615,33 @@ impl Mixer {
     }
 
     /// Both concrete (9^2=81 > 64, override with annotation).
-    pub fn blend_concrete(&mut self, #[ffier(dispatch = concrete)] a: impl Fruit, #[ffier(dispatch = concrete)] b: impl Fruit) -> i32 {
+    pub fn blend_concrete(
+        &mut self,
+        #[ffier(dispatch = concrete)] a: impl Fruit,
+        #[ffier(dispatch = concrete)] b: impl Fruit,
+    ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
         sum
     }
 
     /// First concrete, second vtable (hybrid: 9+9=18 branches).
-    pub fn blend_hybrid(&mut self, a: impl Fruit, #[ffier(dispatch = vtable)] b: impl Fruit) -> i32 {
+    pub fn blend_hybrid(
+        &mut self,
+        a: impl Fruit,
+        #[ffier(dispatch = vtable)] b: impl Fruit,
+    ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
         sum
     }
 
     /// Both vtable (9+9=18 branches).
-    pub fn blend_dynamic(&mut self, #[ffier(dispatch = vtable)] a: impl Fruit, #[ffier(dispatch = vtable)] b: impl Fruit) -> i32 {
+    pub fn blend_dynamic(
+        &mut self,
+        #[ffier(dispatch = vtable)] a: impl Fruit,
+        #[ffier(dispatch = vtable)] b: impl Fruit,
+    ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
         sum

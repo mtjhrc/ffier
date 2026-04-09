@@ -115,6 +115,79 @@ pub fn peek_meta_field(input: &TokenStream, field: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Lifetime erasure helpers
+// ---------------------------------------------------------------------------
+
+/// Replace all named lifetimes with `'static` in a parsed type.
+///
+/// Used by annotations to produce types that can be used at the FFI boundary
+/// (reexport modules, bridge macros) without free lifetime params.
+pub fn erase_lifetimes(ty: &syn::Type) -> syn::Type {
+    use syn::visit_mut::VisitMut;
+    struct Eraser;
+    impl VisitMut for Eraser {
+        fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+            *lt = syn::Lifetime::new("'static", lt.apostrophe);
+        }
+    }
+    let mut ty = ty.clone();
+    Eraser.visit_type_mut(&mut ty);
+    ty
+}
+
+/// Erase lifetimes from type tokens for extern fn signatures.
+///
+/// Replaces named lifetimes with `'static` and adds `'static` to bare
+/// references (`&str` → `&'static str`). Operates on token streams —
+/// falls back to returning the input unchanged if parsing fails.
+pub fn erase_lifetimes_tokens(tokens: &TokenStream) -> TokenStream {
+    use quote::quote;
+    use syn::visit_mut::VisitMut;
+    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
+        struct Eraser;
+        impl VisitMut for Eraser {
+            fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+                *lt = syn::Lifetime::new("'static", lt.apostrophe);
+            }
+            fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
+                // Add 'static to bare references (elided lifetimes)
+                if r.lifetime.is_none() {
+                    r.lifetime = Some(syn::Lifetime::new(
+                        "'static",
+                        proc_macro2::Span::call_site(),
+                    ));
+                }
+                syn::visit_mut::visit_type_reference_mut(self, r);
+            }
+        }
+        let mut ty = ty;
+        syn::visit_mut::VisitMut::visit_type_mut(&mut Eraser, &mut ty);
+        quote! { #ty }
+    } else {
+        tokens.clone()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Prefix helpers --- shared formatting for C ABI names
+// ---------------------------------------------------------------------------
+
+/// Returns `"{prefix}_"` — used for C function name prefixes.
+pub fn fn_pfx(prefix: &str) -> String {
+    format!("{prefix}_")
+}
+
+/// Returns `snake_to_pascal(prefix)` — used for C type name prefixes.
+pub fn type_pfx(prefix: &str) -> String {
+    snake_to_pascal(prefix)
+}
+
+/// Returns `"{PREFIX}_"` — used for C constant name prefixes.
+pub fn upper_pfx(prefix: &str) -> String {
+    format!("{}_", prefix.to_ascii_uppercase())
+}
+
+// ---------------------------------------------------------------------------
 // Metadata types --- parsed from the metadata macro's token stream
 // ---------------------------------------------------------------------------
 
@@ -129,25 +202,19 @@ pub struct MetaExportable {
 
 impl MetaExportable {
     pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
+        fn_pfx(&self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
+        type_pfx(&self.prefix)
     }
 
     pub fn upper_pfx(&self) -> String {
-        format!("{}_", self.prefix.to_ascii_uppercase())
+        upper_pfx(&self.prefix)
     }
 
     pub fn handle_c_name(&self) -> String {
         format!("{}{}", self.type_pfx(), self.struct_name)
-    }
-
-    pub fn uses_slices(&self) -> bool {
-        // With trait-based type mapping, we can't detect slice usage at parse
-        // time. Always emit the shared types — unused typedefs are harmless.
-        true
     }
 }
 
@@ -210,16 +277,12 @@ pub enum MetaReturn {
     Value(MetaValueKind),
     Result {
         ok: Option<MetaValueKind>,
-        #[allow(dead_code)]
-        err_bridge_type: TokenStream,
         err_ident: String,
     },
 }
 
-pub enum MetaValueKind {
-    Regular {
-        bridge_type: TokenStream,
-    },
+pub struct MetaValueKind {
+    pub bridge_type: TokenStream,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,15 +298,15 @@ pub struct MetaError {
 
 impl MetaError {
     pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
+        fn_pfx(&self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
+        type_pfx(&self.prefix)
     }
 
     pub fn upper_pfx(&self) -> String {
-        format!("{}_", self.prefix.to_ascii_uppercase())
+        upper_pfx(&self.prefix)
     }
 }
 
@@ -269,11 +332,11 @@ pub struct MetaImplementable {
 
 impl MetaImplementable {
     pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
+        fn_pfx(&self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
+        type_pfx(&self.prefix)
     }
 
     pub fn vtable_c_name(&self) -> String {
@@ -334,11 +397,11 @@ pub struct MetaTraitImpl {
 
 impl MetaTraitImpl {
     pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
+        fn_pfx(&self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
+        type_pfx(&self.prefix)
     }
 }
 
@@ -606,7 +669,10 @@ impl syn::parse::Parse for MetaParam {
                         ));
                     }
                 };
-                MetaParamKind::ImplTrait { trait_name, dispatch }
+                MetaParamKind::ImplTrait {
+                    trait_name,
+                    dispatch,
+                }
             }
             other => {
                 return Err(syn::Error::new(
@@ -663,19 +729,11 @@ impl syn::parse::Parse for MetaReturn {
                 };
                 content.parse::<Token![,]>()?;
 
-                expect_key(&content, "err_bridge_type")?;
-                let err_bridge_type = parse_parenthesized_tokens(&content)?;
-                content.parse::<Token![,]>()?;
-
                 expect_key(&content, "err_ident")?;
                 let err_ident = parse_string(&content)?;
                 parse_comma(&content)?;
 
-                Ok(MetaReturn::Result {
-                    ok,
-                    err_bridge_type,
-                    err_ident,
-                })
+                Ok(MetaReturn::Result { ok, err_ident })
             }
             other => Err(syn::Error::new(
                 kind.span(),
@@ -694,7 +752,7 @@ impl syn::parse::Parse for MetaValueKind {
                 expect_key(input, "bridge_type")?;
                 let bridge_type = parse_parenthesized_tokens(input)?;
                 parse_comma(input)?;
-                Ok(MetaValueKind::Regular { bridge_type })
+                Ok(MetaValueKind { bridge_type })
             }
             other => Err(syn::Error::new(
                 kind.span(),
@@ -829,44 +887,7 @@ impl syn::parse::Parse for MetaImplementable {
         parse_comma(input)?;
 
         expect_key(input, "vtable_methods")?;
-        let vtable_methods = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut ms = Vec::new();
-            while !content.is_empty() {
-                let inner;
-                syn::braced!(inner in content);
-                expect_key(&inner, "name")?;
-                let mname: Ident = inner.parse()?;
-                parse_comma(&inner)?;
-                expect_key(&inner, "params")?;
-                let params = {
-                    let pinner;
-                    syn::bracketed!(pinner in inner);
-                    let mut ps = Vec::new();
-                    while !pinner.is_empty() {
-                        ps.push(parse_vtable_param(&pinner)?);
-                        if !pinner.is_empty() && pinner.peek(Token![,]) {
-                            pinner.parse::<Token![,]>()?;
-                        }
-                    }
-                    ps
-                };
-                parse_comma(&inner)?;
-                expect_key(&inner, "ret")?;
-                let ret = parse_vtable_ret(&inner)?;
-                parse_comma(&inner)?;
-                ms.push(MetaVtableMethod {
-                    name: mname,
-                    params,
-                    ret,
-                });
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            ms
-        };
+        let vtable_methods = parse_vtable_methods(input)?;
         parse_comma(input)?;
 
         Ok(MetaImplementable {
@@ -879,6 +900,50 @@ impl syn::parse::Parse for MetaImplementable {
             vtable_methods,
         })
     }
+}
+
+fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
+    let inner;
+    syn::braced!(inner in input);
+    expect_key(&inner, "name")?;
+    let mname: Ident = inner.parse()?;
+    parse_comma(&inner)?;
+    expect_key(&inner, "params")?;
+    let params = {
+        let pinner;
+        syn::bracketed!(pinner in inner);
+        let mut ps = Vec::new();
+        while !pinner.is_empty() {
+            ps.push(parse_vtable_param(&pinner)?);
+            if !pinner.is_empty() && pinner.peek(Token![,]) {
+                pinner.parse::<Token![,]>()?;
+            }
+        }
+        ps
+    };
+    parse_comma(&inner)?;
+    expect_key(&inner, "ret")?;
+    let ret = parse_vtable_ret(&inner)?;
+    parse_comma(&inner)?;
+    Ok(MetaVtableMethod {
+        name: mname,
+        params,
+        ret,
+    })
+}
+
+/// Parse a bracketed list of vtable methods: `[ { name = ..., params = [...], ret = ... }, ... ]`.
+fn parse_vtable_methods(input: ParseStream) -> syn::Result<Vec<MetaVtableMethod>> {
+    let content;
+    syn::bracketed!(content in input);
+    let mut ms = Vec::new();
+    while !content.is_empty() {
+        ms.push(parse_vtable_method(&content)?);
+        if !content.is_empty() && content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(ms)
 }
 
 fn parse_vtable_param(input: ParseStream) -> syn::Result<MetaVtableParam> {
@@ -989,44 +1054,7 @@ impl syn::parse::Parse for MetaTraitImpl {
         parse_comma(input)?;
 
         expect_key(input, "methods")?;
-        let methods = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut ms = Vec::new();
-            while !content.is_empty() {
-                let inner;
-                syn::braced!(inner in content);
-                expect_key(&inner, "name")?;
-                let mname: Ident = inner.parse()?;
-                parse_comma(&inner)?;
-                expect_key(&inner, "params")?;
-                let params = {
-                    let pinner;
-                    syn::bracketed!(pinner in inner);
-                    let mut ps = Vec::new();
-                    while !pinner.is_empty() {
-                        ps.push(parse_vtable_param(&pinner)?);
-                        if !pinner.is_empty() && pinner.peek(Token![,]) {
-                            pinner.parse::<Token![,]>()?;
-                        }
-                    }
-                    ps
-                };
-                parse_comma(&inner)?;
-                expect_key(&inner, "ret")?;
-                let ret = parse_vtable_ret(&inner)?;
-                parse_comma(&inner)?;
-                ms.push(MetaVtableMethod {
-                    name: mname,
-                    params,
-                    ret,
-                });
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            ms
-        };
+        let methods = parse_vtable_methods(input)?;
         parse_comma(input)?;
 
         Ok(MetaTraitImpl {
@@ -1041,4 +1069,3 @@ impl syn::parse::Parse for MetaTraitImpl {
         })
     }
 }
-

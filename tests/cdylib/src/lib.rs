@@ -7,7 +7,12 @@ ffier_test_lib::__ffier_ft_library!(ffier_gen_c_macros::generate);
 
 /// Returns the concrete type name inside the handle ("Apple", "Orange",
 /// "VtableFruit", or "unknown"). Consumes and destroys the handle.
+///
+/// # Safety
+/// `handle` must be a valid handle to an `Apple`, `Orange`, or `VtableFruit`,
+/// or `NULL`. The handle is consumed and must not be used after this call.
 #[unsafe(no_mangle)]
+#[allow(clippy::drop_non_drop)]
 pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     handle: *mut core::ffi::c_void,
 ) -> ffier::FfierBytes {
@@ -618,7 +623,10 @@ mod tests {
     fn mixer_blend_concrete() {
         unsafe {
             let m = ft_mixer_new();
-            assert_eq!(ft_mixer_blend_concrete(m, ft_apple_new(10), ft_orange_new(20)), 30);
+            assert_eq!(
+                ft_mixer_blend_concrete(m, ft_apple_new(10), ft_orange_new(20)),
+                30
+            );
             assert_eq!(ft_mixer_total(m), 30);
             ft_mixer_destroy(m);
         }
@@ -628,7 +636,10 @@ mod tests {
     fn mixer_blend_hybrid() {
         unsafe {
             let m = ft_mixer_new();
-            assert_eq!(ft_mixer_blend_hybrid(m, ft_apple_new(5), ft_banana_new(15)), 20);
+            assert_eq!(
+                ft_mixer_blend_hybrid(m, ft_apple_new(5), ft_banana_new(15)),
+                20
+            );
             assert_eq!(ft_mixer_total(m), 20);
             ft_mixer_destroy(m);
         }
@@ -638,7 +649,10 @@ mod tests {
     fn mixer_blend_dynamic() {
         unsafe {
             let m = ft_mixer_new();
-            assert_eq!(ft_mixer_blend_dynamic(m, ft_mango_new(3), ft_lemon_new(7)), 10);
+            assert_eq!(
+                ft_mixer_blend_dynamic(m, ft_mango_new(3), ft_lemon_new(7)),
+                10
+            );
             assert_eq!(ft_mixer_total(m), 10);
             ft_mixer_destroy(m);
         }

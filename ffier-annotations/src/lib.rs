@@ -6,6 +6,8 @@ use syn::{
     visit_mut::VisitMut,
 };
 
+use ffier_meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
+
 // ---------------------------------------------------------------------------
 // Type classification for params and return values
 // ---------------------------------------------------------------------------
@@ -16,7 +18,10 @@ enum ParamKind {
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
-    ImplTrait { trait_name: String, dispatch: String },
+    ImplTrait {
+        trait_name: String,
+        dispatch: String,
+    },
 }
 
 enum ValueKind {
@@ -28,7 +33,6 @@ enum ReturnKind {
     Value(ValueKind),
     Result {
         ok_ty: Option<ValueKind>,
-        err_ty: proc_macro2::TokenStream,
         err_ident: String,
     },
 }
@@ -43,7 +47,6 @@ struct MethodInfo {
     /// the bridge macro writes the returned Self back into the handle.
     is_builder: bool,
     param_idents: Vec<syn::Ident>,
-    param_name_strs: Vec<String>,
     param_kinds: Vec<ParamKind>,
     /// Original Rust parameter types (lifetime-erased, Self-replaced) for client codegen.
     param_orig_types: Vec<Type>,
@@ -83,6 +86,49 @@ fn classify_value(
         alias_counter,
         helper_mod,
     ))
+}
+
+/// Emit `impl FfiHandle for T` and `impl FfiType for T` blocks for an exported type.
+///
+/// `ty` is the type (e.g. `Widget` or `VtableFruit`), `c_handle_name` is the
+/// C handle typedef name string (e.g. `"Widget"`, `"VtableFruit"`).
+fn emit_ffi_handle_impls(
+    ty: &proc_macro2::TokenStream,
+    c_handle_name: &str,
+) -> proc_macro2::TokenStream {
+    quote! {
+        impl ffier::FfiHandle for #ty {
+            const C_HANDLE_NAME: &str = #c_handle_name;
+            fn as_handle(&self) -> *mut core::ffi::c_void {
+                let value_offset = core::mem::offset_of!(
+                    ffier::FfierTaggedBox<Self>, value
+                );
+                let box_ptr = (self as *const Self as *const u8)
+                    .wrapping_sub(value_offset);
+                box_ptr as *mut core::ffi::c_void
+            }
+        }
+
+        impl ffier::FfiType for #ty {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &str = #c_handle_name;
+            fn into_c(self) -> *mut core::ffi::c_void {
+                let tagged = ffier::FfierTaggedBox {
+                    type_id: core::any::TypeId::of::<Self>(),
+                    value: self,
+                };
+                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
+            }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                unsafe {
+                    let tagged = Box::from_raw(
+                        repr as *mut ffier::FfierTaggedBox<Self>
+                    );
+                    tagged.value
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +214,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         };
 
         let mut param_idents = Vec::new();
-        let mut param_name_strs = Vec::new();
         let mut param_kinds = Vec::new();
         let mut param_orig_types = Vec::new();
 
@@ -179,7 +224,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 continue;
             };
             param_idents.push(pat_ident.ident.clone());
-            param_name_strs.push(pat_ident.ident.to_string());
 
             // Capture original type (Self-replaced, lifetimes preserved) for client codegen
             let param_ty_orig = replace_self_type(&pat_ty.ty, self_ty);
@@ -187,9 +231,12 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
             // Auto-detect `impl Trait` params — generator resolves dispatch types
             if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
-                let dispatch = parse_ffier_dispatch(&pat_ty.attrs)
-                    .unwrap_or_else(|| "auto".to_string());
-                param_kinds.push(ParamKind::ImplTrait { trait_name, dispatch });
+                let dispatch =
+                    parse_ffier_dispatch(&pat_ty.attrs).unwrap_or_else(|| "auto".to_string());
+                param_kinds.push(ParamKind::ImplTrait {
+                    trait_name,
+                    dispatch,
+                });
                 continue;
             }
 
@@ -237,13 +284,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     ReturnKind::Void
                 } else if let Some((ok, err)) = extract_result_types(ty) {
                     let err_ident = type_ident_name(&err);
-                    let err_tokens = type_tokens_for_macro(
-                        &err,
-                        &mut reexport_types,
-                        &mut reexport_aliases,
-                        &mut alias_counter,
-                        &helper_mod_name,
-                    );
                     // Result<Self, E> in builder context → treat as Result<(), E> for C
                     let ok_kind = if is_unit_type(&ok)
                         || (is_builder_return && is_self_return(&ok, &self_ty_static))
@@ -261,7 +301,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     };
                     ReturnKind::Result {
                         ok_ty: ok_kind,
-                        err_ty: err_tokens,
                         err_ident,
                     }
                 } else {
@@ -287,7 +326,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             is_by_value,
             is_builder: is_builder_return,
             param_idents,
-            param_name_strs,
             param_kinds,
             param_orig_types,
             ret,
@@ -311,7 +349,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // -----------------------------------------------------------------------
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
-
 
     let reexport_items: Vec<_> = reexport_types
         .iter()
@@ -413,41 +450,12 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_path_tokens = quote! { $crate::#struct_ident };
 
     let struct_name_lit = struct_name;
+    let ffi_handle_impls = emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit);
 
     let output = quote! {
         #impl_block
 
-        impl ffier::FfiHandle for #self_ty_static {
-            const C_HANDLE_NAME: &str = #struct_name_lit;
-            fn as_handle(&self) -> *mut core::ffi::c_void {
-                let value_offset = core::mem::offset_of!(
-                    ffier::FfierTaggedBox<Self>, value
-                );
-                let box_ptr = (self as *const Self as *const u8)
-                    .wrapping_sub(value_offset);
-                box_ptr as *mut core::ffi::c_void
-            }
-        }
-
-        impl ffier::FfiType for #self_ty_static {
-            type CRepr = *mut core::ffi::c_void;
-            const C_TYPE_NAME: &str = #struct_name_lit;
-            fn into_c(self) -> *mut core::ffi::c_void {
-                let tagged = ffier::FfierTaggedBox {
-                    type_id: core::any::TypeId::of::<Self>(),
-                    value: self,
-                };
-                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
-            }
-            fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe {
-                    let tagged = Box::from_raw(
-                        repr as *mut ffier::FfierTaggedBox<Self>
-                    );
-                    tagged.value
-                }
-            }
-        }
+        #ffi_handle_impls
 
         #(#warnings)*
 
@@ -527,39 +535,6 @@ fn is_self_return(ty: &Type, target: &Type) -> bool {
         _ => ty.to_token_stream().to_string().replace(' ', ""),
     };
     inner == tgt
-}
-
-pub(crate) fn camel_to_snake(s: &str) -> String {
-    let mut out = String::new();
-    for (i, ch) in s.chars().enumerate() {
-        if ch.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(ch.to_ascii_lowercase());
-        } else {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-pub(crate) fn camel_to_upper_snake(s: &str) -> String {
-    camel_to_snake(s).to_ascii_uppercase()
-}
-
-/// Replace all named lifetimes with `'static` so types can be used at the
-/// FFI boundary (reexport modules, bridge macros) without free lifetime params.
-fn erase_lifetimes(ty: &Type) -> Type {
-    struct Eraser;
-    impl VisitMut for Eraser {
-        fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
-            *lt = syn::Lifetime::new("'static", lt.apostrophe);
-        }
-    }
-    let mut ty = ty.clone();
-    Eraser.visit_type_mut(&mut ty);
-    ty
 }
 
 /// Replace all occurrences of `Self` in a type with a concrete type.
@@ -678,7 +653,10 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
             quote! { regular, bridge_type = (#bridge_type) }
         }
         ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::ImplTrait { trait_name, dispatch } => {
+        ParamKind::ImplTrait {
+            trait_name,
+            dispatch,
+        } => {
             let dispatch_ident = format_ident!("{dispatch}");
             quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
         }
@@ -700,11 +678,7 @@ fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
             let vk_tokens = emit_value_kind(vk);
             quote! { value(#vk_tokens) }
         }
-        ReturnKind::Result {
-            ok_ty,
-            err_ty,
-            err_ident,
-        } => {
+        ReturnKind::Result { ok_ty, err_ident } => {
             let ok_tokens = match ok_ty {
                 None => quote! { ok = void },
                 Some(vk) => {
@@ -712,7 +686,7 @@ fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
                     quote! { ok = some(#vk_tokens) }
                 }
             };
-            quote! { result(#ok_tokens, err_bridge_type = (#err_ty), err_ident = #err_ident,) }
+            quote! { result(#ok_tokens, err_ident = #err_ident,) }
         }
     }
 }
@@ -750,10 +724,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut code_arms = Vec::new();
     let mut message_arms = Vec::new();
     let mut codes_entries = Vec::new();
-    // For client error enum generation
-    let mut client_variant_idents = Vec::new();
-    let mut client_from_ffi_arms = Vec::new();
-    let mut client_display_arms = Vec::new();
 
     for variant in &data_enum.variants {
         let var_ident = &variant.ident;
@@ -780,11 +750,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         });
 
         codes_entries.push(quote! { (#upper_name, #code) });
-
-        // Client codegen
-        client_variant_idents.push(var_ident.clone());
-        client_from_ffi_arms.push(quote! { #code => Self::#var_ident });
-        client_display_arms.push(quote! { Self::#var_ident => write!(f, #message) });
     }
 
     let unknown_msg = format!(
@@ -792,9 +757,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         camel_to_snake(&name.to_string()).replace('_', " ")
     );
     let unknown_lit = proc_macro2::Literal::byte_string(unknown_msg.as_bytes());
-
-    let name_str = name.to_string();
-    let err_snake = camel_to_snake(&name_str);
 
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{name}");
     let check_const_name = format_ident!("__ffier_library_has_defined_{name}");
@@ -945,10 +907,10 @@ fn parse_ffier_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
 fn extract_impl_trait_name(ty: &Type) -> Option<String> {
     if let Type::ImplTrait(impl_trait) = ty {
         for bound in &impl_trait.bounds {
-            if let syn::TypeParamBound::Trait(trait_bound) = bound {
-                if let Some(seg) = trait_bound.path.segments.last() {
-                    return Some(seg.ident.to_string());
-                }
+            if let syn::TypeParamBound::Trait(trait_bound) = bound
+                && let Some(seg) = trait_bound.path.segments.last()
+            {
+                return Some(seg.ident.to_string());
             }
         }
     }
@@ -987,7 +949,6 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 // ===========================================================================
 
 struct ImplementableArgs {
-    _prefix: Option<String>,
     supers: Vec<SupertraitBlock>,
 }
 
@@ -998,7 +959,6 @@ struct SupertraitBlock {
 
 impl Parse for ImplementableArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut prefix = None;
         let mut supers = Vec::new();
 
         while !input.is_empty() {
@@ -1006,8 +966,7 @@ impl Parse for ImplementableArgs {
 
             if ident == "prefix" {
                 input.parse::<Token![=]>()?;
-                let lit: LitStr = input.parse()?;
-                prefix = Some(lit.value());
+                let _lit: LitStr = input.parse()?;
             } else if ident == "supers" {
                 let content;
                 syn::parenthesized!(content in input);
@@ -1035,10 +994,7 @@ impl Parse for ImplementableArgs {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self {
-            _prefix: prefix,
-            supers,
-        })
+        Ok(Self { supers })
     }
 }
 
@@ -1070,10 +1026,16 @@ fn extract_vtable_methods(
     let mut methods = Vec::new();
 
     for item in &trait_item.items {
-        let TraitItem::Fn(method) = item else { continue };
+        let TraitItem::Fn(method) = item else {
+            continue;
+        };
         if let Some(vm) = parse_trait_method_sig(
-            &method.sig, None,
-            reexport_types, reexport_aliases, alias_counter, helper_mod,
+            &method.sig,
+            None,
+            reexport_types,
+            reexport_aliases,
+            alias_counter,
+            helper_mod,
         ) {
             methods.push(vm);
         }
@@ -1082,8 +1044,12 @@ fn extract_vtable_methods(
     for sup in supers {
         for method in &sup.methods {
             if let Some(vm) = parse_trait_method_sig(
-                &method.sig, Some(sup.trait_name.clone()),
-                reexport_types, reexport_aliases, alias_counter, helper_mod,
+                &method.sig,
+                Some(sup.trait_name.clone()),
+                reexport_types,
+                reexport_aliases,
+                alias_counter,
+                helper_mod,
             ) {
                 methods.push(vm);
             }
@@ -1112,9 +1078,15 @@ fn parse_trait_method_sig(
         .skip(1)
         .filter_map(|arg| {
             let FnArg::Typed(pt) = arg else { return None };
-            let Pat::Ident(pi) = &*pt.pat else { return None };
+            let Pat::Ident(pi) = &*pt.pat else {
+                return None;
+            };
             let bridge_type = bridge_tokens_for_type(
-                &pt.ty, reexport_types, reexport_aliases, alias_counter, helper_mod,
+                &pt.ty,
+                reexport_types,
+                reexport_aliases,
+                alias_counter,
+                helper_mod,
             );
             let erased = erase_lifetimes(&pt.ty);
             let rust_type = quote! { #erased };
@@ -1130,7 +1102,11 @@ fn parse_trait_method_sig(
         ReturnType::Default => (None, None),
         ReturnType::Type(_, ty) => {
             let bt = bridge_tokens_for_type(
-                ty, reexport_types, reexport_aliases, alias_counter, helper_mod,
+                ty,
+                reexport_types,
+                reexport_aliases,
+                alias_counter,
+                helper_mod,
             );
             let erased = erase_lifetimes(ty);
             (Some(bt), Some(quote! { #erased }))
@@ -1164,18 +1140,27 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .items
         .iter()
         .filter_map(|item| {
-            let TraitItem::Fn(method) = item else { return None };
+            let TraitItem::Fn(method) = item else {
+                return None;
+            };
             let sig = &method.sig;
             // Must have &self receiver
             if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
                 return None;
             }
             let name = &sig.ident;
-            let params: Vec<_> = sig.inputs.iter().skip(1).filter_map(|arg| {
-                let FnArg::Typed(pt) = arg else { return None };
-                let Pat::Ident(pi) = &*pt.pat else { return None };
-                Some(pi.ident.clone())
-            }).collect();
+            let params: Vec<_> = sig
+                .inputs
+                .iter()
+                .skip(1)
+                .filter_map(|arg| {
+                    let FnArg::Typed(pt) = arg else { return None };
+                    let Pat::Ident(pi) = &*pt.pat else {
+                        return None;
+                    };
+                    Some(pi.ident.clone())
+                })
+                .collect();
             let call = quote! { self.0.#name(#(#params),*) };
             Some(quote! { #sig { #call } })
         })
@@ -1205,6 +1190,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
+    let wrapper_ffi_handle_impls =
+        emit_ffi_handle_impls(&quote! { #wrapper_name }, &wrapper_c_handle_suffix);
 
     // Reexport state for bridge_tokens_for_type
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
@@ -1214,8 +1201,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Extract all methods (trait + supertraits)
     let vtable_methods = extract_vtable_methods(
-        &trait_item, &args.supers,
-        &mut reexport_types, &mut reexport_aliases, &mut alias_counter, &helper_mod_name,
+        &trait_item,
+        &args.supers,
+        &mut reexport_types,
+        &mut reexport_aliases,
+        &mut alias_counter,
+        &helper_mod_name,
     );
 
     // --- Generate vtable struct fields ---
@@ -1303,7 +1294,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .items
         .iter()
         .filter_map(|item| {
-            let TraitItem::Fn(method) = item else { return None };
+            let TraitItem::Fn(method) = item else {
+                return None;
+            };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
             Some(vtable_call_body(vm, &method.sig))
@@ -1383,24 +1376,36 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
     let has_supertraits = !args.supers.is_empty()
-        || trait_item.supertraits.iter().any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
+        || trait_item
+            .supertraits
+            .iter()
+            .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
 
     let boxdyn_impl = if !has_supertraits {
         let boxdyn_method_impls: Vec<_> = trait_item
             .items
             .iter()
             .filter_map(|item| {
-                let TraitItem::Fn(method) = item else { return None };
+                let TraitItem::Fn(method) = item else {
+                    return None;
+                };
                 let sig = &method.sig;
                 if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
                     return None;
                 }
                 let name = &sig.ident;
-                let params: Vec<_> = sig.inputs.iter().skip(1).filter_map(|arg| {
-                    let FnArg::Typed(pt) = arg else { return None };
-                    let Pat::Ident(pi) = &*pt.pat else { return None };
-                    Some(pi.ident.clone())
-                }).collect();
+                let params: Vec<_> = sig
+                    .inputs
+                    .iter()
+                    .skip(1)
+                    .filter_map(|arg| {
+                        let FnArg::Typed(pt) = arg else { return None };
+                        let Pat::Ident(pi) = &*pt.pat else {
+                            return None;
+                        };
+                        Some(pi.ident.clone())
+                    })
+                    .collect();
                 Some(quote! { #sig { self.0.#name(#(#params),*) } })
             })
             .collect();
@@ -1450,37 +1455,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
 
-        impl ffier::FfiHandle for #wrapper_name {
-            const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
-            fn as_handle(&self) -> *mut core::ffi::c_void {
-                let value_offset = core::mem::offset_of!(
-                    ffier::FfierTaggedBox<Self>, value
-                );
-                let box_ptr = (self as *const Self as *const u8)
-                    .wrapping_sub(value_offset);
-                box_ptr as *mut core::ffi::c_void
-            }
-        }
-
-        impl ffier::FfiType for #wrapper_name {
-            type CRepr = *mut core::ffi::c_void;
-            const C_TYPE_NAME: &str = #wrapper_c_handle_suffix;
-            fn into_c(self) -> *mut core::ffi::c_void {
-                let tagged = ffier::FfierTaggedBox {
-                    type_id: core::any::TypeId::of::<Self>(),
-                    value: self,
-                };
-                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
-            }
-            fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe {
-                    let tagged = Box::from_raw(
-                        repr as *mut ffier::FfierTaggedBox<Self>
-                    );
-                    tagged.value
-                }
-            }
-        }
+        #wrapper_ffi_handle_impls
 
         /// If you see an error about this constant not being found in the crate root,
         /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
@@ -1582,12 +1557,16 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let ImplItem::Fn(method) = item else {
                 return None;
             };
-            if method.attrs.iter().any(|a| is_ffier_skip(a)) {
+            if method.attrs.iter().any(is_ffier_skip) {
                 return None;
             }
             parse_trait_method_sig(
-                &method.sig, None,
-                &mut reexport_types, &mut reexport_aliases, &mut alias_counter, &helper_mod_name,
+                &method.sig,
+                None,
+                &mut reexport_types,
+                &mut reexport_aliases,
+                &mut alias_counter,
+                &helper_mod_name,
             )
         })
         .collect();
@@ -1634,7 +1613,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_ident}");
-    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_ident}");
+    let check_const_name =
+        format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -1724,16 +1704,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     }
 
     if macro_idents.is_empty() {
-        return quote! { compile_error!("library_definition! requires at least one type"); }
-            .into();
+        return quote! { compile_error!("library_definition! requires at least one type"); }.into();
     }
 
     let first = &macro_idents[0];
     let rest = &macro_idents[1..];
-    let rest_paths: Vec<proc_macro2::TokenStream> = rest
-        .iter()
-        .map(|id| quote! { $crate::#id })
-        .collect();
+    let rest_paths: Vec<proc_macro2::TokenStream> =
+        rest.iter().map(|id| quote! { $crate::#id }).collect();
 
     let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
 

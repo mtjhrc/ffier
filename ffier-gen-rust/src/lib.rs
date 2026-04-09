@@ -31,18 +31,18 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
     let mut trait_impls = Vec::new();
 
     for tt in input {
-        if let proc_macro2::TokenTree::Group(g) = tt {
-            if g.delimiter() == proc_macro2::Delimiter::Brace {
-                let stream = g.stream();
-                match peek_meta_tag(&stream).as_str() {
-                    "error" => errors.push(stream),
-                    "exportable" => exportables.push(stream),
-                    "implementable" => implementables.push(stream),
-                    "trait_impl" => trait_impls.push(stream),
-                    tag => {
-                        let msg = format!("unknown metadata tag `@{tag}` in batch");
-                        return quote! { compile_error!(#msg); };
-                    }
+        if let proc_macro2::TokenTree::Group(g) = tt
+            && g.delimiter() == proc_macro2::Delimiter::Brace
+        {
+            let stream = g.stream();
+            match peek_meta_tag(&stream).as_str() {
+                "error" => errors.push(stream),
+                "exportable" => exportables.push(stream),
+                "implementable" => implementables.push(stream),
+                "trait_impl" => trait_impls.push(stream),
+                tag => {
+                    let msg = format!("unknown metadata tag `@{tag}` in batch");
+                    return quote! { compile_error!(#msg); };
                 }
             }
         }
@@ -108,7 +108,6 @@ fn generate_one(input: TokenStream2) -> TokenStream2 {
     }
 }
 
-
 // ===========================================================================
 // Exportable client generation
 // ===========================================================================
@@ -117,7 +116,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
     let struct_name = &meta.struct_name;
     let struct_name_str = struct_name.to_string();
     let struct_lower = camel_to_snake(&struct_name_str);
-    let type_pfx = meta.type_pfx();
     let fn_pfx = meta.fn_pfx();
 
     let has_lifetimes = !meta.lifetimes.is_empty();
@@ -150,7 +148,12 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 quote! { &#lt_lifetime () }
             })
             .collect();
-        quote! { , std::marker::PhantomData<(#(#lts),*)> }
+        if lts.len() == 1 {
+            let lt = &lts[0];
+            quote! { , std::marker::PhantomData<#lt> }
+        } else {
+            quote! { , std::marker::PhantomData<(#(#lts),*)> }
+        }
     } else {
         quote! {}
     };
@@ -202,7 +205,9 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         // --- Build extern "C" declaration from C generator's signature ---
         // for_client=true uses rust_type instead of bridge_type ($crate:: paths)
         let c_sig = ffier_gen_c::c_signature_for_method(
-            m, &meta.prefix, ffier_gen_c::SignatureContext::Client,
+            m,
+            &meta.prefix,
+            ffier_gen_c::SignatureContext::Client,
         );
         let ffi_name = format_ident!("{}", c_sig.fn_name);
         let sig_param_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
@@ -239,10 +244,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                         quote! { #id: #rust_type }
                     }
                     _ => {
-                        let rust_type = p
-                            .rust_type
-                            .as_ref()
-                            .expect("param must have rust_type");
+                        let rust_type = p.rust_type.as_ref().expect("param must have rust_type");
                         quote! { #id: #rust_type }
                     }
                 }
@@ -343,7 +345,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                &type_pfx,
             )
         } else if is_by_value {
             // By-value self, non-builder
@@ -354,7 +355,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                &type_pfx,
             );
             quote! {
                 let __handle = {
@@ -372,7 +372,6 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
-                &type_pfx,
             )
         };
 
@@ -756,7 +755,6 @@ fn build_client_body(
     wrapper_args: &[TokenStream2],
     wrapper_pre_bindings: &[TokenStream2],
     rust_ret: &TokenStream2,
-    _type_pfx: &str,
 ) -> TokenStream2 {
     match ret {
         MetaReturn::Void => {
@@ -814,7 +812,6 @@ fn client_result_ok_from_ffi(
         quote! { <#ok_type as ffier::FfiType>::from_c(unsafe { __out.assume_init() }) },
     )
 }
-
 
 // ===========================================================================
 // Trait impl client generation
