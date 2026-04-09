@@ -951,30 +951,8 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     // For each method, generate a C function pointer line
     for m in &meta.vtable_methods {
         let name_str = m.name.to_string();
-        let param_c_types: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| {
-                let id_str = p.name.to_string();
-                let bt = &p.bridge_type;
-                let type_expr = quote! {
-                    &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-                };
-                (id_str, type_expr)
-            })
-            .collect();
-
-        let ret_c_expr = match &m.ret {
-            MetaVtableRet::Void => quote! { "void" },
-            MetaVtableRet::Value { bridge_type, .. } => {
-                quote! {
-                    &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-                }
-            }
-        };
-
-        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
-        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
+        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
+        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
 
         header_lines.push(quote! {{
             let mut s = String::from("    ");
@@ -1571,6 +1549,33 @@ impl HeaderBuilder {
 // Trait impl bridge generation
 // ===========================================================================
 
+/// Extract C type expressions and param names from vtable method params.
+fn vtable_param_c_types(
+    params: &[ffier_meta::MetaVtableParam],
+    type_pfx: &str,
+) -> (Vec<String>, Vec<TokenStream2>) {
+    let mut names = Vec::new();
+    let mut types = Vec::new();
+    for p in params {
+        names.push(p.name.to_string());
+        let bt = &p.bridge_type;
+        types.push(quote! {
+            &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+        });
+    }
+    (names, types)
+}
+
+/// C return type expression for a vtable return.
+fn vtable_ret_c_expr(ret: &MetaVtableRet, type_pfx: &str) -> TokenStream2 {
+    match ret {
+        MetaVtableRet::Void => quote! { "void" },
+        MetaVtableRet::Value { bridge_type, .. } => quote! {
+            &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+        },
+    }
+}
+
 fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let trait_path = &meta.trait_path;
@@ -1622,29 +1627,9 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         });
 
         // Header line
-        let param_c_types: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| {
-                let id_str = p.name.to_string();
-                let bt = &p.bridge_type;
-                let type_expr = quote! {
-                    &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-                };
-                (id_str, type_expr)
-            })
-            .collect();
-
-        let ret_c_expr = match &m.ret {
-            MetaVtableRet::Void => quote! { "void" },
-            MetaVtableRet::Value { bridge_type, .. } => quote! {
-                &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-            },
-        };
-
+        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
+        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
         let handle_c_name = format!("{type_pfx}{struct_name_str}");
-        let param_id_strs: Vec<_> = param_c_types.iter().map(|(id, _)| id.clone()).collect();
-        let param_type_exprs: Vec<_> = param_c_types.iter().map(|(_, te)| te.clone()).collect();
 
         header_lines.push(quote! {{
             let mut s = String::new();

@@ -918,7 +918,6 @@ impl Parse for ImplementableArgs {
 /// A method signature extracted from a trait for vtable generation.
 struct VtableMethod {
     name: syn::Ident,
-    trait_name: Option<syn::Ident>,
     params: Vec<VtableMethodParam>,
     /// bridge_type for return (None = void)
     ret_bridge_type: Option<proc_macro2::TokenStream>,
@@ -943,15 +942,14 @@ fn extract_vtable_methods(
         let TraitItem::Fn(method) = item else {
             continue;
         };
-        if let Some(vm) = parse_trait_method_sig(&method.sig, None, ctx) {
+        if let Some(vm) = parse_trait_method_sig(&method.sig, ctx) {
             methods.push(vm);
         }
     }
 
     for sup in supers {
         for method in &sup.methods {
-            if let Some(vm) = parse_trait_method_sig(&method.sig, Some(sup.trait_name.clone()), ctx)
-            {
+            if let Some(vm) = parse_trait_method_sig(&method.sig, ctx) {
                 methods.push(vm);
             }
         }
@@ -960,11 +958,7 @@ fn extract_vtable_methods(
     methods
 }
 
-fn parse_trait_method_sig(
-    sig: &syn::Signature,
-    trait_name: Option<syn::Ident>,
-    ctx: &mut AliasContext,
-) -> Option<VtableMethod> {
+fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext) -> Option<VtableMethod> {
     let first = sig.inputs.first()?;
     if !matches!(first, FnArg::Receiver(_)) {
         return None;
@@ -1000,7 +994,6 @@ fn parse_trait_method_sig(
 
     Some(VtableMethod {
         name: sig.ident.clone(),
-        trait_name,
         params,
         ret_bridge_type,
         ret_rust_type,
@@ -1136,19 +1129,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         })
         .collect();
-
-    // --- Generate trait impl method bodies (call through vtable) ---
-    // Group methods by trait
-    let mut own_methods = Vec::new();
-    let mut super_methods: std::collections::HashMap<String, Vec<&VtableMethod>> =
-        std::collections::HashMap::new();
-
-    for m in &vtable_methods {
-        match &m.trait_name {
-            None => own_methods.push(m),
-            Some(tn) => super_methods.entry(tn.to_string()).or_default().push(m),
-        }
-    }
 
     // Build trait path with 'static lifetimes for the wrapper impl
     let trait_generics = &trait_item.generics;
@@ -1393,7 +1373,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if method.attrs.iter().any(is_ffier_skip) {
                 return None;
             }
-            parse_trait_method_sig(&method.sig, None, &mut ctx)
+            parse_trait_method_sig(&method.sig, &mut ctx)
         })
         .collect();
 
