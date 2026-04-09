@@ -10,8 +10,8 @@ use quote::{format_ident, quote};
 use std::collections::HashSet;
 
 use ffier_meta::{
-    MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, peek_meta_tag,
+    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver,
+    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, peek_meta_tag,
 };
 
 /// Generates Rust client source code from batched metadata.
@@ -53,8 +53,22 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
     let mut all_source = String::new();
 
     // Process in sorted order: errors → exportables → implementables → trait_impls.
-    for item in errors.iter().chain(exportables.iter()) {
-        let code = generate_one(item.clone());
+    for item in &errors {
+        let meta: MetaError = match syn::parse2(item.clone()) {
+            Ok(m) => m,
+            Err(e) => return e.to_compile_error(),
+        };
+        let code = generate_error_client(meta);
+        all_source.push_str(&code.to_string());
+        all_source.push('\n');
+    }
+
+    for item in &exportables {
+        let meta: MetaExportable = match syn::parse2(item.clone()) {
+            Ok(m) => m,
+            Err(e) => return e.to_compile_error(),
+        };
+        let code = generate_exportable_client(meta);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
@@ -82,30 +96,6 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
     }
 
     quote! { const FFIER_ALL_CLIENT_SRC: &str = #all_source; }
-}
-
-fn generate_one(input: TokenStream2) -> TokenStream2 {
-    let tag = peek_meta_tag(&input);
-    match tag.as_str() {
-        "exportable" => {
-            let meta: MetaExportable = match syn::parse2(input) {
-                Ok(m) => m,
-                Err(e) => return e.to_compile_error(),
-            };
-            generate_exportable_client(meta)
-        }
-        "error" => {
-            let meta: MetaError = match syn::parse2(input) {
-                Ok(m) => m,
-                Err(e) => return e.to_compile_error(),
-            };
-            generate_error_client(meta)
-        }
-        _ => {
-            let msg = format!("unknown metadata tag `@{tag}`");
-            quote! { compile_error!(#msg); }
-        }
-    }
 }
 
 // ===========================================================================

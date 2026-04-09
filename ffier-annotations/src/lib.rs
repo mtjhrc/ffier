@@ -381,15 +381,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    // Build type alias metadata tokens
-    let alias_meta_tokens: Vec<_> = ctx
-        .aliases
-        .iter()
-        .map(|alias| {
-            quote! { (#alias, $crate::#helper_mod_name::#alias) }
-        })
-        .collect();
-
     // Lifetime idents (without the tick) for metadata
     let lifetime_idents: Vec<_> = input
         .generics
@@ -428,7 +419,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
                     lifetimes = (#(#lifetime_idents),*),
-                    type_aliases = [#(#alias_meta_tokens),*],
                     methods = [#(#method_meta_tokens),*],
                 } $(, $($rest)*)? }
             };
@@ -514,6 +504,10 @@ struct AliasContext {
     helper_mod: syn::Ident,
 }
 
+const PRIMITIVES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
+];
+
 impl AliasContext {
     fn new(helper_mod: syn::Ident) -> Self {
         Self {
@@ -524,15 +518,50 @@ impl AliasContext {
         }
     }
 
-    /// Produce bridge_type tokens for any Rust type (handles references, slices, primitives).
+    /// Produce bridge_type tokens for any Rust type, including references.
+    ///
+    /// Recursively handles reference and slice types, producing tokens
+    /// that resolve via `<T as FfiType>::CRepr` in the cdylib context.
+    /// Primitives and `str` are emitted directly; everything else gets
+    /// a `$crate::helper_mod::_TypeN` alias for cross-crate resolution.
     fn bridge_tokens(&mut self, ty: &Type) -> proc_macro2::TokenStream {
-        bridge_tokens_for_type(
-            ty,
-            &mut self.types,
-            &mut self.aliases,
-            &mut self.counter,
-            &self.helper_mod,
-        )
+        match ty {
+            Type::Reference(ref_ty) => {
+                let inner = self.bridge_tokens(&ref_ty.elem);
+                if ref_ty.mutability.is_some() {
+                    quote! { &'static mut #inner }
+                } else {
+                    quote! { &'static #inner }
+                }
+            }
+            Type::Slice(sl) => {
+                let elem = self.bridge_tokens(&sl.elem);
+                quote! { [#elem] }
+            }
+            Type::Path(tp) if tp.path.is_ident("str") => quote! { str },
+            _ => self.alias_tokens(ty),
+        }
+    }
+
+    /// Get or create an alias for a non-reference, non-slice, non-keyword type.
+    fn alias_tokens(&mut self, ty: &Type) -> proc_macro2::TokenStream {
+        if is_primitive(ty) {
+            return quote! { #ty };
+        }
+        let ty_str = quote!(#ty).to_string();
+        for (i, existing) in self.types.iter().enumerate() {
+            if quote!(#existing).to_string() == ty_str {
+                let alias = &self.aliases[i];
+                let helper = &self.helper_mod;
+                return quote! { $crate::#helper::#alias };
+            }
+        }
+        let alias = format_ident!("_Type{}", self.counter);
+        self.counter += 1;
+        self.types.push(ty.clone());
+        self.aliases.push(alias.clone());
+        let helper = &self.helper_mod;
+        quote! { $crate::#helper::#alias }
     }
 
     /// Emit `pub type _TypeN = super::Erased;` items for the helper module.
@@ -548,91 +577,10 @@ impl AliasContext {
     }
 }
 
-const PRIMITIVES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
-];
-
-fn type_tokens_for_macro(
-    ty: &Type,
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    counter: &mut u32,
-    helper_mod: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    if is_primitive(ty) {
-        return quote! { #ty };
-    }
-
-    for (i, existing) in reexport_types.iter().enumerate() {
-        if quote!(#existing).to_string() == quote!(#ty).to_string() {
-            let alias = &reexport_aliases[i];
-            return quote! { $crate::#helper_mod::#alias };
-        }
-    }
-
-    let alias = format_ident!("_Type{counter}");
-    *counter += 1;
-    reexport_types.push(ty.clone());
-    reexport_aliases.push(alias.clone());
-
-    quote! { $crate::#helper_mod::#alias }
-}
-
 fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
-}
-
-/// Produce bridge_type tokens for any Rust type, including references.
-///
-/// This recursively handles reference and slice types, producing tokens
-/// that resolve via `<T as FfiType>::CRepr` in the cdylib context:
-/// - `&str` → `& str` (str is a keyword, always in scope)
-/// - `&[u8]` → `& [u8]`
-/// - `&Widget` → `& $crate::_ffier_mod::_Type0` (aliased for cross-crate)
-/// - `i32` → `i32` (primitives emitted directly)
-/// - `Widget` → `$crate::_ffier_mod::_Type0` (aliased)
-fn bridge_tokens_for_type(
-    ty: &Type,
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    counter: &mut u32,
-    helper_mod: &syn::Ident,
-) -> proc_macro2::TokenStream {
-    match ty {
-        Type::Reference(ref_ty) => {
-            let inner = bridge_tokens_for_type(
-                &ref_ty.elem,
-                reexport_types,
-                reexport_aliases,
-                counter,
-                helper_mod,
-            );
-            // Use 'static lifetime so generated code like
-            // `<&'static str as FfiType>::CRepr` doesn't trigger E0106.
-            if ref_ty.mutability.is_some() {
-                quote! { &'static mut #inner }
-            } else {
-                quote! { &'static #inner }
-            }
-        }
-        Type::Slice(sl) => {
-            let elem = bridge_tokens_for_type(
-                &sl.elem,
-                reexport_types,
-                reexport_aliases,
-                counter,
-                helper_mod,
-            );
-            quote! { [#elem] }
-        }
-        // `str` is a keyword type — can't be aliased via `super::`, but
-        // always resolves everywhere.
-        Type::Path(tp) if tp.path.is_ident("str") => quote! { str },
-        // Everything else goes through the standard aliasing.
-        _ => type_tokens_for_macro(ty, reexport_types, reexport_aliases, counter, helper_mod),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,20 +1007,37 @@ fn parse_trait_method_sig(
     })
 }
 
-/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` for dynamic dispatch fallback.
-///
-/// This enables the generator to wrap concrete handles into `FfierBoxDyn`
-/// when the combinatorial dispatch exceeds the branch limit.
-///
-/// `#[ffier::implementable]` implies `#[ffier::dispatch]` — use this
-/// annotation alone when you want dynamic dispatch fallback without
-/// exporting the trait's vtable to C.
-#[proc_macro_attribute]
-pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let trait_item = parse_macro_input!(item as ItemTrait);
-    let original_trait = trait_item.clone();
-    let trait_name = &trait_item.ident;
+/// Emit metadata tokens for a list of vtable methods (shared by `#[implementable]` and `#[trait_impl]`).
+fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenStream> {
+    methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let param_meta: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let id = &p.ident;
+                    let bt = &p.bridge_type;
+                    let rt = &p.rust_type;
+                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
+                })
+                .collect();
+            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
+                (None, _) => quote! { void },
+                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
+                _ => unreachable!(),
+            };
+            quote! {
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
+            }
+        })
+        .collect()
+}
 
+/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` — delegates each method to `self.0`.
+fn emit_boxdyn_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
+    let trait_name = &trait_item.ident;
     let method_impls: Vec<_> = trait_item
         .items
         .iter()
@@ -1081,7 +1046,6 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 return None;
             };
             let sig = &method.sig;
-            // Must have &self receiver
             if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
                 return None;
             }
@@ -1098,17 +1062,31 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
-            let call = quote! { self.0.#name(#(#params),*) };
-            Some(quote! { #sig { #call } })
+            Some(quote! { #sig { self.0.#name(#(#params),*) } })
         })
         .collect();
 
-    let output = quote! {
-        #original_trait
-
+    quote! {
         impl #trait_name for ffier::FfierBoxDyn<dyn #trait_name> {
             #(#method_impls)*
         }
+    }
+}
+
+/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` for dynamic dispatch fallback.
+///
+/// `#[ffier::implementable]` implies `#[ffier::dispatch]` — use this
+/// annotation alone when you want dynamic dispatch fallback without
+/// exporting the trait's vtable to C.
+#[proc_macro_attribute]
+pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let trait_item = parse_macro_input!(item as ItemTrait);
+    let original_trait = trait_item.clone();
+    let boxdyn_impl = emit_boxdyn_impl(&trait_item);
+
+    let output = quote! {
+        #original_trait
+        #boxdyn_impl
     };
 
     output.into()
@@ -1258,31 +1236,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}");
     let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}");
 
-    // Build vtable method metadata
-    let vtable_method_meta: Vec<_> = vtable_methods
-        .iter()
-        .map(|m| {
-            let mname = &m.name;
-            let param_meta: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let id = &p.ident;
-                    let bt = &p.bridge_type;
-                    let rt = &p.rust_type;
-                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
-                })
-                .collect();
-            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
-                (None, _) => quote! { void },
-                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
-                _ => unreachable!(),
-            };
-            quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
-            }
-        })
-        .collect();
+    let vtable_method_meta = emit_vtable_method_meta(&vtable_methods);
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -1297,39 +1251,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
 
     let boxdyn_impl = if !has_supertraits {
-        let boxdyn_method_impls: Vec<_> = trait_item
-            .items
-            .iter()
-            .filter_map(|item| {
-                let TraitItem::Fn(method) = item else {
-                    return None;
-                };
-                let sig = &method.sig;
-                if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
-                    return None;
-                }
-                let name = &sig.ident;
-                let params: Vec<_> = sig
-                    .inputs
-                    .iter()
-                    .skip(1)
-                    .filter_map(|arg| {
-                        let FnArg::Typed(pt) = arg else { return None };
-                        let Pat::Ident(pi) = &*pt.pat else {
-                            return None;
-                        };
-                        Some(pi.ident.clone())
-                    })
-                    .collect();
-                Some(quote! { #sig { self.0.#name(#(#params),*) } })
-            })
-            .collect();
-
-        quote! {
-            impl #trait_name for ffier::FfierBoxDyn<dyn #trait_name> {
-                #(#boxdyn_method_impls)*
-            }
-        }
+        emit_boxdyn_impl(&trait_item)
     } else {
         // TODO: generate supertrait delegation for FfierBoxDyn
         quote! {}
@@ -1477,31 +1399,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let reexport_items = ctx.reexport_items();
 
-    // Build method metadata tokens (same format as implementable vtable_methods)
-    let method_meta: Vec<_> = methods
-        .iter()
-        .map(|m| {
-            let mname = &m.name;
-            let param_meta: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let id = &p.ident;
-                    let bt = &p.bridge_type;
-                    let rt = &p.rust_type;
-                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
-                })
-                .collect();
-            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
-                (None, _) => quote! { void },
-                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
-                _ => unreachable!(),
-            };
-            quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
-            }
-        })
-        .collect();
+    let method_meta = emit_vtable_method_meta(&methods);
 
     let lifetime_idents: Vec<_> = input
         .generics
