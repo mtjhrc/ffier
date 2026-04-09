@@ -198,13 +198,72 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         all_code.push(generate_one(item.clone(), &trait_map));
     }
 
+    // Extract prefix from any item for shared types (all items share the same prefix)
+    let first_prefix = errors
+        .iter()
+        .chain(exportables.iter())
+        .chain(implementables.iter())
+        .chain(trait_impls.iter())
+        .next()
+        .map(|item| peek_meta_field(item, "prefix"))
+        .unwrap_or_default();
+    let shared_types_fn = emit_shared_types_fn(&first_prefix);
+
     // Generate unified header function
     quote! {
         #(#all_code)*
 
+        #shared_types_fn
+
         pub fn __ffier_header(guard: &str) -> ffier_gen_c::HeaderBuilder {
-            ffier_gen_c::HeaderBuilder::new(guard)
+            ffier_gen_c::HeaderBuilder::new(guard, __ffier_shared_types())
                 #(.push(#header_fn_names()))*
+        }
+    }
+}
+
+/// Emit a function `__ffier_shared_types()` that returns the Str/Bytes/Path
+/// typedefs and macros for the C header. Called once per library, not per type.
+fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
+    let type_pfx = ffier_meta::snake_to_pascal(prefix);
+    let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
+
+    let str_c = format!("{type_pfx}Str");
+    let bytes_c = format!("{type_pfx}Bytes");
+    let path_c = format!("{type_pfx}Path");
+    let str_macro = format!("{upper_pfx}STR");
+    let bytes_macro = format!("{upper_pfx}BYTES");
+
+    quote! {
+        fn __ffier_shared_types() -> String {
+            [
+                concat!("/* Caller must ensure data is valid UTF-8 */"),
+                "typedef struct {",
+                "    const char* data;",
+                "    uintptr_t len;",
+                concat!("} ", #str_c, ";"),
+                "",
+                concat!("/* Caller must ensure data is a valid UTF-8 path */"),
+                concat!("typedef ", #str_c, " ", #path_c, ";"),
+                "",
+                "typedef struct {",
+                "    const uint8_t* data;",
+                "    uintptr_t len;",
+                concat!("} ", #bytes_c, ";"),
+                "",
+                concat!("#define ", #str_macro, "(s) ((", #str_c, "){ .data = (s), .len = strlen(s) })"),
+                concat!("#if defined(__GNUC__)"),
+                concat!("#define ", #bytes_macro, "(arr) ({ \\"),
+                concat!("    _Static_assert( \\"),
+                concat!("        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\"),
+                concat!("        \"", #bytes_macro, "() requires an array, not a pointer\"); \\"),
+                concat!("    ((", #bytes_c, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\"),
+                "})",
+                "#else",
+                concat!("#define ", #bytes_macro, "(arr) \\"),
+                concat!("    ((", #bytes_c, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })"),
+                "#endif",
+            ].join("\n")
         }
     }
 }
@@ -218,88 +277,14 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
     let struct_name = &meta.struct_name.to_string();
     let fn_pfx = meta.fn_pfx();
     let type_pfx = meta.type_pfx();
-    let upper_pfx = meta.upper_pfx();
     let handle_c_name = meta.handle_c_name();
-
     let str_c_name = format!("{type_pfx}Str");
-    let bytes_c_name = format!("{type_pfx}Bytes");
-    let path_c_name = format!("{type_pfx}Path");
-    let str_macro_name = format!("{upper_pfx}STR");
 
     let struct_lower = camel_to_snake(struct_name);
 
     let mut ffi_fns = Vec::new();
     let handle_typedef_expr = quote! { concat!("typedef void* ", #handle_c_name, ";") };
-    let mut shared_types_exprs: Vec<TokenStream2> = Vec::new();
     let mut decl_exprs: Vec<TokenStream2> = Vec::new();
-
-    // Bytes/Str/Path struct + typedefs (always emitted — unused typedefs are harmless)
-    {
-        let bytes_macro_name = format!("{upper_pfx}BYTES");
-
-        shared_types_exprs.push(quote! {
-            concat!("/* Caller must ensure data is valid UTF-8 */")
-        });
-        shared_types_exprs.push(quote! { "typedef struct {" });
-        shared_types_exprs.push(quote! { "    const char* data;" });
-        shared_types_exprs.push(quote! { "    uintptr_t len;" });
-        shared_types_exprs.push(quote! { concat!("} ", #str_c_name, ";") });
-        shared_types_exprs.push(quote! { "" });
-
-        shared_types_exprs.push(quote! {
-            concat!("/* Caller must ensure data is a valid UTF-8 path */")
-        });
-        shared_types_exprs.push(quote! {
-            concat!("typedef ", #str_c_name, " ", #path_c_name, ";")
-        });
-        shared_types_exprs.push(quote! { "" });
-
-        shared_types_exprs.push(quote! { "typedef struct {" });
-        shared_types_exprs.push(quote! { "    const uint8_t* data;" });
-        shared_types_exprs.push(quote! { "    uintptr_t len;" });
-        shared_types_exprs.push(quote! { concat!("} ", #bytes_c_name, ";") });
-        shared_types_exprs.push(quote! { "" });
-        shared_types_exprs.push(quote! {
-            concat!("#define ", #str_macro_name, "(s) ((", #str_c_name, "){ .data = (s), .len = strlen(s) })")
-        });
-        // BYTES macro: GNU C (GCC + Clang) gets a statement-expression with a
-        // static assert that rejects pointers. Other compilers get a plain
-        // version that works correctly but won't catch accidental pointer args.
-        shared_types_exprs.push(quote! {
-            concat!("#if defined(__GNUC__)")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "#define ", #bytes_macro_name, "(arr) ({ \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "    _Static_assert( \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "        \"", #bytes_macro_name, "() requires an array, not a pointer\"); \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\")
-        });
-        shared_types_exprs.push(quote! { "})" });
-        shared_types_exprs.push(quote! { "#else" });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "#define ", #bytes_macro_name, "(arr) \\")
-        });
-        shared_types_exprs.push(quote! {
-            concat!(
-                "    ((", #bytes_c_name, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })")
-        });
-        shared_types_exprs.push(quote! { "#endif" });
-    }
 
     // Generate typedefs for impl Trait dispatch types (resolved from trait map)
     let mut generated_dyn_types: Vec<String> = Vec::new();
@@ -842,7 +827,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
     // Header function
     let header_fn_name = format_ident!("{fn_pfx}{struct_lower}__header");
-    let num_shared = shared_types_exprs.len();
     let num_decls = decl_exprs.len();
 
     quote! {
@@ -850,10 +834,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
         pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
             let handle_typedef = #handle_typedef_expr .to_string();
-            let shared_lines: [String; #num_shared] = [
-                #(#shared_types_exprs .to_string()),*
-            ];
-            let shared_types = shared_lines.join("\n");
             let decl_lines: [String; #num_decls] = [
                 #(#decl_exprs .to_string()),*
             ];
@@ -861,7 +841,6 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             ffier_gen_c::HeaderSection {
                 struct_name: #struct_name.to_string(),
                 handle_typedef,
-                shared_types,
                 declarations,
             }
         }
@@ -940,7 +919,6 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
             ffier_gen_c::HeaderSection {
                 struct_name: #name_str.to_string(),
                 handle_typedef: String::new(),
-                shared_types: String::new(),
                 declarations: decls,
             }
         }
@@ -1048,7 +1026,6 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             ffier_gen_c::HeaderSection {
                 struct_name: #vtable_section_name.to_string(),
                 handle_typedef: String::new(),
-                shared_types: String::new(),
                 declarations,
             }
         }
@@ -1507,12 +1484,12 @@ fn build_doxygen_comment(
 pub struct HeaderSection {
     pub struct_name: String,
     pub handle_typedef: String,
-    pub shared_types: String,
     pub declarations: String,
 }
 
 pub struct HeaderBuilder {
     guard: String,
+    shared_types: String,
     sections: Vec<HeaderSection>,
 }
 
@@ -1521,9 +1498,10 @@ pub struct HeaderBuilder {
 // The prefix should only be specified here, not duplicated in each #[ffier::exportable(prefix = "krun")].
 
 impl HeaderBuilder {
-    pub fn new(guard: &str) -> Self {
+    pub fn new(guard: &str, shared_types: String) -> Self {
         Self {
             guard: guard.to_string(),
+            shared_types,
             sections: Vec::new(),
         }
     }
@@ -1557,13 +1535,10 @@ impl HeaderBuilder {
             out.push('\n');
         }
 
-        // Emit shared types from the first section that has them
-        for section in &self.sections {
-            if !section.shared_types.is_empty() {
-                out.push_str(&section.shared_types);
-                out.push('\n');
-                break;
-            }
+        // Emit shared types (Str/Bytes/Path structs + macros)
+        if !self.shared_types.is_empty() {
+            out.push_str(&self.shared_types);
+            out.push('\n');
         }
 
         out.push_str("/* Header auto-generated by ffier */\n");
@@ -1704,7 +1679,6 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
             ffier_gen_c::HeaderSection {
                 struct_name: #section_name.to_string(),
                 handle_typedef: String::new(),
-                shared_types: String::new(),
                 declarations: decl_lines.join("\n"),
             }
         }
