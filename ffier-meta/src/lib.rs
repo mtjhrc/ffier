@@ -420,6 +420,23 @@ fn parse_string(input: ParseStream) -> syn::Result<String> {
     Ok(lit.value())
 }
 
+/// Parse a `[item, item, ...]` list where each item is parsed by the closure.
+fn parse_bracketed_list<T>(
+    input: ParseStream,
+    mut parse_item: impl FnMut(ParseStream) -> syn::Result<T>,
+) -> syn::Result<Vec<T>> {
+    let content;
+    syn::bracketed!(content in input);
+    let mut items = Vec::new();
+    while !content.is_empty() {
+        items.push(parse_item(&content)?);
+        if !content.is_empty() && content.peek(Token![,]) {
+            content.parse::<Token![,]>()?;
+        }
+    }
+    Ok(items)
+}
+
 impl syn::parse::Parse for MetaExportable {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         // @exportable
@@ -458,38 +475,18 @@ impl syn::parse::Parse for MetaExportable {
         parse_comma(input)?;
 
         expect_key(input, "type_aliases")?;
-        let type_aliases = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut aliases = Vec::new();
-            while !content.is_empty() {
-                let inner;
-                syn::parenthesized!(inner in content);
-                let alias: Ident = inner.parse()?;
-                inner.parse::<Token![,]>()?;
-                let path: TokenStream = inner.parse()?;
-                aliases.push((alias, path));
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            aliases
-        };
+        let type_aliases = parse_bracketed_list(input, |content| {
+            let inner;
+            syn::parenthesized!(inner in content);
+            let alias: Ident = inner.parse()?;
+            inner.parse::<Token![,]>()?;
+            let path: TokenStream = inner.parse()?;
+            Ok((alias, path))
+        })?;
         parse_comma(input)?;
 
         expect_key(input, "methods")?;
-        let methods = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut ms = Vec::new();
-            while !content.is_empty() {
-                ms.push(content.parse::<MetaMethod>()?);
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            ms
-        };
+        let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
         Ok(MetaExportable {
@@ -518,18 +515,7 @@ impl syn::parse::Parse for MetaMethod {
         parse_comma(input)?;
 
         expect_key(input, "doc")?;
-        let doc = {
-            let inner;
-            syn::bracketed!(inner in input);
-            let mut docs = Vec::new();
-            while !inner.is_empty() {
-                docs.push(parse_string(&inner)?);
-                if !inner.is_empty() && inner.peek(Token![,]) {
-                    inner.parse::<Token![,]>()?;
-                }
-            }
-            docs
-        };
+        let doc = parse_bracketed_list(input, parse_string)?;
         parse_comma(input)?;
 
         expect_key(input, "receiver")?;
@@ -555,33 +541,11 @@ impl syn::parse::Parse for MetaMethod {
         parse_comma(input)?;
 
         expect_key(input, "method_lifetimes")?;
-        let method_lifetimes = {
-            let inner;
-            syn::bracketed!(inner in input);
-            let mut lts = Vec::new();
-            while !inner.is_empty() {
-                lts.push(inner.parse::<Ident>()?);
-                if !inner.is_empty() && inner.peek(Token![,]) {
-                    inner.parse::<Token![,]>()?;
-                }
-            }
-            lts
-        };
+        let method_lifetimes = parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
 
         expect_key(input, "params")?;
-        let params = {
-            let inner;
-            syn::bracketed!(inner in input);
-            let mut ps = Vec::new();
-            while !inner.is_empty() {
-                ps.push(inner.parse::<MetaParam>()?);
-                if !inner.is_empty() && inner.peek(Token![,]) {
-                    inner.parse::<Token![,]>()?;
-                }
-            }
-            ps
-        };
+        let params = parse_bracketed_list(input, |inner| inner.parse::<MetaParam>())?;
         parse_comma(input)?;
 
         expect_key(input, "ret")?;
@@ -763,34 +727,25 @@ impl syn::parse::Parse for MetaError {
         parse_comma(input)?;
 
         expect_key(input, "variants")?;
-        let variants = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut vs = Vec::new();
-            while !content.is_empty() {
-                let inner;
-                syn::braced!(inner in content);
-                expect_key(&inner, "name")?;
-                let vname: Ident = inner.parse()?;
-                parse_comma(&inner)?;
-                expect_key(&inner, "code")?;
-                let code: syn::LitInt = inner.parse()?;
-                let code = code.base10_parse::<u64>()?;
-                parse_comma(&inner)?;
-                expect_key(&inner, "message")?;
-                let message = parse_string(&inner)?;
-                parse_comma(&inner)?;
-                vs.push(MetaErrorVariant {
-                    name: vname,
-                    code,
-                    message,
-                });
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            vs
-        };
+        let variants = parse_bracketed_list(input, |content| {
+            let inner;
+            syn::braced!(inner in content);
+            expect_key(&inner, "name")?;
+            let name: Ident = inner.parse()?;
+            parse_comma(&inner)?;
+            expect_key(&inner, "code")?;
+            let code: syn::LitInt = inner.parse()?;
+            let code = code.base10_parse::<u64>()?;
+            parse_comma(&inner)?;
+            expect_key(&inner, "message")?;
+            let message = parse_string(&inner)?;
+            parse_comma(&inner)?;
+            Ok(MetaErrorVariant {
+                name,
+                code,
+                message,
+            })
+        })?;
         parse_comma(input)?;
 
         Ok(MetaError {
@@ -836,7 +791,7 @@ impl syn::parse::Parse for MetaImplementable {
         parse_comma(input)?;
 
         expect_key(input, "vtable_methods")?;
-        let vtable_methods = parse_vtable_methods(input)?;
+        let vtable_methods = parse_bracketed_list(input, parse_vtable_method)?;
         parse_comma(input)?;
 
         Ok(MetaImplementable {
@@ -857,18 +812,7 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
     let mname: Ident = inner.parse()?;
     parse_comma(&inner)?;
     expect_key(&inner, "params")?;
-    let params = {
-        let pinner;
-        syn::bracketed!(pinner in inner);
-        let mut ps = Vec::new();
-        while !pinner.is_empty() {
-            ps.push(parse_vtable_param(&pinner)?);
-            if !pinner.is_empty() && pinner.peek(Token![,]) {
-                pinner.parse::<Token![,]>()?;
-            }
-        }
-        ps
-    };
+    let params = parse_bracketed_list(&inner, parse_vtable_param)?;
     parse_comma(&inner)?;
     expect_key(&inner, "ret")?;
     let ret = parse_vtable_ret(&inner)?;
@@ -878,20 +822,6 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
         params,
         ret,
     })
-}
-
-/// Parse a bracketed list of vtable methods: `[ { name = ..., params = [...], ret = ... }, ... ]`.
-fn parse_vtable_methods(input: ParseStream) -> syn::Result<Vec<MetaVtableMethod>> {
-    let content;
-    syn::bracketed!(content in input);
-    let mut ms = Vec::new();
-    while !content.is_empty() {
-        ms.push(parse_vtable_method(&content)?);
-        if !content.is_empty() && content.peek(Token![,]) {
-            content.parse::<Token![,]>()?;
-        }
-    }
-    Ok(ms)
 }
 
 fn parse_vtable_param(input: ParseStream) -> syn::Result<MetaVtableParam> {
@@ -987,22 +917,11 @@ impl syn::parse::Parse for MetaTraitImpl {
         parse_comma(input)?;
 
         expect_key(input, "trait_lifetime_args")?;
-        let trait_lifetime_args = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut args = Vec::new();
-            while !content.is_empty() {
-                args.push(parse_string(&content)?);
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            args
-        };
+        let trait_lifetime_args = parse_bracketed_list(input, parse_string)?;
         parse_comma(input)?;
 
         expect_key(input, "methods")?;
-        let methods = parse_vtable_methods(input)?;
+        let methods = parse_bracketed_list(input, parse_vtable_method)?;
         parse_comma(input)?;
 
         Ok(MetaTraitImpl {
