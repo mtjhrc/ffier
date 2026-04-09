@@ -24,15 +24,11 @@ enum ParamKind {
     },
 }
 
-enum ValueKind {
-    Regular(proc_macro2::TokenStream),
-}
-
 enum ReturnKind {
     Void,
-    Value(ValueKind),
+    Value(proc_macro2::TokenStream),
     Result {
-        ok_ty: Option<ValueKind>,
+        ok_ty: Option<proc_macro2::TokenStream>,
         err_ident: String,
     },
 }
@@ -70,22 +66,6 @@ fn is_str_slice(ty: &Type) -> bool {
         return false;
     };
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
-}
-
-fn classify_value(
-    ty: &Type,
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    alias_counter: &mut u32,
-    helper_mod: &syn::Ident,
-) -> ValueKind {
-    ValueKind::Regular(bridge_tokens_for_type(
-        ty,
-        reexport_types,
-        reexport_aliases,
-        alias_counter,
-        helper_mod,
-    ))
 }
 
 /// Emit `impl FfiHandle for T` and `impl FfiType for T` blocks for an exported type.
@@ -171,12 +151,10 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_lower = camel_to_snake(&struct_name);
 
-    let mut reexport_types: Vec<Type> = Vec::new();
-    let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
     let helper_mod_name = format_ident!("_ffier_{struct_lower}");
+    let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     let mut methods = Vec::new();
-    let mut alias_counter = 0u32;
     let is_inherent = input.trait_.is_none();
     let mut warnings = Vec::new();
 
@@ -246,13 +224,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             let kind = if is_str_slice(&param_ty) {
                 ParamKind::StrSlice
             } else {
-                ParamKind::Regular(bridge_tokens_for_type(
-                    &param_ty,
-                    &mut reexport_types,
-                    &mut reexport_aliases,
-                    &mut alias_counter,
-                    &helper_mod_name,
-                ))
+                ParamKind::Regular(ctx.bridge_tokens(&param_ty))
             };
             param_kinds.push(kind);
         }
@@ -290,28 +262,14 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     {
                         None
                     } else {
-                        let vk = classify_value(
-                            &ok,
-                            &mut reexport_types,
-                            &mut reexport_aliases,
-                            &mut alias_counter,
-                            &helper_mod_name,
-                        );
-                        Some(vk)
+                        Some(ctx.bridge_tokens(&ok))
                     };
                     ReturnKind::Result {
                         ok_ty: ok_kind,
                         err_ident,
                     }
                 } else {
-                    let vk = classify_value(
-                        ty,
-                        &mut reexport_types,
-                        &mut reexport_aliases,
-                        &mut alias_counter,
-                        &helper_mod_name,
-                    );
-                    ReturnKind::Value(vk)
+                    ReturnKind::Value(ctx.bridge_tokens(ty))
                 }
             }
         };
@@ -350,14 +308,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
 
-    let reexport_items: Vec<_> = reexport_types
-        .iter()
-        .zip(reexport_aliases.iter())
-        .map(|(ty, alias)| {
-            let erased = erase_lifetimes(ty);
-            quote! { pub type #alias = super::#erased; }
-        })
-        .collect();
+    let reexport_items = ctx.reexport_items();
 
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{struct_ident}");
     let check_const_name = format_ident!("__ffier_library_has_defined_{struct_ident}");
@@ -431,11 +382,10 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // Build type alias metadata tokens
-    let alias_meta_tokens: Vec<_> = reexport_aliases
+    let alias_meta_tokens: Vec<_> = ctx
+        .aliases
         .iter()
-        .zip(reexport_types.iter())
-        .map(|(alias, _ty)| {
-            // In the metadata, reference the alias via $crate::helper_mod::alias
+        .map(|alias| {
             quote! { (#alias, $crate::#helper_mod_name::#alias) }
         })
         .collect();
@@ -556,6 +506,48 @@ fn replace_self_type(ty: &Type, replacement: &Type) -> Type {
     ty
 }
 
+/// Tracks type aliases needed for cross-crate `$crate::` resolution in metadata macros.
+struct AliasContext {
+    types: Vec<Type>,
+    aliases: Vec<syn::Ident>,
+    counter: u32,
+    helper_mod: syn::Ident,
+}
+
+impl AliasContext {
+    fn new(helper_mod: syn::Ident) -> Self {
+        Self {
+            types: Vec::new(),
+            aliases: Vec::new(),
+            counter: 0,
+            helper_mod,
+        }
+    }
+
+    /// Produce bridge_type tokens for any Rust type (handles references, slices, primitives).
+    fn bridge_tokens(&mut self, ty: &Type) -> proc_macro2::TokenStream {
+        bridge_tokens_for_type(
+            ty,
+            &mut self.types,
+            &mut self.aliases,
+            &mut self.counter,
+            &self.helper_mod,
+        )
+    }
+
+    /// Emit `pub type _TypeN = super::Erased;` items for the helper module.
+    fn reexport_items(&self) -> Vec<proc_macro2::TokenStream> {
+        self.types
+            .iter()
+            .zip(self.aliases.iter())
+            .map(|(ty, alias)| {
+                let erased = erase_lifetimes(ty);
+                quote! { pub type #alias = super::#erased; }
+            })
+            .collect()
+    }
+}
+
 const PRIMITIVES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
 ];
@@ -663,27 +655,17 @@ fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
     }
 }
 
-fn emit_value_kind(vk: &ValueKind) -> proc_macro2::TokenStream {
-    match vk {
-        ValueKind::Regular(bridge_type) => {
-            quote! { regular, bridge_type = (#bridge_type), }
-        }
-    }
-}
-
 fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
     match ret {
         ReturnKind::Void => quote! { void },
-        ReturnKind::Value(vk) => {
-            let vk_tokens = emit_value_kind(vk);
-            quote! { value(#vk_tokens) }
+        ReturnKind::Value(bridge_type) => {
+            quote! { value(regular, bridge_type = (#bridge_type),) }
         }
         ReturnKind::Result { ok_ty, err_ident } => {
             let ok_tokens = match ok_ty {
                 None => quote! { ok = void },
-                Some(vk) => {
-                    let vk_tokens = emit_value_kind(vk);
-                    quote! { ok = some(#vk_tokens) }
+                Some(bridge_type) => {
+                    quote! { ok = some(regular, bridge_type = (#bridge_type),) }
                 }
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
@@ -724,6 +706,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut code_arms = Vec::new();
     let mut message_arms = Vec::new();
     let mut codes_entries = Vec::new();
+    let mut variant_meta_tokens = Vec::new();
 
     for variant in &data_enum.variants {
         let var_ident = &variant.ident;
@@ -750,6 +733,9 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         });
 
         codes_entries.push(quote! { (#upper_name, #code) });
+        variant_meta_tokens.push(quote! {
+            { name = #var_ident, code = #code, message = #message, }
+        });
     }
 
     let unknown_msg = format!(
@@ -760,23 +746,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{name}");
     let check_const_name = format_ident!("__ffier_library_has_defined_{name}");
-
-    // Build variant metadata tokens
-    let variant_meta_tokens: Vec<_> = data_enum
-        .variants
-        .iter()
-        .map(|variant| {
-            let var_ident = &variant.ident;
-            let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
-            let code = attrs.code;
-            let message = attrs
-                .message
-                .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
-            quote! {
-                { name = #var_ident, code = #code, message = #message, }
-            }
-        })
-        .collect();
 
     let error_path = quote! { $crate::#name };
 
@@ -1018,10 +987,7 @@ struct VtableMethodParam {
 fn extract_vtable_methods(
     trait_item: &ItemTrait,
     supers: &[SupertraitBlock],
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    alias_counter: &mut u32,
-    helper_mod: &syn::Ident,
+    ctx: &mut AliasContext,
 ) -> Vec<VtableMethod> {
     let mut methods = Vec::new();
 
@@ -1029,28 +995,15 @@ fn extract_vtable_methods(
         let TraitItem::Fn(method) = item else {
             continue;
         };
-        if let Some(vm) = parse_trait_method_sig(
-            &method.sig,
-            None,
-            reexport_types,
-            reexport_aliases,
-            alias_counter,
-            helper_mod,
-        ) {
+        if let Some(vm) = parse_trait_method_sig(&method.sig, None, ctx) {
             methods.push(vm);
         }
     }
 
     for sup in supers {
         for method in &sup.methods {
-            if let Some(vm) = parse_trait_method_sig(
-                &method.sig,
-                Some(sup.trait_name.clone()),
-                reexport_types,
-                reexport_aliases,
-                alias_counter,
-                helper_mod,
-            ) {
+            if let Some(vm) = parse_trait_method_sig(&method.sig, Some(sup.trait_name.clone()), ctx)
+            {
                 methods.push(vm);
             }
         }
@@ -1062,10 +1015,7 @@ fn extract_vtable_methods(
 fn parse_trait_method_sig(
     sig: &syn::Signature,
     trait_name: Option<syn::Ident>,
-    reexport_types: &mut Vec<Type>,
-    reexport_aliases: &mut Vec<syn::Ident>,
-    alias_counter: &mut u32,
-    helper_mod: &syn::Ident,
+    ctx: &mut AliasContext,
 ) -> Option<VtableMethod> {
     let first = sig.inputs.first()?;
     if !matches!(first, FnArg::Receiver(_)) {
@@ -1081,19 +1031,12 @@ fn parse_trait_method_sig(
             let Pat::Ident(pi) = &*pt.pat else {
                 return None;
             };
-            let bridge_type = bridge_tokens_for_type(
-                &pt.ty,
-                reexport_types,
-                reexport_aliases,
-                alias_counter,
-                helper_mod,
-            );
+            let bridge_type = ctx.bridge_tokens(&pt.ty);
             let erased = erase_lifetimes(&pt.ty);
-            let rust_type = quote! { #erased };
             Some(VtableMethodParam {
                 ident: pi.ident.clone(),
                 bridge_type,
-                rust_type,
+                rust_type: quote! { #erased },
             })
         })
         .collect();
@@ -1101,13 +1044,7 @@ fn parse_trait_method_sig(
     let (ret_bridge_type, ret_rust_type) = match &sig.output {
         ReturnType::Default => (None, None),
         ReturnType::Type(_, ty) => {
-            let bt = bridge_tokens_for_type(
-                ty,
-                reexport_types,
-                reexport_aliases,
-                alias_counter,
-                helper_mod,
-            );
+            let bt = ctx.bridge_tokens(ty);
             let erased = erase_lifetimes(ty);
             (Some(bt), Some(quote! { #erased }))
         }
@@ -1193,21 +1130,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_ffi_handle_impls =
         emit_ffi_handle_impls(&quote! { #wrapper_name }, &wrapper_c_handle_suffix);
 
-    // Reexport state for bridge_tokens_for_type
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
-    let mut reexport_types: Vec<Type> = Vec::new();
-    let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
-    let mut alias_counter = 0u32;
+    let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Extract all methods (trait + supertraits)
-    let vtable_methods = extract_vtable_methods(
-        &trait_item,
-        &args.supers,
-        &mut reexport_types,
-        &mut reexport_aliases,
-        &mut alias_counter,
-        &helper_mod_name,
-    );
+    let vtable_methods = extract_vtable_methods(&trait_item, &args.supers, &mut ctx);
 
     // --- Generate vtable struct fields ---
     let vtable_fields: Vec<_> = vtable_methods
@@ -1331,11 +1258,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}");
     let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}");
 
-    // Build vtable field metadata — currently no extra data fields are supported,
-    // so this is always empty. Method function pointer fields are handled by
-    // vtable_methods metadata instead.
-    let vtable_field_meta: Vec<proc_macro2::TokenStream> = Vec::new();
-
     // Build vtable method metadata
     let vtable_method_meta: Vec<_> = vtable_methods
         .iter()
@@ -1364,14 +1286,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
-    let reexport_items: Vec<_> = reexport_types
-        .iter()
-        .zip(reexport_aliases.iter())
-        .map(|(ty, alias)| {
-            let erased = erase_lifetimes(ty);
-            quote! { pub type #alias = super::#erased; }
-        })
-        .collect();
+    let reexport_items = ctx.reexport_items();
 
     // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
@@ -1472,7 +1387,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     prefix = $prefix,
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
-                    vtable_fields = [#(#vtable_field_meta),*],
                     vtable_methods = [#(#vtable_method_meta),*],
                 } $(, $($rest)*)? }
             };
@@ -1543,11 +1457,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name = struct_ident.to_string();
     let struct_snake = camel_to_snake(&struct_name);
 
-    // Reexport state for bridge_tokens_for_type
     let helper_mod_name = format_ident!("_ffier_impl_{trait_snake}_for_{struct_snake}");
-    let mut reexport_types: Vec<Type> = Vec::new();
-    let mut reexport_aliases: Vec<syn::Ident> = Vec::new();
-    let mut alias_counter = 0u32;
+    let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Extract methods, skipping any marked with #[ffier(skip)].
     let methods: Vec<VtableMethod> = input
@@ -1560,25 +1471,11 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if method.attrs.iter().any(is_ffier_skip) {
                 return None;
             }
-            parse_trait_method_sig(
-                &method.sig,
-                None,
-                &mut reexport_types,
-                &mut reexport_aliases,
-                &mut alias_counter,
-                &helper_mod_name,
-            )
+            parse_trait_method_sig(&method.sig, None, &mut ctx)
         })
         .collect();
 
-    let reexport_items: Vec<_> = reexport_types
-        .iter()
-        .zip(reexport_aliases.iter())
-        .map(|(ty, alias)| {
-            let erased = erase_lifetimes(ty);
-            quote! { pub type #alias = super::#erased; }
-        })
-        .collect();
+    let reexport_items = ctx.reexport_items();
 
     // Build method metadata tokens (same format as implementable vtable_methods)
     let method_meta: Vec<_> = methods

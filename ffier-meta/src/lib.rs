@@ -169,25 +169,6 @@ pub fn erase_lifetimes_tokens(tokens: &TokenStream) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// Prefix helpers --- shared formatting for C ABI names
-// ---------------------------------------------------------------------------
-
-/// Returns `"{prefix}_"` — used for C function name prefixes.
-pub fn fn_pfx(prefix: &str) -> String {
-    format!("{prefix}_")
-}
-
-/// Returns `snake_to_pascal(prefix)` — used for C type name prefixes.
-pub fn type_pfx(prefix: &str) -> String {
-    snake_to_pascal(prefix)
-}
-
-/// Returns `"{PREFIX}_"` — used for C constant name prefixes.
-pub fn upper_pfx(prefix: &str) -> String {
-    format!("{}_", prefix.to_ascii_uppercase())
-}
-
-// ---------------------------------------------------------------------------
 // Metadata types --- parsed from the metadata macro's token stream
 // ---------------------------------------------------------------------------
 
@@ -202,15 +183,15 @@ pub struct MetaExportable {
 
 impl MetaExportable {
     pub fn fn_pfx(&self) -> String {
-        fn_pfx(&self.prefix)
+        format!("{}_", self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        type_pfx(&self.prefix)
+        snake_to_pascal(&self.prefix)
     }
 
     pub fn upper_pfx(&self) -> String {
-        upper_pfx(&self.prefix)
+        format!("{}_", self.prefix.to_ascii_uppercase())
     }
 
     pub fn handle_c_name(&self) -> String {
@@ -298,15 +279,15 @@ pub struct MetaError {
 
 impl MetaError {
     pub fn fn_pfx(&self) -> String {
-        fn_pfx(&self.prefix)
+        format!("{}_", self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        type_pfx(&self.prefix)
+        snake_to_pascal(&self.prefix)
     }
 
     pub fn upper_pfx(&self) -> String {
-        upper_pfx(&self.prefix)
+        format!("{}_", self.prefix.to_ascii_uppercase())
     }
 }
 
@@ -326,17 +307,16 @@ pub struct MetaImplementable {
     pub prefix: String,
     pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
-    pub vtable_fields: Vec<MetaVtableField>,
     pub vtable_methods: Vec<MetaVtableMethod>,
 }
 
 impl MetaImplementable {
     pub fn fn_pfx(&self) -> String {
-        fn_pfx(&self.prefix)
+        format!("{}_", self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        type_pfx(&self.prefix)
+        snake_to_pascal(&self.prefix)
     }
 
     pub fn vtable_c_name(&self) -> String {
@@ -350,11 +330,6 @@ impl MetaImplementable {
             camel_to_snake(&self.trait_name.to_string())
         )
     }
-}
-
-pub struct MetaVtableField {
-    pub name: Ident,
-    pub field_type: TokenStream,
 }
 
 pub struct MetaVtableMethod {
@@ -397,11 +372,11 @@ pub struct MetaTraitImpl {
 
 impl MetaTraitImpl {
     pub fn fn_pfx(&self) -> String {
-        fn_pfx(&self.prefix)
+        format!("{}_", self.prefix)
     }
 
     pub fn type_pfx(&self) -> String {
-        type_pfx(&self.prefix)
+        snake_to_pascal(&self.prefix)
     }
 }
 
@@ -860,32 +835,6 @@ impl syn::parse::Parse for MetaImplementable {
         let wrapper_name = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
-        expect_key(input, "vtable_fields")?;
-        let vtable_fields = {
-            let content;
-            syn::bracketed!(content in input);
-            let mut fs = Vec::new();
-            while !content.is_empty() {
-                let inner;
-                syn::braced!(inner in content);
-                expect_key(&inner, "name")?;
-                let fname: Ident = inner.parse()?;
-                parse_comma(&inner)?;
-                expect_key(&inner, "field_type")?;
-                let ftype = parse_parenthesized_tokens(&inner)?;
-                parse_comma(&inner)?;
-                fs.push(MetaVtableField {
-                    name: fname,
-                    field_type: ftype,
-                });
-                if !content.is_empty() && content.peek(Token![,]) {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            fs
-        };
-        parse_comma(input)?;
-
         expect_key(input, "vtable_methods")?;
         let vtable_methods = parse_vtable_methods(input)?;
         parse_comma(input)?;
@@ -896,7 +845,6 @@ impl syn::parse::Parse for MetaImplementable {
             prefix,
             vtable_struct_name,
             wrapper_name,
-            vtable_fields,
             vtable_methods,
         })
     }

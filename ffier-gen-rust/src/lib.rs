@@ -556,17 +556,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     );
     let constructor_name = format_ident!("{}", meta.constructor_name());
 
-    // Vtable fields (user-defined fields)
-    let vtable_field_defs: Vec<_> = meta
-        .vtable_fields
-        .iter()
-        .map(|f| {
-            let fname = &f.name;
-            let ftype = &f.field_type;
-            quote! { pub #fname: #ftype, }
-        })
-        .collect();
-
     // Vtable method function pointer fields
     let vtable_method_fields: Vec<_> = meta
         .vtable_methods
@@ -709,7 +698,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 
         #[repr(C)]
         pub struct #vtable_struct_name {
-            #(#vtable_field_defs)*
+
             #(#vtable_method_fields)*
             pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
         }
