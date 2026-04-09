@@ -169,6 +169,30 @@ pub fn erase_lifetimes_tokens(tokens: &TokenStream) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
+// Shared prefix helpers
+// ---------------------------------------------------------------------------
+
+/// Common prefix formatting for metadata types with a `prefix` field.
+pub trait HasPrefix {
+    fn prefix(&self) -> &str;
+
+    /// `"{prefix}_"` — C function name prefix.
+    fn fn_pfx(&self) -> String {
+        format!("{}_", self.prefix())
+    }
+
+    /// `snake_to_pascal(prefix)` — C type name prefix.
+    fn type_pfx(&self) -> String {
+        snake_to_pascal(self.prefix())
+    }
+
+    /// `"{PREFIX}_"` — C constant name prefix.
+    fn upper_pfx(&self) -> String {
+        format!("{}_", self.prefix().to_ascii_uppercase())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Metadata types --- parsed from the metadata macro's token stream
 // ---------------------------------------------------------------------------
 
@@ -177,23 +201,16 @@ pub struct MetaExportable {
     pub struct_path: TokenStream,
     pub prefix: String,
     pub lifetimes: Vec<Ident>,
-    pub type_aliases: Vec<(Ident, TokenStream)>,
     pub methods: Vec<MetaMethod>,
 }
 
+impl HasPrefix for MetaExportable {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
 impl MetaExportable {
-    pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
-    }
-
-    pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
-    }
-
-    pub fn upper_pfx(&self) -> String {
-        format!("{}_", self.prefix.to_ascii_uppercase())
-    }
-
     pub fn handle_c_name(&self) -> String {
         format!("{}{}", self.type_pfx(), self.struct_name)
     }
@@ -277,17 +294,9 @@ pub struct MetaError {
     pub variants: Vec<MetaErrorVariant>,
 }
 
-impl MetaError {
-    pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
-    }
-
-    pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
-    }
-
-    pub fn upper_pfx(&self) -> String {
-        format!("{}_", self.prefix.to_ascii_uppercase())
+impl HasPrefix for MetaError {
+    fn prefix(&self) -> &str {
+        &self.prefix
     }
 }
 
@@ -310,15 +319,13 @@ pub struct MetaImplementable {
     pub vtable_methods: Vec<MetaVtableMethod>,
 }
 
+impl HasPrefix for MetaImplementable {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
 impl MetaImplementable {
-    pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
-    }
-
-    pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
-    }
-
     pub fn vtable_c_name(&self) -> String {
         format!("{}{}Vtable", self.type_pfx(), self.trait_name)
     }
@@ -370,13 +377,9 @@ pub struct MetaTraitImpl {
     pub methods: Vec<MetaVtableMethod>,
 }
 
-impl MetaTraitImpl {
-    pub fn fn_pfx(&self) -> String {
-        format!("{}_", self.prefix)
-    }
-
-    pub fn type_pfx(&self) -> String {
-        snake_to_pascal(&self.prefix)
+impl HasPrefix for MetaTraitImpl {
+    fn prefix(&self) -> &str {
+        &self.prefix
     }
 }
 
@@ -420,21 +423,39 @@ fn parse_string(input: ParseStream) -> syn::Result<String> {
     Ok(lit.value())
 }
 
-/// Parse a `[item, item, ...]` list where each item is parsed by the closure.
-fn parse_bracketed_list<T>(
-    input: ParseStream,
+/// Parse a comma-separated list inside the given delimiter.
+fn parse_delimited_list<T>(
+    content: ParseStream,
     mut parse_item: impl FnMut(ParseStream) -> syn::Result<T>,
 ) -> syn::Result<Vec<T>> {
-    let content;
-    syn::bracketed!(content in input);
     let mut items = Vec::new();
     while !content.is_empty() {
-        items.push(parse_item(&content)?);
+        items.push(parse_item(content)?);
         if !content.is_empty() && content.peek(Token![,]) {
             content.parse::<Token![,]>()?;
         }
     }
     Ok(items)
+}
+
+/// Parse a `[item, item, ...]` list.
+fn parse_bracketed_list<T>(
+    input: ParseStream,
+    parse_item: impl FnMut(ParseStream) -> syn::Result<T>,
+) -> syn::Result<Vec<T>> {
+    let content;
+    syn::bracketed!(content in input);
+    parse_delimited_list(&content, parse_item)
+}
+
+/// Parse a `(item, item, ...)` list.
+fn parse_parenthesized_list<T>(
+    input: ParseStream,
+    parse_item: impl FnMut(ParseStream) -> syn::Result<T>,
+) -> syn::Result<Vec<T>> {
+    let content;
+    syn::parenthesized!(content in input);
+    parse_delimited_list(&content, parse_item)
 }
 
 impl syn::parse::Parse for MetaExportable {
@@ -460,29 +481,7 @@ impl syn::parse::Parse for MetaExportable {
         parse_comma(input)?;
 
         expect_key(input, "lifetimes")?;
-        let lifetimes = {
-            let content;
-            syn::parenthesized!(content in input);
-            let mut lts = Vec::new();
-            while !content.is_empty() {
-                lts.push(content.parse::<Ident>()?);
-                if !content.is_empty() {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            lts
-        };
-        parse_comma(input)?;
-
-        expect_key(input, "type_aliases")?;
-        let type_aliases = parse_bracketed_list(input, |content| {
-            let inner;
-            syn::parenthesized!(inner in content);
-            let alias: Ident = inner.parse()?;
-            inner.parse::<Token![,]>()?;
-            let path: TokenStream = inner.parse()?;
-            Ok((alias, path))
-        })?;
+        let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
 
         expect_key(input, "methods")?;
@@ -494,7 +493,6 @@ impl syn::parse::Parse for MetaExportable {
             struct_path,
             prefix,
             lifetimes,
-            type_aliases,
             methods,
         })
     }
@@ -902,18 +900,7 @@ impl syn::parse::Parse for MetaTraitImpl {
         parse_comma(input)?;
 
         expect_key(input, "lifetimes")?;
-        let lifetimes = {
-            let content;
-            syn::parenthesized!(content in input);
-            let mut lts = Vec::new();
-            while !content.is_empty() {
-                lts.push(content.parse::<Ident>()?);
-                if !content.is_empty() {
-                    content.parse::<Token![,]>()?;
-                }
-            }
-            lts
-        };
+        let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
 
         expect_key(input, "trait_lifetime_args")?;

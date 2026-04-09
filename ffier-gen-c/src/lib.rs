@@ -10,9 +10,9 @@ use quote::{format_ident, quote};
 use std::collections::HashMap;
 
 use ffier_meta::{
-    MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, camel_to_upper_snake,
-    erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
+    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
+    MetaReceiver, MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake,
+    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
