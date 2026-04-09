@@ -103,7 +103,4 @@ impl TextBuffer {
     }
 }
 
-ffier::library_definition!("mylib",
-    Calculator, CalcError,
-    TextBuffer, BufferError,
-);
+ffier::library_definition!("mylib", Calculator, CalcError, TextBuffer, BufferError,);

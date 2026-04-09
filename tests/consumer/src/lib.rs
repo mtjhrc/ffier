@@ -2,53 +2,51 @@
 //   cargo test -p ffier-test-consumer --features native
 //   cargo test -p ffier-test-consumer --no-default-features --features via-cdylib
 
-#[cfg(feature = "native")]
+#[cfg(all(test, feature = "native"))]
 use ffier_test_lib as api;
 
-#[cfg(feature = "via-cdylib")]
+#[cfg(all(test, feature = "via-cdylib"))]
 use ffier_test_lib_via_cdylib as api;
-
-use api::{Config, Gadget, Mixer, View, Widget};
-
-fn make_widget() -> Widget {
-    Widget::new()
-}
-
-fn make_named_widget(name: &str) -> Widget {
-    Widget::with_name(name)
-}
-
-fn widget_roundtrip() -> i32 {
-    let mut w = make_widget();
-    w.set_count(42);
-    w.get_count()
-}
-
-fn builder_chain() -> (String, i32) {
-    let c = Config::new().set_name("hello").set_size(99);
-    (c.get_name().to_owned(), c.get_size())
-}
-
-fn result_ok_path() -> Result<i32, api::TestError> {
-    let w = make_widget();
-    w.parse_count("test")
-}
-
-fn result_err_path() -> Result<(), api::TestError> {
-    let w = make_widget();
-    w.fail_always()
-}
-
-fn handle_param_roundtrip() -> i32 {
-    let mut w = make_widget();
-    w.set_count(7);
-    let g: Gadget = w.create_gadget();
-    w.read_gadget(&g)
-}
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::api::{self, Config, Gadget, Mixer, View, Widget};
+
+    fn make_widget() -> Widget {
+        Widget::new()
+    }
+
+    fn make_named_widget(name: &str) -> Widget {
+        Widget::with_name(name)
+    }
+
+    fn widget_roundtrip() -> i32 {
+        let mut w = make_widget();
+        w.set_count(42);
+        w.get_count()
+    }
+
+    fn builder_chain() -> (String, i32) {
+        let c = Config::new().set_name("hello").set_size(99);
+        (c.get_name().to_owned(), c.get_size())
+    }
+
+    fn result_ok_path() -> Result<i32, api::TestError> {
+        let w = make_widget();
+        w.parse_count("test")
+    }
+
+    fn result_err_path() -> Result<(), api::TestError> {
+        let w = make_widget();
+        w.fail_always()
+    }
+
+    fn handle_param_roundtrip() -> i32 {
+        let mut w = make_widget();
+        w.set_count(7);
+        let g: Gadget = w.create_gadget();
+        w.read_gadget(&g)
+    }
 
     #[test]
     fn test_constructor() {

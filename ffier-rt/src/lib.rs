@@ -1,8 +1,5 @@
 use std::ffi::{CStr, CString, c_char};
 
-// Re-export paste so that generated error bridge macros can use it.
-pub use paste;
-
 // ---------------------------------------------------------------------------
 // FfiType --- maps Rust types to C-compatible representations
 // ---------------------------------------------------------------------------
@@ -73,7 +70,7 @@ mod std_impls {
 // FfiType impls for reference types --- &str, &[u8], &Path → FfierBytes
 // ---------------------------------------------------------------------------
 
-impl<'a> FfiType for &'a str {
+impl FfiType for &str {
     type CRepr = FfierBytes;
     const C_TYPE_NAME: &'static str = "FfierStr";
     fn into_c(self) -> FfierBytes {
@@ -91,7 +88,7 @@ impl<'a> FfiType for &'a str {
     }
 }
 
-impl<'a> FfiType for &'a [u8] {
+impl FfiType for &[u8] {
     type CRepr = FfierBytes;
     const C_TYPE_NAME: &'static str = "FfierBytes";
     fn into_c(self) -> FfierBytes {
@@ -109,7 +106,7 @@ impl<'a> FfiType for &'a [u8] {
 }
 
 #[cfg(unix)]
-impl<'a> FfiType for &'a std::path::Path {
+impl FfiType for &std::path::Path {
     type CRepr = FfierBytes;
     const C_TYPE_NAME: &'static str = "FfierPath";
     fn into_c(self) -> FfierBytes {
@@ -189,7 +186,7 @@ pub unsafe fn handle_type_id(handle: *const core::ffi::c_void) -> TypeId {
 // Blanket FfiType impls for handle references
 // ---------------------------------------------------------------------------
 
-impl<'a, T: FfiHandle> FfiType for &'a T {
+impl<T: FfiHandle> FfiType for &T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     fn into_c(self) -> *mut c_void {
@@ -200,7 +197,7 @@ impl<'a, T: FfiHandle> FfiType for &'a T {
     }
 }
 
-impl<'a, T: FfiHandle> FfiType for &'a mut T {
+impl<T: FfiHandle> FfiType for &mut T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     fn into_c(self) -> *mut c_void {

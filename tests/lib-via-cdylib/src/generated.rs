@@ -660,7 +660,7 @@ unsafe extern "C" {
         -> <&'static str as ffier::FfiType>::CRepr;
     pub fn ft_view_copy_label(handle: *mut core::ffi::c_void, other: *mut core::ffi::c_void);
 }
-pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<(&'a ())>);
+pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
 impl<'a> View<'a> {
     #[doc(hidden)]
     pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
