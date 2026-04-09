@@ -524,6 +524,30 @@ fn generate_error_client(meta: MetaError) -> TokenStream2 {
 // Implementable client generation
 // ===========================================================================
 
+/// Generate trait method signatures from vtable methods: `fn name(&self, params) -> ret;`
+fn vtable_trait_method_sigs(methods: &[ffier_meta::MetaVtableMethod]) -> Vec<TokenStream2> {
+    methods
+        .iter()
+        .map(|m| {
+            let mname = &m.name;
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { #id: #rt }
+                })
+                .collect();
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+            };
+            quote! { fn #mname(&self, #(#params),*) #ret; }
+        })
+        .collect()
+}
+
 fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // Use plain ident names for client types (not $crate:: paths from bridge)
     let vtable_struct_name = format_ident!(
@@ -576,27 +600,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         .collect();
 
     let trait_name = &meta.trait_name;
-    let trait_method_sigs: Vec<_> = meta
-        .vtable_methods
-        .iter()
-        .map(|m| {
-            let mname = &m.name;
-            let params: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { #id: #rt }
-                })
-                .collect();
-            let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
-            };
-            quote! { fn #mname(&self, #(#params),*) #ret; }
-        })
-        .collect();
+    let trait_method_sigs = vtable_trait_method_sigs(&meta.vtable_methods);
 
     // Build vtable field initializers with const-promoted trampolines for the default method
     let vtable_trampoline_fields: Vec<_> = meta
@@ -836,27 +840,7 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
     let trait_def = if !emit_trait_def {
         quote! {}
     } else {
-        let method_sigs: Vec<_> = meta
-            .methods
-            .iter()
-            .map(|m| {
-                let mname = &m.name;
-                let params: Vec<_> = m
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let id = &p.name;
-                        let rt = &p.rust_type;
-                        quote! { #id: #rt }
-                    })
-                    .collect();
-                let ret = match &m.ret {
-                    MetaVtableRet::Void => quote! {},
-                    MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
-                };
-                quote! { fn #mname(&self, #(#params),*) #ret; }
-            })
-            .collect();
+        let method_sigs = vtable_trait_method_sigs(&meta.methods);
 
         // Trait definition generics: only declared lifetime params, not concrete
         // ones like 'static.
