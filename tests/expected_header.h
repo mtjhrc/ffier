@@ -293,7 +293,7 @@ void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
 
-typedef void* FtSnapshot; /* FtView | FtWidget */
+typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 /**
  * Create a view that borrows a widget.
  *
@@ -513,4 +513,9 @@ int32_t ft_view_snap_source_count(FtView handle);
 
 FtStr ft_widget_snap_description(FtWidget handle);
 int32_t ft_widget_snap_source_count(FtWidget handle);
+
+/* Snapshot for Gadget ----------------------------------------------- */
+
+FtStr ft_gadget_snap_description(FtGadget handle);
+int32_t ft_gadget_snap_source_count(FtGadget handle);
 #endif /* FFIER_TEST_H */

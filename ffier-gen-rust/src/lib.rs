@@ -826,11 +826,11 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
             .collect();
         quote! { #trait_name<#(#lts),*> }
     };
-    let struct_with_lts = if meta.lifetimes.is_empty() {
+    let struct_with_lts = if meta.struct_lifetime_args.is_empty() {
         quote! { #struct_name }
     } else {
         let lts: Vec<_> = meta
-            .lifetimes
+            .struct_lifetime_args
             .iter()
             .map(|lt| syn::Lifetime::new(&format!("'{lt}"), proc_macro2::Span::call_site()))
             .collect();

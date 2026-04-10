@@ -732,6 +732,20 @@ impl Snapshot<'static> for Widget {
     }
 }
 
+/// Generic lifetime impl for a struct without lifetime params — tests that
+/// `impl<'a> Trait<'a> for Struct` does NOT add a spurious `<'a>` to the struct
+/// in the generated client code.
+#[ffier::trait_impl]
+impl<'a> Snapshot<'a> for Gadget {
+    fn snap_description(&self) -> &str {
+        "gadget"
+    }
+
+    fn snap_source_count(&self) -> i32 {
+        self.value
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -758,4 +772,5 @@ ffier::library_definition!("ft",
     Attachment for Sprocket,
     Snapshot for View,
     Snapshot for Widget,
+    Snapshot for Gadget,
 );
