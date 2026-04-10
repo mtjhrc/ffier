@@ -57,6 +57,12 @@ impl Widget {
         self.count = n;
     }
 
+    /// Set count and return `&mut Self` for method chaining.
+    pub fn with_count(&mut self, n: i32) -> &mut Self {
+        self.count = n;
+        self
+    }
+
     /// Get the widget name.
     pub fn name(&self) -> &str {
         &self.name

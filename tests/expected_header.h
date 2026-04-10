@@ -89,6 +89,12 @@ int32_t ft_widget_get_count(FtWidget handle);
  */
 void ft_widget_set_count(FtWidget handle, int32_t n);
 /**
+ * Set count and return `&mut Self` for method chaining.
+ *
+ * @param n
+ */
+void ft_widget_with_count(FtWidget handle, int32_t n);
+/**
  * Get the widget name.
  */
 FtStr ft_widget_name(FtWidget handle);

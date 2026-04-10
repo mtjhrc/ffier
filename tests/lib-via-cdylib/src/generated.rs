@@ -40,6 +40,7 @@ unsafe extern "C" {
     ) -> <Widget as ffier::FfiType>::CRepr;
     pub fn ft_widget_get_count(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
     pub fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: <i32 as ffier::FfiType>::CRepr);
+    pub fn ft_widget_with_count(handle: *mut core::ffi::c_void, n: <i32 as ffier::FfiType>::CRepr);
     pub fn ft_widget_name(
         handle: *mut core::ffi::c_void,
     ) -> <&'static str as ffier::FfiType>::CRepr;
@@ -162,6 +163,11 @@ impl Widget {
     #[doc = " Set the count."]
     pub fn set_count(&mut self, n: i32) {
         unsafe { ft_widget_set_count(self.0, <i32 as ffier::FfiType>::into_c(n)) }
+    }
+    #[doc = " Set count and return `&mut Self` for method chaining."]
+    pub fn with_count(&mut self, n: i32) -> &mut Self {
+        unsafe { ft_widget_with_count(self.0, <i32 as ffier::FfiType>::into_c(n)) };
+        self
     }
     #[doc = " Get the widget name."]
     pub fn name(&self) -> &str {

@@ -291,7 +291,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
 
         // Build the method body
         let wrapper_body = if is_builder && is_by_value {
-            // Builder pattern
+            // Builder pattern (by-value self -> Self)
             match &m.ret {
                 MetaReturn::Void => {
                     quote! {
@@ -319,6 +319,34 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                         let __err = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
                         if __err.code == 0 {
                             Ok(Self(__handle #client_phantom_init))
+                        } else {
+                            Err(#err_ty::from_ffi(__err))
+                        }
+                    }
+                }
+                _ => quote! { compile_error!("unexpected builder return kind") },
+            }
+        } else if is_builder && is_mut {
+            // Builder pattern (&mut self -> &mut Self)
+            match &m.ret {
+                MetaReturn::Void => {
+                    quote! {
+                        #(#wrapper_pre_bindings)*
+                        unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
+                        self
+                    }
+                }
+                MetaReturn::Result {
+                    ok: None,
+                    err_ident,
+                    ..
+                } => {
+                    let err_ty = format_ident!("{err_ident}");
+                    quote! {
+                        #(#wrapper_pre_bindings)*
+                        let __err = unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
+                        if __err.code == 0 {
+                            Ok(self)
                         } else {
                             Err(#err_ty::from_ffi(__err))
                         }
@@ -371,6 +399,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
         // Return type for safe wrapper signature
         let rust_ret = &m.rust_ret;
         let wrapper_ret_type = match &m.ret {
+            MetaReturn::Void if is_builder && is_mut => quote! { -> &mut Self },
             MetaReturn::Void if is_builder => quote! { -> Self },
             MetaReturn::Void => quote! {},
             MetaReturn::Value(_) => {
@@ -379,6 +408,10 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 } else {
                     quote! { -> #rust_ret }
                 }
+            }
+            MetaReturn::Result { err_ident, .. } if is_builder && is_mut => {
+                let err_ty = format_ident!("{err_ident}");
+                quote! { -> Result<&mut Self, #err_ty> }
             }
             MetaReturn::Result { err_ident, .. } if is_builder => {
                 let err_ty = format_ident!("{err_ident}");
