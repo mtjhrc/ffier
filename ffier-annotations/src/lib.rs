@@ -1350,14 +1350,31 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             .to_compile_error()
             .into();
     };
-    let struct_ident = &struct_type_path
+    let struct_last_seg = struct_type_path
         .path
         .segments
         .last()
-        .expect("expected struct name")
-        .ident;
+        .expect("expected struct name");
+    let struct_ident = &struct_last_seg.ident;
     let struct_name = struct_ident.to_string();
     let struct_snake = camel_to_snake(&struct_name);
+
+    // Extract lifetime arguments from the struct type (e.g. 'a from View<'a>).
+    // Structs without lifetime params (e.g. Widget) will produce an empty list.
+    let struct_lt_args: Vec<String> = match &struct_last_seg.arguments {
+        syn::PathArguments::AngleBracketed(ab) => ab
+            .args
+            .iter()
+            .filter_map(|arg| {
+                if let syn::GenericArgument::Lifetime(lt) = arg {
+                    Some(lt.ident.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
 
     let helper_mod_name = format_ident!("_ffier_impl_{trait_snake}_for_{struct_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
@@ -1418,6 +1435,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     prefix = $prefix,
                     lifetimes = (#(#lifetime_idents),*),
                     trait_lifetime_args = [#(#trait_lt_args),*],
+                    struct_lifetime_args = [#(#struct_lt_args),*],
                     methods = [#(#method_meta),*],
                 } $(, $($rest)*)? }
             };

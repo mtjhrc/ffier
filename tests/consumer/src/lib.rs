@@ -175,6 +175,23 @@ mod tests {
     }
 
     // ================================================================
+    // Snapshot trait — generic lifetime impl for non-lifetime struct
+    // ================================================================
+
+    #[test]
+    fn test_gadget_snapshot_trait() {
+        use api::Snapshot;
+        let mut w = Widget::new();
+        w.set_count(42);
+        let g = w.create_gadget();
+        // Gadget implements Snapshot<'a> despite having no lifetime params itself.
+        // This verifies that the generated impl block doesn't add a spurious
+        // lifetime parameter to the Gadget struct.
+        assert_eq!(g.snap_description(), "gadget");
+        assert_eq!(g.snap_source_count(), 42);
+    }
+
+    // ================================================================
     // Mixer + custom Fruit type
     // ================================================================
 

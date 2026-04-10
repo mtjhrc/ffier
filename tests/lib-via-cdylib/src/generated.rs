@@ -1748,3 +1748,25 @@ impl Snapshot<'static> for Widget {
         this.0
     }
 }
+unsafe extern "C" {
+    pub fn ft_gadget_snap_description(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as ffier::FfiType>::CRepr;
+    pub fn ft_gadget_snap_source_count(
+        handle: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
+}
+impl<'a> Snapshot<'a> for Gadget {
+    fn snap_description(&self) -> &str {
+        let __raw = unsafe { ft_gadget_snap_description(self.0) };
+        <&str as ffier::FfiType>::from_c(__raw)
+    }
+    fn snap_source_count(&self) -> i32 {
+        let __raw = unsafe { ft_gadget_snap_source_count(self.0) };
+        <i32 as ffier::FfiType>::from_c(__raw)
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
