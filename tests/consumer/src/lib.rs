@@ -66,6 +66,13 @@ mod tests {
     }
 
     #[test]
+    fn test_mut_self_return_chaining() {
+        let mut w = Widget::new();
+        w.with_count(10).with_count(20);
+        assert_eq!(w.get_count(), 20);
+    }
+
+    #[test]
     fn test_builder() {
         let (name, size) = builder_chain();
         assert_eq!(name, "hello");
