@@ -133,15 +133,15 @@ FtTestError ft_widget_validate(FtWidget handle);
 /**
  * Parse a count value from the name length, returning error if name matches trigger.
  *
- * @param s
- * @param[out] result
+ * @param s the input string whose length becomes the count.
+ * @param[out] result The count derived from the name length.
  * @return FtTestError with code 0 on success, error code on failure.
  */
 FtTestError ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result);
 /**
  * Describe a code as a string.
  *
- * @param code
+ * @param code the numeric code to look up.
  * @param[out] result
  * @return FtTestError with code 0 on success, error code on failure.
  */
