@@ -1378,7 +1378,14 @@ fn parse_param_entry(s: &str) -> Option<(String, String)> {
     let end = rest.find('`')?;
     let name = rest[..end].to_string();
     let after = rest[end + 1..].trim();
-    let desc = after.strip_prefix('-').unwrap_or(after).trim().to_string();
+    // Strip separator between name and description: `-`, `:`, or `—`
+    let desc = after
+        .strip_prefix('-')
+        .or_else(|| after.strip_prefix(':'))
+        .or_else(|| after.strip_prefix('\u{2014}'))
+        .unwrap_or(after)
+        .trim()
+        .to_string();
     Some((name, desc))
 }
 

@@ -103,6 +103,14 @@ impl Widget {
     }
 
     /// Parse a count value from the name length, returning error if name matches trigger.
+    ///
+    /// # Arguments
+    ///
+    /// - `s`: the input string whose length becomes the count.
+    ///
+    /// # Returns
+    ///
+    /// The count derived from the name length.
     pub fn parse_count(&self, s: &str) -> Result<i32, TestError> {
         if s == "error" {
             Err(TestError::NotFound)
@@ -112,6 +120,10 @@ impl Widget {
     }
 
     /// Describe a code as a string.
+    ///
+    /// # Arguments
+    ///
+    /// * `code` - the numeric code to look up.
     pub fn describe(&self, code: i32) -> Result<&str, TestError> {
         match code {
             0 => Ok("zero"),
