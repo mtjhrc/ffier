@@ -1,12 +1,19 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemTrait, LitStr, Pat,
+    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemTrait, ItemUse, LitStr, Pat,
     PathArguments, ReturnType, Token, TraitItem, Type, parse::Parse, parse_macro_input,
     visit_mut::VisitMut,
 };
 
 use ffier_meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
+
+/// Counter for generating unique `#[macro_export]` macro names.
+/// The exported name is an implementation detail — users access the macro
+/// only through the `pub use ... as __ffier_meta_*` alias placed next to the type.
+static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
 // Type classification for params and return values
@@ -308,10 +315,11 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
 
-    let reexport_items = ctx.reexport_items();
+    let reexport_items_crate = ctx.reexport_items_crate();
 
-    let meta_macro_name = format_ident!("__ffier_meta_annotation_{struct_ident}");
-    let check_const_name = format_ident!("__ffier_library_has_defined_{struct_ident}");
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{struct_ident}");
 
     // Build method metadata tokens
     let method_meta_tokens: Vec<_> = methods
@@ -401,17 +409,14 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #(#warnings)*
 
         #[doc(hidden)]
-        pub mod #helper_mod_name {
-            #(#reexport_items)*
-        }
-
-        /// If you see an error about this constant not being found in the crate root,
-        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
-        const _: () = crate::#check_const_name;
-
-        #[doc(hidden)]
         #[macro_export]
-        macro_rules! #meta_macro_name {
+        macro_rules! #internal_macro_name {
+            (@reexport) => {
+                #[doc(hidden)]
+                pub mod #helper_mod_name {
+                    #(#reexport_items_crate)*
+                }
+            };
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @exportable,
@@ -423,6 +428,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 } $(, $($rest)*)? }
             };
         }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
     };
 
     output.into()
@@ -564,14 +572,16 @@ impl AliasContext {
         quote! { $crate::#helper::#alias }
     }
 
-    /// Emit `pub type _TypeN = super::Erased;` items for the helper module.
-    fn reexport_items(&self) -> Vec<proc_macro2::TokenStream> {
+    /// Emit `pub type _TypeN = $crate::Erased;` items for the `@reexport` arm
+    /// of the metadata macro. Uses `$crate::` so the module can be recreated
+    /// at the crate root by `library_definition!`.
+    fn reexport_items_crate(&self) -> Vec<proc_macro2::TokenStream> {
         self.types
             .iter()
             .zip(self.aliases.iter())
             .map(|(ty, alias)| {
                 let erased = erase_lifetimes(ty);
-                quote! { pub type #alias = super::#erased; }
+                quote! { pub type #alias = $crate::#erased; }
             })
             .collect()
     }
@@ -692,8 +702,10 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     );
     let unknown_lit = proc_macro2::Literal::byte_string(unknown_msg.as_bytes());
 
-    let meta_macro_name = format_ident!("__ffier_meta_annotation_{name}");
-    let check_const_name = format_ident!("__ffier_library_has_defined_{name}");
+    let error_snake = camel_to_snake(&name.to_string());
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_{error_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{name}");
 
     let error_path = quote! { $crate::#name };
 
@@ -719,13 +731,10 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        /// If you see an error about this constant not being found in the crate root,
-        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
-        const _: () = crate::#check_const_name;
-
         #[doc(hidden)]
         #[macro_export]
-        macro_rules! #meta_macro_name {
+        macro_rules! #internal_macro_name {
+            (@reexport) => {};
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @error,
@@ -736,6 +745,9 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                 } $(, $($rest)*)? }
             };
         }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
     };
 
     output.into()
@@ -1213,14 +1225,15 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .collect();
 
     // --- Metadata emission ---
-    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}");
-    let check_const_name = format_ident!("__ffier_library_has_defined_{trait_name}");
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_{trait_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{trait_name}");
 
     let vtable_method_meta = emit_vtable_method_meta(&vtable_methods);
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
-    let reexport_items = ctx.reexport_items();
+    let reexport_items_crate = ctx.reexport_items_crate();
 
     // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
@@ -1241,11 +1254,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         #original_trait
 
         #boxdyn_impl
-
-        #[doc(hidden)]
-        pub mod #helper_mod_name {
-            #(#reexport_items)*
-        }
 
         #[repr(C)]
         pub struct #vtable_struct_name {
@@ -1274,13 +1282,15 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #wrapper_ffi_handle_impls
 
-        /// If you see an error about this constant not being found in the crate root,
-        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
-        const _: () = crate::#check_const_name;
-
         #[doc(hidden)]
         #[macro_export]
-        macro_rules! #meta_macro_name {
+        macro_rules! #internal_macro_name {
+            (@reexport) => {
+                #[doc(hidden)]
+                pub mod #helper_mod_name {
+                    #(#reexport_items_crate)*
+                }
+            };
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @implementable,
@@ -1293,6 +1303,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 } $(, $($rest)*)? }
             };
         }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
     };
 
     output.into()
@@ -1394,7 +1407,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let reexport_items = ctx.reexport_items();
+    let reexport_items_crate = ctx.reexport_items_crate();
 
     let method_meta = emit_vtable_method_meta(&methods);
 
@@ -1404,9 +1417,10 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
-    let meta_macro_name = format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_ident}");
-    let check_const_name =
-        format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_ident}");
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name =
+        format_ident!("__ffier_internal_{trait_snake}_for_{struct_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -1414,17 +1428,14 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #clean_impl
 
         #[doc(hidden)]
-        pub mod #helper_mod_name {
-            #(#reexport_items)*
-        }
-
-        /// If you see an error about this constant not being found in the crate root,
-        /// add this type to your `ffier::library_definition!()` call in `lib.rs`.
-        const _: () = crate::#check_const_name;
-
-        #[doc(hidden)]
         #[macro_export]
-        macro_rules! #meta_macro_name {
+        macro_rules! #internal_macro_name {
+            (@reexport) => {
+                #[doc(hidden)]
+                pub mod #helper_mod_name {
+                    #(#reexport_items_crate)*
+                }
+            };
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @trait_impl,
@@ -1440,6 +1451,9 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 } $(, $($rest)*)? }
             };
         }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
     };
 
     output.into()
@@ -1451,67 +1465,57 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Define the list of exported types for a library.
 ///
+/// Entries can be bare idents (same-crate types) or paths. Use `crate::`
+/// prefix for same-crate qualified paths; other paths are treated as
+/// external crate references.
+///
 /// ```ignore
 /// ffier::library_definition!("mylib",
-///     Calculator, CalcError,
-///     TextBuffer, BufferError,
+///     Calculator, CalcError,                        // bare idents (same crate)
+///     crate::submod::TextBuffer,                    // same crate, qualified
+///     trait crate::traits::Processor,               // implementable trait
+///     crate::traits::Fruit for crate::types::Apple, // trait impl
+///     other_crate::Widget,                          // cross-crate
 /// );
 ///
 /// // In cdylib:
 /// mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
 /// ```
 ///
-/// Supports three entry kinds:
-/// - `TypeName` — exportable struct or error enum
-/// - `trait TraitName` — implementable trait
-/// - `TraitName for StructName` — trait impl bridge
+/// Each annotated type generates a `__ffier_meta_*` alias macro next to the
+/// type via `pub use`. This macro resolves those aliases from the given paths
+/// and invokes their `@reexport` arm to create helper modules at the crate root.
 #[proc_macro]
 pub fn library_definition(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as LibraryInput);
     let prefix_lit = &parsed.prefix;
     let prefix_str = parsed.prefix.value();
 
-    let mut macro_idents: Vec<syn::Ident> = Vec::new();
-    let mut check_consts: Vec<syn::Ident> = Vec::new();
+    // For each entry, compute two paths:
+    // 1. alias_path: the __ffier_meta_* alias next to the type (for @reexport invocations)
+    // 2. chain_path: the same alias but with $crate:: for same-crate entries (for the
+    //    __ffier_*_library! macro that expands in the cdylib)
+    let mut reexport_invocations: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut chain_paths: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for entry in &parsed.entries {
-        let (macro_name, const_name) = match entry {
-            LibraryEntry::Plain(name) => (
-                format_ident!("__ffier_meta_annotation_{name}"),
-                format_ident!("__ffier_library_has_defined_{name}"),
-            ),
-            LibraryEntry::Trait(name) => (
-                format_ident!("__ffier_meta_annotation_{name}"),
-                format_ident!("__ffier_library_has_defined_{name}"),
-            ),
-            LibraryEntry::TraitImpl {
-                trait_name,
-                struct_name,
-            } => (
-                format_ident!("__ffier_meta_annotation_{trait_name}_for_{struct_name}"),
-                format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_name}"),
-            ),
-        };
-        macro_idents.push(macro_name);
-        check_consts.push(const_name);
+        let (alias_path, chain_path) = resolve_entry_paths(entry);
+        reexport_invocations.push(quote! { #alias_path!(@reexport); });
+        chain_paths.push(chain_path);
     }
 
-    if macro_idents.is_empty() {
+    if chain_paths.is_empty() {
         return quote! { compile_error!("library_definition! requires at least one type"); }.into();
     }
 
-    let first = &macro_idents[0];
-    let rest = &macro_idents[1..];
-    let rest_paths: Vec<proc_macro2::TokenStream> =
-        rest.iter().map(|id| quote! { $crate::#id }).collect();
+    let first = &chain_paths[0];
+    let rest = &chain_paths[1..];
 
     let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
 
     let output = quote! {
-        #(
-            #[doc(hidden)]
-            pub const #check_consts: () = ();
-        )*
+        // Create _ffier_* helper modules at the crate root via @reexport.
+        #(#reexport_invocations)*
 
         #[doc(hidden)]
         #[macro_export]
@@ -1544,10 +1548,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         #[macro_export]
         macro_rules! #entry_macro_name {
             ($callback:path) => {
-                $crate::#first! { #prefix_lit, $crate::__ffier_chain,
+                #first! { #prefix_lit, $crate::__ffier_chain,
                     #prefix_lit, $callback,
                     [],
-                    [#(#rest_paths),*]
+                    [#(#rest),*]
                 }
             };
         }
@@ -1556,17 +1560,108 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     output.into()
 }
 
+// ---------------------------------------------------------------------------
+// library_definition! helpers
+// ---------------------------------------------------------------------------
+
+/// Compute the alias path and chain path for a library entry.
+///
+/// - alias_path: used at `library_definition!` expansion site (library crate root)
+///   for `@reexport` invocations. Uses the path as-is.
+/// - chain_path: used inside the generated `#[macro_export]` library macro that
+///   expands in the cdylib. Same-crate paths get `$crate::` prefix; external
+///   crate paths are used as-is.
+fn resolve_entry_paths(
+    entry: &LibraryEntry,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    match entry {
+        LibraryEntry::Plain(path) => {
+            let alias = meta_alias_for_type(path);
+            let chain = to_chain_path(&alias);
+            (quote! { #alias }, chain)
+        }
+        LibraryEntry::Trait(path) => {
+            let alias = meta_alias_for_type(path);
+            let chain = to_chain_path(&alias);
+            (quote! { #alias }, chain)
+        }
+        LibraryEntry::TraitImpl {
+            trait_path,
+            struct_path,
+        } => {
+            let trait_name = path_last_ident(trait_path);
+            let struct_name = path_last_ident(struct_path);
+            let alias_ident = format_ident!("__ffier_meta_{trait_name}_for_{struct_name}");
+            // The trait_impl alias lives next to the struct (where the impl block is)
+            let alias = replace_last_segment(struct_path, &alias_ident);
+            let chain = to_chain_path(&alias);
+            (quote! { #alias }, chain)
+        }
+    }
+}
+
+/// Build the `__ffier_meta_*` alias path for a plain type or trait path.
+/// Replaces the last segment: `a::b::Foo` → `a::b::__ffier_meta_Foo`.
+fn meta_alias_for_type(path: &syn::Path) -> syn::Path {
+    let name = path_last_ident(path);
+    let alias_ident = format_ident!("__ffier_meta_{name}");
+    replace_last_segment(path, &alias_ident)
+}
+
+/// Convert an alias path to a chain-usable path.
+///
+/// - Bare ident `__ffier_meta_Foo` → `$crate::__ffier_meta_Foo`
+/// - `crate::a::b::__ffier_meta_Foo` → `$crate::a::b::__ffier_meta_Foo`
+/// - `other_crate::__ffier_meta_Foo` → `other_crate::__ffier_meta_Foo` (as-is)
+fn to_chain_path(path: &syn::Path) -> proc_macro2::TokenStream {
+    let first_seg = &path.segments.first().unwrap().ident;
+
+    if path.segments.len() == 1 {
+        // Bare ident — same crate
+        quote! { $crate::#path }
+    } else if first_seg == "crate" {
+        // crate::a::b::X → $crate::a::b::X
+        let without_crate: syn::punctuated::Punctuated<syn::PathSegment, Token![::]> =
+            path.segments.iter().skip(1).cloned().collect();
+        quote! { $crate::#without_crate }
+    } else {
+        // External crate path — use as-is
+        quote! { #path }
+    }
+}
+
+/// Extract the last identifier from a path.
+fn path_last_ident(path: &syn::Path) -> &syn::Ident {
+    &path.segments.last().expect("path must have segments").ident
+}
+
+/// Replace the last segment of a path with a new ident.
+fn replace_last_segment(path: &syn::Path, new_last: &syn::Ident) -> syn::Path {
+    let mut result = path.clone();
+    let last = result.segments.last_mut().unwrap();
+    last.ident = new_last.clone();
+    last.arguments = syn::PathArguments::None;
+    result
+}
+
+// ---------------------------------------------------------------------------
+// library_definition! parsing
+// ---------------------------------------------------------------------------
+
 struct LibraryInput {
     prefix: LitStr,
     entries: Vec<LibraryEntry>,
 }
 
 enum LibraryEntry {
-    Plain(syn::Ident),
-    Trait(syn::Ident),
+    /// A plain type or error: `Calculator` or `crate::submod::Calculator`
+    Plain(syn::Path),
+    /// An implementable trait: `trait Processor` or `trait crate::traits::Processor`
+    Trait(syn::Path),
+    /// A trait impl bridge: `Fruit for Apple` or `crate::Fruit for crate::Apple`
     TraitImpl {
-        trait_name: syn::Ident,
-        struct_name: syn::Ident,
+        trait_path: syn::Path,
+        struct_path: syn::Path,
     },
 }
 
@@ -1578,22 +1673,21 @@ impl Parse for LibraryInput {
         let mut entries = Vec::new();
         while !input.is_empty() {
             if input.peek(Token![trait]) {
-                // `trait TraitName`
+                // `trait Path::To::TraitName`
                 input.parse::<Token![trait]>()?;
-                let name: syn::Ident = input.parse()?;
-                entries.push(LibraryEntry::Trait(name));
+                let path: syn::Path = input.parse()?;
+                entries.push(LibraryEntry::Trait(path));
             } else {
-                let first: syn::Ident = input.parse()?;
+                let first: syn::Path = input.parse()?;
                 if input.peek(Token![for]) {
-                    // `TraitName for StructName`
+                    // `TraitPath for StructPath`
                     input.parse::<Token![for]>()?;
-                    let second: syn::Ident = input.parse()?;
+                    let second: syn::Path = input.parse()?;
                     entries.push(LibraryEntry::TraitImpl {
-                        trait_name: first,
-                        struct_name: second,
+                        trait_path: first,
+                        struct_path: second,
                     });
                 } else {
-                    // Plain type name
                     entries.push(LibraryEntry::Plain(first));
                 }
             }
@@ -1603,5 +1697,80 @@ impl Parse for LibraryInput {
         }
 
         Ok(LibraryInput { prefix, entries })
+    }
+}
+
+// ===========================================================================
+// #[ffier::reexport] — re-export ffier metadata alongside types
+// ===========================================================================
+
+/// Attribute for `pub use` statements that re-export ffier-annotated types.
+///
+/// When you re-export a type from another crate (or from a private submodule),
+/// the ffier metadata macro alias needs to travel with it. This attribute
+/// automatically generates the corresponding `pub use` for the metadata.
+///
+/// ```ignore
+/// #[ffier::reexport]
+/// pub use other_crate::Calculator;
+/// // also generates: pub use other_crate::__ffier_meta_Calculator;
+///
+/// #[ffier::reexport]
+/// pub use other_crate::{Calculator, OtherThing};
+/// // generates both metadata re-exports
+/// ```
+#[proc_macro_attribute]
+pub fn reexport(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let use_item = parse_macro_input!(item as ItemUse);
+
+    let mut meta_reexports = Vec::new();
+    collect_reexport_paths(&use_item.tree, &mut Vec::new(), &mut meta_reexports);
+
+    let output = quote! {
+        #use_item
+
+        #(
+            #[doc(hidden)]
+            #meta_reexports
+        )*
+    };
+
+    output.into()
+}
+
+/// Walk a `UseTree` and collect `pub use path::__ffier_meta_Type;` statements
+/// for each simple (non-glob, non-renamed) leaf.
+fn collect_reexport_paths(
+    tree: &syn::UseTree,
+    prefix: &mut Vec<syn::Ident>,
+    out: &mut Vec<proc_macro2::TokenStream>,
+) {
+    match tree {
+        syn::UseTree::Path(p) => {
+            prefix.push(p.ident.clone());
+            collect_reexport_paths(&p.tree, prefix, out);
+            prefix.pop();
+        }
+        syn::UseTree::Name(n) => {
+            let type_name = &n.ident;
+            let meta_alias = format_ident!("__ffier_meta_{type_name}");
+            if prefix.is_empty() {
+                out.push(quote! { pub use #meta_alias; });
+            } else {
+                out.push(quote! { pub use #(#prefix)::*::#meta_alias; });
+            }
+        }
+        syn::UseTree::Group(g) => {
+            for tree in &g.items {
+                collect_reexport_paths(tree, prefix, out);
+            }
+        }
+        syn::UseTree::Rename(_) => {
+            // Renamed imports are not supported — the user can manually
+            // re-export the metadata if needed.
+        }
+        syn::UseTree::Glob(_) => {
+            // Glob imports can't be handled — we don't know which types exist.
+        }
     }
 }
