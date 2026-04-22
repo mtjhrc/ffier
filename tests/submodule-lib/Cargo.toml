@@ -1,0 +1,7 @@
+[package]
+name = "ffier-test-submodule-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ffier = { path = "../../ffier" }
