@@ -240,7 +240,7 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
                 concat!("/* Caller must ensure data is valid UTF-8 */"),
                 "typedef struct {",
                 "    const char* data;",
-                "    uintptr_t len;",
+                "    size_t len;",
                 concat!("} ", #str_c, ";"),
                 "",
                 concat!("/* Caller must ensure data is a valid UTF-8 path */"),
@@ -248,7 +248,7 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
                 "",
                 "typedef struct {",
                 "    const uint8_t* data;",
-                "    uintptr_t len;",
+                "    size_t len;",
                 concat!("} ", #bytes_c, ";"),
                 "",
                 concat!("#define ", #str_macro, "(s) ((", #str_c, "){ .data = (s), .len = strlen(s) })"),
@@ -1502,6 +1502,7 @@ impl HeaderBuilder {
         out.push_str(&format!("#ifndef {}\n", self.guard));
         out.push_str(&format!("#define {}\n", self.guard));
         out.push('\n');
+        out.push_str("#include <stddef.h>\n");
         out.push_str("#include <stdint.h>\n");
         out.push_str("#include <stdbool.h>\n");
         out.push_str("#include <string.h>\n");
