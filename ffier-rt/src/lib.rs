@@ -215,6 +215,7 @@ impl<T: FfiHandle> FfiType for &mut T {
 
 /// `#[repr(C)]` byte slice passed across FFI. In C, each usage gets a
 /// typedef (`Str`, `Bytes`, `Path`) from the same underlying struct.
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfierBytes {
     pub data: *const u8,
@@ -359,3 +360,25 @@ impl FfierError {
 /// This type is never constructed directly by users — it's used internally
 /// by the generated trait default and probe trampoline.
 pub struct FfierDefaultMarker;
+
+/// Install a panic hook that suppresses output for `FfierDefaultMarker` panics.
+/// These are used internally as a control-flow mechanism by probe trampolines
+/// and should not produce visible panic output.
+///
+/// Call this once at program startup if your library uses `#[ffier::implementable]`
+/// traits with defaulted methods and Rust client bindings.
+pub fn install_panic_hook() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // Suppress FfierDefaultMarker panics — they're internal control flow
+        if let Some(payload) = info.payload().downcast_ref::<FfierDefaultMarker>() {
+            let _ = payload; // suppress unused warning
+            return;
+        }
+        // Also check for Box<FfierDefaultMarker> (from panic_any)
+        if info.payload().is::<FfierDefaultMarker>() {
+            return;
+        }
+        prev(info);
+    }));
+}
