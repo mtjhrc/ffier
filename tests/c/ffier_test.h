@@ -427,6 +427,13 @@ typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | Ft
 FtMixer ft_mixer_new(void);
 void ft_mixer_add(FtMixer* handle, FtFruit fruit);
 /**
+ * Returns the length of a fruit's label. Used to test that vtable
+ * default method detection works for custom client types crossing FFI.
+ *
+ * @param fruit
+ */
+int32_t ft_mixer_fruit_label_len(FtMixer handle, FtFruit fruit);
+/**
  * Both concrete (9^2=81 > 64, override with annotation).
  *
  * @param a
@@ -533,15 +540,15 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 
-/* Processor (dispatch) ---------------------------------------------- */
-
-int32_t ft_processor_process(void* handle, int32_t input);
-FtStr ft_processor_name(void* handle);
-void ft_processor_destroy(void* handle);
-
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(void* handle);
 FtStr ft_fruit_label(void* handle);
 void ft_fruit_destroy(void* handle);
+
+/* Processor (dispatch) ---------------------------------------------- */
+
+int32_t ft_processor_process(void* handle, int32_t input);
+FtStr ft_processor_name(void* handle);
+void ft_processor_destroy(void* handle);
 #endif /* FFIER_TEST_H */

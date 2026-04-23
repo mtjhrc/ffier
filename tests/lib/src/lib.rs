@@ -638,6 +638,12 @@ impl Mixer {
         self
     }
 
+    /// Returns the length of a fruit's label. Used to test that vtable
+    /// default method detection works for custom client types crossing FFI.
+    pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
+        fruit.label().len() as i32
+    }
+
     /// Both concrete (9^2=81 > 64, override with annotation).
     pub fn blend_concrete(
         &mut self,
