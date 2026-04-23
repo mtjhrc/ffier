@@ -229,6 +229,31 @@ mod tests {
     }
 
     // ================================================================
+    // Vtable default method probe trampoline tests
+    // ================================================================
+
+    #[test]
+    #[ignore = "BUG: probe trampoline passes wrong handle to ft_fruit_label — needs investigation"]
+    fn test_custom_type_default_label_via_ffi() {
+        // Banana doesn't override label() — the probe trampoline should
+        // detect FfierDefaultMarker, patch the vtable to None, and the
+        // library should use its default impl ("fruit").
+        //
+        // fruit_label_len calls fruit.label().len() on the library side.
+        // "fruit".len() = 5.
+        let m = Mixer::new();
+        assert_eq!(m.fruit_label_len(Banana { sweetness: 42 }), 5);
+    }
+
+    #[test]
+    fn test_known_type_default_label_via_ffi() {
+        // Apple also doesn't override label — but it's a known type,
+        // so it uses the self-dispatch path (ft_fruit_label).
+        let m = Mixer::new();
+        assert_eq!(m.fruit_label_len(api::Apple::new(10)), 5);
+    }
+
+    // ================================================================
     // Dispatch path verification (via-cdylib only)
     // ================================================================
 

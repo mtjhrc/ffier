@@ -1314,6 +1314,10 @@ unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as ffier::FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
+    pub fn ft_mixer_fruit_label_len(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as ffier::FfiType>::CRepr;
     pub fn ft_mixer_blend_concrete(
         handle: *mut core::ffi::c_void,
         a: *mut core::ffi::c_void,
@@ -1377,6 +1381,12 @@ impl Mixer {
         };
         unsafe { ft_mixer_add(&mut __handle, fruit.__into_raw_handle()) };
         Self(__handle)
+    }
+    #[doc = " Returns the length of a fruit's label. Used to test that vtable"]
+    #[doc = " default method detection works for custom client types crossing FFI."]
+    pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
+        let __raw = unsafe { ft_mixer_fruit_label_len(self.0, fruit.__into_raw_handle()) };
+        <i32 as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Both concrete (9^2=81 > 64, override with annotation)."]
     pub fn blend_concrete(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
