@@ -1,7 +1,7 @@
 ffier_test_lib::__ffier_ft_library!(ffier_gen_c_macros::generate);
 
 // ---------------------------------------------------------------------------
-// Manual bridge function — peeks at a handle's TypeId to verify dispatch path.
+// Manual bridge function — peeks at a handle's type tag to verify dispatch path.
 // Also demonstrates that hand-written bridge functions work alongside generated ones.
 // ---------------------------------------------------------------------------
 
@@ -16,15 +16,15 @@ ffier_test_lib::__ffier_ft_library!(ffier_gen_c_macros::generate);
 pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     handle: *mut core::ffi::c_void,
 ) -> ffier::FfierBytes {
-    use ffier::FfiType;
-    let type_id = unsafe { ffier::handle_type_id(handle) };
-    let name = if type_id == core::any::TypeId::of::<ffier_test_lib::VtableFruit>() {
+    use ffier::{FfiHandle, FfiType};
+    let tag = unsafe { ffier::handle_type_tag(handle) };
+    let name = if tag == ffier_test_lib::VtableFruit::TYPE_TAG {
         drop(<ffier_test_lib::VtableFruit as FfiType>::from_c(handle));
         "VtableFruit"
-    } else if type_id == core::any::TypeId::of::<ffier_test_lib::Apple>() {
+    } else if tag == ffier_test_lib::Apple::TYPE_TAG {
         drop(<ffier_test_lib::Apple as FfiType>::from_c(handle));
         "Apple"
-    } else if type_id == core::any::TypeId::of::<ffier_test_lib::Orange>() {
+    } else if tag == ffier_test_lib::Orange::TYPE_TAG {
         drop(<ffier_test_lib::Orange as FfiType>::from_c(handle));
         "Orange"
     } else {
@@ -454,21 +454,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]

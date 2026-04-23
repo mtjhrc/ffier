@@ -200,6 +200,8 @@ pub struct MetaExportable {
     pub struct_name: Ident,
     pub struct_path: TokenStream,
     pub prefix: String,
+    /// Stable type tag assigned in `library_definition!`. Nonzero when set.
+    pub type_tag: u32,
     pub lifetimes: Vec<Ident>,
     pub methods: Vec<MetaMethod>,
 }
@@ -291,6 +293,8 @@ pub struct MetaError {
     pub name: Ident,
     pub path: TokenStream,
     pub prefix: String,
+    /// Stable type tag assigned in `library_definition!`. Nonzero when set.
+    pub type_tag: u32,
     pub variants: Vec<MetaErrorVariant>,
 }
 
@@ -314,6 +318,8 @@ pub struct MetaImplementable {
     pub trait_name: Ident,
     pub trait_path: TokenStream,
     pub prefix: String,
+    /// Stable type tag assigned in `library_definition!`. Nonzero when set.
+    pub type_tag: u32,
     pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
     pub vtable_methods: Vec<MetaVtableMethod>,
@@ -484,6 +490,11 @@ impl syn::parse::Parse for MetaExportable {
         let prefix = parse_string(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "type_tag")?;
+        let type_tag: syn::LitInt = input.parse()?;
+        let type_tag = type_tag.base10_parse::<u32>()?;
+        parse_comma(input)?;
+
         expect_key(input, "lifetimes")?;
         let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
@@ -496,6 +507,7 @@ impl syn::parse::Parse for MetaExportable {
             struct_name,
             struct_path,
             prefix,
+            type_tag,
             lifetimes,
             methods,
         })
@@ -728,6 +740,11 @@ impl syn::parse::Parse for MetaError {
         let prefix = parse_string(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "type_tag")?;
+        let type_tag: syn::LitInt = input.parse()?;
+        let type_tag = type_tag.base10_parse::<u32>()?;
+        parse_comma(input)?;
+
         expect_key(input, "variants")?;
         let variants = parse_bracketed_list(input, |content| {
             let inner;
@@ -754,6 +771,7 @@ impl syn::parse::Parse for MetaError {
             name,
             path,
             prefix,
+            type_tag,
             variants,
         })
     }
@@ -784,6 +802,11 @@ impl syn::parse::Parse for MetaImplementable {
         let prefix = parse_string(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "type_tag")?;
+        let type_tag: syn::LitInt = input.parse()?;
+        let type_tag = type_tag.base10_parse::<u32>()?;
+        parse_comma(input)?;
+
         expect_key(input, "vtable_struct")?;
         let vtable_struct_name = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
@@ -800,6 +823,7 @@ impl syn::parse::Parse for MetaImplementable {
             trait_name,
             trait_path,
             prefix,
+            type_tag,
             vtable_struct_name,
             wrapper_name,
             vtable_methods,

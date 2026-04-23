@@ -1,6 +1,7 @@
 #ifndef FFIER_TEST_H
 #define FFIER_TEST_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
@@ -27,7 +28,7 @@ typedef void* FtSprocket;
 /* Caller must ensure data is valid UTF-8 */
 typedef struct {
     const char* data;
-    uintptr_t len;
+    size_t len;
 } FtStr;
 
 /* Caller must ensure data is a valid UTF-8 path */
@@ -35,7 +36,7 @@ typedef FtStr FtPath;
 
 typedef struct {
     const uint8_t* data;
-    uintptr_t len;
+    size_t len;
 } FtBytes;
 
 #define FT_STR(s) ((FtStr){ .data = (s), .len = strlen(s) })

@@ -125,6 +125,7 @@ impl Widget {
 }
 impl ffier::FfiHandle for Widget {
     const C_HANDLE_NAME: &'static str = "Widget";
+    const TYPE_TAG: u32 = 2u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -209,6 +210,14 @@ impl Widget {
         }
     }
     #[doc = " Parse a count value from the name length, returning error if name matches trigger."]
+    #[doc = ""]
+    #[doc = " # Arguments"]
+    #[doc = ""]
+    #[doc = " - `s`: the input string whose length becomes the count."]
+    #[doc = ""]
+    #[doc = " # Returns"]
+    #[doc = ""]
+    #[doc = " The count derived from the name length."]
     pub fn parse_count(&self, s: &str) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let __err = unsafe {
@@ -227,6 +236,10 @@ impl Widget {
         }
     }
     #[doc = " Describe a code as a string."]
+    #[doc = ""]
+    #[doc = " # Arguments"]
+    #[doc = ""]
+    #[doc = " * `code` - the numeric code to look up."]
     pub fn describe(&self, code: i32) -> Result<&str, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let __err = unsafe {
@@ -361,6 +374,7 @@ impl Gadget {
 }
 impl ffier::FfiHandle for Gadget {
     const C_HANDLE_NAME: &'static str = "Gadget";
+    const TYPE_TAG: u32 = 3u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -423,6 +437,7 @@ impl Config {
 }
 impl ffier::FfiHandle for Config {
     const C_HANDLE_NAME: &'static str = "Config";
+    const TYPE_TAG: u32 = 4u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -515,6 +530,7 @@ impl Gizmo {
 }
 impl ffier::FfiHandle for Gizmo {
     const C_HANDLE_NAME: &'static str = "Gizmo";
+    const TYPE_TAG: u32 = 5u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -584,6 +600,7 @@ impl GizmoBuilder {
 }
 impl ffier::FfiHandle for GizmoBuilder {
     const C_HANDLE_NAME: &'static str = "GizmoBuilder";
+    const TYPE_TAG: u32 = 6u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -680,6 +697,7 @@ impl<'a> View<'a> {
 }
 impl<'a> ffier::FfiHandle for View<'a> {
     const C_HANDLE_NAME: &'static str = "View";
+    const TYPE_TAG: u32 = 7u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -764,6 +782,7 @@ impl ViewFactory {
 }
 impl ffier::FfiHandle for ViewFactory {
     const C_HANDLE_NAME: &'static str = "ViewFactory";
+    const TYPE_TAG: u32 = 8u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -837,6 +856,7 @@ impl Pipeline {
 }
 impl ffier::FfiHandle for Pipeline {
     const C_HANDLE_NAME: &'static str = "Pipeline";
+    const TYPE_TAG: u32 = 9u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -914,6 +934,7 @@ impl Apple {
 }
 impl ffier::FfiHandle for Apple {
     const C_HANDLE_NAME: &'static str = "Apple";
+    const TYPE_TAG: u32 = 11u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -964,6 +985,7 @@ impl Orange {
 }
 impl ffier::FfiHandle for Orange {
     const C_HANDLE_NAME: &'static str = "Orange";
+    const TYPE_TAG: u32 = 12u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1012,6 +1034,7 @@ impl Banana {
 }
 impl ffier::FfiHandle for Banana {
     const C_HANDLE_NAME: &'static str = "Banana";
+    const TYPE_TAG: u32 = 13u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1060,6 +1083,7 @@ impl Mango {
 }
 impl ffier::FfiHandle for Mango {
     const C_HANDLE_NAME: &'static str = "Mango";
+    const TYPE_TAG: u32 = 14u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1108,6 +1132,7 @@ impl Peach {
 }
 impl ffier::FfiHandle for Peach {
     const C_HANDLE_NAME: &'static str = "Peach";
+    const TYPE_TAG: u32 = 15u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1156,6 +1181,7 @@ impl Plum {
 }
 impl ffier::FfiHandle for Plum {
     const C_HANDLE_NAME: &'static str = "Plum";
+    const TYPE_TAG: u32 = 16u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1204,6 +1230,7 @@ impl Grape {
 }
 impl ffier::FfiHandle for Grape {
     const C_HANDLE_NAME: &'static str = "Grape";
+    const TYPE_TAG: u32 = 17u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1252,6 +1279,7 @@ impl Lemon {
 }
 impl ffier::FfiHandle for Lemon {
     const C_HANDLE_NAME: &'static str = "Lemon";
+    const TYPE_TAG: u32 = 18u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1317,6 +1345,7 @@ impl Mixer {
 }
 impl ffier::FfiHandle for Mixer {
     const C_HANDLE_NAME: &'static str = "Mixer";
+    const TYPE_TAG: u32 = 21u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1398,6 +1427,7 @@ impl Sprocket {
 }
 impl ffier::FfiHandle for Sprocket {
     const C_HANDLE_NAME: &'static str = "Sprocket";
+    const TYPE_TAG: u32 = 22u32;
     fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }

@@ -72,13 +72,20 @@ fn is_str_slice(ty: &Type) -> bool {
 ///
 /// `ty` is the type (e.g. `Widget` or `VtableFruit`), `c_handle_name` is the
 /// C handle typedef name string (e.g. `"Widget"`, `"VtableFruit"`).
+/// Emit `impl FfiHandle` and `impl FfiType` for a handle type.
+///
+/// `tag_const` is a token stream referencing the type tag constant, e.g.
+/// `crate::__ffier_type_tag_Widget`. The actual value is provided by
+/// `library_definition!` which emits `pub const __ffier_type_tag_Widget: u32 = N;`.
 fn emit_ffi_handle_impls(
     ty: &proc_macro2::TokenStream,
     c_handle_name: &str,
+    tag_const: &proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
     quote! {
         impl ffier::FfiHandle for #ty {
             const C_HANDLE_NAME: &str = #c_handle_name;
+            const TYPE_TAG: u32 = #tag_const;
             fn as_handle(&self) -> *mut core::ffi::c_void {
                 let value_offset = core::mem::offset_of!(
                     ffier::FfierTaggedBox<Self>, value
@@ -94,7 +101,7 @@ fn emit_ffi_handle_impls(
             const C_TYPE_NAME: &str = #c_handle_name;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierTaggedBox {
-                    type_id: core::any::TypeId::of::<Self>(),
+                    type_tag: #tag_const,
                     value: self,
                 };
                 Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
@@ -391,7 +398,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_path_tokens = quote! { $crate::#struct_ident };
 
     let struct_name_lit = struct_name;
-    let ffi_handle_impls = emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit);
+    let tag_const_name = format_ident!("__ffier_type_tag_{struct_ident}");
+    let tag_const = quote! { crate::#tag_const_name };
+    let ffi_handle_impls = emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit, &tag_const);
 
     let output = quote! {
         #impl_block
@@ -412,12 +421,26 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
+            // Tagged invocation (from library_definition! shim): includes type_tag
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @exportable,
+                    name = #struct_ident,
+                    struct_path = (#struct_path_tokens),
+                    prefix = $prefix,
+                    type_tag = $type_tag,
+                    lifetimes = (#(#lifetime_idents),*),
+                    methods = [#(#method_meta_tokens),*],
+                } $(, $($rest)*)? }
+            };
+            // Untagged invocation (legacy / direct): type_tag defaults to 0
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @exportable,
                     name = #struct_ident,
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
+                    type_tag = 0,
                     lifetimes = (#(#lifetime_idents),*),
                     methods = [#(#method_meta_tokens),*],
                 } $(, $($rest)*)? }
@@ -726,12 +749,25 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
+            // Tagged invocation (from library_definition! shim): includes type_tag
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @error,
+                    name = #name,
+                    path = (#error_path),
+                    prefix = $prefix,
+                    type_tag = $type_tag,
+                    variants = [#(#variant_meta_tokens),*],
+                } $(, $($rest)*)? }
+            };
+            // Untagged invocation (legacy / direct): type_tag defaults to 0
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @error,
                     name = #name,
                     path = (#error_path),
                     prefix = $prefix,
+                    type_tag = 0,
                     variants = [#(#variant_meta_tokens),*],
                 } $(, $($rest)*)? }
             };
@@ -1098,8 +1134,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
+    let tag_const_name = format_ident!("__ffier_type_tag_{trait_name}");
+    let tag_const = quote! { crate::#tag_const_name };
     let wrapper_ffi_handle_impls =
-        emit_ffi_handle_impls(&quote! { #wrapper_name }, &wrapper_c_handle_suffix);
+        emit_ffi_handle_impls(&quote! { #wrapper_name }, &wrapper_c_handle_suffix, &tag_const);
 
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
@@ -1281,12 +1319,27 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #meta_macro_name {
+            // Tagged invocation (from library_definition! shim): includes type_tag
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @implementable,
+                    trait_name = #trait_name,
+                    trait_path = (#trait_path_tokens),
+                    prefix = $prefix,
+                    type_tag = $type_tag,
+                    vtable_struct = ($crate::#vtable_struct_name),
+                    wrapper_name = ($crate::#wrapper_name),
+                    vtable_methods = [#(#vtable_method_meta),*],
+                } $(, $($rest)*)? }
+            };
+            // Untagged invocation (legacy / direct): type_tag defaults to 0
             ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @implementable,
                     trait_name = #trait_name,
                     trait_path = (#trait_path_tokens),
                     prefix = $prefix,
+                    type_tag = 0,
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_methods = [#(#vtable_method_meta),*],
@@ -1451,10 +1504,17 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Define the list of exported types for a library.
 ///
+/// Every entry (except `TraitName for StructName`) must have an explicit
+/// type tag: `Name = N`. Tags must be nonzero and unique across the library.
+///
 /// ```ignore
 /// ffier::library_definition!("mylib",
-///     Calculator, CalcError,
-///     TextBuffer, BufferError,
+///     CalcError = 1,
+///     Calculator = 2,
+///     TextBuffer = 3,
+///     BufferError = 4,
+///     trait Processor = 10,
+///     Processor for MyProcessor,
 /// );
 ///
 /// // In cdylib:
@@ -1462,28 +1522,69 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 ///
 /// Supports three entry kinds:
-/// - `TypeName` — exportable struct or error enum
-/// - `trait TraitName` — implementable trait
-/// - `TraitName for StructName` — trait impl bridge
+/// - `TypeName = N` — exportable struct or error enum with type tag
+/// - `trait TraitName = N` — implementable trait with type tag
+/// - `TraitName for StructName` — trait impl bridge (uses the struct's tag)
 #[proc_macro]
 pub fn library_definition(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as LibraryInput);
     let prefix_lit = &parsed.prefix;
     let prefix_str = parsed.prefix.value();
 
+    // Collect: chain macro idents, check consts, tag consts, shim macros
     let mut macro_idents: Vec<syn::Ident> = Vec::new();
     let mut check_consts: Vec<syn::Ident> = Vec::new();
+    let mut tag_consts: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut shim_macros: Vec<proc_macro2::TokenStream> = Vec::new();
 
     for entry in &parsed.entries {
-        let (macro_name, const_name) = match entry {
-            LibraryEntry::Plain(name) => (
-                format_ident!("__ffier_meta_annotation_{name}"),
-                format_ident!("__ffier_library_has_defined_{name}"),
-            ),
-            LibraryEntry::Trait(name) => (
-                format_ident!("__ffier_meta_annotation_{name}"),
-                format_ident!("__ffier_library_has_defined_{name}"),
-            ),
+        let (chain_macro, const_name) = match entry {
+            LibraryEntry::Tagged(name, tag) => {
+                let check = format_ident!("__ffier_library_has_defined_{name}");
+                let tag_const = format_ident!("__ffier_type_tag_{name}");
+                tag_consts.push(quote! {
+                    #[doc(hidden)]
+                    pub const #tag_const: u32 = #tag;
+                });
+
+                // Shim macro that injects the tag into the metadata macro call
+                let real_macro = format_ident!("__ffier_meta_annotation_{name}");
+                let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{name}");
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            $crate::#real_macro! { $prefix, #tag, $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+
+                (shim_name, check)
+            }
+            LibraryEntry::TaggedTrait(name, tag) => {
+                let check = format_ident!("__ffier_library_has_defined_{name}");
+                let tag_const = format_ident!("__ffier_type_tag_{name}");
+                tag_consts.push(quote! {
+                    #[doc(hidden)]
+                    pub const #tag_const: u32 = #tag;
+                });
+
+                // Shim macro for trait entries
+                let real_macro = format_ident!("__ffier_meta_annotation_{name}");
+                let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{name}");
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            $crate::#real_macro! { $prefix, #tag, $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+
+                (shim_name, check)
+            }
             LibraryEntry::TraitImpl {
                 trait_name,
                 struct_name,
@@ -1492,7 +1593,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 format_ident!("__ffier_library_has_defined_{trait_name}_for_{struct_name}"),
             ),
         };
-        macro_idents.push(macro_name);
+        macro_idents.push(chain_macro);
         check_consts.push(const_name);
     }
 
@@ -1508,10 +1609,14 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
 
     let output = quote! {
+        #(#tag_consts)*
+
         #(
             #[doc(hidden)]
             pub const #check_consts: () = ();
         )*
+
+        #(#shim_macros)*
 
         #[doc(hidden)]
         #[macro_export]
@@ -1562,12 +1667,30 @@ struct LibraryInput {
 }
 
 enum LibraryEntry {
-    Plain(syn::Ident),
-    Trait(syn::Ident),
+    /// Type with an explicit type tag: `Name = N`
+    Tagged(syn::Ident, u32),
+    /// Trait with an explicit type tag: `trait Name = N`
+    TaggedTrait(syn::Ident, u32),
+    /// Trait impl: `TraitName for StructName` (uses the struct's tag)
     TraitImpl {
         trait_name: syn::Ident,
         struct_name: syn::Ident,
     },
+}
+
+/// Parse a `= N` type tag after an identifier. Returns the tag value.
+/// Rejects tag 0 (reserved for success / no-type).
+fn parse_type_tag(input: syn::parse::ParseStream) -> syn::Result<u32> {
+    input.parse::<Token![=]>()?;
+    let tag_lit: syn::LitInt = input.parse()?;
+    let tag = tag_lit.base10_parse::<u32>()?;
+    if tag == 0 {
+        return Err(syn::Error::new(
+            tag_lit.span(),
+            "type tag must be nonzero (0 is reserved)",
+        ));
+    }
+    Ok(tag)
 }
 
 impl Parse for LibraryInput {
@@ -1578,10 +1701,11 @@ impl Parse for LibraryInput {
         let mut entries = Vec::new();
         while !input.is_empty() {
             if input.peek(Token![trait]) {
-                // `trait TraitName`
+                // `trait TraitName = N`
                 input.parse::<Token![trait]>()?;
                 let name: syn::Ident = input.parse()?;
-                entries.push(LibraryEntry::Trait(name));
+                let tag = parse_type_tag(input)?;
+                entries.push(LibraryEntry::TaggedTrait(name, tag));
             } else {
                 let first: syn::Ident = input.parse()?;
                 if input.peek(Token![for]) {
@@ -1593,8 +1717,9 @@ impl Parse for LibraryInput {
                         struct_name: second,
                     });
                 } else {
-                    // Plain type name
-                    entries.push(LibraryEntry::Plain(first));
+                    // `TypeName = N`
+                    let tag = parse_type_tag(input)?;
+                    entries.push(LibraryEntry::Tagged(first, tag));
                 }
             }
             if !input.is_empty() {

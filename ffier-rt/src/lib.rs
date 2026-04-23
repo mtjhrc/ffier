@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::{c_char, CStr, CString};
 
 // ---------------------------------------------------------------------------
 // FfiType --- maps Rust types to C-compatible representations
@@ -138,7 +138,6 @@ pub struct FfierBoxDyn<T: ?Sized>(pub Box<T>);
 // FfiHandle --- marker for types exported via #[ffier::exportable]
 // ---------------------------------------------------------------------------
 
-use core::any::TypeId;
 use core::ffi::c_void;
 
 /// Marker trait for types that are exported as opaque C handles.
@@ -150,36 +149,38 @@ pub trait FfiHandle {
     /// The C handle typedef name (e.g. `"ExWidget"`).
     const C_HANDLE_NAME: &'static str;
 
+    /// Stable numeric type tag assigned in `library_definition!`.
+    ///
+    /// Used for runtime type identification of `void*` handles — both for
+    /// type assertions (wrong-handle panics) and `impl Trait` dispatch.
+    ///
+    /// The same tag value is also used in `FfierError.code` (upper bits) for
+    /// error type identification. Both mechanisms will eventually be unified,
+    /// so tag numbers must be globally unique across all types in a library.
+    const TYPE_TAG: u32;
+
     /// Returns the raw handle pointer for this value.
     ///
     /// - **Client side**: the wrapper struct holds `*mut c_void` directly.
     /// - **Library side**: recovers the `FfierTaggedBox<T>` pointer via
     ///   `offset_of!`.
     fn as_handle(&self) -> *mut c_void;
-
-    /// Runtime type identifier. Only available for `'static` types.
-    fn type_id() -> TypeId
-    where
-        Self: 'static,
-    {
-        TypeId::of::<Self>()
-    }
 }
 
 /// Every handle allocation is prefixed with a type tag so any `void*`
 /// handle can be introspected at runtime.
 #[repr(C)]
 pub struct FfierTaggedBox<T> {
-    pub type_id: TypeId,
+    pub type_tag: u32,
     pub value: T,
 }
 
-/// Read the TypeId from a raw handle pointer.
+/// Read the type tag from a raw handle pointer.
 ///
 /// # Safety
 /// `handle` must point to a valid `FfierTaggedBox<_>`.
-pub unsafe fn handle_type_id(handle: *const core::ffi::c_void) -> TypeId {
-    unsafe { *(handle as *const TypeId) }
+pub unsafe fn handle_type_tag(handle: *const core::ffi::c_void) -> u32 {
+    unsafe { *(handle as *const u32) }
 }
 
 // ---------------------------------------------------------------------------
