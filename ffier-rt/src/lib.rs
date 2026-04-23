@@ -345,3 +345,17 @@ impl FfierError {
         *self = Self::ok();
     }
 }
+
+// ---------------------------------------------------------------------------
+// FfierDefaultMarker --- sentinel panic type for vtable default detection
+// ---------------------------------------------------------------------------
+
+/// Panic payload used by client-side probe trampolines to signal that a
+/// trait method's default implementation ran (i.e., the client type doesn't
+/// override the method). The probe trampoline catches this via `catch_unwind`,
+/// patches the vtable field to `None`, and calls the self-dispatch function
+/// to get the library's default result.
+///
+/// This type is never constructed directly by users — it's used internally
+/// by the generated trait default and probe trampoline.
+pub struct FfierDefaultMarker;

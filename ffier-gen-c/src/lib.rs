@@ -1074,6 +1074,23 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
     let vtable_section_name = format!("Vtable{trait_name_str}");
 
+    // VtableRef names — derive the path from vtable_struct_name
+    // (e.g., some_crate::FruitVtable → some_crate::FruitVtableRef)
+    let vtable_ref_ident = format_ident!("{trait_name_str}VtableRef");
+    let vtable_ref_name = {
+        // Replace the last segment of the vtable_struct_name path
+        let mut tokens: Vec<proc_macro2::TokenTree> = vtable_struct_name.clone().into_iter().collect();
+        if let Some(last) = tokens.last_mut() {
+            *last = proc_macro2::TokenTree::Ident(vtable_ref_ident.clone());
+        }
+        tokens.into_iter().collect::<TokenStream2>()
+    };
+    let vtable_ref_c_name = format!("{type_pfx}{trait_name_str}VtableRef");
+    let new_vtable_name_str = format!("{fn_pfx}{trait_snake}_new_vtable");
+    let new_vtable_name = format_ident!("{new_vtable_name_str}");
+    let delete_vtable_name_str = format!("{fn_pfx}{trait_snake}_delete_vtable");
+    let delete_vtable_name = format_ident!("{delete_vtable_name_str}");
+
     // Build header lines for vtable struct
     let mut header_lines: Vec<TokenStream2> = Vec::new();
 
@@ -1108,22 +1125,67 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     }
     header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
     header_lines.push(quote! { "" });
+    // VtableRef: opaque handle, new, delete, from_vtable
     header_lines.push(quote! {
-        concat!("void* ", #constructor_name_str, "(void* user_data, const ", #vtable_c_name, "* vtable);")
+        concat!("typedef void* ", #vtable_ref_c_name, ";")
+    });
+    header_lines.push(quote! {
+        concat!(#vtable_ref_c_name, " ", #new_vtable_name_str,
+                "(const ", #vtable_c_name, "* vtable, size_t vtable_size);")
+    });
+    header_lines.push(quote! {
+        concat!("void ", #delete_vtable_name_str, "(", #vtable_ref_c_name, " vtable_ref);")
+    });
+    header_lines.push(quote! {
+        concat!("void* ", #constructor_name_str,
+                "(void* user_data, ", #vtable_ref_c_name, " vtable_ref);")
     });
 
     let num_header_lines = header_lines.len();
 
     quote! {
+        /// Create a shared vtable reference. Copies the vtable struct into a
+        /// heap allocation owned by the ref. The caller's vtable can be freed
+        /// after this call. Pass `sizeof(YourVtableStruct)` as `vtable_size`
+        /// for forward-compatibility validation.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn #new_vtable_name(
+            vtable: *const #vtable_struct_name,
+            vtable_size: usize,
+        ) -> *mut core::ffi::c_void {
+            let expected = core::mem::size_of::<#vtable_struct_name>();
+            assert!(
+                vtable_size <= expected,
+                "{}(): vtable_size ({}) exceeds library vtable size ({})",
+                #new_vtable_name_str, vtable_size, expected,
+            );
+            let vtable_copy = unsafe { core::ptr::read(vtable) };
+            let vtable_ref = Box::new(#vtable_ref_name {
+                vtable: core::cell::UnsafeCell::new(vtable_copy),
+            });
+            Box::into_raw(vtable_ref) as *mut core::ffi::c_void
+        }
+
+        /// Free a vtable reference. Must not be called while any instances
+        /// created from this ref are still alive.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #delete_vtable_name(
+            vtable_ref: *mut core::ffi::c_void,
+        ) {
+            if !vtable_ref.is_null() {
+                drop(unsafe { Box::from_raw(vtable_ref as *mut #vtable_ref_name) });
+            }
+        }
+
+        /// Create a handle instance using a shared vtable reference.
         #[unsafe(no_mangle)]
         pub extern "C" fn #constructor_name(
             user_data: *mut core::ffi::c_void,
-            vtable: *const #vtable_struct_name,
+            vtable_ref: *mut core::ffi::c_void,
         ) -> *mut core::ffi::c_void {
             let wrapper = #wrapper_name {
                 user_data,
-                vtable,
-                vtable_default_state: core::sync::atomic::AtomicU64::new(0),
+                vtable_ref: vtable_ref as *const #vtable_ref_name,
             };
             <#wrapper_name as ffier::FfiType>::into_c(wrapper)
         }

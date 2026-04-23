@@ -464,7 +464,10 @@ typedef struct {
     void (*on_notify)(void* self_data, int32_t code);
 } FtProcessorVtable;
 
-void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable);
+typedef void* FtProcessorVtableRef;
+FtProcessorVtableRef ft_processor_new_vtable(const FtProcessorVtable* vtable, size_t vtable_size);
+void ft_processor_delete_vtable(FtProcessorVtableRef vtable_ref);
+void* ft_processor_from_vtable(void* user_data, FtProcessorVtableRef vtable_ref);
 
 /* VtableFruit ------------------------------------------------------- */
 
@@ -474,7 +477,10 @@ typedef struct {
     FtStr (*label)(void* self_data);
 } FtFruitVtable;
 
-void* ft_fruit_from_vtable(void* user_data, const FtFruitVtable* vtable);
+typedef void* FtFruitVtableRef;
+FtFruitVtableRef ft_fruit_new_vtable(const FtFruitVtable* vtable, size_t vtable_size);
+void ft_fruit_delete_vtable(FtFruitVtableRef vtable_ref);
+void* ft_fruit_from_vtable(void* user_data, FtFruitVtableRef vtable_ref);
 
 /* Fruit for Apple --------------------------------------------------- */
 
