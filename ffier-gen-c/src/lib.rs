@@ -795,15 +795,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             _ => (false, None),
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
-        // TODO: With trait-based type mapping, detecting handle refs for
-        // borrow notes requires compile-time trait evaluation. Skipped for now.
-        let borrow_notes: Vec<String> = vec![];
         if let Some(doc) = build_doxygen_comment(
             &m.doc,
             &param_name_strs,
             has_out_param,
             err_c_name_for_doc.as_deref(),
-            &borrow_notes,
         ) {
             decl_exprs.push(quote! { #doc });
         }
@@ -1154,7 +1150,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     });
     header_lines.push(quote! {
         concat!(#vtable_ref_c_name, " ", #new_vtable_name_str,
-                "(const ", #vtable_c_name, "* vtable, size_t vtable_size);")
+                "(const ", #vtable_c_name, "* vtable, size_t vtable_size, uint32_t* out_type_tag);")
     });
     header_lines.push(quote! {
         concat!("void ", #delete_vtable_name_str, "(", #vtable_ref_c_name, " vtable_ref);")
@@ -1175,6 +1171,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
         pub extern "C" fn #new_vtable_name(
             vtable: *const #vtable_struct_name,
             vtable_size: usize,
+            out_type_tag: *mut u32,
         ) -> *mut core::ffi::c_void {
             let expected = core::mem::size_of::<#vtable_struct_name>();
             if vtable_size > expected {
@@ -1195,8 +1192,12 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
                     vtable_size,
                 );
             }
+            let type_tag = <#wrapper_name as ffier::FfiHandle>::TYPE_TAG;
+            if !out_type_tag.is_null() {
+                unsafe { *out_type_tag = type_tag; }
+            }
             let vtable_ref = Box::new(#vtable_ref_name {
-                type_tag: <#wrapper_name as ffier::FfiHandle>::TYPE_TAG,
+                type_tag,
                 vtable: core::cell::UnsafeCell::new(vtable_copy),
             });
             Box::into_raw(vtable_ref) as *mut core::ffi::c_void
@@ -1624,9 +1625,8 @@ fn build_doxygen_comment(
     param_names: &[String],
     has_out_param: bool,
     err_c_name: Option<&str>,
-    borrow_notes: &[String],
 ) -> Option<String> {
-    if doc_lines.is_empty() && borrow_notes.is_empty() {
+    if doc_lines.is_empty() {
         return None;
     }
 
@@ -1666,10 +1666,6 @@ fn build_doxygen_comment(
         } else {
             out.push_str(&format!(" * @param {name} {desc}\n"));
         }
-    }
-
-    for note in borrow_notes {
-        out.push_str(&format!(" * @note {note}\n"));
     }
 
     if has_out_param {

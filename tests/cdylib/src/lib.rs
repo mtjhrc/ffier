@@ -542,7 +542,7 @@ mod tests {
             name: Some(test_processor_name),
             on_notify: Some(test_on_notify),
         };
-        unsafe { ft_processor_new_vtable(&vtable, core::mem::size_of_val(&vtable)) }
+        unsafe { ft_processor_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut()) }
     }
 
     #[test]
@@ -611,7 +611,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: None,
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let fruit = ft_fruit_from_vtable(7 as *mut core::ffi::c_void, vt_ref);
             ft_mixer_add(&mut m, fruit);
             assert_eq!(ft_mixer_total(m), 7);
@@ -751,7 +751,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: None,
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let handle = ft_fruit_from_vtable(77 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_value(handle), 77);
             ft_fruit_destroy(handle);
@@ -811,7 +811,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: None,
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
             ft_fruit_destroy(handle);
@@ -832,7 +832,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: Some(custom_label),
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "custom");
             ft_fruit_destroy(handle);
@@ -862,7 +862,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: None,
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(
                 ft_debug_handle_type(handle).as_str_unchecked(),
@@ -911,7 +911,7 @@ mod tests {
                 value: Some(fruit_value),
                 label: None,
             };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
 
             let payload = Box::new(DebugPayload {
                 vtable_ref: vt_ref,
@@ -987,7 +987,7 @@ mod tests {
             };
             REENTRANT_CALL_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
             REENTRANT_HANDLE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
             let handle = ft_fruit_from_vtable(std::ptr::null_mut(), vt_ref);
             REENTRANT_HANDLE.store(handle, std::sync::atomic::Ordering::Relaxed);
 

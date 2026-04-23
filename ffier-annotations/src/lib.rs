@@ -1285,6 +1285,33 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     //
     // Visitor to replace `self` with `__self` in default method bodies.
     struct SelfReplacer;
+    impl SelfReplacer {
+        /// Replace `self` idents in a raw TokenStream (for macro bodies
+        /// that syn::visit_mut doesn't traverse).
+        fn replace_in_token_stream(
+            &self,
+            ts: proc_macro2::TokenStream,
+        ) -> proc_macro2::TokenStream {
+            ts.into_iter()
+                .map(|tt| match tt {
+                    proc_macro2::TokenTree::Ident(ref id) if id == "self" => {
+                        proc_macro2::TokenTree::Ident(proc_macro2::Ident::new(
+                            "__self",
+                            id.span(),
+                        ))
+                    }
+                    proc_macro2::TokenTree::Group(g) => {
+                        let inner = self.replace_in_token_stream(g.stream());
+                        let mut new_g =
+                            proc_macro2::Group::new(g.delimiter(), inner);
+                        new_g.set_span(g.span());
+                        proc_macro2::TokenTree::Group(new_g)
+                    }
+                    other => other,
+                })
+                .collect()
+        }
+    }
     impl VisitMut for SelfReplacer {
         fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
             if let syn::Expr::Path(ep) = expr {
@@ -1294,6 +1321,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
             syn::visit_mut::visit_expr_mut(self, expr);
+        }
+        fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+            mac.tokens = self.replace_in_token_stream(mac.tokens.clone());
         }
     }
 
