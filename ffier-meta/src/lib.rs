@@ -349,6 +349,7 @@ impl MetaImplementable {
     }
 }
 
+#[derive(Clone)]
 pub struct MetaVtableMethod {
     pub name: Ident,
     pub params: Vec<MetaVtableParam>,
@@ -359,12 +360,14 @@ pub struct MetaVtableMethod {
     pub has_default: bool,
 }
 
+#[derive(Clone)]
 pub struct MetaVtableParam {
     pub name: Ident,
     pub bridge_type: TokenStream,
     pub rust_type: TokenStream,
 }
 
+#[derive(Clone)]
 pub enum MetaVtableRet {
     Void,
     Value {

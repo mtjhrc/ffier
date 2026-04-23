@@ -1219,9 +1219,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Helper: generate the vtable call expression for a method (unwrapping Option).
     // `fallback` is Some(tokens) for defaulted methods, None for required methods.
+    // `method_index` is used for the default_mask bitmask (only relevant for defaulted methods).
     let vtable_call_body = |vm: &VtableMethod,
                             sig: &syn::Signature,
-                            fallback: Option<proc_macro2::TokenStream>|
+                            fallback: Option<proc_macro2::TokenStream>,
+                            method_index: usize|
      -> proc_macro2::TokenStream {
         let name = &vm.name;
         let name_str = name.to_string();
@@ -1241,23 +1243,57 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             None => raw_call,
             Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
         };
-        let none_branch = match fallback {
-            Some(fb) => fb,
-            None => {
-                let wrapper_str = wrapper_name.to_string();
+        match fallback {
+            Some(fb) => {
+                // Defaulted method: use re-entrancy detection + caching.
+                // If the client doesn't override, the trampoline will call back
+                // through self-dispatch → re-entry detected → use library default.
+                let bit = 1u32 << method_index;
                 quote! {
-                    panic!(
-                        "{}: required vtable method `{}` not provided",
-                        #wrapper_str, #name_str,
-                    )
+                    #sig {
+                        let __bit: u32 = #bit;
+                        // Fast path: cached as default
+                        if self.default_mask.get() & __bit != 0 {
+                            return #fb;
+                        }
+                        match unsafe { (*self.vtable).#name } {
+                            Some(__f) => {
+                                let __depth = self.call_depth.get();
+                                if __depth > 0 {
+                                    // Re-entering — client doesn't override this method.
+                                    // Cache as default for future calls.
+                                    self.default_mask.set(self.default_mask.get() | __bit);
+                                    #fb
+                                } else {
+                                    self.call_depth.set(__depth + 1);
+                                    let __call_result = { #vtable_branch };
+                                    self.call_depth.set(__depth);
+                                    __call_result
+                                }
+                            }
+                            None => {
+                                self.default_mask.set(self.default_mask.get() | __bit);
+                                #fb
+                            }
+                        }
+                    }
                 }
             }
-        };
-        quote! {
-            #sig {
-                match unsafe { (*self.vtable).#name } {
-                    Some(__f) => { #vtable_branch }
-                    None => { #none_branch }
+            None => {
+                // Required method: no re-entrancy detection needed.
+                let wrapper_str = wrapper_name.to_string();
+                quote! {
+                    #sig {
+                        match unsafe { (*self.vtable).#name } {
+                            Some(__f) => { #vtable_branch }
+                            None => {
+                                panic!(
+                                    "{}: required vtable method `{}` not provided",
+                                    #wrapper_str, #name_str,
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1353,7 +1389,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 return None;
             };
             let name = &method.sig.ident;
-            let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+            let method_index = vtable_methods.iter().position(|v| v.name == *name)?;
+            let vm = &vtable_methods[method_index];
             let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
                 let params_pass: Vec<_> = method
                     .sig
@@ -1370,7 +1407,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .collect();
                 quote! { #helper(self #(, #params_pass)*) }
             });
-            Some(vtable_call_body(vm, &method.sig, fallback))
+            Some(vtable_call_body(vm, &method.sig, fallback, method_index))
         })
         .collect();
 
@@ -1385,8 +1422,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .iter()
                 .filter_map(|method| {
                     let name = &method.sig.ident;
-                    let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(vm, &method.sig, None))
+                    let method_index = vtable_methods.iter().position(|v| v.name == *name)?;
+                    let vm = &vtable_methods[method_index];
+                    Some(vtable_call_body(vm, &method.sig, None, method_index))
                 })
                 .collect();
 
@@ -1442,6 +1480,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         pub struct #wrapper_name {
             pub user_data: *mut core::ffi::c_void,
             pub vtable: *const #vtable_struct_name,
+            #[doc(hidden)]
+            pub default_mask: core::cell::Cell<u32>,
+            #[doc(hidden)]
+            pub call_depth: core::cell::Cell<u32>,
         }
 
         impl #trait_name #trait_ty_generics for #wrapper_name {
