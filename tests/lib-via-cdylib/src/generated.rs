@@ -1473,7 +1473,13 @@ pub trait Processor {
         Self: Sized,
     {
         let __vtable: &'static ProcessorVtable = &ProcessorVtable {
-            process: {
+            drop: Some({
+                unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __trampoline::<Self>
+            }),
+            process: Some({
                 unsafe extern "C" fn __trampoline<__T: Processor>(
                     __ud: *mut core::ffi::c_void,
                     input: <i32 as ffier::FfiType>::CRepr,
@@ -1483,8 +1489,8 @@ pub trait Processor {
                     <i32 as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
-            },
-            name: {
+            }),
+            name: Some({
                 unsafe extern "C" fn __trampoline<__T: Processor>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <&'static str as ffier::FfiType>::CRepr {
@@ -1493,8 +1499,8 @@ pub trait Processor {
                     <&str as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
-            },
-            on_notify: {
+            }),
+            on_notify: Some({
                 unsafe extern "C" fn __trampoline<__T: Processor>(
                     __ud: *mut core::ffi::c_void,
                     code: <i32 as ffier::FfiType>::CRepr,
@@ -1502,12 +1508,6 @@ pub trait Processor {
                     let __obj = unsafe { &*(__ud as *const __T) };
                     let __result = __obj.on_notify(<i32 as ffier::FfiType>::from_c(code));
                     __result
-                }
-                __trampoline::<Self>
-            },
-            drop: Some({
-                unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
                 }
                 __trampoline::<Self>
             }),
@@ -1518,14 +1518,18 @@ pub trait Processor {
 }
 #[repr(C)]
 pub struct ProcessorVtable {
-    pub process: unsafe extern "C" fn(
-        *mut core::ffi::c_void,
-        <i32 as ffier::FfiType>::CRepr,
-    ) -> <i32 as ffier::FfiType>::CRepr,
-    pub name:
-        unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as ffier::FfiType>::CRepr,
-    pub on_notify: unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as ffier::FfiType>::CRepr),
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub process: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <i32 as ffier::FfiType>::CRepr,
+        ) -> <i32 as ffier::FfiType>::CRepr,
+    >,
+    pub name: Option<
+        unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as ffier::FfiType>::CRepr,
+    >,
+    pub on_notify:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as ffier::FfiType>::CRepr)>,
 }
 unsafe extern "C" {
     pub fn ft_processor_from_vtable(
@@ -1549,6 +1553,12 @@ impl Drop for VtableProcessor {
 }
 pub trait Fruit {
     fn value(&self) -> i32;
+    fn label(&self) -> &str {
+        panic!(
+            "{}() has no client-side default — override this method",
+            "label",
+        )
+    }
     #[doc = r" Convert this value into an opaque FFI handle via vtable dispatch."]
     #[doc = r""]
     #[doc = r" Known types (with `#[ffier::trait_impl]`) override this with"]
@@ -1560,7 +1570,13 @@ pub trait Fruit {
         Self: Sized,
     {
         let __vtable: &'static FruitVtable = &FruitVtable {
-            value: {
+            drop: Some({
+                unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __trampoline::<Self>
+            }),
+            value: Some({
                 unsafe extern "C" fn __trampoline<__T: Fruit>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <i32 as ffier::FfiType>::CRepr {
@@ -1569,10 +1585,14 @@ pub trait Fruit {
                     <i32 as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
-            },
-            drop: Some({
-                unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }),
+            label: Some({
+                unsafe extern "C" fn __trampoline<__T: Fruit>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> <&'static str as ffier::FfiType>::CRepr {
+                    let __obj = unsafe { &*(__ud as *const __T) };
+                    let __result = __obj.label();
+                    <&str as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
             }),
@@ -1583,8 +1603,12 @@ pub trait Fruit {
 }
 #[repr(C)]
 pub struct FruitVtable {
-    pub value: unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub value:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr>,
+    pub label: Option<
+        unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as ffier::FfiType>::CRepr,
+    >,
 }
 unsafe extern "C" {
     pub fn ft_fruit_from_vtable(

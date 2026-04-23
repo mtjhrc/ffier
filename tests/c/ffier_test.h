@@ -458,10 +458,10 @@ void ft_sprocket_destroy(FtSprocket handle);
 /* VtableProcessor --------------------------------------------------- */
 
 typedef struct {
+    void (*drop)(void* self_data);
     int32_t (*process)(void* self_data, int32_t input);
     FtStr (*name)(void* self_data);
     void (*on_notify)(void* self_data, int32_t code);
-    void (*drop)(void* self_data);
 } FtProcessorVtable;
 
 void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable);
@@ -469,8 +469,9 @@ void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable)
 /* VtableFruit ------------------------------------------------------- */
 
 typedef struct {
-    int32_t (*value)(void* self_data);
     void (*drop)(void* self_data);
+    int32_t (*value)(void* self_data);
+    FtStr (*label)(void* self_data);
 } FtFruitVtable;
 
 void* ft_fruit_from_vtable(void* user_data, const FtFruitVtable* vtable);
@@ -529,6 +530,7 @@ int32_t ft_gadget_snap_source_count(FtGadget handle);
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(void* handle);
+FtStr ft_fruit_label(void* handle);
 void ft_fruit_destroy(void* handle);
 
 /* Processor (dispatch) ---------------------------------------------- */

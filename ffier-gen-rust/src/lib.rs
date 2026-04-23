@@ -565,6 +565,7 @@ fn vtable_trait_method_sigs(methods: &[ffier_meta::MetaVtableMethod]) -> Vec<Tok
         .iter()
         .map(|m| {
             let mname = &m.name;
+            let mname_str = mname.to_string();
             let params: Vec<_> = m
                 .params
                 .iter()
@@ -578,7 +579,21 @@ fn vtable_trait_method_sigs(methods: &[ffier_meta::MetaVtableMethod]) -> Vec<Tok
                 MetaVtableRet::Void => quote! {},
                 MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
             };
-            quote! { fn #mname(&self, #(#params),*) #ret; }
+            if m.has_default {
+                // Defaulted method: provide a panic default. Known types
+                // (with @trait_impl) override this with a self-dispatch call.
+                // Custom client types that don't override will panic at runtime.
+                quote! {
+                    fn #mname(&self, #(#params),*) #ret {
+                        panic!(
+                            "{}() has no client-side default — override this method",
+                            #mname_str,
+                        )
+                    }
+                }
+            } else {
+                quote! { fn #mname(&self, #(#params),*) #ret; }
+            }
         })
         .collect()
 }
@@ -626,10 +641,10 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 }
             };
             quote! {
-                pub #mname: unsafe extern "C" fn(
+                pub #mname: Option<unsafe extern "C" fn(
                     *mut core::ffi::c_void
                     #(, #params)*
-                ) #ret,
+                ) #ret>,
             }
         })
         .collect();
@@ -683,7 +698,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             };
 
             quote! {
-                #mname: {
+                #mname: Some({
                     unsafe extern "C" fn __trampoline<__T: #trait_name>(
                         __ud: *mut core::ffi::c_void
                         #(, #params)*
@@ -693,7 +708,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                         #ret_conversion
                     }
                     __trampoline::<Self>
-                }
+                })
             }
         })
         .collect();
@@ -710,7 +725,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             #[doc(hidden)]
             fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
                 let __vtable: &'static #vtable_struct_name = &#vtable_struct_name {
-                    #(#vtable_trampoline_fields,)*
                     drop: Some({
                         unsafe extern "C" fn __trampoline<__T>(
                             __ud: *mut core::ffi::c_void,
@@ -719,6 +733,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                         }
                         __trampoline::<Self>
                     }),
+                    #(#vtable_trampoline_fields,)*
                 };
                 let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
                 #wrapper_name::new(__ud, __vtable).__into_raw()
@@ -727,9 +742,8 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 
         #[repr(C)]
         pub struct #vtable_struct_name {
-
-            #(#vtable_method_fields)*
             pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+            #(#vtable_method_fields)*
         }
 
         unsafe extern "C" {
