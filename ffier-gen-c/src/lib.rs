@@ -172,31 +172,36 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let trait_map = build_trait_map(&implementables, &trait_impls);
 
     // Pass 1.5: Validate type tags — check for missing (tag=0) and duplicates.
-    // We parse each metadata item properly to extract type_tag, since
-    // peek_meta_field can't handle integer literal suffixes (e.g. "1u32").
+    // Also builds a tag→name map used to generate __ffier_type_name() for
+    // human-readable panic messages on type mismatch.
+    let mut tag_to_name: HashMap<u32, String> = HashMap::new();
     {
-        let mut tag_to_name: HashMap<u32, String> = HashMap::new();
+        let mut check_tag = |tag: u32, name: &str, hint: &str| -> Option<TokenStream2> {
+            if tag == 0 {
+                let msg = format!(
+                    "type `{name}` has no type tag; add `{hint}` in library_definition!()"
+                );
+                return Some(quote! { compile_error!(#msg); });
+            }
+            if let Some(prev) = tag_to_name.get(&tag) {
+                let msg = format!(
+                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
+                );
+                return Some(quote! { compile_error!(#msg); });
+            }
+            tag_to_name.insert(tag, name.to_string());
+            None
+        };
 
         for item in &errors {
             let meta: MetaError = match syn::parse2(item.clone()) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            let tag = meta.type_tag;
             let name = meta.name.to_string();
-            if tag == 0 {
-                let msg = format!(
-                    "type `{name}` has no type tag; add `{name} = N` in library_definition!()"
-                );
-                return quote! { compile_error!(#msg); };
+            if let Some(err) = check_tag(meta.type_tag, &name, &format!("{name} = N")) {
+                return err;
             }
-            if let Some(prev) = tag_to_name.get(&tag) {
-                let msg = format!(
-                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
-                );
-                return quote! { compile_error!(#msg); };
-            }
-            tag_to_name.insert(tag, name);
         }
 
         for item in &exportables {
@@ -204,21 +209,10 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            let tag = meta.type_tag;
             let name = meta.struct_name.to_string();
-            if tag == 0 {
-                let msg = format!(
-                    "type `{name}` has no type tag; add `{name} = N` in library_definition!()"
-                );
-                return quote! { compile_error!(#msg); };
+            if let Some(err) = check_tag(meta.type_tag, &name, &format!("{name} = N")) {
+                return err;
             }
-            if let Some(prev) = tag_to_name.get(&tag) {
-                let msg = format!(
-                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
-                );
-                return quote! { compile_error!(#msg); };
-            }
-            tag_to_name.insert(tag, name);
         }
 
         for item in &implementables {
@@ -226,23 +220,78 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            let tag = meta.type_tag;
-            let name = meta.trait_name.to_string();
-            if tag == 0 {
-                let msg = format!(
-                    "trait `{name}` has no type tag; add `trait {name} = N` in library_definition!()"
-                );
-                return quote! { compile_error!(#msg); };
+            let name = format!("Vtable{}", meta.trait_name);
+            if let Some(err) = check_tag(meta.type_tag, &name, &format!("trait {} = N", meta.trait_name)) {
+                return err;
             }
-            if let Some(prev) = tag_to_name.get(&tag) {
-                let msg = format!(
-                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
-                );
-                return quote! { compile_error!(#msg); };
-            }
-            tag_to_name.insert(tag, name);
         }
     }
+
+    // Generate __ffier_type_name(), __ffier_dispatch_panic(), and per-trait
+    // accepted-types constants. These are used by all dispatch error messages
+    // (self-dispatch, impl Trait, type assertions) for consistent, human-readable
+    // panic messages.
+    let dispatch_helpers = {
+        let mut sorted: Vec<_> = tag_to_name.iter().collect();
+        sorted.sort_by_key(|(tag, _)| *tag);
+        let tags: Vec<u32> = sorted.iter().map(|(t, _)| **t).collect();
+        let names: Vec<&str> = sorted.iter().map(|(_, n)| n.as_str()).collect();
+
+        // Generate one const per trait: __FFIER_ACCEPTED_Fruit = "Apple | Orange | VtableFruit"
+        let accepted_consts: Vec<TokenStream2> = trait_map.iter().map(|(trait_name, info)| {
+            let const_name = format_ident!("__FFIER_ACCEPTED_{trait_name}");
+            let accepted = info.variants.iter()
+                .map(|v| v.name.as_str())
+                .collect::<Vec<_>>()
+                .join(" | ");
+            quote! {
+                const #const_name: &str = #accepted;
+            }
+        }).collect();
+
+        quote! {
+            /// Look up the type name for a given type tag. Returns "unknown" for
+            /// unrecognized tags (e.g. corrupted handle or use-after-free).
+            fn __ffier_type_name(tag: u32) -> &'static str {
+                match tag {
+                    #(#tags => #names,)*
+                    _ => "unknown",
+                }
+            }
+
+            /// Panic with a clear message when a handle's type tag doesn't match
+            /// any expected type.
+            ///
+            /// - `fn_name`: the C function name (e.g. "ft_fruit_value")
+            /// - `expected`: what was expected (e.g. "Fruit implementor")
+            /// - `accepted`: list of accepted type names (e.g. "Apple | Orange | VtableFruit"),
+            ///   or empty string if not applicable (e.g. for single-type assertions)
+            /// - `actual_tag`: the type tag read from the handle
+            #[cold]
+            #[inline(never)]
+            fn __ffier_dispatch_panic(
+                fn_name: &str,
+                expected: &str,
+                accepted: &str,
+                actual_tag: u32,
+            ) -> ! {
+                let actual_name = __ffier_type_name(actual_tag);
+                if accepted.is_empty() {
+                    panic!(
+                        "{}(): expected {}, got {} (type_tag={})",
+                        fn_name, expected, actual_name, actual_tag,
+                    );
+                } else {
+                    panic!(
+                        "{}(): expected {} ({}), got {} (type_tag={})",
+                        fn_name, expected, accepted, actual_name, actual_tag,
+                    );
+                }
+            }
+
+            #(#accepted_consts)*
+        }
+    };
 
     // Pass 2: Generate bridge code for each item in sorted order
     let mut all_code = Vec::new();
@@ -302,6 +351,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Generate unified header function
     quote! {
+        #dispatch_helpers
+
         #(#all_code)*
 
         #shared_types_fn
@@ -435,14 +486,14 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 #handle_deref
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
                 let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
-                assert!(
-                    __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_tag={}, got {})",
-                    #ffi_name_str,
-                    <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
-                    __expected,
-                    __actual,
-                );
+                if __actual != __expected {
+                    __ffier_dispatch_panic(
+                        #ffi_name_str,
+                        <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
+                        "",
+                        __actual,
+                    );
+                }
             };
             let cast = if is_by_value {
                 quote! {
@@ -659,17 +710,14 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 });
             }
 
-            let variant_names: Vec<_> = info.variants.iter().map(|v| v.name.as_str()).collect();
-            let accepted_list = variant_names.join(" | ");
+            let expected_msg = format!("impl {}", p.trait_name);
+            let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
             vtable_pre_bindings.push(quote! {
                 let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> = {
                     let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                     #(#branches else)* {
-                        panic!(
-                            "{}(): parameter `{}` expected: {}, got unknown (type_tag={})",
-                            #ffi_name_str, stringify!(#dyn_id), #accepted_list, __type_tag,
-                        );
+                        __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     }
                 };
             });
@@ -705,21 +753,13 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                         })
                         .collect();
 
-                    let variant_names: Vec<_> =
-                        variants.iter().map(|(name, _)| name.as_str()).collect();
-                    let accepted_list = variant_names.join(" | ");
+                    let expected_msg = format!("impl {}", p.trait_name);
+                    let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
                     quote! {{
                         let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                         #(#if_branches else)* {
-                            panic!(
-                                "{}(): parameter `{}` expected an object of type: {}, \
-                                 but got unknown handle (type_tag={})",
-                                #ffi_name_str,
-                                stringify!(#dyn_id),
-                                #accepted_list,
-                                __type_tag,
-                            );
+                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                         }
                     }}
                 });
@@ -901,14 +941,14 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             if !handle.is_null() {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
                 let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
-                assert!(
-                    __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_tag={}, got {})",
-                    #destroy_str,
-                    <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
-                    __expected,
-                    __actual,
-                );
+                if __actual != __expected {
+                    __ffier_dispatch_panic(
+                        #destroy_str,
+                        <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
+                        "",
+                        __actual,
+                    );
+                }
                 drop(unsafe {
                     Box::from_raw(handle as *mut ffier::FfierTaggedBox<#struct_path>)
                 });
@@ -1696,6 +1736,7 @@ fn generate_self_dispatch_bridge(
 
     let section_name = format!("{trait_name} (dispatch)");
     let header_fn_name = format_ident!("{fn_pfx}{trait_snake}__dispatch_header");
+    let accepted_const = format_ident!("__FFIER_ACCEPTED_{trait_name}");
 
     let mut bridge_fns = Vec::new();
     let mut header_lines: Vec<TokenStream2> = Vec::new();
@@ -1754,15 +1795,13 @@ fn generate_self_dispatch_bridge(
             }
         }).collect();
 
+        let expected_str = format!("{trait_name} implementor");
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
                 #(#dispatch_branches else)* {
-                    panic!(
-                        "{}(): handle is not a {} implementor (type_tag={})",
-                        #ffi_name_str, #trait_name, __type_tag,
-                    );
+                    __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
                 }
             }
         });
@@ -1803,16 +1842,14 @@ fn generate_self_dispatch_bridge(
         }
     }).collect();
 
+    let destroy_expected = format!("{trait_name} implementor");
     bridge_fns.push(quote! {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
                 #(#destroy_branches else)* {
-                    panic!(
-                        "{}(): handle is not a {} implementor (type_tag={})",
-                        #destroy_name_str, #trait_name, __type_tag,
-                    );
+                    __ffier_dispatch_panic(#destroy_name_str, #destroy_expected, #accepted_const, __type_tag);
                 }
             }
         }
