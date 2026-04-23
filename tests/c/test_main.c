@@ -407,23 +407,32 @@ static void test_drop(void* self_data) {
 }
 
 static const FtProcessorVtable g_test_vtable = {
+    .drop = test_drop,
     .process = test_process,
     .name = test_processor_name,
     .on_notify = test_on_notify,
-    .drop = test_drop,
 };
 
+static FtProcessorVtableRef g_test_vtable_ref = NULL;
+
+static FtProcessorVtableRef get_test_vtable_ref(void) {
+    if (!g_test_vtable_ref) {
+        g_test_vtable_ref = ft_processor_new_vtable(&g_test_vtable, sizeof(g_test_vtable));
+    }
+    return g_test_vtable_ref;
+}
+
 void vtable_constructor(void) {
-    void* proc = ft_processor_from_vtable(NULL, &g_test_vtable);
+    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
     assert(proc != NULL);
-    /* Just test construction; destroy will be tested separately */
-    ft_widget_destroy(proc); /* any _destroy works since it checks type_id... */
+    /* Just test construction and destroy */
+    ft_processor_destroy(proc);
 }
 
 void vtable_dyn_dispatch_process(void) {
     FtPipeline p = ft_pipeline_new();
     g_last_notify_code = -1;
-    void* proc = ft_processor_from_vtable(NULL, &g_test_vtable);
+    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
     ft_pipeline_run(p, proc, 21);
     /* process(21) = 42, then on_notify(42) */
     assert(g_last_notify_code == 42);
@@ -440,7 +449,7 @@ void vtable_supertrait_method(void) {
      * Here verify it independently through a separate invocation. */
     FtPipeline p = ft_pipeline_new();
     g_last_notify_code = -1;
-    void* proc = ft_processor_from_vtable(NULL, &g_test_vtable);
+    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
     ft_pipeline_run(p, proc, 5);
     /* process(5) = 10, on_notify(10) */
     assert(g_last_notify_code == 10);
@@ -449,7 +458,7 @@ void vtable_supertrait_method(void) {
 
 void vtable_drop_callback(void) {
     g_drop_called = 0;
-    void* proc = ft_processor_from_vtable(NULL, &g_test_vtable);
+    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
     /* run() consumes the processor handle, which should trigger drop */
     FtPipeline p = ft_pipeline_new();
     ft_pipeline_run(p, proc, 1);
