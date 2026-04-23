@@ -1152,6 +1152,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_snake = camel_to_snake(&trait_name_str);
 
     let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
+    let vtable_ref_name = format_ident!("{trait_name_str}VtableRef");
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
     let tag_const_name = format_ident!("__ffier_type_tag_{trait_name}");
@@ -1219,11 +1220,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Helper: generate the vtable call expression for a method (unwrapping Option).
     // `fallback` is Some(tokens) for defaulted methods, None for required methods.
-    // `method_index` is used for the default_mask bitmask (only relevant for defaulted methods).
+    //
+    // The library side simply dispatches: Some(f) → call trampoline, None → use default.
+    // Re-entrancy detection and vtable patching happens on the client side
+    // (in the probe trampoline via catch_unwind), not here.
     let vtable_call_body = |vm: &VtableMethod,
                             sig: &syn::Signature,
-                            fallback: Option<proc_macro2::TokenStream>,
-                            method_index: usize|
+                            fallback: Option<proc_macro2::TokenStream>|
      -> proc_macro2::TokenStream {
         let name = &vm.name;
         let name_str = name.to_string();
@@ -1243,64 +1246,23 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             None => raw_call,
             Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
         };
-        match fallback {
-            Some(fb) => {
-                // Defaulted method: use re-entrancy detection + caching.
-                //
-                // AtomicU64 layout:
-                //   low 32 bits  = default_mask  (bit N = method N cached as default)
-                //   high 32 bits = in_flight_mask (bit N = method N currently in trampoline)
-                //
-                // method_index is the index among defaulted methods only.
-                let default_bit = 1u64 << method_index;
-                let in_flight_bit = 1u64 << (method_index + 32);
-                quote! {
-                    #sig {
-                        use core::sync::atomic::Ordering;
-                        let __state = self.vtable_default_state.load(Ordering::Acquire);
-                        // Fast path: cached as default
-                        if __state & #default_bit != 0 {
-                            return #fb;
-                        }
-                        match unsafe { (*self.vtable).#name } {
-                            Some(__f) => {
-                                if __state & #in_flight_bit != 0 {
-                                    // Re-entering — client doesn't override this method.
-                                    // Cache as default for future calls.
-                                    self.vtable_default_state.fetch_or(#default_bit, Ordering::Release);
-                                    #fb
-                                } else {
-                                    // Set in-flight bit before calling trampoline
-                                    self.vtable_default_state.fetch_or(#in_flight_bit, Ordering::Release);
-                                    let __call_result = { #vtable_branch };
-                                    // Clear in-flight bit
-                                    self.vtable_default_state.fetch_and(!#in_flight_bit, Ordering::Release);
-                                    __call_result
-                                }
-                            }
-                            None => {
-                                self.vtable_default_state.fetch_or(#default_bit, Ordering::Release);
-                                #fb
-                            }
-                        }
-                    }
-                }
-            }
+        let none_branch = match fallback {
+            Some(fb) => fb,
             None => {
-                // Required method: no re-entrancy detection needed.
                 let wrapper_str = wrapper_name.to_string();
                 quote! {
-                    #sig {
-                        match unsafe { (*self.vtable).#name } {
-                            Some(__f) => { #vtable_branch }
-                            None => {
-                                panic!(
-                                    "{}: required vtable method `{}` not provided",
-                                    #wrapper_str, #name_str,
-                                )
-                            }
-                        }
-                    }
+                    panic!(
+                        "{}: required vtable method `{}` not provided",
+                        #wrapper_str, #name_str,
+                    )
+                }
+            }
+        };
+        quote! {
+            #sig {
+                match unsafe { (*(*self.vtable_ref).vtable.get()).#name } {
+                    Some(__f) => { #vtable_branch }
+                    None => { #none_branch }
                 }
             }
         }
@@ -1396,8 +1358,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 return None;
             };
             let name = &method.sig.ident;
-            let method_index = vtable_methods.iter().position(|v| v.name == *name)?;
-            let vm = &vtable_methods[method_index];
+            let vm = vtable_methods.iter().find(|v| v.name == *name)?;
             let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
                 let params_pass: Vec<_> = method
                     .sig
@@ -1414,7 +1375,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .collect();
                 quote! { #helper(self #(, #params_pass)*) }
             });
-            Some(vtable_call_body(vm, &method.sig, fallback, method_index))
+            Some(vtable_call_body(vm, &method.sig, fallback))
         })
         .collect();
 
@@ -1429,9 +1390,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .iter()
                 .filter_map(|method| {
                     let name = &method.sig.ident;
-                    let method_index = vtable_methods.iter().position(|v| v.name == *name)?;
-                    let vm = &vtable_methods[method_index];
-                    Some(vtable_call_body(vm, &method.sig, None, method_index))
+                    let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+                    Some(vtable_call_body(vm, &method.sig, None))
                 })
                 .collect();
 
@@ -1484,19 +1444,27 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#vtable_fields,)*
         }
 
+        /// Shared vtable reference — created once per vtable via `new_vtable`,
+        /// shared across all instances that use the same vtable. Contains an
+        /// owned mutable copy of the vtable struct so that client-side probe
+        /// trampolines can patch defaulted method fields to `None` after
+        /// detecting that the client type doesn't override them.
+        #[doc(hidden)]
+        pub struct #vtable_ref_name {
+            pub vtable: core::cell::UnsafeCell<#vtable_struct_name>,
+        }
+
+        // Safety: The vtable fields are only mutated via one-way transitions
+        // (Some→None) by client probe trampolines. After patching, the field
+        // is never written again. This is safe for concurrent reads because
+        // Option<fn> is pointer-sized and pointer-aligned writes are atomic
+        // on all supported platforms.
+        unsafe impl Sync for #vtable_ref_name {}
+        unsafe impl Send for #vtable_ref_name {}
+
         pub struct #wrapper_name {
             pub user_data: *mut core::ffi::c_void,
-            pub vtable: *const #vtable_struct_name,
-            /// Packed bitmask for vtable default method detection (AtomicU64):
-            /// - Low 32 bits: default_mask — bit N set = defaulted method N
-            ///   is cached as "uses library default" (skip trampoline).
-            /// - High 32 bits: in_flight_mask — bit N set = defaulted method N
-            ///   is currently being called (re-entrancy guard).
-            ///
-            /// Only defaulted methods get bits (not required methods).
-            /// Limits: 32 defaulted methods per trait.
-            #[doc(hidden)]
-            pub vtable_default_state: core::sync::atomic::AtomicU64,
+            pub vtable_ref: *const #vtable_ref_name,
         }
 
         impl #trait_name #trait_ty_generics for #wrapper_name {
@@ -1507,7 +1475,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl Drop for #wrapper_name {
             fn drop(&mut self) {
-                if let Some(drop_fn) = unsafe { (*self.vtable).drop } {
+                if let Some(drop_fn) = unsafe { (*(*self.vtable_ref).vtable.get()).drop } {
                     unsafe { drop_fn(self.user_data) };
                 }
             }
