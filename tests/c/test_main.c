@@ -417,7 +417,7 @@ static FtProcessorVtableRef g_test_vtable_ref = NULL;
 
 static FtProcessorVtableRef get_test_vtable_ref(void) {
     if (!g_test_vtable_ref) {
-        g_test_vtable_ref = ft_processor_new_vtable(&g_test_vtable, sizeof(g_test_vtable));
+        g_test_vtable_ref = ft_processor_new_vtable(&g_test_vtable, sizeof(g_test_vtable), NULL);
     }
     return g_test_vtable_ref;
 }

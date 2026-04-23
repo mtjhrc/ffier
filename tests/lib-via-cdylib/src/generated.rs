@@ -1560,11 +1560,17 @@ pub trait Processor {
                 __trampoline::<Self>
             }),
         };
-        let __vtable_ref =
-            unsafe { ft_processor_new_vtable(&__vtable, core::mem::size_of::<ProcessorVtable>()) }
-                as *mut ProcessorVtable;
+        let mut __type_tag: u32 = 0;
+        let __vtable_ref = unsafe {
+            ft_processor_new_vtable(
+                &__vtable,
+                core::mem::size_of::<ProcessorVtable>(),
+                &mut __type_tag,
+            )
+        } as *mut ProcessorVtable;
         let __payload = Box::new(__FfierClientPayload_Processor {
             vtable_ref: __vtable_ref,
+            type_tag: __type_tag,
             value: self,
         });
         let __payload_ptr = Box::into_raw(__payload);
@@ -1583,6 +1589,9 @@ pub trait Processor {
 #[repr(C)]
 struct __FfierClientPayload_Processor<__T> {
     vtable_ref: *mut ProcessorVtable,
+    #[doc = r" VtableFruit's type tag — stored here so probe trampolines can"]
+    #[doc = r" construct temporary handles without computing offsets into VtableRef."]
+    type_tag: u32,
     value: __T,
 }
 #[repr(C)]
@@ -1604,6 +1613,7 @@ unsafe extern "C" {
     pub fn ft_processor_new_vtable(
         vtable: *const ProcessorVtable,
         vtable_size: usize,
+        out_type_tag: *mut u32,
     ) -> *mut core::ffi::c_void;
     pub fn ft_processor_from_vtable(
         user_data: *mut core::ffi::c_void,
@@ -1697,11 +1707,7 @@ pub trait Fruit {
                                     vtable_ref: *mut core::ffi::c_void,
                                 }
                                 let __temp = __TempHandle {
-                                    type_tag: unsafe {
-                                        let __vt_ref_ptr = __payload.vtable_ref as *const u8;
-                                        let __tag_offset = core::mem::size_of::<FruitVtable>();
-                                        *(__vt_ref_ptr.add(__tag_offset) as *const u32)
-                                    },
+                                    type_tag: __payload.type_tag,
                                     user_data: __ud,
                                     vtable_ref: __payload.vtable_ref as *mut core::ffi::c_void,
                                 };
@@ -1720,11 +1726,17 @@ pub trait Fruit {
                 __probe::<Self>
             }),
         };
-        let __vtable_ref =
-            unsafe { ft_fruit_new_vtable(&__vtable, core::mem::size_of::<FruitVtable>()) }
-                as *mut FruitVtable;
+        let mut __type_tag: u32 = 0;
+        let __vtable_ref = unsafe {
+            ft_fruit_new_vtable(
+                &__vtable,
+                core::mem::size_of::<FruitVtable>(),
+                &mut __type_tag,
+            )
+        } as *mut FruitVtable;
         let __payload = Box::new(__FfierClientPayload_Fruit {
             vtable_ref: __vtable_ref,
+            type_tag: __type_tag,
             value: self,
         });
         let __payload_ptr = Box::into_raw(__payload);
@@ -1743,6 +1755,9 @@ pub trait Fruit {
 #[repr(C)]
 struct __FfierClientPayload_Fruit<__T> {
     vtable_ref: *mut FruitVtable,
+    #[doc = r" VtableFruit's type tag — stored here so probe trampolines can"]
+    #[doc = r" construct temporary handles without computing offsets into VtableRef."]
+    type_tag: u32,
     value: __T,
 }
 #[repr(C)]
@@ -1758,6 +1773,7 @@ unsafe extern "C" {
     pub fn ft_fruit_new_vtable(
         vtable: *const FruitVtable,
         vtable_size: usize,
+        out_type_tag: *mut u32,
     ) -> *mut core::ffi::c_void;
     pub fn ft_fruit_from_vtable(
         user_data: *mut core::ffi::c_void,

@@ -472,7 +472,7 @@ typedef struct {
 } FtProcessorVtable;
 
 typedef void* FtProcessorVtableRef;
-FtProcessorVtableRef ft_processor_new_vtable(const FtProcessorVtable* vtable, size_t vtable_size);
+FtProcessorVtableRef ft_processor_new_vtable(const FtProcessorVtable* vtable, size_t vtable_size, uint32_t* out_type_tag);
 void ft_processor_delete_vtable(FtProcessorVtableRef vtable_ref);
 void* ft_processor_from_vtable(void* user_data, FtProcessorVtableRef vtable_ref);
 
@@ -485,7 +485,7 @@ typedef struct {
 } FtFruitVtable;
 
 typedef void* FtFruitVtableRef;
-FtFruitVtableRef ft_fruit_new_vtable(const FtFruitVtable* vtable, size_t vtable_size);
+FtFruitVtableRef ft_fruit_new_vtable(const FtFruitVtable* vtable, size_t vtable_size, uint32_t* out_type_tag);
 void ft_fruit_delete_vtable(FtFruitVtableRef vtable_ref);
 void* ft_fruit_from_vtable(void* user_data, FtFruitVtableRef vtable_ref);
 

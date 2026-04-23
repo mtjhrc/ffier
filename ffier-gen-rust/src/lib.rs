@@ -784,13 +784,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                                             vtable_ref: *mut core::ffi::c_void,
                                         }
                                         let __temp = __TempHandle {
-                                            type_tag: unsafe {
-                                                // type_tag is stored right after the vtable
-                                                // in the VtableRef (last field)
-                                                let __vt_ref_ptr = __payload.vtable_ref as *const u8;
-                                                let __tag_offset = core::mem::size_of::<#vtable_struct_name>();
-                                                *(__vt_ref_ptr.add(__tag_offset) as *const u32)
-                                            },
+                                            type_tag: __payload.type_tag,
                                             user_data: __ud,
                                             vtable_ref: __payload.vtable_ref as *mut core::ffi::c_void,
                                         };
@@ -886,12 +880,18 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     #(#vtable_trampoline_fields,)*
                 };
                 // Create a VtableRef (owned mutable copy of the vtable)
+                let mut __type_tag: u32 = 0;
                 let __vtable_ref = unsafe {
-                    #new_vtable_name(&__vtable, core::mem::size_of::<#vtable_struct_name>())
+                    #new_vtable_name(
+                        &__vtable,
+                        core::mem::size_of::<#vtable_struct_name>(),
+                        &mut __type_tag,
+                    )
                 } as *mut #vtable_struct_name;
                 // Box the value inside a ClientPayload
                 let __payload = Box::new(#client_payload_name {
                     vtable_ref: __vtable_ref,
+                    type_tag: __type_tag,
                     value: self,
                 });
                 let __payload_ptr = Box::into_raw(__payload);
@@ -911,6 +911,9 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         #[repr(C)]
         struct #client_payload_name<__T> {
             vtable_ref: *mut #vtable_struct_name,
+            /// VtableFruit's type tag — stored here so probe trampolines can
+            /// construct temporary handles without computing offsets into VtableRef.
+            type_tag: u32,
             value: __T,
         }
 
@@ -924,6 +927,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             pub fn #new_vtable_name(
                 vtable: *const #vtable_struct_name,
                 vtable_size: usize,
+                out_type_tag: *mut u32,
             ) -> *mut core::ffi::c_void;
             pub fn #constructor_name(
                 user_data: *mut core::ffi::c_void,
