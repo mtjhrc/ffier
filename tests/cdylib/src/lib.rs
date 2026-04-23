@@ -842,6 +842,110 @@ mod tests {
     }
 
     // ================================================================
+    // Debug: handle type inspection
+    // ================================================================
+
+    #[test]
+    fn debug_handle_type_vtable_fruit() {
+        unsafe {
+            let vtable = ffier_test_lib::FruitVtable {
+                drop: None,
+                value: Some(fruit_value),
+                label: None,
+            };
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
+            assert_eq!(
+                ft_debug_handle_type(handle).as_str_unchecked(),
+                "VtableFruit",
+            );
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn debug_handle_type_apple() {
+        unsafe {
+            let apple = ft_apple_new(1);
+            assert_eq!(ft_debug_handle_type(apple).as_str_unchecked(), "Apple",);
+            ft_apple_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn debug_handle_type_null() {
+        unsafe {
+            assert_eq!(ft_debug_handle_type(ptr::null()).as_str_unchecked(), "null",);
+        }
+    }
+
+    // ================================================================
+    // Debug: simulate ClientPayload flow
+    // ================================================================
+
+    /// Simulate what __into_raw_handle does for a custom type:
+    /// Box a "payload" struct, pass it as user_data to from_vtable,
+    /// then check the handle is valid.
+    #[repr(C)]
+    struct DebugPayload {
+        vtable_ref: *mut core::ffi::c_void,
+        handle: *mut core::ffi::c_void,
+        value: i32,
+    }
+
+    #[test]
+    fn debug_client_payload_handle_roundtrip() {
+        unsafe {
+            let vtable = ffier_test_lib::FruitVtable {
+                drop: None,
+                value: Some(fruit_value),
+                label: None,
+            };
+            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable));
+
+            let payload = Box::new(DebugPayload {
+                vtable_ref: vt_ref,
+                handle: core::ptr::null_mut(),
+                value: 42,
+            });
+            let payload_ptr = Box::into_raw(payload);
+
+            let handle = ft_fruit_from_vtable(payload_ptr as *mut core::ffi::c_void, vt_ref);
+
+            // Write handle back into payload
+            (*payload_ptr).handle = handle;
+
+            // Verify handle is valid
+            eprintln!("handle: {:p}", handle);
+            eprintln!("payload_ptr: {:p}", payload_ptr);
+            eprintln!("payload.handle: {:p}", (*payload_ptr).handle);
+            assert_eq!(
+                ft_debug_handle_type(handle).as_str_unchecked(),
+                "VtableFruit",
+            );
+
+            // Verify the handle stored in payload is the same
+            assert_eq!(
+                ft_debug_handle_type((*payload_ptr).handle).as_str_unchecked(),
+                "VtableFruit",
+            );
+
+            // Now call ft_fruit_label through the handle — label is None, should use default
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+
+            // Also call through the stored handle
+            assert_eq!(
+                ft_fruit_label((*payload_ptr).handle).as_str_unchecked(),
+                "fruit"
+            );
+
+            ft_fruit_destroy(handle);
+            // Don't drop payload — handle destruction freed VtableFruit,
+            // but payload is leaked (same as in real __into_raw_handle)
+        }
+    }
+
+    // ================================================================
     // Re-entrancy detection for vtable default methods
     // ================================================================
 

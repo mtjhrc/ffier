@@ -728,6 +728,13 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 // If override: replaces vtable field with normal trampoline.
                 let self_dispatch_fn = format_ident!("{self_dispatch_prefix}_{mname}");
                 let normal_trampoline_name = format_ident!("__normal_{mname}");
+
+                // Forward method arguments to self-dispatch
+                let fwd_params: Vec<_> = m.params.iter().map(|p| {
+                    let id = &p.name;
+                    quote! { #id }
+                }).collect();
+
                 quote! {
                     #mname: Some({
                         // Normal trampoline — used after probe confirms override
@@ -761,8 +768,34 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                                     if __e.is::<ffier::FfierDefaultMarker>() {
                                         // Client uses default — patch vtable to None
                                         unsafe { (*__payload.vtable_ref).#mname = None; }
-                                        // Call self-dispatch for the result
-                                        unsafe { #self_dispatch_fn(__payload.handle) }
+                                        // Construct a temporary handle on the stack
+                                        // and call the self-dispatch function. The
+                                        // vtable field is now None, so self-dispatch
+                                        // will use the library's default.
+                                        //
+                                        // FfierTaggedBox layout: { type_tag: u32, value: VtableFruit }
+                                        // VtableFruit layout: { user_data: *mut c_void, vtable_ref: *const VtableRef }
+                                        // VtableRef starts with UnsafeCell<VtableStruct> (transparent)
+                                        // so *mut VtableStruct == *const VtableRef for layout purposes.
+                                        #[repr(C)]
+                                        struct __TempHandle {
+                                            type_tag: u32,
+                                            user_data: *mut core::ffi::c_void,
+                                            vtable_ref: *mut core::ffi::c_void,
+                                        }
+                                        let __temp = __TempHandle {
+                                            type_tag: unsafe {
+                                                // type_tag is stored right after the vtable
+                                                // in the VtableRef (last field)
+                                                let __vt_ref_ptr = __payload.vtable_ref as *const u8;
+                                                let __tag_offset = core::mem::size_of::<#vtable_struct_name>();
+                                                *(__vt_ref_ptr.add(__tag_offset) as *const u32)
+                                            },
+                                            user_data: __ud,
+                                            vtable_ref: __payload.vtable_ref as *mut core::ffi::c_void,
+                                        };
+                                        let __handle = &__temp as *const __TempHandle as *mut core::ffi::c_void;
+                                        unsafe { #self_dispatch_fn(__handle #(, #fwd_params)*) }
                                     } else {
                                         std::panic::resume_unwind(__e)
                                     }
@@ -846,29 +879,25 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 // Box the value inside a ClientPayload
                 let __payload = Box::new(#client_payload_name {
                     vtable_ref: __vtable_ref,
-                    handle: core::ptr::null_mut(), // filled in below
                     value: self,
                 });
                 let __payload_ptr = Box::into_raw(__payload);
-                let __handle = unsafe {
+                unsafe {
                     #constructor_name(
                         __payload_ptr as *mut core::ffi::c_void,
                         __vtable_ref as *mut core::ffi::c_void,
                     )
-                };
-                // Fill in the handle so probe trampolines can call self-dispatch
-                unsafe { (*__payload_ptr).handle = __handle; }
-                __handle
+                }
             }
         }
 
-        /// Client-side payload wrapping the user value + vtable ref + handle.
-        /// The probe trampoline needs all three to detect defaults and call
-        /// self-dispatch.
+        /// Client-side payload wrapping the user value + vtable ref.
+        /// The probe trampoline needs these to patch the vtable and
+        /// construct temporary handles for self-dispatch calls.
         #[doc(hidden)]
+        #[repr(C)]
         struct #client_payload_name<__T> {
             vtable_ref: *mut #vtable_struct_name,
-            handle: *mut core::ffi::c_void,
             value: __T,
         }
 

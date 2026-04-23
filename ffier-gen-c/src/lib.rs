@@ -336,6 +336,27 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .map(|item| peek_meta_field(item, "prefix"))
         .unwrap_or_default();
 
+    // Debug utility: exported function to inspect a handle's type tag and name.
+    let debug_fn = {
+        let debug_fn_name = format_ident!("{first_prefix}_debug_handle_type");
+        quote! {
+            /// Debug utility: read the type tag from a handle and return the
+            /// type name as a string. Returns "null" for null handles,
+            /// "unknown" for unrecognized tags.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #debug_fn_name(
+                handle: *const core::ffi::c_void,
+            ) -> ffier::FfierBytes {
+                if handle.is_null() {
+                    return unsafe { ffier::FfierBytes::from_str("null") };
+                }
+                let tag = unsafe { ffier::handle_type_tag(handle) };
+                let name = __ffier_type_name(tag);
+                unsafe { ffier::FfierBytes::from_str(name) }
+            }
+        }
+    };
+
     // Pass 3: Generate self-dispatch functions for implementable traits.
     // For each trait with an @implementable entry, generate per-trait dispatching
     // C functions that read the type tag and dispatch to the concrete implementor.
@@ -352,6 +373,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate unified header function
     quote! {
         #dispatch_helpers
+
+        #debug_fn
 
         #(#all_code)*
 
@@ -1161,6 +1184,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             );
             let vtable_copy = unsafe { core::ptr::read(vtable) };
             let vtable_ref = Box::new(#vtable_ref_name {
+                type_tag: <#wrapper_name as ffier::FfiHandle>::TYPE_TAG,
                 vtable: core::cell::UnsafeCell::new(vtable_copy),
             });
             Box::into_raw(vtable_ref) as *mut core::ffi::c_void
