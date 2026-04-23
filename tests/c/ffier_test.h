@@ -527,15 +527,15 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 
-/* Fruit (dispatch) -------------------------------------------------- */
-
-int32_t ft_fruit_value(void* handle);
-FtStr ft_fruit_label(void* handle);
-void ft_fruit_destroy(void* handle);
-
 /* Processor (dispatch) ---------------------------------------------- */
 
 int32_t ft_processor_process(void* handle, int32_t input);
 FtStr ft_processor_name(void* handle);
 void ft_processor_destroy(void* handle);
+
+/* Fruit (dispatch) -------------------------------------------------- */
+
+int32_t ft_fruit_value(void* handle);
+FtStr ft_fruit_label(void* handle);
+void ft_fruit_destroy(void* handle);
 #endif /* FFIER_TEST_H */

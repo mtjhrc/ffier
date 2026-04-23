@@ -835,4 +835,43 @@ mod tests {
             ft_apple_destroy(apple);
         }
     }
+
+    // ================================================================
+    // Re-entrancy detection for vtable default methods
+    // ================================================================
+
+    /// Global to pass the VtableFruit handle to the reentrant trampoline.
+    /// The trampoline calls ft_fruit_label(handle) to simulate a client-side
+    /// trait default that calls back through self-dispatch.
+    static REENTRANT_HANDLE: std::sync::atomic::AtomicPtr<core::ffi::c_void> =
+        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    /// Trampoline that re-enters ft_fruit_label using the stashed handle.
+    /// Simulates what happens when a client trait default calls through
+    /// self-dispatch because the user didn't override the method.
+    unsafe extern "C" fn reentrant_label(_self_data: *mut core::ffi::c_void) -> ffier::FfierBytes {
+        let handle = REENTRANT_HANDLE.load(std::sync::atomic::Ordering::Relaxed);
+        unsafe { ft_fruit_label(handle) }
+    }
+
+    #[test]
+    fn vtable_reentrant_label_detected_and_cached() {
+        unsafe {
+            let vtable = ffier_test_lib::FruitVtable {
+                drop: None,
+                value: Some(fruit_value),
+                label: Some(reentrant_label),
+            };
+            REENTRANT_HANDLE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
+            let handle = ft_fruit_from_vtable(std::ptr::null_mut(), &vtable);
+            REENTRANT_HANDLE.store(handle, std::sync::atomic::Ordering::Relaxed);
+
+            // First call: trampoline re-enters → re-entrancy detected → default "fruit"
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+            // Second call: cached in default_mask → skips trampoline, returns default
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+
+            ft_fruit_destroy(handle);
+        }
+    }
 }

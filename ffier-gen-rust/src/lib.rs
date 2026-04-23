@@ -7,12 +7,21 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
     HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake, peek_meta_tag,
+    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableMethod, MetaVtableRet, camel_to_snake,
+    peek_meta_tag,
 };
+
+/// Info about defaulted methods for an implementable trait.
+/// Used to generate self-dispatch calls for known types.
+struct TraitDefaults {
+    prefix: String,
+    trait_name: String,
+    methods: Vec<MetaVtableMethod>,
+}
 
 /// Generates Rust client source code from batched metadata.
 ///
@@ -73,16 +82,37 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         all_source.push('\n');
     }
 
+    // Collect per-trait defaulted method info from implementables.
+    // Used by trait_impl client generation to emit self-dispatch calls
+    // for defaulted methods that the concrete type doesn't override.
+    let mut trait_defaults: HashMap<String, TraitDefaults> = HashMap::new();
+
     for item in &implementables {
         let meta: MetaImplementable = match syn::parse2(item.clone()) {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
+        let defaulted: Vec<_> = meta.vtable_methods.iter()
+            .filter(|m| m.has_default)
+            .cloned()
+            .collect();
+        if !defaulted.is_empty() {
+            trait_defaults.insert(meta.trait_name.to_string(), TraitDefaults {
+                prefix: meta.prefix.clone(),
+                trait_name: meta.trait_name.to_string(),
+                methods: defaulted,
+            });
+        }
         defined_traits.insert(meta.trait_name.to_string());
         let code = generate_implementable_client(meta);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
+
+    // Track which self-dispatch extern declarations have been emitted
+    // to avoid duplicates (multiple @trait_impl entries share the same
+    // self-dispatch functions).
+    let mut emitted_dispatch_externs: HashSet<String> = HashSet::new();
 
     for item in &trait_impls {
         let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
@@ -90,7 +120,9 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
             Err(e) => return e.to_compile_error(),
         };
         let emit_trait_def = defined_traits.insert(meta.trait_name.to_string());
-        let code = generate_trait_impl_client(meta, emit_trait_def);
+        let emit_externs = emitted_dispatch_externs.insert(meta.trait_name.to_string());
+        let defaults = trait_defaults.get(&meta.trait_name.to_string());
+        let code = generate_trait_impl_client(meta, emit_trait_def, defaults, emit_externs);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
@@ -849,7 +881,12 @@ fn client_result_ok_from_ffi(
 // Trait impl client generation
 // ===========================================================================
 
-fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> TokenStream2 {
+fn generate_trait_impl_client(
+    meta: MetaTraitImpl,
+    emit_trait_def: bool,
+    trait_defaults: Option<&TraitDefaults>,
+    emit_dispatch_externs: bool,
+) -> TokenStream2 {
     let trait_name = &meta.trait_name;
     let struct_name = &meta.struct_name;
     let fn_pfx = meta.fn_pfx();
@@ -997,15 +1034,105 @@ fn generate_trait_impl_client(meta: MetaTraitImpl, emit_trait_def: bool) -> Toke
         })
         .collect();
 
+    // For defaulted methods from the @implementable that aren't in this
+    // @trait_impl, emit self-dispatch calls (e.g. ft_fruit_label instead
+    // of ft_apple_label). This way known types dynamically call through
+    // FFI to the library's default impl.
+    let mut default_extern_decls: Vec<TokenStream2> = Vec::new();
+    let mut default_method_impls: Vec<TokenStream2> = Vec::new();
+
+    if let Some(defaults) = trait_defaults {
+        let existing_methods: HashSet<String> = meta
+            .methods
+            .iter()
+            .map(|m| m.name.to_string())
+            .collect();
+        let trait_snake = camel_to_snake(&defaults.trait_name);
+        let dispatch_pfx = format!("{}_{trait_snake}", defaults.prefix);
+
+        for m in &defaults.methods {
+            if existing_methods.contains(&m.name.to_string()) {
+                continue;
+            }
+            let method_name = &m.name;
+            let ffi_name = format_ident!("{dispatch_pfx}_{method_name}");
+
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { #id: #rt }
+                })
+                .collect();
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+            };
+
+            // Extern declaration params use bridge types
+            let extern_params: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let id = &p.name;
+                    let bt = &p.bridge_type;
+                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
+                })
+                .collect();
+            let extern_ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                }
+            };
+            if emit_dispatch_externs {
+                default_extern_decls.push(quote! {
+                    pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #extern_params)*) #extern_ret;
+                });
+            }
+
+            // Convert args and call
+            let call_args: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let id = &p.name;
+                    let rt = &p.rust_type;
+                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                })
+                .collect();
+            let body = match &m.ret {
+                MetaVtableRet::Void => {
+                    quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
+                }
+                MetaVtableRet::Value { rust_type, .. } => {
+                    quote! {
+                        let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
+                        <#rust_type as ffier::FfiType>::from_c(__raw)
+                    }
+                }
+            };
+            default_method_impls.push(quote! {
+                fn #method_name(&self, #(#params),*) #ret {
+                    #body
+                }
+            });
+        }
+    }
+
     quote! {
         #trait_def
 
         unsafe extern "C" {
             #(#extern_decls)*
+            #(#default_extern_decls)*
         }
 
         impl #impl_generics #trait_with_lts for #struct_with_lts {
             #(#trait_method_impls)*
+            #(#default_method_impls)*
 
             fn __into_raw_handle(self) -> *mut core::ffi::c_void {
                 let this = std::mem::ManuallyDrop::new(self);
