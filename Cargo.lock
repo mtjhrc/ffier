@@ -95,6 +95,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-test-submodule-cdylib"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+ "ffier-gen-c",
+ "ffier-gen-c-macros",
+ "ffier-test-submodule-lib",
+]
+
+[[package]]
+name = "ffier-test-submodule-lib"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+]
+
+[[package]]
 name = "mylib"
 version = "0.1.0"
 dependencies = [

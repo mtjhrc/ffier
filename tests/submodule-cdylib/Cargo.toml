@@ -1,0 +1,13 @@
+[package]
+name = "ffier-test-submodule-cdylib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ffier-test-submodule-lib = { path = "../submodule-lib" }
+ffier = { path = "../../ffier" }
+ffier-gen-c = { path = "../../ffier-gen-c" }
+ffier-gen-c-macros = { path = "../../ffier-gen-c-macros" }
