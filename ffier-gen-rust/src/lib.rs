@@ -109,20 +109,14 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         all_source.push('\n');
     }
 
-    // Track which self-dispatch extern declarations have been emitted
-    // to avoid duplicates (multiple @trait_impl entries share the same
-    // self-dispatch functions).
-    let mut emitted_dispatch_externs: HashSet<String> = HashSet::new();
-
     for item in &trait_impls {
         let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
         let emit_trait_def = defined_traits.insert(meta.trait_name.to_string());
-        let emit_externs = emitted_dispatch_externs.insert(meta.trait_name.to_string());
         let defaults = trait_defaults.get(&meta.trait_name.to_string());
-        let code = generate_trait_impl_client(meta, emit_trait_def, defaults, emit_externs);
+        let code = generate_trait_impl_client(meta, emit_trait_def, defaults);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
@@ -597,7 +591,6 @@ fn vtable_trait_method_sigs(methods: &[ffier_meta::MetaVtableMethod]) -> Vec<Tok
         .iter()
         .map(|m| {
             let mname = &m.name;
-            let mname_str = mname.to_string();
             let params: Vec<_> = m
                 .params
                 .iter()
@@ -612,15 +605,12 @@ fn vtable_trait_method_sigs(methods: &[ffier_meta::MetaVtableMethod]) -> Vec<Tok
                 MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
             };
             if m.has_default {
-                // Defaulted method: provide a panic default. Known types
-                // (with @trait_impl) override this with a self-dispatch call.
-                // Custom client types that don't override will panic at runtime.
+                // Defaulted method: panic with FfierDefaultMarker so the probe
+                // trampoline can detect via catch_unwind that this is the default.
+                // Known types (with @trait_impl) override with self-dispatch calls.
                 quote! {
                     fn #mname(&self, #(#params),*) #ret {
-                        panic!(
-                            "{}() has no client-side default — override this method",
-                            #mname_str,
-                        )
+                        std::panic::panic_any(ffier::FfierDefaultMarker)
                     }
                 }
             } else {
@@ -650,7 +640,13 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             .unwrap_or("VtableWrapper")
             .trim()
     );
+    let trait_name = &meta.trait_name;
+    let trait_name_str = trait_name.to_string();
+    let trait_snake = camel_to_snake(&trait_name_str);
     let constructor_name = format_ident!("{}", meta.constructor_name());
+    let fn_pfx = meta.fn_pfx();
+    let new_vtable_name = format_ident!("{fn_pfx}{trait_snake}_new_vtable");
+    let self_dispatch_prefix = format!("{fn_pfx}{trait_snake}");
 
     // Vtable method function pointer fields
     let vtable_method_fields: Vec<_> = meta
@@ -681,19 +677,19 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         })
         .collect();
 
-    let trait_name = &meta.trait_name;
     let trait_method_sigs = vtable_trait_method_sigs(&meta.vtable_methods);
 
-    // Build vtable field initializers with const-promoted trampolines for the default method
+    // ClientPayload wraps user value + vtable_ref + handle for probe trampolines
+    let client_payload_name = format_ident!("__FfierClientPayload_{trait_name}");
+
+    // Build vtable field initializers with trampolines.
+    // Defaulted methods get probe trampolines (catch_unwind on first call).
+    // Required methods get normal trampolines.
     let vtable_trampoline_fields: Vec<_> = meta
         .vtable_methods
         .iter()
         .map(|m| {
             let mname = &m.name;
-            // Trampoline fn signature uses bridge_type ('static lifetimes)
-            // for the CRepr types, since it's a standalone extern fn.
-            // Conversions (from_c/into_c) use rust_type (actual lifetimes)
-            // so the trait method's lifetimes are preserved.
             let params: Vec<_> = m
                 .params
                 .iter()
@@ -709,8 +705,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
             };
-
-            // Argument conversions use rust_type (actual lifetimes)
             let arg_conversions: Vec<_> = m
                 .params
                 .iter()
@@ -720,8 +714,6 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     quote! { <#rt as ffier::FfiType>::from_c(#id) }
                 })
                 .collect();
-
-            // Return conversion uses rust_type (actual lifetimes)
             let ret_conversion = match &m.ret {
                 MetaVtableRet::Void => quote! { __result },
                 MetaVtableRet::Value { rust_type, .. } => {
@@ -729,19 +721,98 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 }
             };
 
-            quote! {
-                #mname: Some({
-                    unsafe extern "C" fn __trampoline<__T: #trait_name>(
-                        __ud: *mut core::ffi::c_void
-                        #(, #params)*
-                    ) #ret {
-                        let __obj = unsafe { &*(__ud as *const __T) };
-                        let __result = __obj.#mname(#(#arg_conversions),*);
-                        #ret_conversion
-                    }
-                    __trampoline::<Self>
-                })
+            if m.has_default {
+                // Defaulted method: probe trampoline with catch_unwind.
+                // On first call, detects if client overrides via FfierDefaultMarker panic.
+                // If default: patches vtable to None, calls self-dispatch for result.
+                // If override: replaces vtable field with normal trampoline.
+                let self_dispatch_fn = format_ident!("{self_dispatch_prefix}_{mname}");
+                let normal_trampoline_name = format_ident!("__normal_{mname}");
+                quote! {
+                    #mname: Some({
+                        // Normal trampoline — used after probe confirms override
+                        unsafe extern "C" fn #normal_trampoline_name<__T: #trait_name>(
+                            __ud: *mut core::ffi::c_void
+                            #(, #params)*
+                        ) #ret {
+                            let __payload = unsafe { &*(__ud as *const #client_payload_name<__T>) };
+                            let __result = __payload.value.#mname(#(#arg_conversions),*);
+                            #ret_conversion
+                        }
+                        // Probe trampoline — runs once, replaces itself
+                        unsafe extern "C" fn __probe<__T: #trait_name>(
+                            __ud: *mut core::ffi::c_void
+                            #(, #params)*
+                        ) #ret {
+                            let __payload = unsafe { &*(__ud as *const #client_payload_name<__T>) };
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let __result = __payload.value.#mname(#(#arg_conversions),*);
+                                #ret_conversion
+                            })) {
+                                Ok(__result) => {
+                                    // User overrides — replace with normal trampoline
+                                    unsafe {
+                                        (*__payload.vtable_ref).#mname =
+                                            Some(#normal_trampoline_name::<__T>);
+                                    }
+                                    __result
+                                }
+                                Err(__e) => {
+                                    if __e.is::<ffier::FfierDefaultMarker>() {
+                                        // Client uses default — patch vtable to None
+                                        unsafe { (*__payload.vtable_ref).#mname = None; }
+                                        // Call self-dispatch for the result
+                                        unsafe { #self_dispatch_fn(__payload.handle) }
+                                    } else {
+                                        std::panic::resume_unwind(__e)
+                                    }
+                                }
+                            }
+                        }
+                        __probe::<Self>
+                    })
+                }
+            } else {
+                // Required method: normal trampoline, no catch_unwind
+                quote! {
+                    #mname: Some({
+                        unsafe extern "C" fn __trampoline<__T: #trait_name>(
+                            __ud: *mut core::ffi::c_void
+                            #(, #params)*
+                        ) #ret {
+                            let __payload = unsafe { &*(__ud as *const #client_payload_name<__T>) };
+                            let __result = __payload.value.#mname(#(#arg_conversions),*);
+                            #ret_conversion
+                        }
+                        __trampoline::<Self>
+                    })
+                }
             }
+        })
+        .collect();
+
+    // Self-dispatch extern declarations for defaulted methods (probe trampoline calls these)
+    let self_dispatch_externs: Vec<_> = meta
+        .vtable_methods
+        .iter()
+        .filter(|m| m.has_default)
+        .map(|m| {
+            let ffi_name = format_ident!("{self_dispatch_prefix}_{}", m.name);
+            let params: Vec<_> = m
+                .params
+                .iter()
+                .map(|p| {
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::CRepr }
+                })
+                .collect();
+            let ret = match &m.ret {
+                MetaVtableRet::Void => quote! {},
+                MetaVtableRet::Value { bridge_type, .. } => {
+                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                }
+            };
+            quote! { pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
         })
         .collect();
 
@@ -753,23 +824,52 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             ///
             /// Known types (with `#[ffier::trait_impl]`) override this with
             /// direct handle passthrough. User types get the default
-            /// implementation which builds a const-promoted static vtable.
+            /// implementation which builds a vtable with probe trampolines.
             #[doc(hidden)]
             fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
-                let __vtable: &'static #vtable_struct_name = &#vtable_struct_name {
+                // Build vtable with probe trampolines for defaulted methods
+                let __vtable = #vtable_struct_name {
                     drop: Some({
                         unsafe extern "C" fn __trampoline<__T>(
                             __ud: *mut core::ffi::c_void,
                         ) {
-                            unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                            unsafe { drop(Box::from_raw(__ud as *mut #client_payload_name<__T>)) };
                         }
                         __trampoline::<Self>
                     }),
                     #(#vtable_trampoline_fields,)*
                 };
-                let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
-                #wrapper_name::new(__ud, __vtable).__into_raw()
+                // Create a VtableRef (owned mutable copy of the vtable)
+                let __vtable_ref = unsafe {
+                    #new_vtable_name(&__vtable, core::mem::size_of::<#vtable_struct_name>())
+                } as *mut #vtable_struct_name;
+                // Box the value inside a ClientPayload
+                let __payload = Box::new(#client_payload_name {
+                    vtable_ref: __vtable_ref,
+                    handle: core::ptr::null_mut(), // filled in below
+                    value: self,
+                });
+                let __payload_ptr = Box::into_raw(__payload);
+                let __handle = unsafe {
+                    #constructor_name(
+                        __payload_ptr as *mut core::ffi::c_void,
+                        __vtable_ref as *mut core::ffi::c_void,
+                    )
+                };
+                // Fill in the handle so probe trampolines can call self-dispatch
+                unsafe { (*__payload_ptr).handle = __handle; }
+                __handle
             }
+        }
+
+        /// Client-side payload wrapping the user value + vtable ref + handle.
+        /// The probe trampoline needs all three to detect defaults and call
+        /// self-dispatch.
+        #[doc(hidden)]
+        struct #client_payload_name<__T> {
+            vtable_ref: *mut #vtable_struct_name,
+            handle: *mut core::ffi::c_void,
+            value: __T,
         }
 
         #[repr(C)]
@@ -779,19 +879,20 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         }
 
         unsafe extern "C" {
+            pub fn #new_vtable_name(
+                vtable: *const #vtable_struct_name,
+                vtable_size: usize,
+            ) -> *mut core::ffi::c_void;
             pub fn #constructor_name(
                 user_data: *mut core::ffi::c_void,
-                vtable: *const #vtable_struct_name,
+                vtable_ref: *mut core::ffi::c_void,
             ) -> *mut core::ffi::c_void;
+            #(#self_dispatch_externs)*
         }
 
         pub struct #wrapper_name(*mut core::ffi::c_void);
 
         impl #wrapper_name {
-            pub fn new(user_data: *mut core::ffi::c_void, vtable: &#vtable_struct_name) -> Self {
-                Self(unsafe { #constructor_name(user_data, vtable) })
-            }
-
             #[doc(hidden)]
             pub fn __into_raw(self) -> *mut core::ffi::c_void {
                 let this = std::mem::ManuallyDrop::new(self);
@@ -885,7 +986,6 @@ fn generate_trait_impl_client(
     meta: MetaTraitImpl,
     emit_trait_def: bool,
     trait_defaults: Option<&TraitDefaults>,
-    emit_dispatch_externs: bool,
 ) -> TokenStream2 {
     let trait_name = &meta.trait_name;
     let struct_name = &meta.struct_name;
@@ -1038,7 +1138,7 @@ fn generate_trait_impl_client(
     // @trait_impl, emit self-dispatch calls (e.g. ft_fruit_label instead
     // of ft_apple_label). This way known types dynamically call through
     // FFI to the library's default impl.
-    let mut default_extern_decls: Vec<TokenStream2> = Vec::new();
+    let default_extern_decls: Vec<TokenStream2> = Vec::new();
     let mut default_method_impls: Vec<TokenStream2> = Vec::new();
 
     if let Some(defaults) = trait_defaults {
@@ -1070,28 +1170,6 @@ fn generate_trait_impl_client(
                 MetaVtableRet::Void => quote! {},
                 MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
             };
-
-            // Extern declaration params use bridge types
-            let extern_params: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let id = &p.name;
-                    let bt = &p.bridge_type;
-                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
-                })
-                .collect();
-            let extern_ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { bridge_type, .. } => {
-                    quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
-                }
-            };
-            if emit_dispatch_externs {
-                default_extern_decls.push(quote! {
-                    pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #extern_params)*) #extern_ret;
-                });
-            }
 
             // Convert args and call
             let call_args: Vec<_> = m

@@ -863,7 +863,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires client-side probe trampoline with catch_unwind (TODO)"]
+    #[ignore = "manual re-entrancy test — probe trampolines only protect the Rust client path"]
     fn vtable_reentrant_label_detected_and_cached() {
         unsafe {
             let vtable = ffier_test_lib::FruitVtable {

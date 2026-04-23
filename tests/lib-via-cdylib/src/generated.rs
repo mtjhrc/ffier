@@ -1466,16 +1466,20 @@ pub trait Processor {
     #[doc = r""]
     #[doc = r" Known types (with `#[ffier::trait_impl]`) override this with"]
     #[doc = r" direct handle passthrough. User types get the default"]
-    #[doc = r" implementation which builds a const-promoted static vtable."]
+    #[doc = r" implementation which builds a vtable with probe trampolines."]
     #[doc(hidden)]
     fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        let __vtable: &'static ProcessorVtable = &ProcessorVtable {
+        let __vtable = ProcessorVtable {
             drop: Some({
                 unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                    unsafe {
+                        drop(Box::from_raw(
+                            __ud as *mut __FfierClientPayload_Processor<__T>,
+                        ))
+                    };
                 }
                 __trampoline::<Self>
             }),
@@ -1484,8 +1488,11 @@ pub trait Processor {
                     __ud: *mut core::ffi::c_void,
                     input: <i32 as ffier::FfiType>::CRepr,
                 ) -> <i32 as ffier::FfiType>::CRepr {
-                    let __obj = unsafe { &*(__ud as *const __T) };
-                    let __result = __obj.process(<i32 as ffier::FfiType>::from_c(input));
+                    let __payload =
+                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                    let __result = __payload
+                        .value
+                        .process(<i32 as ffier::FfiType>::from_c(input));
                     <i32 as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
@@ -1494,8 +1501,9 @@ pub trait Processor {
                 unsafe extern "C" fn __trampoline<__T: Processor>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <&'static str as ffier::FfiType>::CRepr {
-                    let __obj = unsafe { &*(__ud as *const __T) };
-                    let __result = __obj.name();
+                    let __payload =
+                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                    let __result = __payload.value.name();
                     <&str as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
@@ -1505,16 +1513,45 @@ pub trait Processor {
                     __ud: *mut core::ffi::c_void,
                     code: <i32 as ffier::FfiType>::CRepr,
                 ) {
-                    let __obj = unsafe { &*(__ud as *const __T) };
-                    let __result = __obj.on_notify(<i32 as ffier::FfiType>::from_c(code));
+                    let __payload =
+                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                    let __result = __payload
+                        .value
+                        .on_notify(<i32 as ffier::FfiType>::from_c(code));
                     __result
                 }
                 __trampoline::<Self>
             }),
         };
-        let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
-        VtableProcessor::new(__ud, __vtable).__into_raw()
+        let __vtable_ref =
+            unsafe { ft_processor_new_vtable(&__vtable, core::mem::size_of::<ProcessorVtable>()) }
+                as *mut ProcessorVtable;
+        let __payload = Box::new(__FfierClientPayload_Processor {
+            vtable_ref: __vtable_ref,
+            handle: core::ptr::null_mut(),
+            value: self,
+        });
+        let __payload_ptr = Box::into_raw(__payload);
+        let __handle = unsafe {
+            ft_processor_from_vtable(
+                __payload_ptr as *mut core::ffi::c_void,
+                __vtable_ref as *mut core::ffi::c_void,
+            )
+        };
+        unsafe {
+            (*__payload_ptr).handle = __handle;
+        }
+        __handle
     }
+}
+#[doc = r" Client-side payload wrapping the user value + vtable ref + handle."]
+#[doc = r" The probe trampoline needs all three to detect defaults and call"]
+#[doc = r" self-dispatch."]
+#[doc(hidden)]
+struct __FfierClientPayload_Processor<__T> {
+    vtable_ref: *mut ProcessorVtable,
+    handle: *mut core::ffi::c_void,
+    value: __T,
 }
 #[repr(C)]
 pub struct ProcessorVtable {
@@ -1532,16 +1569,17 @@ pub struct ProcessorVtable {
         Option<unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as ffier::FfiType>::CRepr)>,
 }
 unsafe extern "C" {
+    pub fn ft_processor_new_vtable(
+        vtable: *const ProcessorVtable,
+        vtable_size: usize,
+    ) -> *mut core::ffi::c_void;
     pub fn ft_processor_from_vtable(
         user_data: *mut core::ffi::c_void,
-        vtable: *const ProcessorVtable,
+        vtable_ref: *mut core::ffi::c_void,
     ) -> *mut core::ffi::c_void;
 }
 pub struct VtableProcessor(*mut core::ffi::c_void);
 impl VtableProcessor {
-    pub fn new(user_data: *mut core::ffi::c_void, vtable: &ProcessorVtable) -> Self {
-        Self(unsafe { ft_processor_from_vtable(user_data, vtable) })
-    }
     #[doc(hidden)]
     pub fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
@@ -1554,25 +1592,22 @@ impl Drop for VtableProcessor {
 pub trait Fruit {
     fn value(&self) -> i32;
     fn label(&self) -> &str {
-        panic!(
-            "{}() has no client-side default — override this method",
-            "label",
-        )
+        std::panic::panic_any(ffier::FfierDefaultMarker)
     }
     #[doc = r" Convert this value into an opaque FFI handle via vtable dispatch."]
     #[doc = r""]
     #[doc = r" Known types (with `#[ffier::trait_impl]`) override this with"]
     #[doc = r" direct handle passthrough. User types get the default"]
-    #[doc = r" implementation which builds a const-promoted static vtable."]
+    #[doc = r" implementation which builds a vtable with probe trampolines."]
     #[doc(hidden)]
     fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        let __vtable: &'static FruitVtable = &FruitVtable {
+        let __vtable = FruitVtable {
             drop: Some({
                 unsafe extern "C" fn __trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                    unsafe { drop(Box::from_raw(__ud as *mut __FfierClientPayload_Fruit<__T>)) };
                 }
                 __trampoline::<Self>
             }),
@@ -1580,26 +1615,78 @@ pub trait Fruit {
                 unsafe extern "C" fn __trampoline<__T: Fruit>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <i32 as ffier::FfiType>::CRepr {
-                    let __obj = unsafe { &*(__ud as *const __T) };
-                    let __result = __obj.value();
+                    let __payload = unsafe { &*(__ud as *const __FfierClientPayload_Fruit<__T>) };
+                    let __result = __payload.value.value();
                     <i32 as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
             }),
             label: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
+                unsafe extern "C" fn __normal_label<__T: Fruit>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <&'static str as ffier::FfiType>::CRepr {
-                    let __obj = unsafe { &*(__ud as *const __T) };
-                    let __result = __obj.label();
+                    let __payload = unsafe { &*(__ud as *const __FfierClientPayload_Fruit<__T>) };
+                    let __result = __payload.value.label();
                     <&str as ffier::FfiType>::into_c(__result)
                 }
-                __trampoline::<Self>
+                unsafe extern "C" fn __probe<__T: Fruit>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> <&'static str as ffier::FfiType>::CRepr {
+                    let __payload = unsafe { &*(__ud as *const __FfierClientPayload_Fruit<__T>) };
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let __result = __payload.value.label();
+                        <&str as ffier::FfiType>::into_c(__result)
+                    })) {
+                        Ok(__result) => {
+                            unsafe {
+                                (*__payload.vtable_ref).label = Some(__normal_label::<__T>);
+                            }
+                            __result
+                        }
+                        Err(__e) => {
+                            if __e.is::<ffier::FfierDefaultMarker>() {
+                                unsafe {
+                                    (*__payload.vtable_ref).label = None;
+                                }
+                                unsafe { ft_fruit_label(__payload.handle) }
+                            } else {
+                                std::panic::resume_unwind(__e)
+                            }
+                        }
+                    }
+                }
+                __probe::<Self>
             }),
         };
-        let __ud = Box::into_raw(Box::new(self)) as *mut core::ffi::c_void;
-        VtableFruit::new(__ud, __vtable).__into_raw()
+        let __vtable_ref =
+            unsafe { ft_fruit_new_vtable(&__vtable, core::mem::size_of::<FruitVtable>()) }
+                as *mut FruitVtable;
+        let __payload = Box::new(__FfierClientPayload_Fruit {
+            vtable_ref: __vtable_ref,
+            handle: core::ptr::null_mut(),
+            value: self,
+        });
+        let __payload_ptr = Box::into_raw(__payload);
+        let __handle = unsafe {
+            ft_fruit_from_vtable(
+                __payload_ptr as *mut core::ffi::c_void,
+                __vtable_ref as *mut core::ffi::c_void,
+            )
+        };
+        unsafe {
+            (*__payload_ptr).handle = __handle;
+        }
+        __handle
     }
+}
+#[doc = r" Client-side payload wrapping the user value + vtable ref + handle."]
+#[doc = r" The probe trampoline needs all three to detect defaults and call"]
+#[doc = r" self-dispatch."]
+#[doc(hidden)]
+struct __FfierClientPayload_Fruit<__T> {
+    vtable_ref: *mut FruitVtable,
+    handle: *mut core::ffi::c_void,
+    value: __T,
 }
 #[repr(C)]
 pub struct FruitVtable {
@@ -1611,16 +1698,20 @@ pub struct FruitVtable {
     >,
 }
 unsafe extern "C" {
+    pub fn ft_fruit_new_vtable(
+        vtable: *const FruitVtable,
+        vtable_size: usize,
+    ) -> *mut core::ffi::c_void;
     pub fn ft_fruit_from_vtable(
         user_data: *mut core::ffi::c_void,
-        vtable: *const FruitVtable,
+        vtable_ref: *mut core::ffi::c_void,
     ) -> *mut core::ffi::c_void;
+    pub fn ft_fruit_label(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as ffier::FfiType>::CRepr;
 }
 pub struct VtableFruit(*mut core::ffi::c_void);
 impl VtableFruit {
-    pub fn new(user_data: *mut core::ffi::c_void, vtable: &FruitVtable) -> Self {
-        Self(unsafe { ft_fruit_from_vtable(user_data, vtable) })
-    }
     #[doc(hidden)]
     pub fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
@@ -1632,9 +1723,6 @@ impl Drop for VtableFruit {
 }
 unsafe extern "C" {
     pub fn ft_apple_value(handle: *mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr;
-    pub fn ft_fruit_label(
-        handle: *mut core::ffi::c_void,
-    ) -> <&'static str as ffier::FfiType>::CRepr;
 }
 impl Fruit for Apple {
     fn value(&self) -> i32 {
