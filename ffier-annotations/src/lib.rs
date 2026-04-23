@@ -1154,8 +1154,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
-    // Extract all methods (trait + supertraits)
+    // Extract all methods (trait + supertraits).
+    // own_method_count tracks how many belong to this trait (before supers).
     let vtable_methods = extract_vtable_methods(&trait_item, &args.supers, &mut ctx);
+    let own_method_count = trait_item
+        .items
+        .iter()
+        .filter(|item| matches!(item, TraitItem::Fn(_)))
+        .count();
 
     // --- Generate vtable struct fields ---
     let vtable_fields: Vec<_> = vtable_methods
@@ -1340,6 +1346,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_methods = [#(#vtable_method_meta),*],
+                    own_method_count = #own_method_count,
                 } $(, $($rest)*)? }
             };
             // Untagged invocation (legacy / direct): type_tag defaults to 0
@@ -1353,6 +1360,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_methods = [#(#vtable_method_meta),*],
+                    own_method_count = #own_method_count,
                 } $(, $($rest)*)? }
             };
         }

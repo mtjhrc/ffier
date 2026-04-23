@@ -34,6 +34,10 @@ pub struct ImplementableInfo {
     pub wrapper_path: TokenStream2,
     pub vtable_struct_path: TokenStream2,
     pub methods: Vec<ffier_meta::MetaVtableMethod>,
+    /// Number of methods that belong to this trait (not supertrait methods).
+    /// Only the first `own_method_count` methods are dispatched in self-dispatch
+    /// functions. Supertrait methods need separate dispatch through their own trait.
+    pub own_method_count: usize,
 }
 
 /// Build the trait-to-impls map from parsed implementable and trait_impl metadata.
@@ -67,6 +71,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             let wrapper_path = meta.wrapper_name.clone();
             let vtable_struct_path = meta.vtable_struct_name.clone();
             let methods = meta.vtable_methods;
+            let own_method_count = meta.own_method_count;
 
             let info = map.entry(trait_name).or_insert_with(|| TraitDispatchInfo {
                 variants: Vec::new(),
@@ -81,6 +86,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
                 wrapper_path,
                 vtable_struct_path,
                 methods,
+                own_method_count,
             });
         }
     }
@@ -280,6 +286,18 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .next()
         .map(|item| peek_meta_field(item, "prefix"))
         .unwrap_or_default();
+
+    // Pass 3: Generate self-dispatch functions for implementable traits.
+    // For each trait with an @implementable entry, generate per-trait dispatching
+    // C functions that read the type tag and dispatch to the concrete implementor.
+    for (trait_name, info) in &trait_map {
+        if info.implementable.is_some() {
+            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix);
+            all_code.push(code);
+            let trait_snake = camel_to_snake(trait_name);
+            header_fn_names.push(format_ident!("{first_prefix}_{trait_snake}__dispatch_header"));
+        }
+    }
     let shared_types_fn = emit_shared_types_fn(&first_prefix);
 
     // Generate unified header function
@@ -1623,6 +1641,202 @@ impl HeaderBuilder {
         out.push('\n');
         out.push_str(&format!("#endif /* {} */\n", self.guard));
         out
+    }
+}
+
+// ===========================================================================
+// Self-dispatch bridge generation
+// ===========================================================================
+
+/// Emit a `let obj = ...` binding that borrows (or consumes) a value from
+/// a `FfierTaggedBox<T>` pointed to by `handle`.
+///
+/// - `mutable = false`: `let obj = &(*ptr).value;` (immutable borrow)
+/// - `mutable = true`:  `let obj = &mut (*ptr).value;` (mutable borrow)
+///
+/// For consuming dispatch (by-value `self`), a different pattern is needed:
+/// `let obj = Box::from_raw(ptr).value;` — add a separate helper when needed.
+fn borrow_from_tagged_box(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
+    if mutable {
+        quote! {
+            let obj = unsafe { &mut (*(handle as *mut ffier::FfierTaggedBox<#ty>)).value };
+        }
+    } else {
+        quote! {
+            let obj = unsafe { &(*(handle as *const ffier::FfierTaggedBox<#ty>)).value };
+        }
+    }
+}
+
+/// Generate per-trait dispatching C functions for an `#[ffier::implementable]` trait.
+///
+/// For each method on the trait, generates a single C function that reads the
+/// type tag from the handle and dispatches to the concrete implementor's method.
+/// Also generates a dispatching destroy function.
+///
+/// Example: for `trait Fruit` with method `value(&self) -> i32` and
+/// implementors `Apple`, `Orange`, `VtableFruit`:
+///
+/// ```c
+/// int32_t ft_fruit_value(void* handle);
+/// void ft_fruit_destroy(void* handle);
+/// ```
+fn generate_self_dispatch_bridge(
+    trait_name: &str,
+    info: &TraitDispatchInfo,
+    prefix: &str,
+) -> TokenStream2 {
+    let imp = info.implementable.as_ref().expect(
+        "generate_self_dispatch_bridge called for non-implementable trait",
+    );
+    let trait_path = &imp.trait_path;
+    let trait_snake = camel_to_snake(trait_name);
+    let fn_pfx = format!("{prefix}_");
+    let type_pfx = ffier_meta::snake_to_pascal(prefix);
+
+    let section_name = format!("{trait_name} (dispatch)");
+    let header_fn_name = format_ident!("{fn_pfx}{trait_snake}__dispatch_header");
+
+    let mut bridge_fns = Vec::new();
+    let mut header_lines: Vec<TokenStream2> = Vec::new();
+
+    // Generate dispatching functions for each trait method (own methods only,
+    // not supertrait methods — those need their own dispatch via their own trait).
+    // TODO: Reconsider the `supers(...)` syntax on #[ffier::implementable].
+    //       Perhaps supertrait methods should be exported by making the supertrait
+    //       itself #[ffier::implementable] (or at least having its own trait_impl
+    //       entries), rather than inlining them into the subtrait's vtable.
+    let own_methods = &imp.methods[..imp.own_method_count];
+    for m in own_methods {
+        let method_name = &m.name;
+        let ffi_name_str = format!("{fn_pfx}{trait_snake}_{method_name}");
+        let ffi_name = format_ident!("{ffi_name_str}");
+
+        // Build C bridge params: handle + method params
+        let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
+        let mut call_args = Vec::new();
+
+        for p in &m.params {
+            let param_name = &p.name;
+            let bt = &p.bridge_type;
+            bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
+            call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+        }
+
+        // Return type
+        let ret_type = match &m.ret {
+            MetaVtableRet::Void => quote! {},
+            MetaVtableRet::Value { bridge_type, .. } => {
+                quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+            }
+        };
+
+        // Build dispatch branches — one per variant.
+        // TODO: Support `&mut self` and consuming `self` receivers once
+        //       MetaVtableMethod tracks receiver kind.
+        let dispatch_branches: Vec<_> = info.variants.iter().map(|v| {
+            let ty = &v.bridge_type;
+            let obj_binding = borrow_from_tagged_box(ty, false);
+            let ret_conversion = match &m.ret {
+                MetaVtableRet::Void => quote! {
+                    <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
+                },
+                MetaVtableRet::Value { bridge_type, .. } => quote! {
+                    let call_result = <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
+                    return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                },
+            };
+            quote! {
+                if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    #obj_binding
+                    #ret_conversion
+                }
+            }
+        }).collect();
+
+        bridge_fns.push(quote! {
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+                let __type_tag = unsafe { ffier::handle_type_tag(handle) };
+                #(#dispatch_branches else)* {
+                    panic!(
+                        "{}(): handle is not a {} implementor (type_tag={})",
+                        #ffi_name_str, #trait_name, __type_tag,
+                    );
+                }
+            }
+        });
+
+        // Header line for this method
+        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
+        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+
+        header_lines.push(quote! {{
+            let mut s = String::new();
+            s.push_str(#ret_c_expr);
+            s.push(' ');
+            s.push_str(#ffi_name_str);
+            s.push_str("(void* handle");
+            let param_types: &[&str] = &[#(#param_type_exprs),*];
+            let param_names: &[&str] = &[#(#param_id_strs),*];
+            for (t, n) in param_types.iter().zip(param_names.iter()) {
+                s.push_str(", ");
+                s.push_str(t);
+                s.push(' ');
+                s.push_str(n);
+            }
+            s.push_str(");");
+            s
+        }});
+    }
+
+    // Generate dispatching destroy function
+    let destroy_name_str = format!("{fn_pfx}{trait_snake}_destroy");
+    let destroy_name = format_ident!("{destroy_name_str}");
+
+    let destroy_branches: Vec<_> = info.variants.iter().map(|v| {
+        let ty = &v.bridge_type;
+        quote! {
+            if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                drop(unsafe { Box::from_raw(handle as *mut ffier::FfierTaggedBox<#ty>) });
+            }
+        }
+    }).collect();
+
+    bridge_fns.push(quote! {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
+            if !handle.is_null() {
+                let __type_tag = unsafe { ffier::handle_type_tag(handle) };
+                #(#destroy_branches else)* {
+                    panic!(
+                        "{}(): handle is not a {} implementor (type_tag={})",
+                        #destroy_name_str, #trait_name, __type_tag,
+                    );
+                }
+            }
+        }
+    });
+
+    header_lines.push(quote! {
+        concat!("void ", #destroy_name_str, "(void* handle);")
+    });
+
+    let num_header_lines = header_lines.len();
+
+    quote! {
+        #(#bridge_fns)*
+
+        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+            let decl_lines: [String; #num_header_lines] = [
+                #(#header_lines .to_string()),*
+            ];
+            ffier_gen_c::HeaderSection {
+                struct_name: #section_name.to_string(),
+                handle_typedef: String::new(),
+                declarations: decl_lines.join("\n"),
+            }
+        }
     }
 }
 
