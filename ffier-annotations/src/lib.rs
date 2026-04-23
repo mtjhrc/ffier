@@ -1246,33 +1246,40 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         match fallback {
             Some(fb) => {
                 // Defaulted method: use re-entrancy detection + caching.
-                // If the client doesn't override, the trampoline will call back
-                // through self-dispatch → re-entry detected → use library default.
-                let bit = 1u32 << method_index;
+                //
+                // AtomicU64 layout:
+                //   low 32 bits  = default_mask  (bit N = method N cached as default)
+                //   high 32 bits = in_flight_mask (bit N = method N currently in trampoline)
+                //
+                // method_index is the index among defaulted methods only.
+                let default_bit = 1u64 << method_index;
+                let in_flight_bit = 1u64 << (method_index + 32);
                 quote! {
                     #sig {
-                        let __bit: u32 = #bit;
+                        use core::sync::atomic::Ordering;
+                        let __state = self.vtable_default_state.load(Ordering::Acquire);
                         // Fast path: cached as default
-                        if self.default_mask.get() & __bit != 0 {
+                        if __state & #default_bit != 0 {
                             return #fb;
                         }
                         match unsafe { (*self.vtable).#name } {
                             Some(__f) => {
-                                let __depth = self.call_depth.get();
-                                if __depth > 0 {
+                                if __state & #in_flight_bit != 0 {
                                     // Re-entering — client doesn't override this method.
                                     // Cache as default for future calls.
-                                    self.default_mask.set(self.default_mask.get() | __bit);
+                                    self.vtable_default_state.fetch_or(#default_bit, Ordering::Release);
                                     #fb
                                 } else {
-                                    self.call_depth.set(__depth + 1);
+                                    // Set in-flight bit before calling trampoline
+                                    self.vtable_default_state.fetch_or(#in_flight_bit, Ordering::Release);
                                     let __call_result = { #vtable_branch };
-                                    self.call_depth.set(__depth);
+                                    // Clear in-flight bit
+                                    self.vtable_default_state.fetch_and(!#in_flight_bit, Ordering::Release);
                                     __call_result
                                 }
                             }
                             None => {
-                                self.default_mask.set(self.default_mask.get() | __bit);
+                                self.vtable_default_state.fetch_or(#default_bit, Ordering::Release);
                                 #fb
                             }
                         }
@@ -1480,10 +1487,16 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         pub struct #wrapper_name {
             pub user_data: *mut core::ffi::c_void,
             pub vtable: *const #vtable_struct_name,
+            /// Packed bitmask for vtable default method detection (AtomicU64):
+            /// - Low 32 bits: default_mask — bit N set = defaulted method N
+            ///   is cached as "uses library default" (skip trampoline).
+            /// - High 32 bits: in_flight_mask — bit N set = defaulted method N
+            ///   is currently being called (re-entrancy guard).
+            ///
+            /// Only defaulted methods get bits (not required methods).
+            /// Limits: 32 defaulted methods per trait.
             #[doc(hidden)]
-            pub default_mask: core::cell::Cell<u32>,
-            #[doc(hidden)]
-            pub call_depth: core::cell::Cell<u32>,
+            pub vtable_default_state: core::sync::atomic::AtomicU64,
         }
 
         impl #trait_name #trait_ty_generics for #wrapper_name {

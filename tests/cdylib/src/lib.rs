@@ -841,15 +841,18 @@ mod tests {
     // ================================================================
 
     /// Global to pass the VtableFruit handle to the reentrant trampoline.
-    /// The trampoline calls ft_fruit_label(handle) to simulate a client-side
-    /// trait default that calls back through self-dispatch.
     static REENTRANT_HANDLE: std::sync::atomic::AtomicPtr<core::ffi::c_void> =
         std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+
+    /// Counter: how many times the reentrant trampoline was invoked.
+    static REENTRANT_CALL_COUNT: std::sync::atomic::AtomicU32 =
+        std::sync::atomic::AtomicU32::new(0);
 
     /// Trampoline that re-enters ft_fruit_label using the stashed handle.
     /// Simulates what happens when a client trait default calls through
     /// self-dispatch because the user didn't override the method.
     unsafe extern "C" fn reentrant_label(_self_data: *mut core::ffi::c_void) -> ffier::FfierBytes {
+        REENTRANT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let handle = REENTRANT_HANDLE.load(std::sync::atomic::Ordering::Relaxed);
         unsafe { ft_fruit_label(handle) }
     }
@@ -862,14 +865,26 @@ mod tests {
                 value: Some(fruit_value),
                 label: Some(reentrant_label),
             };
+            REENTRANT_CALL_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
             REENTRANT_HANDLE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
             let handle = ft_fruit_from_vtable(std::ptr::null_mut(), &vtable);
             REENTRANT_HANDLE.store(handle, std::sync::atomic::Ordering::Relaxed);
 
-            // First call: trampoline re-enters → re-entrancy detected → default "fruit"
+            // First call: trampoline fires, re-enters, re-entrancy detected → default "fruit"
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
-            // Second call: cached in default_mask → skips trampoline, returns default
+            assert_eq!(
+                REENTRANT_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "trampoline should have been called exactly once on first invocation"
+            );
+
+            // Second call: cached in default_mask → trampoline NOT called, returns default
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+            assert_eq!(
+                REENTRANT_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed),
+                1,
+                "trampoline should NOT be called again — result cached"
+            );
 
             ft_fruit_destroy(handle);
         }

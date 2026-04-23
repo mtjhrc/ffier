@@ -1123,8 +1123,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             let wrapper = #wrapper_name {
                 user_data,
                 vtable,
-                default_mask: core::cell::Cell::new(0),
-                call_depth: core::cell::Cell::new(0),
+                vtable_default_state: core::sync::atomic::AtomicU64::new(0),
             };
             <#wrapper_name as ffier::FfiType>::into_c(wrapper)
         }
