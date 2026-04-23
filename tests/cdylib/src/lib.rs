@@ -710,4 +710,79 @@ mod tests {
     fn destroy_null_handle() {
         unsafe { ft_widget_destroy(ptr::null_mut()) };
     }
+
+    // ================================================================
+    // Self-dispatch — trait-scoped functions that dispatch by type tag
+    // ================================================================
+
+    #[test]
+    fn self_dispatch_fruit_value_on_apple() {
+        unsafe {
+            let apple = ft_apple_new(42);
+            // ft_fruit_value dispatches to Apple::value via type tag
+            assert_eq!(ft_fruit_value(apple), 42);
+            ft_apple_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_fruit_value_on_orange() {
+        unsafe {
+            let orange = ft_orange_new(99);
+            assert_eq!(ft_fruit_value(orange), 99);
+            ft_orange_destroy(orange);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_fruit_value_on_vtable_fruit() {
+        unsafe {
+            // Create a VtableFruit via the C vtable mechanism.
+            // fruit_value (defined above) reads self_data as i32.
+            let vtable = ffier_test_lib::FruitVtable {
+                value: fruit_value,
+                drop: Some(fruit_drop),
+            };
+            let handle = ft_fruit_from_vtable(77 as *mut core::ffi::c_void, &vtable);
+            assert_eq!(ft_fruit_value(handle), 77);
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_fruit_destroy_on_apple() {
+        unsafe {
+            let apple = ft_apple_new(1);
+            // ft_fruit_destroy dispatches to the right destructor
+            ft_fruit_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_fruit_destroy_null() {
+        unsafe {
+            ft_fruit_destroy(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn self_dispatch_processor_process() {
+        unsafe {
+            let vtable = make_vtable();
+            let handle = ft_processor_from_vtable(ptr::null_mut(), &vtable);
+            // ft_processor_process dispatches via type tag
+            assert_eq!(ft_processor_process(handle, 10), 20);
+            ft_processor_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_processor_name() {
+        unsafe {
+            let vtable = make_vtable();
+            let handle = ft_processor_from_vtable(ptr::null_mut(), &vtable);
+            assert_eq!(ft_processor_name(handle).as_str_unchecked(), "test_proc",);
+            ft_processor_destroy(handle);
+        }
+    }
 }

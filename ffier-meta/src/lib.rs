@@ -323,6 +323,10 @@ pub struct MetaImplementable {
     pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
     pub vtable_methods: Vec<MetaVtableMethod>,
+    /// Number of methods that belong to this trait (not supertrait methods).
+    /// The first `own_method_count` entries in `vtable_methods` are this trait's
+    /// own methods; the rest are from supertrait `supers(...)` blocks.
+    pub own_method_count: usize,
 }
 
 impl HasPrefix for MetaImplementable {
@@ -819,6 +823,11 @@ impl syn::parse::Parse for MetaImplementable {
         let vtable_methods = parse_bracketed_list(input, parse_vtable_method)?;
         parse_comma(input)?;
 
+        expect_key(input, "own_method_count")?;
+        let own_method_count: syn::LitInt = input.parse()?;
+        let own_method_count = own_method_count.base10_parse::<usize>()?;
+        parse_comma(input)?;
+
         Ok(MetaImplementable {
             trait_name,
             trait_path,
@@ -827,6 +836,7 @@ impl syn::parse::Parse for MetaImplementable {
             vtable_struct_name,
             wrapper_name,
             vtable_methods,
+            own_method_count,
         })
     }
 }
