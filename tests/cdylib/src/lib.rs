@@ -560,6 +560,7 @@ mod tests {
             assert_eq!(err.code, 0);
             assert_eq!(last, 42);
             ft_pipeline_destroy(p);
+            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -573,6 +574,7 @@ mod tests {
             ft_pipeline_run(p, proc, 5);
             assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 10);
             ft_pipeline_destroy(p);
+            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -586,6 +588,7 @@ mod tests {
             ft_pipeline_run(p, proc, 1);
             assert!(DROP_CALLED.load(Ordering::SeqCst));
             ft_pipeline_destroy(p);
+            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -613,6 +616,7 @@ mod tests {
             ft_mixer_add(&mut m, fruit);
             assert_eq!(ft_mixer_total(m), 7);
             ft_mixer_destroy(m);
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -751,6 +755,7 @@ mod tests {
             let handle = ft_fruit_from_vtable(77 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_value(handle), 77);
             ft_fruit_destroy(handle);
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -778,6 +783,7 @@ mod tests {
             // ft_processor_process dispatches via type tag
             assert_eq!(ft_processor_process(handle, 10), 20);
             ft_processor_destroy(handle);
+            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -788,6 +794,7 @@ mod tests {
             let handle = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
             assert_eq!(ft_processor_name(handle).as_str_unchecked(), "test_proc",);
             ft_processor_destroy(handle);
+            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -808,6 +815,7 @@ mod tests {
             let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
             ft_fruit_destroy(handle);
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -828,6 +836,7 @@ mod tests {
             let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "custom");
             ft_fruit_destroy(handle);
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -860,6 +869,7 @@ mod tests {
                 "VtableFruit",
             );
             ft_fruit_destroy(handle);
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -940,8 +950,8 @@ mod tests {
             );
 
             ft_fruit_destroy(handle);
-            // Don't drop payload — handle destruction freed VtableFruit,
-            // but payload is leaked (same as in real __into_raw_handle)
+            drop(Box::from_raw(payload_ptr));
+            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
