@@ -1177,12 +1177,24 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             vtable_size: usize,
         ) -> *mut core::ffi::c_void {
             let expected = core::mem::size_of::<#vtable_struct_name>();
-            assert!(
-                vtable_size <= expected,
-                "{}(): vtable_size ({}) exceeds library vtable size ({})",
-                #new_vtable_name_str, vtable_size, expected,
-            );
-            let vtable_copy = unsafe { core::ptr::read(vtable) };
+            if vtable_size > expected {
+                eprintln!(
+                    "{}(): vtable_size ({}) exceeds library vtable size ({}) — aborting",
+                    #new_vtable_name_str, vtable_size, expected,
+                );
+                std::process::abort();
+            }
+            // Zero-initialize then copy only vtable_size bytes from the
+            // caller. Fields beyond vtable_size remain zero (= None for
+            // Option<fn>), providing forward compatibility.
+            let mut vtable_copy: #vtable_struct_name = unsafe { core::mem::zeroed() };
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    vtable as *const u8,
+                    &raw mut vtable_copy as *mut u8,
+                    vtable_size,
+                );
+            }
             let vtable_ref = Box::new(#vtable_ref_name {
                 type_tag: <#wrapper_name as ffier::FfiHandle>::TYPE_TAG,
                 vtable: core::cell::UnsafeCell::new(vtable_copy),

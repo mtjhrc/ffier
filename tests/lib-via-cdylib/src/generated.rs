@@ -1498,12 +1498,21 @@ pub trait Processor {
                     __ud: *mut core::ffi::c_void,
                     input: <i32 as ffier::FfiType>::CRepr,
                 ) -> <i32 as ffier::FfiType>::CRepr {
-                    let __payload =
-                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
-                    let __result = __payload
-                        .value
-                        .process(<i32 as ffier::FfiType>::from_c(input));
-                    <i32 as ffier::FfiType>::into_c(__result)
+                    let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let __payload =
+                            unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                        let __result = __payload
+                            .value
+                            .process(<i32 as ffier::FfiType>::from_c(input));
+                        <i32 as ffier::FfiType>::into_c(__result)
+                    }));
+                    match __result {
+                        Ok(__v) => __v,
+                        Err(__e) => {
+                            eprintln!("ffier: panic in vtable trampoline: {:?}", __e);
+                            std::process::abort();
+                        }
+                    }
                 }
                 __trampoline::<Self>
             }),
@@ -1511,10 +1520,19 @@ pub trait Processor {
                 unsafe extern "C" fn __trampoline<__T: Processor>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <&'static str as ffier::FfiType>::CRepr {
-                    let __payload =
-                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
-                    let __result = __payload.value.name();
-                    <&str as ffier::FfiType>::into_c(__result)
+                    let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let __payload =
+                            unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                        let __result = __payload.value.name();
+                        <&str as ffier::FfiType>::into_c(__result)
+                    }));
+                    match __result {
+                        Ok(__v) => __v,
+                        Err(__e) => {
+                            eprintln!("ffier: panic in vtable trampoline: {:?}", __e);
+                            std::process::abort();
+                        }
+                    }
                 }
                 __trampoline::<Self>
             }),
@@ -1523,12 +1541,21 @@ pub trait Processor {
                     __ud: *mut core::ffi::c_void,
                     code: <i32 as ffier::FfiType>::CRepr,
                 ) {
-                    let __payload =
-                        unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
-                    let __result = __payload
-                        .value
-                        .on_notify(<i32 as ffier::FfiType>::from_c(code));
-                    __result
+                    let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let __payload =
+                            unsafe { &*(__ud as *const __FfierClientPayload_Processor<__T>) };
+                        let __result = __payload
+                            .value
+                            .on_notify(<i32 as ffier::FfiType>::from_c(code));
+                        __result
+                    }));
+                    match __result {
+                        Ok(__v) => __v,
+                        Err(__e) => {
+                            eprintln!("ffier: panic in vtable trampoline: {:?}", __e);
+                            std::process::abort();
+                        }
+                    }
                 }
                 __trampoline::<Self>
             }),
@@ -1620,9 +1647,19 @@ pub trait Fruit {
                 unsafe extern "C" fn __trampoline<__T: Fruit>(
                     __ud: *mut core::ffi::c_void,
                 ) -> <i32 as ffier::FfiType>::CRepr {
-                    let __payload = unsafe { &*(__ud as *const __FfierClientPayload_Fruit<__T>) };
-                    let __result = __payload.value.value();
-                    <i32 as ffier::FfiType>::into_c(__result)
+                    let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let __payload =
+                            unsafe { &*(__ud as *const __FfierClientPayload_Fruit<__T>) };
+                        let __result = __payload.value.value();
+                        <i32 as ffier::FfiType>::into_c(__result)
+                    }));
+                    match __result {
+                        Ok(__v) => __v,
+                        Err(__e) => {
+                            eprintln!("ffier: panic in vtable trampoline: {:?}", __e);
+                            std::process::abort();
+                        }
+                    }
                 }
                 __trampoline::<Self>
             }),
@@ -1672,7 +1709,10 @@ pub trait Fruit {
                                     &__temp as *const __TempHandle as *mut core::ffi::c_void;
                                 unsafe { ft_fruit_label(__handle) }
                             } else {
-                                std::panic::resume_unwind(__e)
+                                eprintln!
+                                ("ffier: panic in vtable trampoline (not FfierDefaultMarker): {:?}",
+                                __e);
+                                std::process::abort();
                             }
                         }
                     }

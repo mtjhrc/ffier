@@ -1169,7 +1169,16 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let own_method_count = trait_item
         .items
         .iter()
-        .filter(|item| matches!(item, TraitItem::Fn(_)))
+        .filter(|item| {
+            if let TraitItem::Fn(m) = item {
+                // Only count methods with a receiver (&self, &mut self, self).
+                // Static methods (no receiver) are excluded from vtable_methods
+                // by parse_trait_method_sig.
+                m.sig.inputs.first().map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)))
+            } else {
+                false
+            }
+        })
         .count();
 
     // --- Generate vtable struct fields ---
@@ -1458,14 +1467,23 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             pub type_tag: u32,
         }
 
-        // Safety: The vtable fields are only mutated via one-way transitions
-        // (Some→None) by client probe trampolines. After patching, the field
-        // is never written again. This is safe for concurrent reads because
-        // Option<fn> is pointer-sized and pointer-aligned writes are atomic
-        // on all supported platforms.
+        // Safety: VtableRef is accessed through raw pointers (*const VtableRef)
+        // stored in VtableFruit. The UnsafeCell<VtableStruct> is mutated via
+        // one-way transitions (Some→None) by client-side probe trampolines.
+        //
+        // In the Rust client path, each __into_raw_handle creates a private
+        // VtableRef (no sharing), so no concurrent mutation is possible.
+        //
+        // In the C path, vtable refs CAN be shared across instances. If a C
+        // caller shares a vtable ref AND uses defaulted methods that trigger
+        // probe trampolines from multiple threads, the concurrent writes are
+        // one-way (Some→None) and pointer-sized (atomic on supported platforms).
+        // For strict Rust memory model compliance, C callers sharing vtable
+        // refs should ensure single-threaded first-call to defaulted methods.
         unsafe impl Sync for #vtable_ref_name {}
         unsafe impl Send for #vtable_ref_name {}
 
+        #[repr(C)]
         pub struct #wrapper_name {
             pub user_data: *mut core::ffi::c_void,
             pub vtable_ref: *const #vtable_ref_name,

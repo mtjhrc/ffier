@@ -797,7 +797,10 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                                         let __handle = &__temp as *const __TempHandle as *mut core::ffi::c_void;
                                         unsafe { #self_dispatch_fn(__handle #(, #fwd_params)*) }
                                     } else {
-                                        std::panic::resume_unwind(__e)
+                                        // Cannot resume_unwind across extern "C" boundary.
+                                        // Print the panic info and abort.
+                                        eprintln!("ffier: panic in vtable trampoline (not FfierDefaultMarker): {:?}", __e);
+                                        std::process::abort();
                                     }
                                 }
                             }
@@ -806,16 +809,26 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     })
                 }
             } else {
-                // Required method: normal trampoline, no catch_unwind
+                // Required method: trampoline with catch_unwind to prevent
+                // panics from unwinding through extern "C" boundary (UB).
                 quote! {
                     #mname: Some({
                         unsafe extern "C" fn __trampoline<__T: #trait_name>(
                             __ud: *mut core::ffi::c_void
                             #(, #params)*
                         ) #ret {
-                            let __payload = unsafe { &*(__ud as *const #client_payload_name<__T>) };
-                            let __result = __payload.value.#mname(#(#arg_conversions),*);
-                            #ret_conversion
+                            let __result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let __payload = unsafe { &*(__ud as *const #client_payload_name<__T>) };
+                                let __result = __payload.value.#mname(#(#arg_conversions),*);
+                                #ret_conversion
+                            }));
+                            match __result {
+                                Ok(__v) => __v,
+                                Err(__e) => {
+                                    eprintln!("ffier: panic in vtable trampoline: {:?}", __e);
+                                    std::process::abort();
+                                }
+                            }
                         }
                         __trampoline::<Self>
                     })
@@ -1167,7 +1180,7 @@ fn generate_trait_impl_client(
     // @trait_impl, emit self-dispatch calls (e.g. ft_fruit_label instead
     // of ft_apple_label). This way known types dynamically call through
     // FFI to the library's default impl.
-    let default_extern_decls: Vec<TokenStream2> = Vec::new();
+
     let mut default_method_impls: Vec<TokenStream2> = Vec::new();
 
     if let Some(defaults) = trait_defaults {
@@ -1234,7 +1247,7 @@ fn generate_trait_impl_client(
 
         unsafe extern "C" {
             #(#extern_decls)*
-            #(#default_extern_decls)*
+
         }
 
         impl #impl_generics #trait_with_lts for #struct_with_lts {
