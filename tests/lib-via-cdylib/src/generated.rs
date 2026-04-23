@@ -1538,29 +1538,24 @@ pub trait Processor {
                 as *mut ProcessorVtable;
         let __payload = Box::new(__FfierClientPayload_Processor {
             vtable_ref: __vtable_ref,
-            handle: core::ptr::null_mut(),
             value: self,
         });
         let __payload_ptr = Box::into_raw(__payload);
-        let __handle = unsafe {
+        unsafe {
             ft_processor_from_vtable(
                 __payload_ptr as *mut core::ffi::c_void,
                 __vtable_ref as *mut core::ffi::c_void,
             )
-        };
-        unsafe {
-            (*__payload_ptr).handle = __handle;
         }
-        __handle
     }
 }
-#[doc = r" Client-side payload wrapping the user value + vtable ref + handle."]
-#[doc = r" The probe trampoline needs all three to detect defaults and call"]
-#[doc = r" self-dispatch."]
+#[doc = r" Client-side payload wrapping the user value + vtable ref."]
+#[doc = r" The probe trampoline needs these to patch the vtable and"]
+#[doc = r" construct temporary handles for self-dispatch calls."]
 #[doc(hidden)]
+#[repr(C)]
 struct __FfierClientPayload_Processor<__T> {
     vtable_ref: *mut ProcessorVtable,
-    handle: *mut core::ffi::c_void,
     value: __T,
 }
 #[repr(C)]
@@ -1658,7 +1653,24 @@ pub trait Fruit {
                                 unsafe {
                                     (*__payload.vtable_ref).label = None;
                                 }
-                                unsafe { ft_fruit_label(__payload.handle) }
+                                #[repr(C)]
+                                struct __TempHandle {
+                                    type_tag: u32,
+                                    user_data: *mut core::ffi::c_void,
+                                    vtable_ref: *mut core::ffi::c_void,
+                                }
+                                let __temp = __TempHandle {
+                                    type_tag: unsafe {
+                                        let __vt_ref_ptr = __payload.vtable_ref as *const u8;
+                                        let __tag_offset = core::mem::size_of::<FruitVtable>();
+                                        *(__vt_ref_ptr.add(__tag_offset) as *const u32)
+                                    },
+                                    user_data: __ud,
+                                    vtable_ref: __payload.vtable_ref as *mut core::ffi::c_void,
+                                };
+                                let __handle =
+                                    &__temp as *const __TempHandle as *mut core::ffi::c_void;
+                                unsafe { ft_fruit_label(__handle) }
                             } else {
                                 std::panic::resume_unwind(__e)
                             }
@@ -1673,29 +1685,24 @@ pub trait Fruit {
                 as *mut FruitVtable;
         let __payload = Box::new(__FfierClientPayload_Fruit {
             vtable_ref: __vtable_ref,
-            handle: core::ptr::null_mut(),
             value: self,
         });
         let __payload_ptr = Box::into_raw(__payload);
-        let __handle = unsafe {
+        unsafe {
             ft_fruit_from_vtable(
                 __payload_ptr as *mut core::ffi::c_void,
                 __vtable_ref as *mut core::ffi::c_void,
             )
-        };
-        unsafe {
-            (*__payload_ptr).handle = __handle;
         }
-        __handle
     }
 }
-#[doc = r" Client-side payload wrapping the user value + vtable ref + handle."]
-#[doc = r" The probe trampoline needs all three to detect defaults and call"]
-#[doc = r" self-dispatch."]
+#[doc = r" Client-side payload wrapping the user value + vtable ref."]
+#[doc = r" The probe trampoline needs these to patch the vtable and"]
+#[doc = r" construct temporary handles for self-dispatch calls."]
 #[doc(hidden)]
+#[repr(C)]
 struct __FfierClientPayload_Fruit<__T> {
     vtable_ref: *mut FruitVtable,
-    handle: *mut core::ffi::c_void,
     value: __T,
 }
 #[repr(C)]

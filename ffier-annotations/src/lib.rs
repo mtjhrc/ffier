@@ -1450,8 +1450,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         /// trampolines can patch defaulted method fields to `None` after
         /// detecting that the client type doesn't override them.
         #[doc(hidden)]
+        #[repr(C)]
         pub struct #vtable_ref_name {
             pub vtable: core::cell::UnsafeCell<#vtable_struct_name>,
+            /// Type tag for VtableXxx — used by client-side probe trampolines
+            /// to construct temporary handles on the stack.
+            pub type_tag: u32,
         }
 
         // Safety: The vtable fields are only mutated via one-way transitions

@@ -233,7 +233,6 @@ mod tests {
     // ================================================================
 
     #[test]
-    #[ignore = "BUG: probe trampoline passes wrong handle to ft_fruit_label — needs investigation"]
     fn test_custom_type_default_label_via_ffi() {
         // Banana doesn't override label() — the probe trampoline should
         // detect FfierDefaultMarker, patch the vtable to None, and the
