@@ -49,14 +49,21 @@ impl std::fmt::Display for BufferError {
 impl std::error::Error for BufferError {}
 unsafe extern "C" {
     pub fn mylib_calculator_destroy(handle: *mut core::ffi::c_void);
-    pub fn mylib_calculator_new() -> *mut core::ffi::c_void;
-    pub fn mylib_calculator_add(handle: *mut core::ffi::c_void, a: i32, b: i32) -> i32;
-    pub fn mylib_calculator_is_positive(handle: *mut core::ffi::c_void, value: i32) -> bool;
+    pub fn mylib_calculator_new() -> <Calculator as ffier::FfiType>::CRepr;
+    pub fn mylib_calculator_add(
+        handle: *mut core::ffi::c_void,
+        a: <i32 as ffier::FfiType>::CRepr,
+        b: <i32 as ffier::FfiType>::CRepr,
+    ) -> <i32 as ffier::FfiType>::CRepr;
+    pub fn mylib_calculator_is_positive(
+        handle: *mut core::ffi::c_void,
+        value: <i32 as ffier::FfiType>::CRepr,
+    ) -> <bool as ffier::FfiType>::CRepr;
     pub fn mylib_calculator_divide(
         handle: *mut core::ffi::c_void,
-        a: i32,
-        b: i32,
-        result: *mut i32,
+        a: <i32 as ffier::FfiType>::CRepr,
+        b: <i32 as ffier::FfiType>::CRepr,
+        result: *mut <i32 as ffier::FfiType>::CRepr,
     ) -> ffier::FfierError;
 }
 pub struct Calculator(*mut core::ffi::c_void);
@@ -71,9 +78,16 @@ impl Calculator {
         this.0
     }
 }
+impl ffier::FfiHandle for Calculator {
+    const C_HANDLE_NAME: &'static str = "Calculator";
+    const TYPE_TAG: u32 = 1u32;
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
 impl ffier::FfiType for Calculator {
     type CRepr = *mut core::ffi::c_void;
-    const C_TYPE_NAME: &str = "";
+    const C_TYPE_NAME: &'static str = "Calculator";
     fn into_c(self) -> *mut core::ffi::c_void {
         self.__into_raw()
     }
@@ -93,20 +107,36 @@ impl Calculator {
     }
     #[doc = " Add two integers."]
     pub fn add(&self, a: i32, b: i32) -> i32 {
-        let __raw = unsafe { mylib_calculator_add(self.0, a, b) };
-        __raw
+        let __raw = unsafe {
+            mylib_calculator_add(
+                self.0,
+                <i32 as ffier::FfiType>::into_c(a),
+                <i32 as ffier::FfiType>::into_c(b),
+            )
+        };
+        <i32 as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Check whether a value is strictly positive."]
     pub fn is_positive(&self, value: i32) -> bool {
-        let __raw = unsafe { mylib_calculator_is_positive(self.0, value) };
-        __raw
+        let __raw =
+            unsafe { mylib_calculator_is_positive(self.0, <i32 as ffier::FfiType>::into_c(value)) };
+        <bool as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Divide `a` by `b`, returning an error if `b` is zero."]
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe { mylib_calculator_divide(self.0, a, b, __out.as_mut_ptr()) };
+        let __err = unsafe {
+            mylib_calculator_divide(
+                self.0,
+                <i32 as ffier::FfiType>::into_c(a),
+                <i32 as ffier::FfiType>::into_c(b),
+                __out.as_mut_ptr(),
+            )
+        };
         if __err.code == 0 {
-            Ok(unsafe { __out.assume_init() })
+            Ok(<i32 as ffier::FfiType>::from_c(unsafe {
+                __out.assume_init()
+            }))
         } else {
             Err(CalcError::from_ffi(__err))
         }
@@ -119,16 +149,27 @@ impl Drop for Calculator {
 }
 unsafe extern "C" {
     pub fn mylib_text_buffer_destroy(handle: *mut core::ffi::c_void);
-    pub fn mylib_text_buffer_new(output_fd: i32) -> *mut core::ffi::c_void;
-    pub fn mylib_text_buffer_fd(handle: *mut core::ffi::c_void) -> i32;
-    pub fn mylib_text_buffer_write(handle: *mut core::ffi::c_void, text: ffier::FfierBytes);
+    pub fn mylib_text_buffer_new(
+        output_fd: <OwnedFd as ffier::FfiType>::CRepr,
+    ) -> <TextBuffer as ffier::FfiType>::CRepr;
+    pub fn mylib_text_buffer_fd(
+        handle: *mut core::ffi::c_void,
+    ) -> <BorrowedFd<'static> as ffier::FfiType>::CRepr;
+    pub fn mylib_text_buffer_write(
+        handle: *mut core::ffi::c_void,
+        text: <&'static str as ffier::FfiType>::CRepr,
+    );
     pub fn mylib_text_buffer_write_parts(
         handle: *mut core::ffi::c_void,
         parts: *const ffier::FfierBytes,
         parts_len: usize,
     );
-    pub fn mylib_text_buffer_contents(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
-    pub fn mylib_text_buffer_as_bytes(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
+    pub fn mylib_text_buffer_contents(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as ffier::FfiType>::CRepr;
+    pub fn mylib_text_buffer_as_bytes(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static [u8] as ffier::FfiType>::CRepr;
     pub fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierError;
     pub fn mylib_text_buffer_clear(handle: *mut core::ffi::c_void);
 }
@@ -144,9 +185,16 @@ impl TextBuffer {
         this.0
     }
 }
+impl ffier::FfiHandle for TextBuffer {
+    const C_HANDLE_NAME: &'static str = "TextBuffer";
+    const TYPE_TAG: u32 = 3u32;
+    fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
 impl ffier::FfiType for TextBuffer {
     type CRepr = *mut core::ffi::c_void;
-    const C_TYPE_NAME: &str = "";
+    const C_TYPE_NAME: &'static str = "TextBuffer";
     fn into_c(self) -> *mut core::ffi::c_void {
         self.__into_raw()
     }
@@ -173,7 +221,7 @@ impl TextBuffer {
     }
     #[doc = " Append text to the buffer."]
     pub fn write(&mut self, text: &str) {
-        unsafe { mylib_text_buffer_write(self.0, ffier::FfierBytes::from_str(text)) }
+        unsafe { mylib_text_buffer_write(self.0, <&str as ffier::FfiType>::into_c(text)) }
     }
     #[doc = " Append multiple strings to the buffer."]
     pub fn write_parts(&mut self, parts: &[&str]) {
@@ -186,14 +234,12 @@ impl TextBuffer {
     #[doc = " Get the buffer contents."]
     pub fn contents(&self) -> &str {
         let __raw = unsafe { mylib_text_buffer_contents(self.0) };
-        unsafe {
-            core::str::from_utf8_unchecked(core::slice::from_raw_parts(__raw.data, __raw.len))
-        }
+        <&str as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Get the buffer contents as raw bytes."]
     pub fn as_bytes(&self) -> &[u8] {
         let __raw = unsafe { mylib_text_buffer_as_bytes(self.0) };
-        unsafe { core::slice::from_raw_parts(__raw.data, __raw.len) }
+        <&[u8] as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Flush the buffer contents to the output file descriptor."]
     pub fn flush(&self) -> Result<(), BufferError> {

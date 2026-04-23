@@ -154,9 +154,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
     };
 
     // FfiHandle for all types (including lifetime-parameterized)
+    let type_tag = meta.type_tag;
     let client_ffi_handle_impl = quote! {
         impl #client_struct_generics_with_tick ffier::FfiHandle for #struct_name #client_struct_generics_with_tick {
             const C_HANDLE_NAME: &'static str = #struct_name_str;
+            const TYPE_TAG: u32 = #type_tag;
             fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
         }
     };

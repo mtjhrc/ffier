@@ -165,6 +165,79 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // This allows resolving `impl Trait` params automatically.
     let trait_map = build_trait_map(&implementables, &trait_impls);
 
+    // Pass 1.5: Validate type tags — check for missing (tag=0) and duplicates.
+    // We parse each metadata item properly to extract type_tag, since
+    // peek_meta_field can't handle integer literal suffixes (e.g. "1u32").
+    {
+        let mut tag_to_name: HashMap<u32, String> = HashMap::new();
+
+        for item in &errors {
+            let meta: MetaError = match syn::parse2(item.clone()) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            let tag = meta.type_tag;
+            let name = meta.name.to_string();
+            if tag == 0 {
+                let msg = format!(
+                    "type `{name}` has no type tag; add `{name} = N` in library_definition!()"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            if let Some(prev) = tag_to_name.get(&tag) {
+                let msg = format!(
+                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            tag_to_name.insert(tag, name);
+        }
+
+        for item in &exportables {
+            let meta: MetaExportable = match syn::parse2(item.clone()) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            let tag = meta.type_tag;
+            let name = meta.struct_name.to_string();
+            if tag == 0 {
+                let msg = format!(
+                    "type `{name}` has no type tag; add `{name} = N` in library_definition!()"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            if let Some(prev) = tag_to_name.get(&tag) {
+                let msg = format!(
+                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            tag_to_name.insert(tag, name);
+        }
+
+        for item in &implementables {
+            let meta: MetaImplementable = match syn::parse2(item.clone()) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            let tag = meta.type_tag;
+            let name = meta.trait_name.to_string();
+            if tag == 0 {
+                let msg = format!(
+                    "trait `{name}` has no type tag; add `trait {name} = N` in library_definition!()"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            if let Some(prev) = tag_to_name.get(&tag) {
+                let msg = format!(
+                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+            tag_to_name.insert(tag, name);
+        }
+    }
+
     // Pass 2: Generate bridge code for each item in sorted order
     let mut all_code = Vec::new();
     let mut header_fn_names = Vec::new();
@@ -342,11 +415,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             };
             let type_assert = quote! {
                 #handle_deref
-                let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <#struct_path as ffier::FfiHandle>::type_id();
+                let __actual = unsafe { ffier::handle_type_tag(handle) };
+                let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
                 assert!(
                     __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
+                    "{}(): `handle` is not a {} (expected type_tag={}, got {})",
                     #ffi_name_str,
                     <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
                     __expected,
@@ -559,7 +632,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             for v in &info.variants {
                 let ty = &v.bridge_type;
                 branches.push(quote! {
-                    if __type_id == <#ty as ffier::FfiHandle>::type_id() {
+                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
                         let __val = unsafe {
                             (*Box::from_raw(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value
                         };
@@ -573,11 +646,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
             vtable_pre_bindings.push(quote! {
                 let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> = {
-                    let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                    let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                     #(#branches else)* {
                         panic!(
-                            "{}(): parameter `{}` expected: {}, got unknown (type_id={:?})",
-                            #ffi_name_str, stringify!(#dyn_id), #accepted_list, __type_id,
+                            "{}(): parameter `{}` expected: {}, got unknown (type_tag={})",
+                            #ffi_name_str, stringify!(#dyn_id), #accepted_list, __type_tag,
                         );
                     }
                 };
@@ -602,7 +675,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                         .iter()
                         .map(|(_, ty_tokens)| {
                             quote! {
-                                if __type_id == <#ty_tokens as ffier::FfiHandle>::type_id() {
+                                if __type_tag == <#ty_tokens as ffier::FfiHandle>::TYPE_TAG {
                                     let #dyn_id = unsafe {
                                         (*Box::from_raw(
                                             #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
@@ -619,15 +692,15 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     let accepted_list = variant_names.join(" | ");
 
                     quote! {{
-                        let __type_id = unsafe { ffier::handle_type_id(#dyn_id) };
+                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                         #(#if_branches else)* {
                             panic!(
                                 "{}(): parameter `{}` expected an object of type: {}, \
-                                 but got unknown handle (type_id={:?})",
+                                 but got unknown handle (type_tag={})",
                                 #ffi_name_str,
                                 stringify!(#dyn_id),
                                 #accepted_list,
-                                __type_id,
+                                __type_tag,
                             );
                         }
                     }}
@@ -808,11 +881,11 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
-                let __actual = unsafe { ffier::handle_type_id(handle) };
-                let __expected = <#struct_path as ffier::FfiHandle>::type_id();
+                let __actual = unsafe { ffier::handle_type_tag(handle) };
+                let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
                 assert!(
                     __actual == __expected,
-                    "{}(): `handle` is not a {} (expected type_id={:?}, got {:?})",
+                    "{}(): `handle` is not a {} (expected type_tag={}, got {})",
                     #destroy_str,
                     <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
                     __expected,
