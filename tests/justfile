@@ -1,7 +1,7 @@
 root := justfile_directory() / ".."
 
 # Run all tests
-default: check-header valgrind miri consumer
+default: check-header check-generated-client valgrind miri consumer cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -67,3 +67,7 @@ consumer-cdylib: build
 
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
+
+# Run all Rust tests (cdylib, via-cdylib, submodule, etc.)
+cargo-test: build
+    cargo test --manifest-path {{root}}/Cargo.toml
