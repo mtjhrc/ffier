@@ -353,6 +353,10 @@ pub struct MetaVtableMethod {
     pub name: Ident,
     pub params: Vec<MetaVtableParam>,
     pub ret: MetaVtableRet,
+    /// Whether this method has a default implementation in the trait.
+    /// Defaulted methods can be left as NULL in the C vtable — the Rust
+    /// side falls back to the trait's default impl.
+    pub has_default: bool,
 }
 
 pub struct MetaVtableParam {
@@ -853,10 +857,14 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
     expect_key(&inner, "ret")?;
     let ret = parse_vtable_ret(&inner)?;
     parse_comma(&inner)?;
+    expect_key(&inner, "has_default")?;
+    let has_default: syn::LitBool = inner.parse()?;
+    parse_comma(&inner)?;
     Ok(MetaVtableMethod {
         name: mname,
         params,
         ret,
+        has_default: has_default.value,
     })
 }
 

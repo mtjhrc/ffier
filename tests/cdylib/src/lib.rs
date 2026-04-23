@@ -537,10 +537,10 @@ mod tests {
 
     fn make_vtable() -> ffier_test_lib::ProcessorVtable {
         ffier_test_lib::ProcessorVtable {
-            process: test_process,
-            name: test_processor_name,
-            on_notify: test_on_notify,
             drop: Some(test_drop),
+            process: Some(test_process),
+            name: Some(test_processor_name),
+            on_notify: Some(test_on_notify),
         }
     }
 
@@ -603,8 +603,9 @@ mod tests {
         unsafe {
             let mut m = ft_mixer_new();
             let vtable = ffier_test_lib::FruitVtable {
-                value: fruit_value,
                 drop: Some(fruit_drop),
+                value: Some(fruit_value),
+                label: None,
             };
             let fruit = ft_fruit_from_vtable(7 as *mut core::ffi::c_void, &vtable);
             ft_mixer_add(&mut m, fruit);
@@ -740,8 +741,9 @@ mod tests {
             // Create a VtableFruit via the C vtable mechanism.
             // fruit_value (defined above) reads self_data as i32.
             let vtable = ffier_test_lib::FruitVtable {
-                value: fruit_value,
                 drop: Some(fruit_drop),
+                value: Some(fruit_value),
+                label: None,
             };
             let handle = ft_fruit_from_vtable(77 as *mut core::ffi::c_void, &vtable);
             assert_eq!(ft_fruit_value(handle), 77);
@@ -783,6 +785,54 @@ mod tests {
             let handle = ft_processor_from_vtable(ptr::null_mut(), &vtable);
             assert_eq!(ft_processor_name(handle).as_str_unchecked(), "test_proc",);
             ft_processor_destroy(handle);
+        }
+    }
+
+    // ================================================================
+    // Vtable default method fallback
+    // ================================================================
+
+    #[test]
+    fn vtable_default_method_uses_fallback() {
+        unsafe {
+            // VtableFruit with label = None → should use the default "fruit"
+            let vtable = ffier_test_lib::FruitVtable {
+                drop: Some(fruit_drop),
+                value: Some(fruit_value),
+                label: None,
+            };
+            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, &vtable);
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    unsafe extern "C" fn custom_label(_self_data: *mut core::ffi::c_void) -> ffier::FfierBytes {
+        unsafe { ffier::FfierBytes::from_str("custom") }
+    }
+
+    #[test]
+    fn vtable_default_method_overridden() {
+        unsafe {
+            // VtableFruit with label = Some(custom) → should use the custom impl
+            let vtable = ffier_test_lib::FruitVtable {
+                drop: Some(fruit_drop),
+                value: Some(fruit_value),
+                label: Some(custom_label),
+            };
+            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, &vtable);
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "custom");
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn self_dispatch_default_method_on_concrete_type() {
+        unsafe {
+            // Apple doesn't override label → default "fruit" via self-dispatch
+            let apple = ft_apple_new(10);
+            assert_eq!(ft_fruit_label(apple).as_str_unchecked(), "fruit");
+            ft_apple_destroy(apple);
         }
     }
 }

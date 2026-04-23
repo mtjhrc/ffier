@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro::TokenStream;
@@ -971,6 +972,8 @@ struct VtableMethod {
     ret_bridge_type: Option<proc_macro2::TokenStream>,
     /// rust_type for return (None = void)
     ret_rust_type: Option<proc_macro2::TokenStream>,
+    /// Whether this method has a default implementation in the trait.
+    has_default: bool,
 }
 
 struct VtableMethodParam {
@@ -990,14 +993,17 @@ fn extract_vtable_methods(
         let TraitItem::Fn(method) = item else {
             continue;
         };
-        if let Some(vm) = parse_trait_method_sig(&method.sig, ctx) {
+        let has_default = method.default.is_some();
+        if let Some(vm) = parse_trait_method_sig(&method.sig, ctx, has_default) {
             methods.push(vm);
         }
     }
 
+    // Supertrait methods are always required (no defaults — the supers(...)
+    // syntax only declares signatures, not default bodies).
     for sup in supers {
         for method in &sup.methods {
-            if let Some(vm) = parse_trait_method_sig(&method.sig, ctx) {
+            if let Some(vm) = parse_trait_method_sig(&method.sig, ctx, false) {
                 methods.push(vm);
             }
         }
@@ -1006,7 +1012,7 @@ fn extract_vtable_methods(
     methods
 }
 
-fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext) -> Option<VtableMethod> {
+fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext, has_default: bool) -> Option<VtableMethod> {
     let first = sig.inputs.first()?;
     if !matches!(first, FnArg::Receiver(_)) {
         return None;
@@ -1045,6 +1051,7 @@ fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext) -> Optio
         params,
         ret_bridge_type,
         ret_rust_type,
+        has_default,
     })
 }
 
@@ -1069,8 +1076,9 @@ fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenSt
                 (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
                 _ => unreachable!(),
             };
+            let hd = m.has_default;
             quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, }
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, }
             }
         })
         .collect()
@@ -1181,7 +1189,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
             };
             quote! {
-                pub #name: unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret
+                pub #name: Option<unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret>
             }
         })
         .collect();
@@ -1209,9 +1217,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         t
     };
 
-    // Helper: generate vtable call-through body for a method
-    let vtable_call_body = |vm: &VtableMethod, sig: &syn::Signature| -> proc_macro2::TokenStream {
+    // Helper: generate the vtable call expression for a method (unwrapping Option).
+    // `fallback` is Some(tokens) for defaulted methods, None for required methods.
+    let vtable_call_body = |vm: &VtableMethod,
+                            sig: &syn::Signature,
+                            fallback: Option<proc_macro2::TokenStream>|
+     -> proc_macro2::TokenStream {
         let name = &vm.name;
+        let name_str = name.to_string();
         let vtable_args: Vec<_> = vm
             .params
             .iter()
@@ -1221,16 +1234,117 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote! { <#bt as ffier::FfiType>::into_c(#id) }
             })
             .collect();
-        let call = quote! {
-            unsafe { ((*self.vtable).#name)(self.user_data, #(#vtable_args),*) }
+        let raw_call = quote! {
+            unsafe { __f(self.user_data, #(#vtable_args),*) }
         };
-        let body = match &vm.ret_bridge_type {
-            None => call,
-            Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#call) },
+        let vtable_branch = match &vm.ret_bridge_type {
+            None => raw_call,
+            Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
         };
-        quote! { #sig { #body } }
+        let none_branch = match fallback {
+            Some(fb) => fb,
+            None => {
+                let wrapper_str = wrapper_name.to_string();
+                quote! {
+                    panic!(
+                        "{}: required vtable method `{}` not provided",
+                        #wrapper_str, #name_str,
+                    )
+                }
+            }
+        };
+        quote! {
+            #sig {
+                match unsafe { (*self.vtable).#name } {
+                    Some(__f) => { #vtable_branch }
+                    None => { #none_branch }
+                }
+            }
+        }
     };
 
+    // --- Default method extraction ---
+    // For methods with default bodies, extract the body into a free helper function
+    // and rewrite the trait's default to call it. This allows the VtableXxx impl's
+    // None branch to also call the helper, preserving the default behavior when
+    // the C side doesn't provide a function pointer.
+    //
+    // Visitor to replace `self` with `__self` in default method bodies.
+    struct SelfReplacer;
+    impl VisitMut for SelfReplacer {
+        fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
+            if let syn::Expr::Path(ep) = expr {
+                if ep.qself.is_none() && ep.path.is_ident("self") {
+                    *expr = syn::parse_quote! { __self };
+                    return;
+                }
+            }
+            syn::visit_mut::visit_expr_mut(self, expr);
+        }
+    }
+
+    let mut default_helpers: Vec<proc_macro2::TokenStream> = Vec::new();
+    // Map from method name → helper fn ident (only for methods with defaults)
+    let mut default_helper_names: HashMap<String, syn::Ident> = HashMap::new();
+
+    // Build modified trait: replace default bodies with helper calls
+    let mut modified_trait = original_trait.clone();
+    for item in &mut modified_trait.items {
+        let TraitItem::Fn(method) = item else { continue };
+        let Some(default_block) = &method.default else { continue };
+
+        let method_name = &method.sig.ident;
+        let helper_name = format_ident!("__ffier_default_{trait_name}_{method_name}");
+        default_helper_names.insert(method_name.to_string(), helper_name.clone());
+
+        // Extract the default body, rewriting self → __self
+        let mut body = default_block.clone();
+        SelfReplacer.visit_block_mut(&mut body);
+
+        // Build the helper function signature: same as the trait method but
+        // with &self replaced by __self: &(impl Trait + ?Sized)
+        let mut helper_sig = method.sig.clone();
+        // Remove the receiver and add __self parameter
+        let helper_params: Vec<_> = helper_sig
+            .inputs
+            .iter()
+            .filter(|arg| !matches!(arg, syn::FnArg::Receiver(_)))
+            .cloned()
+            .collect();
+        helper_sig.inputs = syn::punctuated::Punctuated::new();
+        helper_sig.inputs.push(syn::parse_quote! {
+            __self: &(impl #trait_name + ?Sized)
+        });
+        for p in helper_params {
+            helper_sig.inputs.push(p);
+        }
+        helper_sig.ident = helper_name.clone();
+
+        default_helpers.push(quote! {
+            #[doc(hidden)]
+            #helper_sig #body
+        });
+
+        // Rewrite the trait's default body to call the helper
+        let params_pass: Vec<_> = method
+            .sig
+            .inputs
+            .iter()
+            .filter_map(|arg| {
+                if let syn::FnArg::Typed(pat_type) = arg {
+                    if let syn::Pat::Ident(pi) = &*pat_type.pat {
+                        return Some(pi.ident.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+        method.default = Some(syn::parse_quote! {
+            { #helper_name(self #(, #params_pass)*) }
+        });
+    }
+
+    // --- Generate VtableXxx method impls ---
     let own_method_impls: Vec<_> = trait_item_erased
         .items
         .iter()
@@ -1240,11 +1354,27 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-            Some(vtable_call_body(vm, &method.sig))
+            let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
+                let params_pass: Vec<_> = method
+                    .sig
+                    .inputs
+                    .iter()
+                    .filter_map(|arg| {
+                        if let syn::FnArg::Typed(pat_type) = arg {
+                            if let syn::Pat::Ident(pi) = &*pat_type.pat {
+                                return Some(pi.ident.clone());
+                            }
+                        }
+                        None
+                    })
+                    .collect();
+                quote! { #helper(self #(, #params_pass)*) }
+            });
+            Some(vtable_call_body(vm, &method.sig, fallback))
         })
         .collect();
 
-    // Supertrait impls
+    // Supertrait impls — all required (supers don't have defaults)
     let super_impls: Vec<_> = args
         .supers
         .iter()
@@ -1256,7 +1386,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|method| {
                     let name = &method.sig.ident;
                     let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(vm, &method.sig))
+                    Some(vtable_call_body(vm, &method.sig, None))
                 })
                 .collect();
 
@@ -1295,14 +1425,18 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     };
 
     let output = quote! {
-        #original_trait
+        #(#default_helpers)*
+
+        #modified_trait
 
         #boxdyn_impl
 
         #[repr(C)]
         pub struct #vtable_struct_name {
-            #(#vtable_fields,)*
+            /// Drop callback. Always the first field so its offset is stable
+            /// across vtable versions (forward-compatible ABI).
             pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+            #(#vtable_fields,)*
         }
 
         pub struct #wrapper_name {
@@ -1464,7 +1598,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             if method.attrs.iter().any(is_ffier_skip) {
                 return None;
             }
-            parse_trait_method_sig(&method.sig, &mut ctx)
+            // trait_impl methods are concrete overrides, not defaults
+            parse_trait_method_sig(&method.sig, &mut ctx, false)
         })
         .collect();
 

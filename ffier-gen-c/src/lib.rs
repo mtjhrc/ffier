@@ -1079,7 +1079,10 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 
     header_lines.push(quote! { concat!("typedef struct {") });
 
-    // For each method, generate a C function pointer line
+    // drop function pointer — always first for stable ABI offset
+    header_lines.push(quote! { "    void (*drop)(void* self_data);" });
+
+    // Method function pointers
     for m in &meta.vtable_methods {
         let name_str = m.name.to_string();
         let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
@@ -1103,9 +1106,6 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
             s
         }});
     }
-
-    // drop function pointer
-    header_lines.push(quote! { "    void (*drop)(void* self_data);" });
     header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
     header_lines.push(quote! { "" });
     header_lines.push(quote! {

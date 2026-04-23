@@ -514,6 +514,12 @@ impl Orange {
 #[ffier::implementable]
 pub trait Fruit {
     fn value(&self) -> i32;
+
+    /// Default label — returns "fruit". C can override by providing the
+    /// vtable field; if left NULL, this default runs.
+    fn label(&self) -> &str {
+        "fruit"
+    }
 }
 
 #[ffier::trait_impl]
