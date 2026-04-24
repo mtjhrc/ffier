@@ -646,6 +646,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     let constructor_name = format_ident!("{}", meta.constructor_name());
     let fn_pfx = meta.fn_pfx();
     let new_vtable_name = format_ident!("{fn_pfx}{trait_snake}_new_vtable");
+    let delete_vtable_name = format_ident!("{fn_pfx}{trait_snake}_delete_vtable");
     let self_dispatch_prefix = format!("{fn_pfx}{trait_snake}");
 
     // Vtable method function pointer fields
