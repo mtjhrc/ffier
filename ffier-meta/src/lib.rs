@@ -327,6 +327,9 @@ pub struct MetaImplementable {
     /// The first `own_method_count` entries in `vtable_methods` are this trait's
     /// own methods; the rest are from supertrait `supers(...)` blocks.
     pub own_method_count: usize,
+    /// Highest vtable slot index (including reserved/retired slots).
+    /// Used by code generators to pad the vtable struct up to this slot.
+    pub max_vtable_slot: usize,
 }
 
 impl HasPrefix for MetaImplementable {
@@ -358,6 +361,9 @@ pub struct MetaVtableMethod {
     /// Defaulted methods can be left as NULL in the C vtable — the Rust
     /// side falls back to the trait's default impl.
     pub has_default: bool,
+    /// Explicit vtable slot index from `#[ffier(index = N)]`.
+    /// Determines position in the vtable struct (after `drop` at slot 0).
+    pub index: usize,
 }
 
 #[derive(Clone)]
@@ -835,6 +841,11 @@ impl syn::parse::Parse for MetaImplementable {
         let own_method_count = own_method_count.base10_parse::<usize>()?;
         parse_comma(input)?;
 
+        expect_key(input, "max_vtable_slot")?;
+        let max_vtable_slot: syn::LitInt = input.parse()?;
+        let max_vtable_slot = max_vtable_slot.base10_parse::<usize>()?;
+        parse_comma(input)?;
+
         Ok(MetaImplementable {
             trait_name,
             trait_path,
@@ -844,6 +855,7 @@ impl syn::parse::Parse for MetaImplementable {
             wrapper_name,
             vtable_methods,
             own_method_count,
+            max_vtable_slot,
         })
     }
 }
@@ -863,11 +875,16 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
     expect_key(&inner, "has_default")?;
     let has_default: syn::LitBool = inner.parse()?;
     parse_comma(&inner)?;
+    expect_key(&inner, "index")?;
+    let index: syn::LitInt = inner.parse()?;
+    let index = index.base10_parse::<usize>()?;
+    parse_comma(&inner)?;
     Ok(MetaVtableMethod {
         name: mname,
         params,
         ret,
         has_default: has_default.value,
+        index,
     })
 }
 

@@ -436,10 +436,15 @@ pub trait Observer {
 }
 
 #[ffier::implementable(
-    supers(Observer { fn on_notify(&self, code: i32); })
+    supers(Observer {
+        #[ffier(index = 2)]
+        fn on_notify(&self, code: i32);
+    })
 )]
 pub trait Processor: Observer {
+    #[ffier(index = 0)]
     fn process(&self, input: i32) -> i32;
+    #[ffier(index = 1)]
     fn name(&self) -> &str;
 }
 
@@ -514,10 +519,12 @@ impl Orange {
 #[cfg(feature = "fruit-label")]
 #[ffier::implementable]
 pub trait Fruit {
+    #[ffier(index = 0)]
     fn value(&self) -> i32;
 
     /// Default label — returns "fruit". C can override by providing the
     /// vtable field; if left NULL, this default runs.
+    #[ffier(index = 1)]
     fn label(&self) -> &str {
         "fruit"
     }
@@ -526,6 +533,7 @@ pub trait Fruit {
 #[cfg(not(feature = "fruit-label"))]
 #[ffier::implementable]
 pub trait Fruit {
+    #[ffier(index = 0)]
     fn value(&self) -> i32;
 }
 

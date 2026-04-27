@@ -92,16 +92,21 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
-        let defaulted: Vec<_> = meta.vtable_methods.iter()
+        let defaulted: Vec<_> = meta
+            .vtable_methods
+            .iter()
             .filter(|m| m.has_default)
             .cloned()
             .collect();
         if !defaulted.is_empty() {
-            trait_defaults.insert(meta.trait_name.to_string(), TraitDefaults {
-                prefix: meta.prefix.clone(),
-                trait_name: meta.trait_name.to_string(),
-                methods: defaulted,
-            });
+            trait_defaults.insert(
+                meta.trait_name.to_string(),
+                TraitDefaults {
+                    prefix: meta.prefix.clone(),
+                    trait_name: meta.trait_name.to_string(),
+                    methods: defaulted,
+                },
+            );
         }
         defined_traits.insert(meta.trait_name.to_string());
         let code = generate_implementable_client(meta);
@@ -600,8 +605,8 @@ fn vtable_trait_method_sigs(
 ) -> Vec<TokenStream2> {
     methods
         .iter()
-        .enumerate()
-        .map(|(method_index, m)| {
+        .map(|m| {
+            let method_index = m.index;
             let mname = &m.name;
             let params: Vec<_> = m
                 .params
@@ -702,11 +707,21 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     let self_dispatch_prefix = format!("{fn_pfx}{trait_snake}");
     let type_tag = meta.type_tag;
 
-    // Vtable method function pointer fields
-    let vtable_method_fields: Vec<_> = meta
-        .vtable_methods
-        .iter()
-        .map(|m| {
+    // Vtable method function pointer fields, sorted by explicit index with padding for gaps.
+    let vtable_method_fields: Vec<_> = {
+        let mut sorted: Vec<_> = meta.vtable_methods.iter().collect();
+        sorted.sort_by_key(|m| m.index);
+
+        let mut fields = Vec::new();
+        let mut next_slot = 0usize;
+        for m in &sorted {
+            while next_slot < m.index {
+                let pad_name = format_ident!("__reserved_{next_slot}");
+                fields.push(quote! {
+                    pub #pad_name: Option<unsafe extern "C" fn()>,
+                });
+                next_slot += 1;
+            }
             let mname = &m.name;
             let params: Vec<_> = m
                 .params
@@ -722,14 +737,24 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
             };
-            quote! {
+            fields.push(quote! {
                 pub #mname: Option<unsafe extern "C" fn(
                     *mut core::ffi::c_void
                     #(, #params)*
                 ) #ret>,
-            }
-        })
-        .collect();
+            });
+            next_slot = m.index + 1;
+        }
+        // Pad trailing reserved slots
+        while next_slot <= meta.max_vtable_slot {
+            let pad_name = format_ident!("__reserved_{next_slot}");
+            fields.push(quote! {
+                pub #pad_name: Option<unsafe extern "C" fn()>,
+            });
+            next_slot += 1;
+        }
+        fields
+    };
 
     let trait_method_sigs = vtable_trait_method_sigs(
         &meta.vtable_methods,
@@ -738,14 +763,22 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         Some(type_tag),
     );
 
-    // Build vtable field initializers with simple trampolines.
-    // All methods (defaulted and required) get the same simple trampoline
-    // that expects user_data = *const T and calls the method directly.
-    // Abort on panic to prevent unwinding through extern "C" boundary.
-    let vtable_trampoline_fields: Vec<_> = meta
-        .vtable_methods
-        .iter()
-        .map(|m| {
+    // Build vtable field initializers with simple trampolines, sorted by index
+    // with `None` padding for gaps. All methods get a simple trampoline that
+    // expects user_data = *const T and calls the method directly.
+    let vtable_trampoline_fields: Vec<_> = {
+        let mut sorted: Vec<_> = meta.vtable_methods.iter().collect();
+        sorted.sort_by_key(|m| m.index);
+
+        let mut fields = Vec::new();
+        let mut next_slot = 0usize;
+        for m in &sorted {
+            while next_slot < m.index {
+                let pad_name = format_ident!("__reserved_{next_slot}");
+                fields.push(quote! { #pad_name: None });
+                next_slot += 1;
+            }
+
             let mname = &m.name;
             let params: Vec<_> = m
                 .params
@@ -780,7 +813,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 
             // Simple trampoline: user_data points directly to &T.
             // Abort on panic (no catch_unwind needed — no probe detection).
-            quote! {
+            fields.push(quote! {
                 #mname: Some({
                     unsafe extern "C" fn __trampoline<__T: #trait_name>(
                         __ud: *mut core::ffi::c_void
@@ -792,9 +825,17 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     }
                     __trampoline::<Self>
                 })
-            }
-        })
-        .collect();
+            });
+            next_slot = m.index + 1;
+        }
+        // Pad trailing reserved slots
+        while next_slot <= meta.max_vtable_slot {
+            let pad_name = format_ident!("__reserved_{next_slot}");
+            fields.push(quote! { #pad_name: None });
+            next_slot += 1;
+        }
+        fields
+    };
 
     // Self-dispatch extern declarations for defaulted methods
     // (trait defaults call these via temp handle)
@@ -1130,11 +1171,8 @@ fn generate_trait_impl_client(
     let mut default_method_impls: Vec<TokenStream2> = Vec::new();
 
     if let Some(defaults) = trait_defaults {
-        let existing_methods: HashSet<String> = meta
-            .methods
-            .iter()
-            .map(|m| m.name.to_string())
-            .collect();
+        let existing_methods: HashSet<String> =
+            meta.methods.iter().map(|m| m.name.to_string()).collect();
         let trait_snake = camel_to_snake(&defaults.trait_name);
         let dispatch_pfx = format!("{}_{trait_snake}", defaults.prefix);
 
