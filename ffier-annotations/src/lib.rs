@@ -94,9 +94,9 @@ fn emit_ffi_handle_impls(
         impl ffier::FfiHandle for #ty {
             const C_HANDLE_NAME: &str = #c_handle_name;
             const TYPE_TAG: u32 = #tag_const;
-            fn as_handle(&self) -> *mut core::ffi::c_void {
+            unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
                 let value_offset = core::mem::offset_of!(
-                    ffier::FfierTaggedBox<Self>, value
+                    ffier::FfierHandleBox<Self>, value
                 );
                 let box_ptr = (self as *const Self as *const u8)
                     .wrapping_sub(value_offset);
@@ -108,8 +108,9 @@ fn emit_ffi_handle_impls(
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &str = #c_handle_name;
             fn into_c(self) -> *mut core::ffi::c_void {
-                let tagged = ffier::FfierTaggedBox {
+                let tagged = ffier::FfierHandleBox {
                     type_tag: #tag_const,
+                    metadata: 0,
                     value: self,
                 };
                 Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
@@ -117,7 +118,7 @@ fn emit_ffi_handle_impls(
             fn from_c(repr: *mut core::ffi::c_void) -> Self {
                 unsafe {
                     let tagged = Box::from_raw(
-                        repr as *mut ffier::FfierTaggedBox<Self>
+                        repr as *mut ffier::FfierHandleBox<Self>
                     );
                     tagged.value
                 }
@@ -1152,7 +1153,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_snake = camel_to_snake(&trait_name_str);
 
     let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
-    let vtable_ref_name = format_ident!("{trait_name_str}VtableRef");
+
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
     let tag_const_name = format_ident!("__ffier_type_tag_{trait_name}");
@@ -1230,12 +1231,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Helper: generate the vtable call expression for a method (unwrapping Option).
     // `fallback` is Some(tokens) for defaulted methods, None for required methods.
     //
-    // The library side simply dispatches: Some(f) → call trampoline, None → use default.
-    // Re-entrancy detection and vtable patching happens on the client side
-    // (in the probe trampoline via catch_unwind), not here.
+    // For defaulted methods, we first check the metadata field on the handle:
+    // if bit 0 is set and the method index matches, we skip vtable dispatch and
+    // call the library default directly. This prevents infinite re-entrancy when
+    // a client trait default calls through self-dispatch.
     let vtable_call_body = |vm: &VtableMethod,
                             sig: &syn::Signature,
-                            fallback: Option<proc_macro2::TokenStream>|
+                            fallback: Option<proc_macro2::TokenStream>,
+                            _method_index: Option<usize>|
      -> proc_macro2::TokenStream {
         let name = &vm.name;
         let name_str = name.to_string();
@@ -1249,14 +1252,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
         let raw_call = quote! {
-            unsafe { __f(self.user_data, #(#vtable_args),*) }
+            unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
         };
         let vtable_branch = match &vm.ret_bridge_type {
             None => raw_call,
             Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
         };
-        let none_branch = match fallback {
-            Some(fb) => fb,
+        let none_branch = match &fallback {
+            Some(fb) => fb.clone(),
             None => {
                 let wrapper_str = wrapper_name.to_string();
                 quote! {
@@ -1267,9 +1270,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 }
             }
         };
+        // No metadata check inside VtableFoo::method() — the metadata field
+        // lives outside the provenance of `&self`. The self-dispatch function
+        // reads metadata from the raw handle pointer (which has full provenance
+        // over the entire FfierHandleBox) and skips vtable dispatch if the
+        // metadata indicates a default-method dispatch skip.
+        let metadata_check = quote! {};
         quote! {
             #sig {
-                match unsafe { (*(*self.vtable_ref).vtable.get()).#name } {
+                #metadata_check
+                let __vtable = unsafe { &*(self.value.vtable_ptr as *const #vtable_struct_name) };
+                match __vtable.#name {
                     Some(__f) => { #vtable_branch }
                     None => { #none_branch }
                 }
@@ -1366,7 +1377,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         default_helpers.push(quote! {
             #[doc(hidden)]
-            #helper_sig #body
+            pub #helper_sig #body
         });
 
         // Rewrite the trait's default body to call the helper
@@ -1398,6 +1409,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+            // Find the method index in vtable_methods for metadata dispatch
+            let method_index = vtable_methods.iter().position(|v| v.name == *name);
             let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
                 let params_pass: Vec<_> = method
                     .sig
@@ -1414,7 +1427,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .collect();
                 quote! { #helper(self #(, #params_pass)*) }
             });
-            Some(vtable_call_body(vm, &method.sig, fallback))
+            Some(vtable_call_body(vm, &method.sig, fallback, method_index))
         })
         .collect();
 
@@ -1430,7 +1443,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|method| {
                     let name = &method.sig.ident;
                     let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(vm, &method.sig, None))
+                    Some(vtable_call_body(vm, &method.sig, None, None))
                 })
                 .collect();
 
@@ -1483,40 +1496,20 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#vtable_fields,)*
         }
 
-        /// Shared vtable reference — created once per vtable via `new_vtable`,
-        /// shared across all instances that use the same vtable. Contains an
-        /// owned mutable copy of the vtable struct so that client-side probe
-        /// trampolines can patch defaulted method fields to `None` after
-        /// detecting that the client type doesn't override them.
-        #[doc(hidden)]
-        #[repr(C)]
-        pub struct #vtable_ref_name {
-            pub vtable: core::cell::UnsafeCell<#vtable_struct_name>,
-            /// Type tag for VtableXxx — used by client-side probe trampolines
-            /// to construct temporary handles on the stack.
-            pub type_tag: u32,
-        }
-
-        // Safety: VtableRef is accessed through raw pointers (*const VtableRef)
-        // stored in VtableFruit. The UnsafeCell<VtableStruct> is mutated via
-        // one-way transitions (Some→None) by client-side probe trampolines.
-        //
-        // In the Rust client path, each __into_raw_handle creates a private
-        // VtableRef (no sharing), so no concurrent mutation is possible.
-        //
-        // In the C path, vtable refs CAN be shared across instances. If a C
-        // caller shares a vtable ref AND uses defaulted methods that trigger
-        // probe trampolines from multiple threads, the concurrent writes are
-        // one-way (Some→None) and pointer-sized (atomic on supported platforms).
-        // For strict Rust memory model compliance, C callers sharing vtable
-        // refs should ensure single-threaded first-call to defaulted methods.
-        unsafe impl Sync for #vtable_ref_name {}
-        unsafe impl Send for #vtable_ref_name {}
-
+        /// Wrapper type for vtable-dispatched trait implementations.
+        ///
+        /// Lives inside `FfierHandleBox<VtableFoo>` where:
+        /// - `FfierHandleBox.type_tag` identifies this as a VtableFoo handle
+        /// - `FfierHandleBox.metadata` encodes default-method dispatch skip
+        /// - `value: VtableFoo` contains the vtable pointer and user data
+        ///
+        /// The vtable pointer points to a `&'static` const-promoted vtable
+        /// (Rust client) or a caller-owned vtable (C client via `from_vtable`).
+        /// The vtable is **not** copied — the caller must ensure it outlives
+        /// all handles that reference it.
         #[repr(C)]
         pub struct #wrapper_name {
-            pub user_data: *mut core::ffi::c_void,
-            pub vtable_ref: *const #vtable_ref_name,
+            pub value: ffier::VtableHandle,
         }
 
         impl #trait_name #trait_ty_generics for #wrapper_name {
@@ -1527,8 +1520,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl Drop for #wrapper_name {
             fn drop(&mut self) {
-                if let Some(drop_fn) = unsafe { (*(*self.vtable_ref).vtable.get()).drop } {
-                    unsafe { drop_fn(self.user_data) };
+                let vtable = unsafe { &*(self.value.vtable_ptr as *const #vtable_struct_name) };
+                if let Some(drop_fn) = vtable.drop {
+                    unsafe { drop_fn(self.value.user_data as *mut core::ffi::c_void) };
                 }
             }
         }

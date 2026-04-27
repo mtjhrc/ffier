@@ -498,7 +498,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
         // Single source of truth: the extern "C" fn signature.
         let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge);
 
-        // Self cast via FfierTaggedBox (instance methods only)
+        // Self cast via FfierHandleBox (instance methods only)
         let obj_binding = if has_receiver {
             let handle_deref = if handle_is_indirect {
                 quote! { let handle = unsafe { *handle }; }
@@ -521,17 +521,17 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
             let cast = if is_by_value {
                 quote! {
                     let tagged = *Box::from_raw(
-                        handle as *mut ffier::FfierTaggedBox<#struct_path>
+                        handle as *mut ffier::FfierHandleBox<#struct_path>
                     );
                     tagged.value
                 }
             } else if is_mut {
                 quote! {
-                    &mut (*(handle as *mut ffier::FfierTaggedBox<#struct_path>)).value
+                    &mut (*(handle as *mut ffier::FfierHandleBox<#struct_path>)).value
                 }
             } else {
                 quote! {
-                    &(*(handle as *const ffier::FfierTaggedBox<#struct_path>)).value
+                    &(*(handle as *const ffier::FfierHandleBox<#struct_path>)).value
                 }
             };
             Some(quote! { #type_assert let obj = unsafe { #cast }; })
@@ -726,7 +726,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 branches.push(quote! {
                     if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
                         let __val = unsafe {
-                            (*Box::from_raw(#dyn_id as *mut ffier::FfierTaggedBox<#ty>)).value
+                            (*Box::from_raw(#dyn_id as *mut ffier::FfierHandleBox<#ty>)).value
                         };
                         ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
                     }
@@ -767,7 +767,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                                 if __type_tag == <#ty_tokens as ffier::FfiHandle>::TYPE_TAG {
                                     let #dyn_id = unsafe {
                                         (*Box::from_raw(
-                                            #dyn_id as *mut ffier::FfierTaggedBox<#ty_tokens>
+                                            #dyn_id as *mut ffier::FfierHandleBox<#ty_tokens>
                                         )).value
                                     };
                                     #inner
@@ -969,7 +969,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                     );
                 }
                 drop(unsafe {
-                    Box::from_raw(handle as *mut ffier::FfierTaggedBox<#struct_path>)
+                    Box::from_raw(handle as *mut ffier::FfierHandleBox<#struct_path>)
                 });
             }
         }
@@ -1093,23 +1093,6 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
     let vtable_section_name = format!("Vtable{trait_name_str}");
 
-    // VtableRef names — derive the path from vtable_struct_name
-    // (e.g., some_crate::FruitVtable → some_crate::FruitVtableRef)
-    let vtable_ref_ident = format_ident!("{trait_name_str}VtableRef");
-    let vtable_ref_name = {
-        // Replace the last segment of the vtable_struct_name path
-        let mut tokens: Vec<proc_macro2::TokenTree> = vtable_struct_name.clone().into_iter().collect();
-        if let Some(last) = tokens.last_mut() {
-            *last = proc_macro2::TokenTree::Ident(vtable_ref_ident.clone());
-        }
-        tokens.into_iter().collect::<TokenStream2>()
-    };
-    let vtable_ref_c_name = format!("{type_pfx}{trait_name_str}VtableRef");
-    let new_vtable_name_str = format!("{fn_pfx}{trait_snake}_new_vtable");
-    let new_vtable_name = format_ident!("{new_vtable_name_str}");
-    let delete_vtable_name_str = format!("{fn_pfx}{trait_snake}_delete_vtable");
-    let delete_vtable_name = format_ident!("{delete_vtable_name_str}");
-
     // Build header lines for vtable struct
     let mut header_lines: Vec<TokenStream2> = Vec::new();
 
@@ -1144,85 +1127,44 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     }
     header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
     header_lines.push(quote! { "" });
-    // VtableRef: opaque handle, new, delete, from_vtable
-    header_lines.push(quote! {
-        concat!("typedef void* ", #vtable_ref_c_name, ";")
-    });
-    header_lines.push(quote! {
-        concat!(#vtable_ref_c_name, " ", #new_vtable_name_str,
-                "(const ", #vtable_c_name, "* vtable, size_t vtable_size, uint32_t* out_type_tag);")
-    });
-    header_lines.push(quote! {
-        concat!("void ", #delete_vtable_name_str, "(", #vtable_ref_c_name, " vtable_ref);")
-    });
+    // from_vtable: creates a handle from user_data + vtable pointer
     header_lines.push(quote! {
         concat!("void* ", #constructor_name_str,
-                "(void* user_data, ", #vtable_ref_c_name, " vtable_ref);")
+                "(void* user_data, const ", #vtable_c_name, "* vtable, size_t vtable_size);")
     });
 
     let num_header_lines = header_lines.len();
 
     quote! {
-        /// Create a shared vtable reference. Copies the vtable struct into a
-        /// heap allocation owned by the ref. The caller's vtable can be freed
-        /// after this call. Pass `sizeof(YourVtableStruct)` as `vtable_size`
-        /// for forward-compatibility validation.
+        /// Create a handle instance from user data and a vtable pointer.
+        ///
+        /// The vtable is **not** copied — the pointer is stored directly.
+        /// The caller must ensure the vtable outlives all handles created
+        /// from it (typically by making it `static const`).
+        ///
+        /// `vtable_size` is used for forward-compatibility validation only:
+        /// if the caller's vtable struct is larger than the library's (i.e.
+        /// compiled against a newer header), the call aborts to prevent
+        /// reading garbage from unrecognized fields.
         #[unsafe(no_mangle)]
-        pub extern "C" fn #new_vtable_name(
+        pub extern "C" fn #constructor_name(
+            user_data: *mut core::ffi::c_void,
             vtable: *const #vtable_struct_name,
             vtable_size: usize,
-            out_type_tag: *mut u32,
         ) -> *mut core::ffi::c_void {
             let expected = core::mem::size_of::<#vtable_struct_name>();
             if vtable_size > expected {
                 eprintln!(
                     "{}(): vtable_size ({}) exceeds library vtable size ({}) — aborting",
-                    #new_vtable_name_str, vtable_size, expected,
+                    #constructor_name_str, vtable_size, expected,
                 );
                 std::process::abort();
             }
-            // Zero-initialize then copy only vtable_size bytes from the
-            // caller. Fields beyond vtable_size remain zero (= None for
-            // Option<fn>), providing forward compatibility.
-            let mut vtable_copy: #vtable_struct_name = unsafe { core::mem::zeroed() };
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    vtable as *const u8,
-                    &raw mut vtable_copy as *mut u8,
-                    vtable_size,
-                );
-            }
-            let type_tag = <#wrapper_name as ffier::FfiHandle>::TYPE_TAG;
-            if !out_type_tag.is_null() {
-                unsafe { *out_type_tag = type_tag; }
-            }
-            let vtable_ref = Box::new(#vtable_ref_name {
-                type_tag,
-                vtable: core::cell::UnsafeCell::new(vtable_copy),
-            });
-            Box::into_raw(vtable_ref) as *mut core::ffi::c_void
-        }
-
-        /// Free a vtable reference. Must not be called while any instances
-        /// created from this ref are still alive.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #delete_vtable_name(
-            vtable_ref: *mut core::ffi::c_void,
-        ) {
-            if !vtable_ref.is_null() {
-                drop(unsafe { Box::from_raw(vtable_ref as *mut #vtable_ref_name) });
-            }
-        }
-
-        /// Create a handle instance using a shared vtable reference.
-        #[unsafe(no_mangle)]
-        pub extern "C" fn #constructor_name(
-            user_data: *mut core::ffi::c_void,
-            vtable_ref: *mut core::ffi::c_void,
-        ) -> *mut core::ffi::c_void {
             let wrapper = #wrapper_name {
-                user_data,
-                vtable_ref: vtable_ref as *const #vtable_ref_name,
+                value: ffier::VtableHandle {
+                    vtable_ptr: vtable as *const core::ffi::c_void,
+                    user_data: user_data as *const core::ffi::c_void,
+                },
             };
             <#wrapper_name as ffier::FfiType>::into_c(wrapper)
         }
@@ -1784,7 +1726,7 @@ impl HeaderBuilder {
 // ===========================================================================
 
 /// Emit a `let obj = ...` binding that borrows (or consumes) a value from
-/// a `FfierTaggedBox<T>` pointed to by `handle`.
+/// a `FfierHandleBox<T>` pointed to by `handle`.
 ///
 /// - `mutable = false`: `let obj = &(*ptr).value;` (immutable borrow)
 /// - `mutable = true`:  `let obj = &mut (*ptr).value;` (mutable borrow)
@@ -1794,11 +1736,11 @@ impl HeaderBuilder {
 fn borrow_from_tagged_box(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
     if mutable {
         quote! {
-            let obj = unsafe { &mut (*(handle as *mut ffier::FfierTaggedBox<#ty>)).value };
+            let obj = unsafe { &mut (*(handle as *mut ffier::FfierHandleBox<#ty>)).value };
         }
     } else {
         quote! {
-            let obj = unsafe { &(*(handle as *const ffier::FfierTaggedBox<#ty>)).value };
+            let obj = unsafe { &(*(handle as *const ffier::FfierHandleBox<#ty>)).value };
         }
     }
 }
@@ -1843,7 +1785,7 @@ fn generate_self_dispatch_bridge(
     //       itself #[ffier::implementable] (or at least having its own trait_impl
     //       entries), rather than inlining them into the subtrait's vtable.
     let own_methods = &imp.methods[..imp.own_method_count];
-    for m in own_methods {
+    for (_method_index, m) in own_methods.iter().enumerate() {
         let method_name = &m.name;
         let ffi_name_str = format!("{fn_pfx}{trait_snake}_{method_name}");
         let ffi_name = format_ident!("{ffi_name_str}");
@@ -1870,8 +1812,62 @@ fn generate_self_dispatch_bridge(
         // Build dispatch branches — one per variant.
         // TODO: Support `&mut self` and consuming `self` receivers once
         //       MetaVtableMethod tracks receiver kind.
+        let wrapper_path = &imp.wrapper_path;
+        let method_index_u32 = _method_index as u32;
+
+        // For defaulted methods, the VtableFoo dispatch branch needs a
+        // metadata check: if the handle's metadata field has bit 0 set
+        // and the method index matches, skip vtable dispatch and call
+        // the library's default directly. This is used by client-side
+        // trait defaults to prevent infinite re-entrancy.
+        // Build the full path to the default helper function.
+        // The helper is generated by #[ffier::implementable] next to the trait
+        // definition, so its path is: trait_path's parent module :: __ffier_default_TraitName_method
+        let default_helper_path = if m.has_default {
+            let helper_ident = format_ident!("__ffier_default_{}_{}", trait_name, method_name);
+            // Replace the last segment of trait_path with the helper name
+            let mut tokens: Vec<proc_macro2::TokenTree> = trait_path.clone().into_iter().collect();
+            if let Some(last) = tokens.last_mut() {
+                *last = proc_macro2::TokenTree::Ident(helper_ident);
+            }
+            Some(tokens.into_iter().collect::<TokenStream2>())
+        } else {
+            None
+        };
+
         let dispatch_branches: Vec<_> = info.variants.iter().map(|v| {
             let ty = &v.bridge_type;
+            let is_vtable_variant = ty.to_string() == wrapper_path.to_string();
+
+            // For the VtableFoo variant of defaulted methods, check metadata
+            // before calling through the vtable.
+            let metadata_guard = if is_vtable_variant && m.has_default {
+                if let Some(helper) = &default_helper_path {
+                    let obj_for_default = borrow_from_tagged_box(ty, false);
+                    let default_call = match &m.ret {
+                        MetaVtableRet::Void => quote! {
+                            #helper(obj #(, #call_args)*);
+                            return;
+                        },
+                        MetaVtableRet::Value { bridge_type, .. } => quote! {
+                            let call_result = #helper(obj #(, #call_args)*);
+                            return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                        },
+                    };
+                    quote! {
+                        let __metadata = unsafe { ffier::handle_metadata(handle) };
+                        if __metadata & 1 != 0 && (__metadata >> 1) & 0x7FFF == #method_index_u32 {
+                            #obj_for_default
+                            #default_call
+                        }
+                    }
+                } else {
+                    quote! {}
+                }
+            } else {
+                quote! {}
+            };
+
             let obj_binding = borrow_from_tagged_box(ty, false);
             let ret_conversion = match &m.ret {
                 MetaVtableRet::Void => quote! {
@@ -1884,6 +1880,7 @@ fn generate_self_dispatch_bridge(
             };
             quote! {
                 if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    #metadata_guard
                     #obj_binding
                     #ret_conversion
                 }
@@ -1932,7 +1929,7 @@ fn generate_self_dispatch_bridge(
         let ty = &v.bridge_type;
         quote! {
             if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                drop(unsafe { Box::from_raw(handle as *mut ffier::FfierTaggedBox<#ty>) });
+                drop(unsafe { Box::from_raw(handle as *mut ffier::FfierHandleBox<#ty>) });
             }
         }
     }).collect();
@@ -2047,7 +2044,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
-                let obj = unsafe { &(*(handle as *const ffier::FfierTaggedBox<#struct_path>)).value };
+                let obj = unsafe { &(*(handle as *const ffier::FfierHandleBox<#struct_path>)).value };
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
                 #ret_conversion
             }

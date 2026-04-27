@@ -162,25 +162,56 @@ pub trait FfiHandle {
     /// Returns the raw handle pointer for this value.
     ///
     /// - **Client side**: the wrapper struct holds `*mut c_void` directly.
-    /// - **Library side**: recovers the `FfierTaggedBox<T>` pointer via
+    /// - **Library side**: recovers the `FfierHandleBox<T>` pointer via
     ///   `offset_of!`.
-    fn as_handle(&self) -> *mut c_void;
+    ///
+    /// # Safety
+    /// On the library side, `self` must point into a valid `FfierHandleBox<Self>`.
+    /// Calling this on a freestanding value (e.g. on the stack or in a `Vec`)
+    /// produces a garbage pointer. Safety is enforced by the code generator:
+    /// only generated bridge code calls `as_handle`, and only on references
+    /// obtained from `FfierHandleBox` borrows.
+    unsafe fn as_handle(&self) -> *mut c_void;
 }
 
-/// Every handle allocation is prefixed with a type tag so any `void*`
-/// handle can be introspected at runtime.
+/// Every handle allocation is prefixed with a type tag and metadata so any
+/// `void*` handle can be introspected at runtime.
+///
+/// The `metadata` field occupies what was previously alignment padding between
+/// `type_tag: u32` and `value: T` (which typically starts at pointer alignment
+/// on 64-bit systems). Zero additional space cost for pointer-aligned `T`.
 #[repr(C)]
-pub struct FfierTaggedBox<T> {
+pub struct FfierHandleBox<T> {
     pub type_tag: u32,
+    /// Metadata field. For vtable handles, bit 0 = 1 indicates the lower 16
+    /// bits encode a method index for default-method dispatch skip:
+    /// `metadata = 1 | (method_index << 1)`. For non-vtable types this is 0.
+    pub metadata: u32,
     pub value: T,
 }
 
 /// Read the type tag from a raw handle pointer.
 ///
 /// # Safety
-/// `handle` must point to a valid `FfierTaggedBox<_>`.
+/// `handle` must point to a valid `FfierHandleBox<_>`.
 pub unsafe fn handle_type_tag(handle: *const core::ffi::c_void) -> u32 {
     unsafe { *(handle as *const u32) }
+}
+
+/// Read the metadata field from a raw handle pointer.
+///
+/// # Safety
+/// `handle` must point to a valid `FfierHandleBox<_>`.
+pub unsafe fn handle_metadata(handle: *const core::ffi::c_void) -> u32 {
+    unsafe { *((handle as *const u32).add(1)) }
+}
+
+/// Vtable handle value — the `value` field of `FfierHandleBox<VtableHandle>`
+/// for `#[ffier::implementable]` trait handles.
+#[repr(C)]
+pub struct VtableHandle {
+    pub vtable_ptr: *const c_void,
+    pub user_data: *const c_void,
 }
 
 // ---------------------------------------------------------------------------
@@ -191,10 +222,12 @@ impl<T: FfiHandle> FfiType for &T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     fn into_c(self) -> *mut c_void {
-        self.as_handle()
+        // Safety: into_c is only called by generated bridge code on references
+        // that point into a valid FfierHandleBox<T>.
+        unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &(*(repr as *const FfierTaggedBox<T>)).value }
+        unsafe { &(*(repr as *const FfierHandleBox<T>)).value }
     }
 }
 
@@ -202,10 +235,12 @@ impl<T: FfiHandle> FfiType for &mut T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     fn into_c(self) -> *mut c_void {
-        self.as_handle()
+        // Safety: into_c is only called by generated bridge code on references
+        // that point into a valid FfierHandleBox<T>.
+        unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &mut (*(repr as *mut FfierTaggedBox<T>)).value }
+        unsafe { &mut (*(repr as *mut FfierHandleBox<T>)).value }
     }
 }
 
@@ -345,40 +380,4 @@ impl FfierError {
         }
         *self = Self::ok();
     }
-}
-
-// ---------------------------------------------------------------------------
-// FfierDefaultMarker --- sentinel panic type for vtable default detection
-// ---------------------------------------------------------------------------
-
-/// Panic payload used by client-side probe trampolines to signal that a
-/// trait method's default implementation ran (i.e., the client type doesn't
-/// override the method). The probe trampoline catches this via `catch_unwind`,
-/// patches the vtable field to `None`, and calls the self-dispatch function
-/// to get the library's default result.
-///
-/// This type is never constructed directly by users — it's used internally
-/// by the generated trait default and probe trampoline.
-pub struct FfierDefaultMarker;
-
-/// Install a panic hook that suppresses output for `FfierDefaultMarker` panics.
-/// These are used internally as a control-flow mechanism by probe trampolines
-/// and should not produce visible panic output.
-///
-/// Call this once at program startup if your library uses `#[ffier::implementable]`
-/// traits with defaulted methods and Rust client bindings.
-pub fn install_panic_hook() {
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        // Suppress FfierDefaultMarker panics — they're internal control flow
-        if let Some(payload) = info.payload().downcast_ref::<FfierDefaultMarker>() {
-            let _ = payload; // suppress unused warning
-            return;
-        }
-        // Also check for Box<FfierDefaultMarker> (from panic_any)
-        if info.payload().is::<FfierDefaultMarker>() {
-            return;
-        }
-        prev(info);
-    }));
 }

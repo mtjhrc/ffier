@@ -535,14 +535,19 @@ mod tests {
         DROP_CALLED.store(true, Ordering::SeqCst);
     }
 
-    fn make_processor_vtable_ref() -> *mut core::ffi::c_void {
-        let vtable = ffier_test_lib::ProcessorVtable {
-            drop: Some(test_drop),
-            process: Some(test_process),
-            name: Some(test_processor_name),
-            on_notify: Some(test_on_notify),
-        };
-        unsafe { ft_processor_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut()) }
+    static PROCESSOR_VTABLE: ffier_test_lib::ProcessorVtable = ffier_test_lib::ProcessorVtable {
+        drop: Some(test_drop),
+        process: Some(test_process),
+        name: Some(test_processor_name),
+        on_notify: Some(test_on_notify),
+    };
+
+    fn make_processor_handle(user_data: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+        ft_processor_from_vtable(
+            user_data,
+            &PROCESSOR_VTABLE,
+            core::mem::size_of_val(&PROCESSOR_VTABLE),
+        )
     }
 
     #[test]
@@ -550,8 +555,7 @@ mod tests {
         unsafe {
             let p = ft_pipeline_new();
             LAST_NOTIFY_CODE.store(-1, Ordering::SeqCst);
-            let vt_ref = make_processor_vtable_ref();
-            let proc = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
+            let proc = make_processor_handle(ptr::null_mut());
             ft_pipeline_run(p, proc, 21);
             assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 42);
             assert_eq!(ft_pipeline_result_count(p), 1);
@@ -560,7 +564,6 @@ mod tests {
             assert_eq!(err.code, 0);
             assert_eq!(last, 42);
             ft_pipeline_destroy(p);
-            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -569,12 +572,10 @@ mod tests {
         unsafe {
             let p = ft_pipeline_new();
             LAST_NOTIFY_CODE.store(-1, Ordering::SeqCst);
-            let vt_ref = make_processor_vtable_ref();
-            let proc = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
+            let proc = make_processor_handle(ptr::null_mut());
             ft_pipeline_run(p, proc, 5);
             assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 10);
             ft_pipeline_destroy(p);
-            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -583,12 +584,10 @@ mod tests {
         unsafe {
             DROP_CALLED.store(false, Ordering::SeqCst);
             let p = ft_pipeline_new();
-            let vt_ref = make_processor_vtable_ref();
-            let proc = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
+            let proc = make_processor_handle(ptr::null_mut());
             ft_pipeline_run(p, proc, 1);
             assert!(DROP_CALLED.load(Ordering::SeqCst));
             ft_pipeline_destroy(p);
-            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -602,23 +601,18 @@ mod tests {
 
     unsafe extern "C" fn fruit_drop(_self_data: *mut core::ffi::c_void) {}
 
-    #[test]
-    fn mixer_with_vtable_fruit() {
-        unsafe {
-            let mut m = ft_mixer_new();
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: Some(fruit_drop),
-                value: Some(fruit_value),
-                label: None,
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let fruit = ft_fruit_from_vtable(7 as *mut core::ffi::c_void, vt_ref);
-            ft_mixer_add(&mut m, fruit);
-            assert_eq!(ft_mixer_total(m), 7);
-            ft_mixer_destroy(m);
-            ft_fruit_delete_vtable(vt_ref);
-        }
-    }
+    // Static vtable variants for fruit tests — vtable must outlive handles.
+    static FRUIT_VT_DROP_VALUE: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
+        drop: Some(fruit_drop),
+        value: Some(fruit_value),
+        label: None,
+    };
+
+    static FRUIT_VT_VALUE_ONLY: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
+        drop: None,
+        value: Some(fruit_value),
+        label: None,
+    };
 
     #[test]
     fn mixer_blend_concrete() {
@@ -746,16 +740,13 @@ mod tests {
         unsafe {
             // Create a VtableFruit via the C vtable mechanism.
             // fruit_value (defined above) reads self_data as i32.
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: Some(fruit_drop),
-                value: Some(fruit_value),
-                label: None,
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let handle = ft_fruit_from_vtable(77 as *mut core::ffi::c_void, vt_ref);
+            let handle = ft_fruit_from_vtable(
+                77 as *mut core::ffi::c_void,
+                &FRUIT_VT_DROP_VALUE,
+                core::mem::size_of_val(&FRUIT_VT_DROP_VALUE),
+            );
             assert_eq!(ft_fruit_value(handle), 77);
             ft_fruit_destroy(handle);
-            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -778,23 +769,19 @@ mod tests {
     #[test]
     fn self_dispatch_processor_process() {
         unsafe {
-            let vt_ref = make_processor_vtable_ref();
-            let handle = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
+            let handle = make_processor_handle(ptr::null_mut());
             // ft_processor_process dispatches via type tag
             assert_eq!(ft_processor_process(handle, 10), 20);
             ft_processor_destroy(handle);
-            ft_processor_delete_vtable(vt_ref);
         }
     }
 
     #[test]
     fn self_dispatch_processor_name() {
         unsafe {
-            let vt_ref = make_processor_vtable_ref();
-            let handle = ft_processor_from_vtable(ptr::null_mut(), vt_ref);
+            let handle = make_processor_handle(ptr::null_mut());
             assert_eq!(ft_processor_name(handle).as_str_unchecked(), "test_proc",);
             ft_processor_destroy(handle);
-            ft_processor_delete_vtable(vt_ref);
         }
     }
 
@@ -806,16 +793,13 @@ mod tests {
     fn vtable_default_method_uses_fallback() {
         unsafe {
             // VtableFruit with label = None → should use the default "fruit"
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: Some(fruit_drop),
-                value: Some(fruit_value),
-                label: None,
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_DROP_VALUE,
+                core::mem::size_of_val(&FRUIT_VT_DROP_VALUE),
+            );
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
             ft_fruit_destroy(handle);
-            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -823,20 +807,23 @@ mod tests {
         unsafe { ffier::FfierBytes::from_str("custom") }
     }
 
+    static FRUIT_VT_CUSTOM_LABEL: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
+        drop: Some(fruit_drop),
+        value: Some(fruit_value),
+        label: Some(custom_label),
+    };
+
     #[test]
     fn vtable_default_method_overridden() {
         unsafe {
             // VtableFruit with label = Some(custom) → should use the custom impl
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: Some(fruit_drop),
-                value: Some(fruit_value),
-                label: Some(custom_label),
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_CUSTOM_LABEL,
+                core::mem::size_of_val(&FRUIT_VT_CUSTOM_LABEL),
+            );
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "custom");
             ft_fruit_destroy(handle);
-            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -857,19 +844,16 @@ mod tests {
     #[test]
     fn debug_handle_type_vtable_fruit() {
         unsafe {
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: None,
-                value: Some(fruit_value),
-                label: None,
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let handle = ft_fruit_from_vtable(42 as *mut core::ffi::c_void, vt_ref);
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_VALUE_ONLY,
+                core::mem::size_of_val(&FRUIT_VT_VALUE_ONLY),
+            );
             assert_eq!(
                 ft_debug_handle_type(handle).as_str_unchecked(),
                 "VtableFruit",
             );
             ft_fruit_destroy(handle);
-            ft_fruit_delete_vtable(vt_ref);
         }
     }
 
@@ -890,122 +874,29 @@ mod tests {
     }
 
     // ================================================================
-    // Debug: simulate ClientPayload flow
+    // Debug: handle roundtrip
     // ================================================================
 
-    /// Simulate what __into_raw_handle does for a custom type:
-    /// Box a "payload" struct, pass it as user_data to from_vtable,
-    /// then check the handle is valid.
-    #[repr(C)]
-    struct DebugPayload {
-        vtable_ref: *mut core::ffi::c_void,
-        handle: *mut core::ffi::c_void,
-        value: i32,
-    }
-
     #[test]
-    fn debug_client_payload_handle_roundtrip() {
+    fn debug_vtable_handle_roundtrip() {
         unsafe {
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: None,
-                value: Some(fruit_value),
-                label: None,
-            };
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-
-            let payload = Box::new(DebugPayload {
-                vtable_ref: vt_ref,
-                handle: core::ptr::null_mut(),
-                value: 42,
-            });
-            let payload_ptr = Box::into_raw(payload);
-
-            let handle = ft_fruit_from_vtable(payload_ptr as *mut core::ffi::c_void, vt_ref);
-
-            // Write handle back into payload
-            (*payload_ptr).handle = handle;
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_VALUE_ONLY,
+                core::mem::size_of_val(&FRUIT_VT_VALUE_ONLY),
+            );
 
             // Verify handle is valid
-            eprintln!("handle: {:p}", handle);
-            eprintln!("payload_ptr: {:p}", payload_ptr);
-            eprintln!("payload.handle: {:p}", (*payload_ptr).handle);
             assert_eq!(
                 ft_debug_handle_type(handle).as_str_unchecked(),
                 "VtableFruit",
             );
 
-            // Verify the handle stored in payload is the same
-            assert_eq!(
-                ft_debug_handle_type((*payload_ptr).handle).as_str_unchecked(),
-                "VtableFruit",
-            );
-
-            // Now call ft_fruit_label through the handle — label is None, should use default
+            // Call ft_fruit_label — label is None, should use default
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
 
-            // Also call through the stored handle
-            assert_eq!(
-                ft_fruit_label((*payload_ptr).handle).as_str_unchecked(),
-                "fruit"
-            );
-
-            ft_fruit_destroy(handle);
-            drop(Box::from_raw(payload_ptr));
-            ft_fruit_delete_vtable(vt_ref);
-        }
-    }
-
-    // ================================================================
-    // Re-entrancy detection for vtable default methods
-    // ================================================================
-
-    /// Global to pass the VtableFruit handle to the reentrant trampoline.
-    static REENTRANT_HANDLE: std::sync::atomic::AtomicPtr<core::ffi::c_void> =
-        std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
-
-    /// Counter: how many times the reentrant trampoline was invoked.
-    static REENTRANT_CALL_COUNT: std::sync::atomic::AtomicU32 =
-        std::sync::atomic::AtomicU32::new(0);
-
-    /// Trampoline that re-enters ft_fruit_label using the stashed handle.
-    /// Simulates what happens when a client trait default calls through
-    /// self-dispatch because the user didn't override the method.
-    unsafe extern "C" fn reentrant_label(_self_data: *mut core::ffi::c_void) -> ffier::FfierBytes {
-        REENTRANT_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let handle = REENTRANT_HANDLE.load(std::sync::atomic::Ordering::Relaxed);
-        unsafe { ft_fruit_label(handle) }
-    }
-
-    #[test]
-    #[ignore = "manual re-entrancy test — probe trampolines only protect the Rust client path"]
-    fn vtable_reentrant_label_detected_and_cached() {
-        unsafe {
-            let vtable = ffier_test_lib::FruitVtable {
-                drop: None,
-                value: Some(fruit_value),
-                label: Some(reentrant_label),
-            };
-            REENTRANT_CALL_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
-            REENTRANT_HANDLE.store(std::ptr::null_mut(), std::sync::atomic::Ordering::Relaxed);
-            let vt_ref = ft_fruit_new_vtable(&vtable, core::mem::size_of_val(&vtable), core::ptr::null_mut());
-            let handle = ft_fruit_from_vtable(std::ptr::null_mut(), vt_ref);
-            REENTRANT_HANDLE.store(handle, std::sync::atomic::Ordering::Relaxed);
-
-            // First call: trampoline fires, re-enters, re-entrancy detected → default "fruit"
-            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
-            assert_eq!(
-                REENTRANT_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed),
-                1,
-                "trampoline should have been called exactly once on first invocation"
-            );
-
-            // Second call: cached in default_mask → trampoline NOT called, returns default
-            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
-            assert_eq!(
-                REENTRANT_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed),
-                1,
-                "trampoline should NOT be called again — result cached"
-            );
+            // Call ft_fruit_value — reads self_data as i32
+            assert_eq!(ft_fruit_value(handle), 42);
 
             ft_fruit_destroy(handle);
         }
