@@ -413,17 +413,12 @@ static const FtProcessorVtable g_test_vtable = {
     .on_notify = test_on_notify,
 };
 
-static FtProcessorVtableRef g_test_vtable_ref = NULL;
-
-static FtProcessorVtableRef get_test_vtable_ref(void) {
-    if (!g_test_vtable_ref) {
-        g_test_vtable_ref = ft_processor_new_vtable(&g_test_vtable, sizeof(g_test_vtable), NULL);
-    }
-    return g_test_vtable_ref;
+static void* make_processor_handle(void* user_data) {
+    return ft_processor_from_vtable(user_data, &g_test_vtable, sizeof(g_test_vtable));
 }
 
 void vtable_constructor(void) {
-    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
+    void* proc = make_processor_handle(NULL);
     assert(proc != NULL);
     /* Just test construction and destroy */
     ft_processor_destroy(proc);
@@ -432,7 +427,7 @@ void vtable_constructor(void) {
 void vtable_dyn_dispatch_process(void) {
     FtPipeline p = ft_pipeline_new();
     g_last_notify_code = -1;
-    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
+    void* proc = make_processor_handle(NULL);
     ft_pipeline_run(p, proc, 21);
     /* process(21) = 42, then on_notify(42) */
     assert(g_last_notify_code == 42);
@@ -449,7 +444,7 @@ void vtable_supertrait_method(void) {
      * Here verify it independently through a separate invocation. */
     FtPipeline p = ft_pipeline_new();
     g_last_notify_code = -1;
-    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
+    void* proc = make_processor_handle(NULL);
     ft_pipeline_run(p, proc, 5);
     /* process(5) = 10, on_notify(10) */
     assert(g_last_notify_code == 10);
@@ -458,7 +453,7 @@ void vtable_supertrait_method(void) {
 
 void vtable_drop_callback(void) {
     g_drop_called = 0;
-    void* proc = ft_processor_from_vtable(NULL, get_test_vtable_ref());
+    void* proc = make_processor_handle(NULL);
     /* run() consumes the processor handle, which should trigger drop */
     FtPipeline p = ft_pipeline_new();
     ft_pipeline_run(p, proc, 1);

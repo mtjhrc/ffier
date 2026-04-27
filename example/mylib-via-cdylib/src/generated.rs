@@ -81,7 +81,7 @@ impl Calculator {
 impl ffier::FfiHandle for Calculator {
     const C_HANDLE_NAME: &'static str = "Calculator";
     const TYPE_TAG: u32 = 1u32;
-    fn as_handle(&self) -> *mut core::ffi::c_void {
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
 }
@@ -188,7 +188,7 @@ impl TextBuffer {
 impl ffier::FfiHandle for TextBuffer {
     const C_HANDLE_NAME: &'static str = "TextBuffer";
     const TYPE_TAG: u32 = 3u32;
-    fn as_handle(&self) -> *mut core::ffi::c_void {
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
 }
