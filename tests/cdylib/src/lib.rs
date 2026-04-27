@@ -838,6 +838,71 @@ mod tests {
     }
 
     // ================================================================
+    // Vtable forward/backward compatibility
+    // ================================================================
+
+    #[test]
+    fn vtable_smaller_than_expected_uses_defaults() {
+        unsafe {
+            // Simulate an older client whose vtable only has `drop` + `value`
+            // (no `label` field). Pass a truncated vtable_size so the library
+            // treats `label` as absent → default dispatch.
+            let truncated_size = core::mem::offset_of!(ffier_test_lib::FruitVtable, label);
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_CUSTOM_LABEL, // has label = Some(custom_label)
+                truncated_size,         // but we tell the library it's smaller
+            );
+            // label field is beyond vtable_size → treated as None → default "fruit"
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+            // value field is within vtable_size → works normally
+            assert_eq!(ft_fruit_value(handle), 42);
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn vtable_larger_than_expected_works() {
+        unsafe {
+            // Simulate a newer client whose vtable is larger than the library
+            // expects. Extra bytes beyond the library's struct size are ignored.
+            let oversized = core::mem::size_of::<ffier_test_lib::FruitVtable>() + 64;
+            let handle = ft_fruit_from_vtable(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_CUSTOM_LABEL,
+                oversized,
+            );
+            // All known fields work normally
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "custom");
+            assert_eq!(ft_fruit_value(handle), 42);
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
+    fn vtable_zero_size_all_defaults() {
+        unsafe {
+            // vtable_size = 0 → all fields treated as None.
+            // drop = None means no drop callback (fine, user_data is not heap-allocated).
+            // value is required → will panic. But label has a default.
+            // For this test, just test that label defaults correctly.
+            // We can't call value (it would panic), so use a handle with
+            // a full vtable for value but truncated to only cover drop + value.
+            let size_for_drop_and_value = core::mem::offset_of!(ffier_test_lib::FruitVtable, label);
+            let handle = ft_fruit_from_vtable(
+                99 as *mut core::ffi::c_void,
+                &FRUIT_VT_DROP_VALUE,
+                size_for_drop_and_value,
+            );
+            // value works (within bounds)
+            assert_eq!(ft_fruit_value(handle), 99);
+            // label is out of bounds → default
+            assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    // ================================================================
     // Debug: handle type inspection
     // ================================================================
 

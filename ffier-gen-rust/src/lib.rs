@@ -650,6 +650,7 @@ fn vtable_trait_method_sigs(
                                 value: ffier::VtableHandle {
                                     vtable_ptr: __vtable as *const #vt_name as *const core::ffi::c_void,
                                     user_data: self as *const Self as *const core::ffi::c_void,
+                                    vtable_size: core::mem::size_of::<#vt_name>() as u16,
                                 },
                             };
                             let __raw = unsafe {

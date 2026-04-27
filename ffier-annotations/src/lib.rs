@@ -1251,6 +1251,19 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 quote! { <#bt as ffier::FfiType>::into_c(#id) }
             })
             .collect();
+        // Build the concrete fn pointer type for this vtable field
+        let param_bridge_types: Vec<_> = vm.params.iter().map(|p| {
+            let bt = &p.bridge_type;
+            quote! { <#bt as ffier::FfiType>::CRepr }
+        }).collect();
+        let fn_ret = match &vm.ret_bridge_type {
+            None => quote! {},
+            Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
+        };
+        let fn_ptr_type = quote! {
+            unsafe extern "C" fn(*mut core::ffi::c_void #(, #param_bridge_types)*) #fn_ret
+        };
+
         let raw_call = quote! {
             unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
         };
@@ -1279,8 +1292,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {
             #sig {
                 #metadata_check
-                let __vtable = unsafe { &*(self.value.vtable_ptr as *const #vtable_struct_name) };
-                match __vtable.#name {
+                let __field: Option<#fn_ptr_type> = unsafe {
+                    self.value.field_or_none(
+                        core::mem::offset_of!(#vtable_struct_name, #name),
+                    )
+                };
+                match __field {
                     Some(__f) => { #vtable_branch }
                     None => { #none_branch }
                 }
@@ -1520,8 +1537,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         impl Drop for #wrapper_name {
             fn drop(&mut self) {
-                let vtable = unsafe { &*(self.value.vtable_ptr as *const #vtable_struct_name) };
-                if let Some(drop_fn) = vtable.drop {
+                let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
+                    self.value.field_or_none(
+                        core::mem::offset_of!(#vtable_struct_name, drop),
+                    )
+                };
+                if let Some(drop_fn) = drop_field {
                     unsafe { drop_fn(self.value.user_data as *mut core::ffi::c_void) };
                 }
             }

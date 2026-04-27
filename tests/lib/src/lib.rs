@@ -511,6 +511,7 @@ impl Orange {
     }
 }
 
+#[cfg(feature = "fruit-label")]
 #[ffier::implementable]
 pub trait Fruit {
     fn value(&self) -> i32;
@@ -520,6 +521,12 @@ pub trait Fruit {
     fn label(&self) -> &str {
         "fruit"
     }
+}
+
+#[cfg(not(feature = "fruit-label"))]
+#[ffier::implementable]
+pub trait Fruit {
+    fn value(&self) -> i32;
 }
 
 #[ffier::trait_impl]
@@ -640,6 +647,7 @@ impl Mixer {
 
     /// Returns the length of a fruit's label. Used to test that vtable
     /// default method detection works for custom client types crossing FFI.
+    #[cfg(feature = "fruit-label")]
     pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
         fruit.label().len() as i32
     }
