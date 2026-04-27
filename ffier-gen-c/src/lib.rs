@@ -1142,28 +1142,24 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
         /// The caller must ensure the vtable outlives all handles created
         /// from it (typically by making it `static const`).
         ///
-        /// `vtable_size` is used for forward-compatibility validation only:
-        /// if the caller's vtable struct is larger than the library's (i.e.
-        /// compiled against a newer header), the call aborts to prevent
-        /// reading garbage from unrecognized fields.
+        /// `vtable_size` enables forward/backward compatibility:
+        /// - **Older client, newer library** (smaller vtable): fields beyond
+        ///   `vtable_size` are treated as `None` → default dispatch.
+        /// - **Newer client, older library** (larger vtable): only the first
+        ///   `vtable_size` bytes are read; extra fields are ignored.
+        ///
+        /// Pass `sizeof(YourVtableStruct)` as `vtable_size`.
         #[unsafe(no_mangle)]
         pub extern "C" fn #constructor_name(
             user_data: *mut core::ffi::c_void,
             vtable: *const #vtable_struct_name,
             vtable_size: usize,
         ) -> *mut core::ffi::c_void {
-            let expected = core::mem::size_of::<#vtable_struct_name>();
-            if vtable_size > expected {
-                eprintln!(
-                    "{}(): vtable_size ({}) exceeds library vtable size ({}) — aborting",
-                    #constructor_name_str, vtable_size, expected,
-                );
-                std::process::abort();
-            }
             let wrapper = #wrapper_name {
                 value: ffier::VtableHandle {
                     vtable_ptr: vtable as *const core::ffi::c_void,
                     user_data: user_data as *const core::ffi::c_void,
+                    vtable_size: vtable_size.try_into().expect("vtable_size exceeds u16::MAX"),
                 },
             };
             <#wrapper_name as ffier::FfiType>::into_c(wrapper)

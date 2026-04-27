@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-test-compat"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+]
+
+[[package]]
 name = "ffier-test-consumer"
 version = "0.1.0"
 dependencies = [

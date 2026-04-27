@@ -1,7 +1,7 @@
 root := justfile_directory() / ".."
 
 # Run all tests
-default: check-header check-generated-client valgrind miri consumer cargo-test
+default: check-header check-generated-client check-generated-compat valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -67,6 +67,21 @@ consumer-cdylib: build
 
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
+
+# Generate v1 client bindings (Fruit without label method)
+gen-v1-client: build
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --no-default-features --bin gen-rust-client | rustfmt > compat/src/generated_v1.rs
+
+# Update the v1 compat bindings
+update-generated-compat: gen-v1-client
+
+# Check v1 compat bindings match checked-in version
+check-generated-compat: gen-v1-client
+    diff compat/src/generated_v1.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --no-default-features --bin gen-rust-client 2>/dev/null | rustfmt)
+
+# Run vtable backward-compatibility tests (v1 client → v2 library)
+compat: build
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-compat
 
 # Run all Rust tests (cdylib, via-cdylib, submodule, etc.)
 cargo-test: build

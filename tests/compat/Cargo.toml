@@ -1,11 +1,7 @@
 [package]
-name = "ffier-test-lib"
+name = "ffier-test-compat"
 version = "0.1.0"
 edition = "2024"
-
-[features]
-default = ["fruit-label"]
-fruit-label = []
 
 [dependencies]
 ffier = { path = "../../ffier" }

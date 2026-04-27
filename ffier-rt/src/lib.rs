@@ -212,6 +212,34 @@ pub unsafe fn handle_metadata(handle: *const core::ffi::c_void) -> u32 {
 pub struct VtableHandle {
     pub vtable_ptr: *const c_void,
     pub user_data: *const c_void,
+    /// Size of the vtable struct as provided by the caller (truncated to
+    /// `u16`; max 65535 bytes — more than enough for any vtable). Used for
+    /// forward/backward compatibility: fields at offsets beyond this size
+    /// are treated as `None` (default dispatch). This allows older clients
+    /// (smaller vtable) to work with newer libraries (larger vtable) and
+    /// vice versa.
+    pub vtable_size: u16,
+}
+
+impl VtableHandle {
+    /// Read an `Option<extern "C" fn(...)>` vtable field with bounds checking.
+    ///
+    /// Returns `None` if the field extends beyond `self.vtable_size`,
+    /// providing forward/backward-compatible default dispatch for fields
+    /// not present in the vtable.
+    ///
+    /// # Safety
+    /// - `vtable_ptr` must point to a valid vtable struct of at least
+    ///   `self.vtable_size` bytes.
+    /// - `field_offset` must be the correct offset of an `Option<F>` field.
+    #[inline]
+    pub unsafe fn field_or_none<F: Copy>(&self, field_offset: usize) -> Option<F> {
+        if field_offset + core::mem::size_of::<Option<F>>() > self.vtable_size as usize {
+            None
+        } else {
+            unsafe { *(self.vtable_ptr.byte_add(field_offset) as *const Option<F>) }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

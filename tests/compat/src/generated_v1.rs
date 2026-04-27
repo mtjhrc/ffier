@@ -1577,23 +1577,6 @@ impl Drop for VtableProcessor {
 }
 pub trait Fruit {
     fn value(&self) -> i32;
-    fn label(&self) -> &str
-    where
-        Self: Sized,
-    {
-        let __vtable: &'static FruitVtable = Self::__ffier_vtable();
-        let __temp = ffier::FfierHandleBox::<ffier::VtableHandle> {
-            type_tag: 20u32,
-            metadata: 1 | (1u32 << 1),
-            value: ffier::VtableHandle {
-                vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
-                user_data: self as *const Self as *const core::ffi::c_void,
-                vtable_size: core::mem::size_of::<FruitVtable>() as u16,
-            },
-        };
-        let __raw = unsafe { ft_fruit_label(&__temp as *const _ as *mut core::ffi::c_void) };
-        <&str as ffier::FfiType>::from_c(__raw)
-    }
     #[doc = r" Build a vtable with trampolines for all methods."]
     #[doc = r" The returned reference is `&'static` via const promotion per"]
     #[doc = r" monomorphization — zero allocation."]
@@ -1616,16 +1599,6 @@ pub trait Fruit {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.value();
                     <i32 as ffier::FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            label: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <&'static str as ffier::FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.label();
-                    <&str as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
             }),
@@ -1657,9 +1630,6 @@ pub struct FruitVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub value:
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as ffier::FfiType>::CRepr>,
-    pub label: Option<
-        unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as ffier::FfiType>::CRepr,
-    >,
 }
 unsafe extern "C" {
     pub fn ft_fruit_from_vtable(
@@ -1667,9 +1637,6 @@ unsafe extern "C" {
         vtable: *const core::ffi::c_void,
         vtable_size: usize,
     ) -> *mut core::ffi::c_void;
-    pub fn ft_fruit_label(
-        handle: *mut core::ffi::c_void,
-    ) -> <&'static str as ffier::FfiType>::CRepr;
 }
 pub struct VtableFruit(*mut core::ffi::c_void);
 impl VtableFruit {
@@ -1690,10 +1657,6 @@ impl Fruit for Apple {
         let __raw = unsafe { ft_apple_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
-    }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
@@ -1706,10 +1669,6 @@ impl Fruit for Orange {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_orange_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
-    }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
     }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
@@ -1724,10 +1683,6 @@ impl Fruit for Banana {
         let __raw = unsafe { ft_banana_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
-    }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
@@ -1740,10 +1695,6 @@ impl Fruit for Mango {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_mango_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
-    }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
     }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
@@ -1758,10 +1709,6 @@ impl Fruit for Peach {
         let __raw = unsafe { ft_peach_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
-    }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
@@ -1774,10 +1721,6 @@ impl Fruit for Plum {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_plum_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
-    }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
     }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
@@ -1792,10 +1735,6 @@ impl Fruit for Grape {
         let __raw = unsafe { ft_grape_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
-    }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
@@ -1808,10 +1747,6 @@ impl Fruit for Lemon {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_lemon_value(self.0) };
         <i32 as ffier::FfiType>::from_c(__raw)
-    }
-    fn label(&self) -> &str {
-        let __raw = unsafe { ft_fruit_label(self.0) };
-        <&str as ffier::FfiType>::from_c(__raw)
     }
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
