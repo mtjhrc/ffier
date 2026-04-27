@@ -178,15 +178,12 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     {
         let mut check_tag = |tag: u32, name: &str, hint: &str| -> Option<TokenStream2> {
             if tag == 0 {
-                let msg = format!(
-                    "type `{name}` has no type tag; add `{hint}` in library_definition!()"
-                );
+                let msg =
+                    format!("type `{name}` has no type tag; add `{hint}` in library_definition!()");
                 return Some(quote! { compile_error!(#msg); });
             }
             if let Some(prev) = tag_to_name.get(&tag) {
-                let msg = format!(
-                    "duplicate type tag {tag}: used by both `{prev}` and `{name}`"
-                );
+                let msg = format!("duplicate type tag {tag}: used by both `{prev}` and `{name}`");
                 return Some(quote! { compile_error!(#msg); });
             }
             tag_to_name.insert(tag, name.to_string());
@@ -221,7 +218,11 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 Err(e) => return e.to_compile_error(),
             };
             let name = format!("Vtable{}", meta.trait_name);
-            if let Some(err) = check_tag(meta.type_tag, &name, &format!("trait {} = N", meta.trait_name)) {
+            if let Some(err) = check_tag(
+                meta.type_tag,
+                &name,
+                &format!("trait {} = N", meta.trait_name),
+            ) {
                 return err;
             }
         }
@@ -238,16 +239,21 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         let names: Vec<&str> = sorted.iter().map(|(_, n)| n.as_str()).collect();
 
         // Generate one const per trait: __FFIER_ACCEPTED_Fruit = "Apple | Orange | VtableFruit"
-        let accepted_consts: Vec<TokenStream2> = trait_map.iter().map(|(trait_name, info)| {
-            let const_name = format_ident!("__FFIER_ACCEPTED_{trait_name}");
-            let accepted = info.variants.iter()
-                .map(|v| v.name.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ");
-            quote! {
-                const #const_name: &str = #accepted;
-            }
-        }).collect();
+        let accepted_consts: Vec<TokenStream2> = trait_map
+            .iter()
+            .map(|(trait_name, info)| {
+                let const_name = format_ident!("__FFIER_ACCEPTED_{trait_name}");
+                let accepted = info
+                    .variants
+                    .iter()
+                    .map(|v| v.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                quote! {
+                    const #const_name: &str = #accepted;
+                }
+            })
+            .collect();
 
         quote! {
             /// Look up the type name for a given type tag. Returns "unknown" for
@@ -365,7 +371,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix);
             all_code.push(code);
             let trait_snake = camel_to_snake(trait_name);
-            header_fn_names.push(format_ident!("{first_prefix}_{trait_snake}__dispatch_header"));
+            header_fn_names.push(format_ident!(
+                "{first_prefix}_{trait_snake}__dispatch_header"
+            ));
         }
     }
     let shared_types_fn = emit_shared_types_fn(&first_prefix);
@@ -1101,29 +1109,51 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     // drop function pointer — always first for stable ABI offset
     header_lines.push(quote! { "    void (*drop)(void* self_data);" });
 
-    // Method function pointers
-    for m in &meta.vtable_methods {
-        let name_str = m.name.to_string();
-        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
-        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+    // Method function pointers, sorted by explicit index with padding for gaps.
+    {
+        let mut sorted_methods: Vec<_> = meta.vtable_methods.iter().collect();
+        sorted_methods.sort_by_key(|m| m.index);
 
-        header_lines.push(quote! {{
-            let mut s = String::from("    ");
-            s.push_str(#ret_c_expr);
-            s.push_str(" (*");
-            s.push_str(#name_str);
-            s.push_str(")(void* self_data");
-            let param_types: &[&str] = &[#(#param_type_exprs),*];
-            let param_names: &[&str] = &[#(#param_id_strs),*];
-            for (t, n) in param_types.iter().zip(param_names.iter()) {
-                s.push_str(", ");
-                s.push_str(t);
-                s.push(' ');
-                s.push_str(n);
+        let mut next_slot = 0usize;
+        for m in &sorted_methods {
+            while next_slot < m.index {
+                let pad_comment = format!(
+                    "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
+                );
+                header_lines.push(quote! { #pad_comment });
+                next_slot += 1;
             }
-            s.push_str(");");
-            s
-        }});
+            let name_str = m.name.to_string();
+            let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
+            let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+
+            header_lines.push(quote! {{
+                let mut s = String::from("    ");
+                s.push_str(#ret_c_expr);
+                s.push_str(" (*");
+                s.push_str(#name_str);
+                s.push_str(")(void* self_data");
+                let param_types: &[&str] = &[#(#param_type_exprs),*];
+                let param_names: &[&str] = &[#(#param_id_strs),*];
+                for (t, n) in param_types.iter().zip(param_names.iter()) {
+                    s.push_str(", ");
+                    s.push_str(t);
+                    s.push(' ');
+                    s.push_str(n);
+                }
+                s.push_str(");");
+                s
+            }});
+            next_slot = m.index + 1;
+        }
+        // Pad trailing reserved slots
+        while next_slot <= meta.max_vtable_slot {
+            let pad_comment = format!(
+                "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
+            );
+            header_lines.push(quote! { #pad_comment });
+            next_slot += 1;
+        }
     }
     header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
     header_lines.push(quote! { "" });
@@ -1759,9 +1789,10 @@ fn generate_self_dispatch_bridge(
     info: &TraitDispatchInfo,
     prefix: &str,
 ) -> TokenStream2 {
-    let imp = info.implementable.as_ref().expect(
-        "generate_self_dispatch_bridge called for non-implementable trait",
-    );
+    let imp = info
+        .implementable
+        .as_ref()
+        .expect("generate_self_dispatch_bridge called for non-implementable trait");
     let trait_path = &imp.trait_path;
     let trait_snake = camel_to_snake(trait_name);
     let fn_pfx = format!("{prefix}_");
@@ -1781,7 +1812,7 @@ fn generate_self_dispatch_bridge(
     //       itself #[ffier::implementable] (or at least having its own trait_impl
     //       entries), rather than inlining them into the subtrait's vtable.
     let own_methods = &imp.methods[..imp.own_method_count];
-    for (_method_index, m) in own_methods.iter().enumerate() {
+    for m in own_methods.iter() {
         let method_name = &m.name;
         let ffi_name_str = format!("{fn_pfx}{trait_snake}_{method_name}");
         let ffi_name = format_ident!("{ffi_name_str}");
@@ -1809,7 +1840,7 @@ fn generate_self_dispatch_bridge(
         // TODO: Support `&mut self` and consuming `self` receivers once
         //       MetaVtableMethod tracks receiver kind.
         let wrapper_path = &imp.wrapper_path;
-        let method_index_u32 = _method_index as u32;
+        let method_index_u32 = m.index as u32;
 
         // For defaulted methods, the VtableFoo dispatch branch needs a
         // metadata check: if the handle's metadata field has bit 0 set
@@ -1921,14 +1952,18 @@ fn generate_self_dispatch_bridge(
     let destroy_name_str = format!("{fn_pfx}{trait_snake}_destroy");
     let destroy_name = format_ident!("{destroy_name_str}");
 
-    let destroy_branches: Vec<_> = info.variants.iter().map(|v| {
-        let ty = &v.bridge_type;
-        quote! {
-            if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                drop(unsafe { Box::from_raw(handle as *mut ffier::FfierHandleBox<#ty>) });
+    let destroy_branches: Vec<_> = info
+        .variants
+        .iter()
+        .map(|v| {
+            let ty = &v.bridge_type;
+            quote! {
+                if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    drop(unsafe { Box::from_raw(handle as *mut ffier::FfierHandleBox<#ty>) });
+                }
             }
-        }
-    }).collect();
+        })
+        .collect();
 
     let destroy_expected = format!("{trait_name} implementor");
     bridge_fns.push(quote! {

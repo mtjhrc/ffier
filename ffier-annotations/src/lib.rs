@@ -410,7 +410,8 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let struct_name_lit = struct_name;
     let tag_const_name = format_ident!("__ffier_type_tag_{struct_ident}");
     let tag_const = quote! { crate::#tag_const_name };
-    let ffi_handle_impls = emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit, &tag_const);
+    let ffi_handle_impls =
+        emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit, &tag_const);
 
     let output = quote! {
         #impl_block
@@ -848,6 +849,32 @@ fn is_ffier_skip(attr: &syn::Attribute) -> bool {
     found
 }
 
+/// Parse `#[ffier(index = N)]` from a trait method's attributes.
+/// Returns `Some(N)` if present, `None` if no such attribute.
+fn parse_ffier_index(attrs: &[syn::Attribute]) -> syn::Result<Option<usize>> {
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+        let mut index = None;
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("index") {
+                let value = meta.value()?;
+                let lit: syn::LitInt = value.parse()?;
+                index = Some(lit.base10_parse::<usize>()?);
+                Ok(())
+            } else {
+                // Not our attribute key — skip (may be `dispatch`, etc.)
+                Ok(())
+            }
+        })?;
+        if index.is_some() {
+            return Ok(index);
+        }
+    }
+    Ok(None)
+}
+
 /// Parse `#[ffier(dispatch = concrete)]` or `#[ffier(dispatch = vtable)]` from method attrs.
 fn parse_ffier_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
     for attr in attrs {
@@ -917,6 +944,9 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 
 struct ImplementableArgs {
     supers: Vec<SupertraitBlock>,
+    /// Reserved vtable slot indices (retired methods). These slots are padded
+    /// in the vtable struct to keep the layout stable.
+    reserved: Vec<usize>,
 }
 
 struct SupertraitBlock {
@@ -927,6 +957,7 @@ struct SupertraitBlock {
 impl Parse for ImplementableArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut supers = Vec::new();
+        let mut reserved = Vec::new();
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -952,16 +983,24 @@ impl Parse for ImplementableArgs {
                     // optional comma between supertrait blocks
                     let _ = content.parse::<Token![,]>();
                 }
+            } else if ident == "reserved" {
+                let content;
+                syn::parenthesized!(content in input);
+                while !content.is_empty() {
+                    let lit: syn::LitInt = content.parse()?;
+                    reserved.push(lit.base10_parse::<usize>()?);
+                    let _ = content.parse::<Token![,]>();
+                }
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
-                    "expected `prefix` or `supers`",
+                    "expected `prefix`, `supers`, or `reserved`",
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { supers })
+        Ok(Self { supers, reserved })
     }
 }
 
@@ -975,6 +1014,9 @@ struct VtableMethod {
     ret_rust_type: Option<proc_macro2::TokenStream>,
     /// Whether this method has a default implementation in the trait.
     has_default: bool,
+    /// Explicit vtable slot index from `#[ffier(index = N)]`.
+    /// Determines position in the vtable struct (after `drop`).
+    index: usize,
 }
 
 struct VtableMethodParam {
@@ -986,8 +1028,9 @@ struct VtableMethodParam {
 fn extract_vtable_methods(
     trait_item: &ItemTrait,
     supers: &[SupertraitBlock],
+    reserved: &[usize],
     ctx: &mut AliasContext,
-) -> Vec<VtableMethod> {
+) -> syn::Result<Vec<VtableMethod>> {
     let mut methods = Vec::new();
 
     for item in &trait_item.items {
@@ -995,7 +1038,18 @@ fn extract_vtable_methods(
             continue;
         };
         let has_default = method.default.is_some();
-        if let Some(vm) = parse_trait_method_sig(&method.sig, ctx, has_default) {
+        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default) {
+            let index = parse_ffier_index(&method.attrs)?;
+            let index = index.ok_or_else(|| {
+                syn::Error::new_spanned(
+                    &method.sig.ident,
+                    format!(
+                        "vtable method `{}` is missing `#[ffier(index = N)]`",
+                        method.sig.ident,
+                    ),
+                )
+            })?;
+            vm.index = index;
             methods.push(vm);
         }
     }
@@ -1004,16 +1058,58 @@ fn extract_vtable_methods(
     // syntax only declares signatures, not default bodies).
     for sup in supers {
         for method in &sup.methods {
-            if let Some(vm) = parse_trait_method_sig(&method.sig, ctx, false) {
+            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false) {
+                let index = parse_ffier_index(&method.attrs)?;
+                let index = index.ok_or_else(|| {
+                    syn::Error::new_spanned(
+                        &method.sig.ident,
+                        format!(
+                            "supertrait vtable method `{}` is missing `#[ffier(index = N)]`",
+                            method.sig.ident,
+                        ),
+                    )
+                })?;
+                vm.index = index;
                 methods.push(vm);
             }
         }
     }
 
-    methods
+    // Validate: no duplicate indices
+    let mut seen: HashMap<usize, &syn::Ident> = HashMap::new();
+    for m in &methods {
+        if let Some(prev) = seen.insert(m.index, &m.name) {
+            return Err(syn::Error::new_spanned(
+                &m.name,
+                format!(
+                    "duplicate vtable index {}: both `{}` and `{}` use index {}",
+                    m.index, prev, m.name, m.index,
+                ),
+            ));
+        }
+    }
+
+    // Validate: no method uses a reserved index
+    for m in &methods {
+        if reserved.contains(&m.index) {
+            return Err(syn::Error::new_spanned(
+                &m.name,
+                format!(
+                    "vtable index {} is reserved (retired slot) but used by method `{}`",
+                    m.index, m.name,
+                ),
+            ));
+        }
+    }
+
+    Ok(methods)
 }
 
-fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext, has_default: bool) -> Option<VtableMethod> {
+fn parse_trait_method_sig(
+    sig: &syn::Signature,
+    ctx: &mut AliasContext,
+    has_default: bool,
+) -> Option<VtableMethod> {
     let first = sig.inputs.first()?;
     if !matches!(first, FnArg::Receiver(_)) {
         return None;
@@ -1053,6 +1149,7 @@ fn parse_trait_method_sig(sig: &syn::Signature, ctx: &mut AliasContext, has_defa
         ret_bridge_type,
         ret_rust_type,
         has_default,
+        index: 0, // placeholder — caller sets the real index from #[ffier(index = N)]
     })
 }
 
@@ -1078,8 +1175,9 @@ fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenSt
                 _ => unreachable!(),
             };
             let hd = m.has_default;
+            let idx = m.index;
             quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, }
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, index = #idx, }
             }
         })
         .collect()
@@ -1158,15 +1256,22 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
     let tag_const_name = format_ident!("__ffier_type_tag_{trait_name}");
     let tag_const = quote! { crate::#tag_const_name };
-    let wrapper_ffi_handle_impls =
-        emit_ffi_handle_impls(&quote! { #wrapper_name }, &wrapper_c_handle_suffix, &tag_const);
+    let wrapper_ffi_handle_impls = emit_ffi_handle_impls(
+        &quote! { #wrapper_name },
+        &wrapper_c_handle_suffix,
+        &tag_const,
+    );
 
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Extract all methods (trait + supertraits).
     // own_method_count tracks how many belong to this trait (before supers).
-    let vtable_methods = extract_vtable_methods(&trait_item, &args.supers, &mut ctx);
+    let vtable_methods =
+        match extract_vtable_methods(&trait_item, &args.supers, &args.reserved, &mut ctx) {
+            Ok(v) => v,
+            Err(e) => return e.to_compile_error().into(),
+        };
     let own_method_count = trait_item
         .items
         .iter()
@@ -1175,35 +1280,67 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // Only count methods with a receiver (&self, &mut self, self).
                 // Static methods (no receiver) are excluded from vtable_methods
                 // by parse_trait_method_sig.
-                m.sig.inputs.first().map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)))
+                m.sig
+                    .inputs
+                    .first()
+                    .map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)))
             } else {
                 false
             }
         })
         .count();
 
-    // --- Generate vtable struct fields ---
-    let vtable_fields: Vec<_> = vtable_methods
-        .iter()
-        .map(|m| {
-            let name = &m.name;
-            let params: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let bt = &p.bridge_type;
-                    quote! { <#bt as ffier::FfiType>::CRepr }
-                })
-                .collect();
-            let ret = match &m.ret_bridge_type {
-                None => quote! {},
-                Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
-            };
-            quote! {
-                pub #name: Option<unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret>
-            }
-        })
-        .collect();
+    // --- Generate vtable struct fields (ordered by explicit index, with padding for gaps) ---
+    // Sort methods by their explicit index to determine vtable layout.
+    let mut sorted_methods: Vec<&VtableMethod> = vtable_methods.iter().collect();
+    sorted_methods.sort_by_key(|m| m.index);
+
+    let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut next_slot = 0usize;
+
+    for m in &sorted_methods {
+        // Insert padding fields for any gaps
+        while next_slot < m.index {
+            let pad_name = format_ident!("__reserved_{next_slot}");
+            vtable_fields.push(quote! {
+                #[doc(hidden)]
+                pub #pad_name: Option<unsafe extern "C" fn()>
+            });
+            next_slot += 1;
+        }
+
+        let name = &m.name;
+        let params: Vec<_> = m
+            .params
+            .iter()
+            .map(|p| {
+                let bt = &p.bridge_type;
+                quote! { <#bt as ffier::FfiType>::CRepr }
+            })
+            .collect();
+        let ret = match &m.ret_bridge_type {
+            None => quote! {},
+            Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
+        };
+        vtable_fields.push(quote! {
+            pub #name: Option<unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret>
+        });
+        next_slot = m.index + 1;
+    }
+
+    // Add trailing padding for reserved slots beyond the last method index.
+    // Gaps between methods are already handled by the loop above; here we only
+    // need to extend the vtable for reserved indices that fall after all methods.
+    if let Some(&max_reserved) = args.reserved.iter().max() {
+        while next_slot <= max_reserved {
+            let pad_name = format_ident!("__reserved_{next_slot}");
+            vtable_fields.push(quote! {
+                #[doc(hidden)]
+                pub #pad_name: Option<unsafe extern "C" fn()>
+            });
+            next_slot += 1;
+        }
+    }
 
     // Build trait path with 'static lifetimes for the wrapper impl
     let trait_generics = &trait_item.generics;
@@ -1252,10 +1389,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             })
             .collect();
         // Build the concrete fn pointer type for this vtable field
-        let param_bridge_types: Vec<_> = vm.params.iter().map(|p| {
-            let bt = &p.bridge_type;
-            quote! { <#bt as ffier::FfiType>::CRepr }
-        }).collect();
+        let param_bridge_types: Vec<_> = vm
+            .params
+            .iter()
+            .map(|p| {
+                let bt = &p.bridge_type;
+                quote! { <#bt as ffier::FfiType>::CRepr }
+            })
+            .collect();
         let fn_ret = match &vm.ret_bridge_type {
             None => quote! {},
             Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
@@ -1323,15 +1464,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             ts.into_iter()
                 .map(|tt| match tt {
                     proc_macro2::TokenTree::Ident(ref id) if id == "self" => {
-                        proc_macro2::TokenTree::Ident(proc_macro2::Ident::new(
-                            "__self",
-                            id.span(),
-                        ))
+                        proc_macro2::TokenTree::Ident(proc_macro2::Ident::new("__self", id.span()))
                     }
                     proc_macro2::TokenTree::Group(g) => {
                         let inner = self.replace_in_token_stream(g.stream());
-                        let mut new_g =
-                            proc_macro2::Group::new(g.delimiter(), inner);
+                        let mut new_g = proc_macro2::Group::new(g.delimiter(), inner);
                         new_g.set_span(g.span());
                         proc_macro2::TokenTree::Group(new_g)
                     }
@@ -1360,10 +1497,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut default_helper_names: HashMap<String, syn::Ident> = HashMap::new();
 
     // Build modified trait: replace default bodies with helper calls
+    // and strip #[ffier(index = N)] attributes (consumed by macro).
     let mut modified_trait = original_trait.clone();
     for item in &mut modified_trait.items {
-        let TraitItem::Fn(method) = item else { continue };
-        let Some(default_block) = &method.default else { continue };
+        let TraitItem::Fn(method) = item else {
+            continue;
+        };
+        // Strip all #[ffier(...)] from emitted method attrs (consumed by this macro)
+        method.attrs.retain(|attr| !attr.path().is_ident("ffier"));
+        let Some(default_block) = &method.default else {
+            continue;
+        };
 
         let method_name = &method.sig.ident;
         let helper_name = format_ident!("__ffier_default_{trait_name}_{method_name}");
@@ -1426,8 +1570,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-            // Find the method index in vtable_methods for metadata dispatch
-            let method_index = vtable_methods.iter().position(|v| v.name == *name);
+            // Use the explicit index for metadata dispatch
+            let method_index = Some(vm.index);
             let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
                 let params_pass: Vec<_> = method
                     .sig
@@ -1471,6 +1615,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         })
         .collect();
+
+    // --- Compute max vtable slot for metadata ---
+    // The highest slot index that needs to be padded in the vtable struct.
+    // This accounts for both method indices and reserved (retired) slots.
+    let max_method_index = vtable_methods.iter().map(|m| m.index).max();
+    let max_reserved_index = args.reserved.iter().copied().max();
+    let max_vtable_slot_val: usize = match (max_method_index, max_reserved_index) {
+        (Some(mi), Some(ri)) => mi.max(ri),
+        (Some(v), None) | (None, Some(v)) => v,
+        (None, None) => 0,
+    };
 
     // --- Metadata emission ---
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -1571,6 +1726,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
+                    max_vtable_slot = #max_vtable_slot_val,
                 } $(, $($rest)*)? }
             };
             // Untagged invocation (legacy / direct): type_tag defaults to 0
@@ -1585,6 +1741,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     wrapper_name = ($crate::#wrapper_name),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
+                    max_vtable_slot = #max_vtable_slot_val,
                 } $(, $($rest)*)? }
             };
         }

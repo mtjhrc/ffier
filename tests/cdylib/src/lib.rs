@@ -454,15 +454,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]
