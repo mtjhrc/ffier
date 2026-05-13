@@ -341,29 +341,29 @@ void error_result_constants(void) {
     assert(FT_ERROR_TEST_NOT_FOUND != FT_ERROR_TEST_CUSTOM_MESSAGE);
 }
 
-void strerror_custom_message(void) {
+void error_name_custom_message(void) {
     FtWidget w = ft_widget_new();
     FtResult r = ft_widget_fail_always(w, NULL);
     assert(r == FT_ERROR_TEST_CUSTOM_MESSAGE);
-    const char* msg = ft_strerror(r);
+    const char* msg = ft_error_name(r);
     assert(msg != NULL);
-    assert(strcmp(msg, "custom error message") == 0);
+    assert(strcmp(msg, "CustomMessage") == 0);
     ft_widget_destroy(w);
 }
 
-void strerror_not_found(void) {
+void error_name_not_found(void) {
     FtWidget w = ft_widget_new();
     int32_t result;
     FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
-    const char* msg = ft_strerror(r);
+    const char* msg = ft_error_name(r);
     assert(msg != NULL);
-    assert(strcmp(msg, "not found") == 0);
+    assert(strcmp(msg, "NotFound(...)") == 0);
     ft_widget_destroy(w);
 }
 
-void strerror_success(void) {
-    const char* msg = ft_strerror(FT_RESULT_SUCCESS);
+void error_name_success(void) {
+    const char* msg = ft_error_name(FT_RESULT_SUCCESS);
     assert(msg != NULL);
     assert(strcmp(msg, "success") == 0);
 }
@@ -578,9 +578,9 @@ int main(void) {
 
     printf("\n[error type]\n");
     RUN_TEST(error_result_constants);
-    RUN_TEST(strerror_custom_message);
-    RUN_TEST(strerror_not_found);
-    RUN_TEST(strerror_success);
+    RUN_TEST(error_name_custom_message);
+    RUN_TEST(error_name_not_found);
+    RUN_TEST(error_name_success);
     RUN_TEST(error_handle_message_and_destroy);
     RUN_TEST(error_handle_null_safe);
 

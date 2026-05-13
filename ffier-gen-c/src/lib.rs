@@ -494,18 +494,18 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 // Strerror bridge generation (batch-level, all errors)
 // ===========================================================================
 
-/// Generate `{prefix}_strerror()` and `{prefix}_strerror_s()` functions
-/// that dispatch by type tag to per-error static message tables.
+/// Generate `{prefix}_error_name()`, `{prefix}_error_message()`, and
+/// `{prefix}_error_destroy()` functions.
 fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
-    let strerror_name = format_ident!("{fn_pfx}strerror");
-    let strerror_s_name = format_ident!("{fn_pfx}strerror_s");
+    let error_name_fn = format_ident!("{fn_pfx}error_name");
+    let error_name_s_fn = format_ident!("{fn_pfx}error_name_s");
     let error_message_name = format_ident!("{fn_pfx}error_message");
     let error_destroy_name = format_ident!("{fn_pfx}error_destroy");
-    let strerror_name_str = strerror_name.to_string();
-    let strerror_s_name_str = strerror_s_name.to_string();
+    let error_name_fn_str = error_name_fn.to_string();
+    let error_name_s_fn_str = error_name_s_fn.to_string();
     let error_message_name_str = error_message_name.to_string();
     let error_destroy_name_str = error_destroy_name.to_string();
 
@@ -537,12 +537,13 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
     let unknown_msg_bytes = proc_macro2::Literal::byte_string(b"unknown error\0");
 
     quote! {
-        /// Static message lookup from a packed `FtResult`.
+        /// Variant name lookup from a packed `FtResult`.
         ///
-        /// Returns a pointer to a null-terminated static string describing the
-        /// error variant. Returns "unknown error" for unrecognized codes.
+        /// Returns a null-terminated static string: the variant's Rust name
+        /// (e.g. `"NotFound(...)"`, `"CustomMessage"`). For programmatic use.
+        /// Use `ft_error_message()` for rich human-readable messages.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #strerror_name(
+        pub unsafe extern "C" fn #error_name_fn(
             r: ffier::FfierResult,
         ) -> *const core::ffi::c_char {
             if r == 0 { return b"success\0".as_ptr() as *const core::ffi::c_char; }
@@ -555,13 +556,12 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             }
         }
 
-        /// Static message lookup returning an `FfierBytes` (length-prefixed,
-        /// null-terminated). For higher-level bindings.
+        /// Variant name lookup returning an `FfierBytes` (length-prefixed).
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #strerror_s_name(
+        pub unsafe extern "C" fn #error_name_s_fn(
             r: ffier::FfierResult,
         ) -> ffier::FfierBytes {
-            let ptr = unsafe { #strerror_name(r) };
+            let ptr = unsafe { #error_name_fn(r) };
             let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
@@ -603,11 +603,11 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             let mut decls = String::new();
             decls.push_str(&format!(
                 "const char* {}({} r);\n",
-                #strerror_name_str, #result_c_name,
+                #error_name_fn_str, #result_c_name,
             ));
             decls.push_str(&format!(
                 "{} {}({} r);\n",
-                #str_c_name, #strerror_s_name_str, #result_c_name,
+                #str_c_name, #error_name_s_fn_str, #result_c_name,
             ));
             decls.push_str(&format!(
                 "{} {}({} err);\n",
@@ -618,7 +618,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
                 #error_destroy_name_str, #error_c_name,
             ));
             ffier_gen_c::HeaderSection {
-                struct_name: "strerror".to_string(),
+                struct_name: "error".to_string(),
                 handle_typedef: String::new(),
                 declarations: decls,
             }

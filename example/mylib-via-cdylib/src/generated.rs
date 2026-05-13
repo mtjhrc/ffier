@@ -23,7 +23,7 @@ impl CalcError {
 impl std::fmt::Display for CalcError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::DivisionByZero => write!(f, "division by zero"),
+            Self::DivisionByZero => write!(f, "DivisionByZero"),
         }
     }
 }
@@ -48,7 +48,7 @@ impl BufferError {
 impl std::fmt::Display for BufferError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WriteFailed => write!(f, "write failed"),
+            Self::WriteFailed => write!(f, "WriteFailed"),
         }
     }
 }
