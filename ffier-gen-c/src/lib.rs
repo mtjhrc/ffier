@@ -7,7 +7,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
     HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
@@ -109,6 +109,7 @@ fn generate_one(
     item: TokenStream2,
     trait_map: &TraitMap,
     error_map: &ErrorMap,
+    handle_types: &HashSet<String>,
 ) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
     match tag.as_str() {
@@ -117,7 +118,7 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_exportable_bridge(meta, trait_map, error_map)
+            generate_exportable_bridge(meta, trait_map, error_map, handle_types)
         }
         "error" => {
             let meta: MetaError = match syn::parse2(item) {
@@ -201,6 +202,24 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             }
         }
         map
+    };
+
+    // Build handle set: type names that are opaque handles (exportables + implementables).
+    // Used to determine GLib-style returns for Result<Handle, E>.
+    let handle_types: HashSet<String> = {
+        let mut set = HashSet::new();
+        for item in &exportables {
+            if let Ok(meta) = syn::parse2::<MetaExportable>(item.clone()) {
+                set.insert(meta.struct_name.to_string());
+            }
+        }
+        for item in &implementables {
+            if let Ok(meta) = syn::parse2::<MetaImplementable>(item.clone()) {
+                // Vtable wrapper types are also handles
+                set.insert(format!("Vtable{}", meta.trait_name));
+            }
+        }
+        set
     };
 
     // Pass 1.5: Validate type tags — check for missing (tag=0) and duplicates.
@@ -361,7 +380,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         };
         header_fn_names.push(header_fn);
 
-        all_code.push(generate_one(item.clone(), &trait_map, &error_map));
+        all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types));
     }
 
     // Extract prefix from any item for shared types (all items share the same prefix)
@@ -502,7 +521,6 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
 
     let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
     let result_name_fn = format_ident!("{fn_pfx}result_name");
-    let error_result_name = format_ident!("{fn_pfx}error_result");
     let error_result_name = format_ident!("{fn_pfx}error_result");
     let error_message_name = format_ident!("{fn_pfx}error_message");
     let error_destroy_name = format_ident!("{fn_pfx}error_destroy");
@@ -648,6 +666,7 @@ fn generate_exportable_bridge(
     meta: MetaExportable,
     trait_map: &TraitMap,
     error_map: &ErrorMap,
+    handle_types: &HashSet<String>,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
@@ -707,7 +726,7 @@ fn generate_exportable_bridge(
         };
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge);
+        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types);
 
         // Self cast via FfierHandleBox (instance methods only)
         let obj_binding = if has_receiver {
@@ -1098,18 +1117,34 @@ fn generate_exportable_bridge(
                 });
             }
             MetaReturn::Result { ok, err_ident } => {
-                let result_c_name = format!("{type_pfx}Result");
+                let ok_is_handle = ok.is_some()
+                    && is_result_ok_handle(&m.rust_ret, handle_types);
 
-                let out_c_type = ok.as_ref().map(|vk| {
-                    let bridge_type = &vk.bridge_type;
+                // Header: return type depends on handle-ness
+                let ret_c_name = if ok_is_handle {
+                    let bridge_type = &ok.as_ref().unwrap().bridge_type;
                     quote! {
                         &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                     }
-                });
+                } else {
+                    let result_c_name = format!("{type_pfx}Result");
+                    quote! { #result_c_name }
+                };
+
+                let out_c_type = if ok_is_handle {
+                    None // no out-param for handle returns
+                } else {
+                    ok.as_ref().map(|vk| {
+                        let bridge_type = &vk.bridge_type;
+                        quote! {
+                            &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                        }
+                    })
+                };
 
                 let err_handle_c_name = format!("{type_pfx}Error");
                 let header_line = build_header_line(
-                    quote! { #result_c_name },
+                    ret_c_name,
                     &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
@@ -1125,69 +1160,93 @@ fn generate_exportable_bridge(
                 let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
                 let err_path = err_info.map(|i| &i.path);
 
-                let err_branch = {
-                    let box_expr = if err_path.is_some() {
-                        quote! {
-                            if !err_out.is_null() {
-                                unsafe {
-                                    *err_out = ffier::ffier_error_box(e, #err_type_tag);
+                let box_expr = if err_path.is_some() {
+                    quote! {
+                        if !err_out.is_null() {
+                            unsafe {
+                                *err_out = ffier::ffier_error_box(e, #err_type_tag);
+                            }
+                        }
+                    }
+                } else {
+                    quote! {}
+                };
+
+                if ok_is_handle {
+                    // GLib-style: return handle directly, NULL on error
+                    let bridge_type = &ok.as_ref().unwrap().bridge_type;
+                    ffi_fns.push(quote! {
+                        #[unsafe(no_mangle)]
+                        pub unsafe extern "C" fn #ffi_name(
+                            #(#sig_names: #sig_types),*
+                        ) #sig_ret {
+                            #obj_binding
+                            #(#vtable_pre_bindings)*
+                            #(#pre_bindings)*
+                            match #method_call {
+                                Ok(ok_val) => {
+                                    <#bridge_type as ffier::FfiType>::into_c(ok_val)
+                                }
+                                Err(e) => {
+                                    #box_expr
+                                    core::ptr::null_mut()
                                 }
                             }
                         }
-                    } else {
-                        quote! {}
+                    });
+                } else {
+                    // FtResult style: out-param for ok value, return result code
+                    let ok_branch = match ok {
+                        Some(vk) => {
+                            let bridge_type = &vk.bridge_type;
+                            quote! {
+                                Ok(ok_val) => {
+                                    unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
+                                    ffier::FFIER_RESULT_SUCCESS
+                                }
+                            }
+                        }
+                        None if handle_is_indirect => quote! {
+                            Ok(new_self) => {
+                                unsafe { *handle_ptr = <#struct_path as ffier::FfiType>::into_c(new_self) };
+                                ffier::FFIER_RESULT_SUCCESS
+                            }
+                        },
+                        None => quote! {
+                            Ok(_) => ffier::FFIER_RESULT_SUCCESS,
+                        },
                     };
-                    quote! {
+
+                    let err_branch = quote! {
                         Err(e) => {
                             let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
                             #box_expr
                             __r
                         }
-                    }
-                };
+                    };
 
-                let ok_branch = match ok {
-                    Some(vk) => {
-                        let bridge_type = &vk.bridge_type;
-                        quote! {
-                            Ok(ok_val) => {
-                                unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
-                                ffier::FFIER_RESULT_SUCCESS
+                    let handle_ptr_binding = if handle_is_indirect {
+                        quote! { let handle_ptr = handle; }
+                    } else {
+                        quote! {}
+                    };
+
+                    ffi_fns.push(quote! {
+                        #[unsafe(no_mangle)]
+                        pub unsafe extern "C" fn #ffi_name(
+                            #(#sig_names: #sig_types),*
+                        ) #sig_ret {
+                            #handle_ptr_binding
+                            #obj_binding
+                            #(#vtable_pre_bindings)*
+                            #(#pre_bindings)*
+                            match #method_call {
+                                #ok_branch
+                                #err_branch
                             }
                         }
-                    }
-                    None if handle_is_indirect => quote! {
-                        Ok(new_self) => {
-                            unsafe { *handle_ptr = <#struct_path as ffier::FfiType>::into_c(new_self) };
-                            ffier::FFIER_RESULT_SUCCESS
-                        }
-                    },
-                    None => quote! {
-                        Ok(_) => ffier::FFIER_RESULT_SUCCESS,
-                    },
-                };
-
-                let handle_ptr_binding = if handle_is_indirect {
-                    quote! { let handle_ptr = handle; }
-                } else {
-                    quote! {}
-                };
-
-                ffi_fns.push(quote! {
-                    #[unsafe(no_mangle)]
-                    pub unsafe extern "C" fn #ffi_name(
-                        #(#sig_names: #sig_types),*
-                    ) #sig_ret {
-                        #handle_ptr_binding
-                        #obj_binding
-                        #(#vtable_pre_bindings)*
-                        #(#pre_bindings)*
-                        match #method_call {
-                            #ok_branch
-                            #err_branch
-                        }
-                    }
-                });
+                    });
+                }
             }
         }
     }
@@ -1420,6 +1479,27 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 // Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
 // ===========================================================================
 
+/// Extract the last path segment name from a token stream like `$crate::Gadget`.
+fn last_path_segment(ts: &TokenStream2) -> Option<String> {
+    let mut last_ident = None;
+    for tt in ts.clone() {
+        if let proc_macro2::TokenTree::Ident(id) = tt {
+            last_ident = Some(id.to_string());
+        }
+    }
+    last_ident
+}
+
+/// Check if a Result<T, E> Ok type is a handle, using the original Rust
+/// return type tokens (e.g. `Result<Gadget, TestError>`) rather than the
+/// bridge_type alias (which may be an opaque `_TypeN`).
+pub fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
+    let ok_type = extract_result_ok_type(rust_ret);
+    last_path_segment(&ok_type)
+        .map(|name| handle_types.contains(&name))
+        .unwrap_or(false)
+}
+
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
 pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
@@ -1477,6 +1557,7 @@ pub fn c_signature_for_method(
     method: &MetaMethod,
     prefix: &str,
     ctx: SignatureContext,
+    handle_types: &HashSet<String>,
 ) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name);
     let mut params = Vec::new();
@@ -1525,19 +1606,32 @@ pub fn c_signature_for_method(
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
-            if let Some(vk) = ok {
-                let ok_rust_type = extract_result_ok_type(&method.rust_ret);
+            let ok_is_handle = ok.is_some()
+                && is_result_ok_handle(&method.rust_ret, handle_types);
+
+            if ok_is_handle {
+                // GLib-style: return handle directly (NULL on error).
+                // Only err_out as param.
                 params.push(CExternParam {
-                    name: format_ident!("result"),
-                    c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
                 });
+                quote! { -> *mut core::ffi::c_void }
+            } else {
+                // Value or void result: out-param + return FfierResult.
+                if let Some(vk) = ok {
+                    let ok_rust_type = extract_result_ok_type(&method.rust_ret);
+                    params.push(CExternParam {
+                        name: format_ident!("result"),
+                        c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
+                    });
+                }
+                params.push(CExternParam {
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
+                });
+                quote! { -> ffier::FfierResult }
             }
-            // Optional error handle out-param (nullable — caller can pass NULL)
-            params.push(CExternParam {
-                name: format_ident!("err_out"),
-                c_type: quote! { *mut *mut core::ffi::c_void },
-            });
-            quote! { -> ffier::FfierResult }
         }
     };
 

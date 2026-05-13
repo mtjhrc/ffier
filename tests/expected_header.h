@@ -179,7 +179,7 @@ FtGadget ft_widget_create_gadget(FtWidget handle);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_try_create_gadget(FtWidget handle, bool ok, FtGadget* result, FtError* err_out);
+FtGadget ft_widget_try_create_gadget(FtWidget handle, bool ok, FtError* err_out);
 /**
  * Read a gadget's value.
  *
@@ -293,7 +293,7 @@ FtGizmo ft_gizmo_builder_build(FtGizmoBuilder handle);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtGizmo* result, FtError* err_out);
+FtGizmo ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtError* err_out);
 void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
@@ -532,17 +532,17 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 
-/* Fruit (dispatch) -------------------------------------------------- */
-
-int32_t ft_fruit_value(void* handle);
-FtStr ft_fruit_label(void* handle);
-void ft_fruit_destroy(void* handle);
-
 /* Processor (dispatch) ---------------------------------------------- */
 
 int32_t ft_processor_process(void* handle, int32_t input);
 FtStr ft_processor_name(void* handle);
 void ft_processor_destroy(void* handle);
+
+/* Fruit (dispatch) -------------------------------------------------- */
+
+int32_t ft_fruit_value(void* handle);
+FtStr ft_fruit_label(void* handle);
+void ft_fruit_destroy(void* handle);
 
 /* error ------------------------------------------------------------- */
 

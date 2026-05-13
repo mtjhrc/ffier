@@ -107,6 +107,7 @@ fn emit_ffi_handle_impls(
         impl ffier::FfiType for #ty {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &str = #c_handle_name;
+            const IS_HANDLE: bool = true;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierHandleBox {
                     type_tag: #tag_const,
@@ -923,11 +924,6 @@ fn extract_impl_trait_name(ty: &Type) -> Option<String> {
         }
     }
     None
-}
-
-/// `DivisionByZero` → `"division by zero"`
-fn camel_to_human(s: &str) -> String {
-    camel_to_snake(s).replace('_', " ")
 }
 
 /// Extract `/// doc` comments from attributes.

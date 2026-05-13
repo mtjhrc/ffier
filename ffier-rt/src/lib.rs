@@ -7,6 +7,8 @@ use std::ffi::CStr;
 pub trait FfiType {
     type CRepr;
     const C_TYPE_NAME: &'static str;
+    /// True for types backed by an opaque handle (`void*`).
+    const IS_HANDLE: bool = false;
     fn into_c(self) -> Self::CRepr;
     fn from_c(repr: Self::CRepr) -> Self;
 }
@@ -249,6 +251,7 @@ impl VtableHandle {
 impl<T: FfiHandle> FfiType for &T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut c_void {
         // Safety: into_c is only called by generated bridge code on references
         // that point into a valid FfierHandleBox<T>.
@@ -262,6 +265,7 @@ impl<T: FfiHandle> FfiType for &T {
 impl<T: FfiHandle> FfiType for &mut T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut c_void {
         // Safety: into_c is only called by generated bridge code on references
         // that point into a valid FfierHandleBox<T>.
