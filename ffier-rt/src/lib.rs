@@ -417,17 +417,31 @@ pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
 /// handles. Preserves the concrete Rust error value alongside a cached
 /// `Display` message.
 ///
-/// `cached_msg` is first so `ft_error_message()` can read it without
-/// knowing `E` — it's always at offset 0 of the payload regardless of
-/// the error type's size.
+/// Field order: `result`, `cached_msg`, then `error`. The first two are
+/// at fixed offsets regardless of `E`, so `FfierErrorHeader` can read
+/// them without knowing the concrete error type.
 #[repr(C)]
 pub struct FfierErrorPayload<E> {
-    /// Cached `Display::fmt()` output (first field — fixed offset).
-    pub cached_msg: String,
     /// Pre-computed `FfierResult` (type_tag << 32 | code).
     pub result: FfierResult,
+    /// Cached `Display::fmt()` output.
+    pub cached_msg: String,
     /// The concrete Rust error value.
     pub error: E,
+}
+
+/// Fixed-layout prefix of every `FfierHandleBox<FfierErrorPayload<E>>`.
+///
+/// Since both `FfierHandleBox` and `FfierErrorPayload` are `#[repr(C)]`,
+/// the first fields have identical layout regardless of `E`. This struct
+/// lets `ffier_error_result()` and `ffier_error_message()` read them
+/// through a plain cast — no raw pointer arithmetic, no generics needed.
+#[repr(C)]
+struct FfierErrorHeader {
+    type_tag: u32,
+    metadata: u32,
+    result: FfierResult,
+    cached_msg: String,
 }
 
 /// Box an `FfiError` value into a `FfierHandleBox`-based error handle.
@@ -453,11 +467,19 @@ pub fn ffier_error_box<E: FfiError>(error: E, type_tag: u32) -> *mut c_void {
     Box::into_raw(boxed) as *mut c_void
 }
 
-/// Read the cached message from an error handle.
+/// Read the `FfierResult` from a boxed error handle.
 ///
-/// Works without knowing the concrete error type because `cached_msg`
-/// is the first field of `FfierErrorPayload<E>` (`#[repr(C)]` — fixed
-/// offset from the `FfierHandleBox` header).
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box`, or null.
+pub unsafe fn ffier_error_result(handle: *const c_void) -> FfierResult {
+    if handle.is_null() {
+        return FFIER_RESULT_SUCCESS;
+    }
+    let header = unsafe { &*(handle as *const FfierErrorHeader) };
+    header.result
+}
+
+/// Read the cached message from an error handle.
 ///
 /// # Safety
 /// `handle` must be a valid error handle from `ffier_error_box`, or null.
@@ -465,11 +487,8 @@ pub unsafe fn ffier_error_message(handle: *const c_void) -> FfierBytes {
     if handle.is_null() {
         return FfierBytes::EMPTY;
     }
-    // Handle points to start of FfierHandleBox { type_tag: u32, metadata: u32, value: ... }
-    // value starts at offset 8. cached_msg is the first field of value (#[repr(C)]).
-    let msg_ptr = unsafe { (handle as *const u8).add(8) as *const String };
-    let msg = unsafe { &*msg_ptr };
-    unsafe { FfierBytes::from_str(msg) }
+    let header = unsafe { &*(handle as *const FfierErrorHeader) };
+    unsafe { FfierBytes::from_str(&header.cached_msg) }
 }
 
 /// Typed destroy — drops `FfierHandleBox<FfierErrorPayload<E>>`.
