@@ -25,6 +25,9 @@ typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtSprocket;
 
+typedef uint64_t FtResult;
+#define FT_RESULT_SUCCESS 0
+
 /* Caller must ensure data is valid UTF-8 */
 typedef struct {
     const char* data;
@@ -55,17 +58,9 @@ typedef struct {
 
 /* TestError --------------------------------------------------------- */
 
-typedef struct {
-    uint64_t code;
-    char* _msg; /* private */
-} FtTestError;
-
-#define FT_TEST_ERROR_NOT_FOUND 1
-#define FT_TEST_ERROR_CUSTOM_MESSAGE 2
-#define FT_TEST_ERROR_INVALID_INPUT 3
-
-const char* ft_test_error_message(const FtTestError* err);
-void ft_test_error_free(FtTestError* err);
+#define FT_ERROR_TEST_NOT_FOUND ((uint64_t)1 << 32 | 1)
+#define FT_ERROR_TEST_CUSTOM_MESSAGE ((uint64_t)1 << 32 | 2)
+#define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)1 << 32 | 3)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -128,38 +123,38 @@ int64_t ft_widget_negate(FtWidget handle, int64_t v);
 /**
  * Validate internal state (always succeeds for default widget).
  *
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_validate(FtWidget handle);
+FtResult ft_widget_validate(FtWidget handle);
 /**
  * Parse a count value from the name length, returning error if name matches trigger.
  *
  * @param s the input string whose length becomes the count.
  * @param[out] result The count derived from the name length.
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result);
+FtResult ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result);
 /**
  * Describe a code as a string.
  *
  * @param code the numeric code to look up.
  * @param[out] result
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_describe(FtWidget handle, int32_t code, FtStr* result);
+FtResult ft_widget_describe(FtWidget handle, int32_t code, FtStr* result);
 /**
  * Always fails with an error.
  *
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_fail_always(FtWidget handle);
+FtResult ft_widget_fail_always(FtWidget handle);
 /**
  * Always fails with an error (value variant).
  *
  * @param[out] result
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_fail_with_value(FtWidget handle, int32_t* result);
+FtResult ft_widget_fail_with_value(FtWidget handle, int32_t* result);
 /**
  * Set tags from a string slice.
  *
@@ -179,9 +174,9 @@ FtGadget ft_widget_create_gadget(FtWidget handle);
  *
  * @param ok
  * @param[out] result
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_widget_try_create_gadget(FtWidget handle, bool ok, FtGadget* result);
+FtResult ft_widget_try_create_gadget(FtWidget handle, bool ok, FtGadget* result);
 /**
  * Read a gadget's value.
  *
@@ -242,9 +237,9 @@ void ft_config_set_size(FtConfig* handle, int32_t size);
 /**
  * Validate and return self, or error if name is empty.
  *
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_config_validated(FtConfig* handle);
+FtResult ft_config_validated(FtConfig* handle);
 /**
  * Get the config name.
  */
@@ -293,9 +288,9 @@ FtGizmo ft_gizmo_builder_build(FtGizmoBuilder handle);
  * Try to build the gizmo; fails if name is empty.
  *
  * @param[out] result
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtGizmo* result);
+FtResult ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtGizmo* result);
 void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
@@ -376,9 +371,9 @@ int32_t ft_pipeline_result_count(FtPipeline handle);
  * Get the last result, or error if empty.
  *
  * @param[out] result
- * @return FtTestError with code 0 on success, error code on failure.
+ * @return FtResult with code 0 on success, error code on failure.
  */
-FtTestError ft_pipeline_last_result(FtPipeline handle, int32_t* result);
+FtResult ft_pipeline_last_result(FtPipeline handle, int32_t* result);
 void ft_pipeline_destroy(FtPipeline handle);
 
 /* Apple ------------------------------------------------------------- */
@@ -534,15 +529,20 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 
+/* Processor (dispatch) ---------------------------------------------- */
+
+int32_t ft_processor_process(void* handle, int32_t input);
+FtStr ft_processor_name(void* handle);
+void ft_processor_destroy(void* handle);
+
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(void* handle);
 FtStr ft_fruit_label(void* handle);
 void ft_fruit_destroy(void* handle);
 
-/* Processor (dispatch) ---------------------------------------------- */
+/* strerror ---------------------------------------------------------- */
 
-int32_t ft_processor_process(void* handle, int32_t input);
-FtStr ft_processor_name(void* handle);
-void ft_processor_destroy(void* handle);
+const char* ft_strerror(FtResult r);
+FtStr ft_strerror_s(FtResult r);
 #endif /* FFIER_TEST_H */

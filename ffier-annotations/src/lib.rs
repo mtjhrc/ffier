@@ -735,15 +735,40 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
     let error_path = quote! { $crate::#name };
 
+    // Display impl — same messages as static_message, used for rich error output
+    let display_arms: Vec<_> = data_enum
+        .variants
+        .iter()
+        .zip(variant_meta_tokens.iter())
+        .map(|(variant, _)| {
+            let var_ident = &variant.ident;
+            let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
+            let message = attrs
+                .message
+                .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+            quote! { #name::#var_ident => write!(f, #message) }
+        })
+        .collect();
+
     let output = quote! {
+        impl core::fmt::Display for #name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                match self {
+                    #(#display_arms,)*
+                }
+            }
+        }
+
+        impl std::error::Error for #name {}
+
         impl ffier::FfiError for #name {
-            fn code(&self) -> u64 {
+            fn code(&self) -> u32 {
                 match self {
                     #(#code_arms,)*
                 }
             }
 
-            fn static_message(code: u64) -> &'static core::ffi::CStr {
+            fn static_message(code: u32) -> &'static core::ffi::CStr {
                 match code {
                     #(#message_arms,)*
                     _ => unsafe {
@@ -752,7 +777,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn codes() -> &'static [(&'static str, u64)] {
+            fn codes() -> &'static [(&'static str, u32)] {
                 &[#(#codes_entries),*]
             }
         }
@@ -793,7 +818,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 }
 
 struct FfierVariantAttrs {
-    code: u64,
+    code: u32,
     message: Option<String>,
 }
 
@@ -810,7 +835,7 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
             if meta.path.is_ident("code") {
                 let value = meta.value()?;
                 let lit: syn::LitInt = value.parse()?;
-                code = Some(lit.base10_parse::<u64>()?);
+                code = Some(lit.base10_parse::<u32>()?);
                 Ok(())
             } else if meta.path.is_ident("message") {
                 let value = meta.value()?;

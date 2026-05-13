@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::CStr;
 
 // ---------------------------------------------------------------------------
 // FfiType --- maps Rust types to C-compatible representations
@@ -352,60 +352,59 @@ impl FfierBytes {
 }
 
 // ---------------------------------------------------------------------------
-// FfiError --- per-type C error struct: { code, _msg }
+// FfiError --- trait for error enums exported via FFI
 // ---------------------------------------------------------------------------
 
-pub trait FfiError: Sized {
-    fn code(&self) -> u64;
+/// Trait for error enums exported across the FFI boundary.
+///
+/// Requires `std::error::Error` (which implies `Display`). The `Display`
+/// impl is used for rich error messages cached inside the error handle.
+pub trait FfiError: std::error::Error + Sized {
+    /// Variant code (lower 32 bits of `FfierResult`).
+    fn code(&self) -> u32;
 
-    fn message(&self) -> Option<String> {
-        None
-    }
-
-    fn static_message(code: u64) -> &'static CStr;
+    /// Static human-readable message for a variant code (no allocation).
+    fn static_message(code: u32) -> &'static CStr;
 
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
-    fn codes() -> &'static [(&'static str, u64)];
+    fn codes() -> &'static [(&'static str, u32)];
 }
 
-#[repr(C)]
-pub struct FfierError {
-    pub code: u64,
-    _msg: *mut c_char,
+// ---------------------------------------------------------------------------
+// FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
+// ---------------------------------------------------------------------------
+
+/// Packed error result: `0` = success, nonzero = `(type_tag << 32) | code`.
+///
+/// Users compare against generated constants (`FT_ERROR_CALC_OVERFLOW` etc.).
+/// The internal layout is an implementation detail.
+pub type FfierResult = u64;
+
+/// Build a `FfierResult` from a type tag and variant code.
+#[inline]
+pub fn ffier_result(type_tag: u32, code: u32) -> FfierResult {
+    ((type_tag as u64) << 32) | (code as u64)
 }
 
-impl FfierError {
-    pub fn ok() -> Self {
-        Self {
-            code: 0,
-            _msg: core::ptr::null_mut(),
-        }
-    }
+/// Extract the type tag from a `FfierResult` (upper 32 bits).
+#[inline]
+pub fn ffier_result_type_tag(r: FfierResult) -> u32 {
+    (r >> 32) as u32
+}
 
-    pub fn from_err<E: FfiError>(e: E) -> Self {
-        let code = e.code();
-        let msg_ptr = match e.message() {
-            Some(s) => CString::new(s)
-                .map(CString::into_raw)
-                .unwrap_or(core::ptr::null_mut()),
-            None => core::ptr::null_mut(),
-        };
-        Self {
-            code,
-            _msg: msg_ptr,
-        }
-    }
+/// Extract the error code from a `FfierResult` (lower 32 bits).
+#[inline]
+pub fn ffier_result_code(r: FfierResult) -> u32 {
+    r as u32
+}
 
-    pub fn msg_ptr(&self) -> *const c_char {
-        self._msg
-    }
+/// Success value.
+pub const FFIER_RESULT_SUCCESS: FfierResult = 0;
 
-    /// # Safety
-    /// `_msg` must be null or from `CString::into_raw`.
-    pub unsafe fn free(&mut self) {
-        if !self._msg.is_null() {
-            drop(unsafe { CString::from_raw(self._msg) });
-        }
-        *self = Self::ok();
-    }
+/// Convert an error value into a `FfierResult`.
+///
+/// `type_tag` identifies the error enum (assigned in `library_definition!`).
+#[inline]
+pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
+    ffier_result(type_tag, e.code())
 }
