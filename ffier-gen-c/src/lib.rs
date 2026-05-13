@@ -494,18 +494,21 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 // Strerror bridge generation (batch-level, all errors)
 // ===========================================================================
 
-/// Generate `{prefix}_error_name()`, `{prefix}_error_message()`, and
+/// Generate `{prefix}_result_name()`, `{prefix}_error_message()`, and
 /// `{prefix}_error_destroy()` functions.
 fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
-    let error_name_cstr_fn = format_ident!("{fn_pfx}error_name_cstr");
-    let error_name_fn = format_ident!("{fn_pfx}error_name");
+    let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
+    let result_name_fn = format_ident!("{fn_pfx}result_name");
+    let error_result_name = format_ident!("{fn_pfx}error_result");
+    let error_result_name = format_ident!("{fn_pfx}error_result");
     let error_message_name = format_ident!("{fn_pfx}error_message");
     let error_destroy_name = format_ident!("{fn_pfx}error_destroy");
-    let error_name_cstr_fn_str = error_name_cstr_fn.to_string();
-    let error_name_fn_str = error_name_fn.to_string();
+    let result_name_cstr_fn_str = result_name_cstr_fn.to_string();
+    let result_name_fn_str = result_name_fn.to_string();
+    let error_result_name_str = error_result_name.to_string();
     let error_message_name_str = error_message_name.to_string();
     let error_destroy_name_str = error_destroy_name.to_string();
 
@@ -539,7 +542,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
     quote! {
         /// Variant name as a null-terminated C string.
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #error_name_cstr_fn(
+        pub unsafe extern "C" fn #result_name_cstr_fn(
             r: ffier::FfierResult,
         ) -> *const core::ffi::c_char {
             if r == 0 { return b"success\0".as_ptr() as *const core::ffi::c_char; }
@@ -554,12 +557,23 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
 
         /// Variant name as `FtStr` (length-prefixed, no strlen needed).
         #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #error_name_fn(
+        pub unsafe extern "C" fn #result_name_fn(
             r: ffier::FfierResult,
         ) -> ffier::FfierBytes {
-            let ptr = unsafe { #error_name_cstr_fn(r) };
+            let ptr = unsafe { #result_name_cstr_fn(r) };
             let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
             ffier::FfierBytes { data: ptr as *const u8, len }
+        }
+
+        /// Extract the `FtResult` code from a boxed error handle.
+        ///
+        /// Enables a single `KRUN_TRY` macro for both `FtResult`-returning
+        /// and handle-returning functions.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #error_result_name(
+            err: *const core::ffi::c_void,
+        ) -> ffier::FfierResult {
+            unsafe { ffier::ffier_error_result(err) }
         }
 
         /// Rich Display message from a boxed error handle.
@@ -599,11 +613,15 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             let mut decls = String::new();
             decls.push_str(&format!(
                 "{} {}({} r);\n",
-                #str_c_name, #error_name_fn_str, #result_c_name,
+                #str_c_name, #result_name_fn_str, #result_c_name,
             ));
             decls.push_str(&format!(
                 "const char* {}({} r);\n",
-                #error_name_cstr_fn_str, #result_c_name,
+                #result_name_cstr_fn_str, #result_c_name,
+            ));
+            decls.push_str(&format!(
+                "{} {}({} err);\n",
+                #result_c_name, #error_result_name_str, #error_c_name,
             ));
             decls.push_str(&format!(
                 "{} {}({} err);\n",

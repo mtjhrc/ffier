@@ -316,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn error_name_data_carrying() {
+    fn result_name_data_carrying() {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
@@ -328,7 +328,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             // strerror returns variant name with (...) for data-carrying
-            let msg = CStr::from_ptr(ft_error_name_cstr(r)).to_str().unwrap();
+            let msg = CStr::from_ptr(ft_result_name_cstr(r)).to_str().unwrap();
             assert_eq!(msg, "NotFound(...)");
             ft_widget_destroy(w);
         }
@@ -352,7 +352,7 @@ mod tests {
             let msg = ft_error_message(err);
             assert_eq!(msg.as_str_unchecked(), "not found: error");
             // strerror shows data-carrying hint, not the Display output
-            let static_msg = CStr::from_ptr(ft_error_name_cstr(r)).to_str().unwrap();
+            let static_msg = CStr::from_ptr(ft_result_name_cstr(r)).to_str().unwrap();
             assert_eq!(static_msg, "NotFound(...)");
             ft_error_destroy(err);
             ft_widget_destroy(w);
@@ -507,22 +507,22 @@ mod tests {
     }
 
     #[test]
-    fn error_name_returns_variant_name() {
+    fn result_name_returns_variant_name() {
         unsafe {
             let w = ft_widget_new();
             let r = ft_widget_fail_always(w, ptr::null_mut());
             assert_ne!(r, 0);
             // strerror returns raw variant name, not Display output
-            let msg = CStr::from_ptr(ft_error_name_cstr(r)).to_str().unwrap();
+            let msg = CStr::from_ptr(ft_result_name_cstr(r)).to_str().unwrap();
             assert_eq!(msg, "CustomMessage");
             ft_widget_destroy(w);
         }
     }
 
     #[test]
-    fn error_name_success() {
+    fn result_name_success() {
         unsafe {
-            let msg = ft_error_name(0);
+            let msg = ft_result_name(0);
             assert_eq!(msg.as_str_unchecked(), "success");
         }
     }
@@ -552,6 +552,29 @@ mod tests {
             assert_eq!(msg.as_str_unchecked(), "custom error message");
             ft_error_destroy(err);
             ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn error_result_from_handle() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let r = ft_widget_fail_always(w, &mut err);
+            assert_ne!(r, 0);
+            assert!(!err.is_null());
+            // ft_error_result extracts the FtResult from the boxed error
+            let r2 = ft_error_result(err);
+            assert_eq!(r, r2);
+            ft_error_destroy(err);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn error_result_null_returns_success() {
+        unsafe {
+            assert_eq!(ft_error_result(ptr::null()), 0);
         }
     }
 
