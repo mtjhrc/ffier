@@ -4,11 +4,11 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
 pub enum TestError {
-    #[error("not found")]
+    #[error("not found: {0}")]
     #[ffier(code = 1)]
-    NotFound,
+    NotFound(String),
     #[error("custom error message")]
     #[ffier(code = 2)]
     CustomMessage,
@@ -116,7 +116,7 @@ impl Widget {
     /// The count derived from the name length.
     pub fn parse_count(&self, s: &str) -> Result<i32, TestError> {
         if s == "error" {
-            Err(TestError::NotFound)
+            Err(TestError::NotFound(s.to_string()))
         } else {
             Ok(s.len() as i32)
         }
@@ -131,7 +131,7 @@ impl Widget {
         match code {
             0 => Ok("zero"),
             1 => Ok("one"),
-            _ => Err(TestError::NotFound),
+            _ => Err(TestError::NotFound(format!("code {code}"))),
         }
     }
 
@@ -165,7 +165,7 @@ impl Widget {
         if ok {
             Ok(Gadget { value: self.count })
         } else {
-            Err(TestError::NotFound)
+            Err(TestError::NotFound("gadget creation failed".to_string()))
         }
     }
 
@@ -482,7 +482,10 @@ impl Pipeline {
 
     /// Get the last result, or error if empty.
     pub fn last_result(&self) -> Result<i32, TestError> {
-        self.results.last().copied().ok_or(TestError::NotFound)
+        self.results
+            .last()
+            .copied()
+            .ok_or_else(|| TestError::NotFound("no results".to_string()))
     }
 }
 

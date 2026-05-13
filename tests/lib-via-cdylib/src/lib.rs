@@ -259,12 +259,10 @@ mod tests {
 
     #[test]
     fn error_display() {
-        assert_eq!(format!("{}", TestError::NotFound), "not found");
-        assert_eq!(
-            format!("{}", TestError::CustomMessage),
-            "custom error message"
-        );
-        assert_eq!(format!("{}", TestError::InvalidInput), "invalid input");
+        // Client-side Display uses the variant name (same as ft_error_name)
+        assert_eq!(format!("{}", TestError::NotFound), "NotFound(...)");
+        assert_eq!(format!("{}", TestError::CustomMessage), "CustomMessage");
+        assert_eq!(format!("{}", TestError::InvalidInput), "InvalidInput");
     }
 
     // ================================================================

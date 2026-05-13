@@ -316,13 +316,45 @@ mod tests {
     }
 
     #[test]
-    fn method_returning_result_fail_with_value() {
+    fn error_name_data_carrying() {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
-            let r = ft_widget_fail_with_value(w, &mut result, ptr::null_mut());
+            let r = ft_widget_parse_count(
+                w,
+                ffier::FfierBytes::from_str("error"),
+                &mut result,
+                ptr::null_mut(),
+            );
             assert_ne!(r, 0);
-            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
+            // strerror returns variant name with (...) for data-carrying
+            let msg = CStr::from_ptr(ft_error_name(r)).to_str().unwrap();
+            assert_eq!(msg, "NotFound(...)");
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn error_message_has_interpolated_data() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut result: i32 = -1;
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let r = ft_widget_parse_count(
+                w,
+                ffier::FfierBytes::from_str("error"),
+                &mut result,
+                &mut err,
+            );
+            assert_ne!(r, 0);
+            assert!(!err.is_null());
+            // error_message returns the rich Display output with interpolated data
+            let msg = ft_error_message(err);
+            assert_eq!(msg.as_str_unchecked(), "not found: error");
+            // strerror shows data-carrying hint, not the Display output
+            let static_msg = CStr::from_ptr(ft_error_name(r)).to_str().unwrap();
+            assert_eq!(static_msg, "NotFound(...)");
+            ft_error_destroy(err);
             ft_widget_destroy(w);
         }
     }
@@ -475,39 +507,22 @@ mod tests {
     }
 
     #[test]
-    fn strerror_auto_generated() {
+    fn error_name_returns_variant_name() {
         unsafe {
             let w = ft_widget_new();
             let r = ft_widget_fail_always(w, ptr::null_mut());
             assert_ne!(r, 0);
-            let msg = CStr::from_ptr(ft_strerror(r)).to_str().unwrap();
-            assert_eq!(msg, "custom error message");
+            // strerror returns raw variant name, not Display output
+            let msg = CStr::from_ptr(ft_error_name(r)).to_str().unwrap();
+            assert_eq!(msg, "CustomMessage");
             ft_widget_destroy(w);
         }
     }
 
     #[test]
-    fn strerror_not_found() {
+    fn error_name_success() {
         unsafe {
-            let w = ft_widget_new();
-            let mut result: i32 = -1;
-            let r = ft_widget_parse_count(
-                w,
-                ffier::FfierBytes::from_str("error"),
-                &mut result,
-                ptr::null_mut(),
-            );
-            assert_ne!(r, 0);
-            let msg = CStr::from_ptr(ft_strerror(r)).to_str().unwrap();
-            assert_eq!(msg, "not found");
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    fn strerror_success() {
-        unsafe {
-            let msg = CStr::from_ptr(ft_strerror(0)).to_str().unwrap();
+            let msg = CStr::from_ptr(ft_error_name(0)).to_str().unwrap();
             assert_eq!(msg, "success");
         }
     }

@@ -544,10 +544,10 @@ int32_t ft_processor_process(void* handle, int32_t input);
 FtStr ft_processor_name(void* handle);
 void ft_processor_destroy(void* handle);
 
-/* strerror ---------------------------------------------------------- */
+/* error ------------------------------------------------------------- */
 
-const char* ft_strerror(FtResult r);
-FtStr ft_strerror_s(FtResult r);
+const char* ft_error_name(FtResult r);
+FtStr ft_error_name_s(FtResult r);
 FtStr ft_error_message(FtError err);
 void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

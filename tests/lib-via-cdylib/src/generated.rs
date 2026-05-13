@@ -28,9 +28,9 @@ impl TestError {
 impl std::fmt::Display for TestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotFound => write!(f, "not found"),
-            Self::CustomMessage => write!(f, "custom error message"),
-            Self::InvalidInput => write!(f, "invalid input"),
+            Self::NotFound => write!(f, "NotFound(...)"),
+            Self::CustomMessage => write!(f, "CustomMessage"),
+            Self::InvalidInput => write!(f, "InvalidInput"),
         }
     }
 }

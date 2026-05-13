@@ -701,13 +701,26 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
-        // Message priority: #[ffier(message="...")] > #[error("...")] > humanized name
-        let message = attrs.message
-            .or_else(|| parse_thiserror_message(&variant.attrs))
-            .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+        // Static message for strerror: #[ffier(message="...")] > raw variant name
+        // Data-carrying variants get "Name(...)" / "Name{..}" to signal
+        // that ft_error_message() has richer detail.
+        let message = attrs.message.unwrap_or_else(|| {
+            let name = var_ident.to_string();
+            match &variant.fields {
+                syn::Fields::Unit => name,
+                syn::Fields::Unnamed(_) => format!("{name}(...)"),
+                syn::Fields::Named(_) => format!("{name}{{..}}"),
+            }
+        });
         let upper_name = camel_to_upper_snake(&var_ident.to_string());
 
-        code_arms.push(quote! { #name::#var_ident => #code });
+        // Wildcard pattern for variants with fields
+        let match_pattern = match &variant.fields {
+            syn::Fields::Unit => quote! { #name::#var_ident },
+            syn::Fields::Unnamed(_) => quote! { #name::#var_ident(..) },
+            syn::Fields::Named(_) => quote! { #name::#var_ident { .. } },
+        };
+        code_arms.push(quote! { #match_pattern => #code });
 
         let msg_with_nul = format!("{message}\0");
         let msg_lit = proc_macro2::Literal::byte_string(msg_with_nul.as_bytes());
@@ -833,26 +846,6 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
         proc_macro2::Span::call_site(),
         "missing #[ffier(code = N)] attribute on variant",
     ))
-}
-
-/// Extract the message string from a `#[error("...")]` attribute (thiserror).
-///
-/// Only handles the simple `#[error("literal string")]` form — format args
-/// like `#[error("bad value: {0}")]` are returned as-is (the static_message
-/// table gets the raw format template, which is good enough for strerror).
-fn parse_thiserror_message(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if !attr.path().is_ident("error") {
-            continue;
-        }
-        // #[error("message")] parses as a parenthesized group with a LitStr
-        if let syn::Meta::List(list) = &attr.meta {
-            if let Ok(lit) = syn::parse2::<LitStr>(list.tokens.clone()) {
-                return Some(lit.value());
-            }
-        }
-    }
-    None
 }
 
 /// Check if an attribute is `#[ffier(skip)]`.
