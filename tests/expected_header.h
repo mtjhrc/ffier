@@ -28,6 +28,9 @@ typedef void* FtSprocket;
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
 
+/* Opaque error handle — pass to *_error_message() for details, free with *_error_destroy() */
+typedef void* FtError;
+
 /* Caller must ensure data is valid UTF-8 */
 typedef struct {
     const char* data;
@@ -125,7 +128,7 @@ int64_t ft_widget_negate(FtWidget handle, int64_t v);
  *
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_validate(FtWidget handle);
+FtResult ft_widget_validate(FtWidget handle, FtError* err_out);
 /**
  * Parse a count value from the name length, returning error if name matches trigger.
  *
@@ -133,7 +136,7 @@ FtResult ft_widget_validate(FtWidget handle);
  * @param[out] result The count derived from the name length.
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result);
+FtResult ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result, FtError* err_out);
 /**
  * Describe a code as a string.
  *
@@ -141,20 +144,20 @@ FtResult ft_widget_parse_count(FtWidget handle, FtStr s, int32_t* result);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_describe(FtWidget handle, int32_t code, FtStr* result);
+FtResult ft_widget_describe(FtWidget handle, int32_t code, FtStr* result, FtError* err_out);
 /**
  * Always fails with an error.
  *
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_fail_always(FtWidget handle);
+FtResult ft_widget_fail_always(FtWidget handle, FtError* err_out);
 /**
  * Always fails with an error (value variant).
  *
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_fail_with_value(FtWidget handle, int32_t* result);
+FtResult ft_widget_fail_with_value(FtWidget handle, int32_t* result, FtError* err_out);
 /**
  * Set tags from a string slice.
  *
@@ -176,7 +179,7 @@ FtGadget ft_widget_create_gadget(FtWidget handle);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_widget_try_create_gadget(FtWidget handle, bool ok, FtGadget* result);
+FtResult ft_widget_try_create_gadget(FtWidget handle, bool ok, FtGadget* result, FtError* err_out);
 /**
  * Read a gadget's value.
  *
@@ -239,7 +242,7 @@ void ft_config_set_size(FtConfig* handle, int32_t size);
  *
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_config_validated(FtConfig* handle);
+FtResult ft_config_validated(FtConfig* handle, FtError* err_out);
 /**
  * Get the config name.
  */
@@ -290,7 +293,7 @@ FtGizmo ft_gizmo_builder_build(FtGizmoBuilder handle);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtGizmo* result);
+FtResult ft_gizmo_builder_try_build(FtGizmoBuilder handle, FtGizmo* result, FtError* err_out);
 void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
@@ -373,7 +376,7 @@ int32_t ft_pipeline_result_count(FtPipeline handle);
  * @param[out] result
  * @return FtResult with code 0 on success, error code on failure.
  */
-FtResult ft_pipeline_last_result(FtPipeline handle, int32_t* result);
+FtResult ft_pipeline_last_result(FtPipeline handle, int32_t* result, FtError* err_out);
 void ft_pipeline_destroy(FtPipeline handle);
 
 /* Apple ------------------------------------------------------------- */
@@ -529,20 +532,22 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 
-/* Processor (dispatch) ---------------------------------------------- */
-
-int32_t ft_processor_process(void* handle, int32_t input);
-FtStr ft_processor_name(void* handle);
-void ft_processor_destroy(void* handle);
-
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(void* handle);
 FtStr ft_fruit_label(void* handle);
 void ft_fruit_destroy(void* handle);
 
+/* Processor (dispatch) ---------------------------------------------- */
+
+int32_t ft_processor_process(void* handle, int32_t input);
+FtStr ft_processor_name(void* handle);
+void ft_processor_destroy(void* handle);
+
 /* strerror ---------------------------------------------------------- */
 
 const char* ft_strerror(FtResult r);
 FtStr ft_strerror_s(FtResult r);
+FtStr ft_error_message(FtError err);
+void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

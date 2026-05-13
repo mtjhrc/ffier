@@ -701,8 +701,9 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
-        let message = attrs
-            .message
+        // Message priority: #[ffier(message="...")] > #[error("...")] > humanized name
+        let message = attrs.message
+            .or_else(|| parse_thiserror_message(&variant.attrs))
             .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
         let upper_name = camel_to_upper_snake(&var_ident.to_string());
 
@@ -735,32 +736,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
     let error_path = quote! { $crate::#name };
 
-    // Display impl — same messages as static_message, used for rich error output
-    let display_arms: Vec<_> = data_enum
-        .variants
-        .iter()
-        .zip(variant_meta_tokens.iter())
-        .map(|(variant, _)| {
-            let var_ident = &variant.ident;
-            let attrs = parse_ffier_variant_attrs(&variant.attrs).unwrap();
-            let message = attrs
-                .message
-                .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
-            quote! { #name::#var_ident => write!(f, #message) }
-        })
-        .collect();
-
     let output = quote! {
-        impl core::fmt::Display for #name {
-            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-                match self {
-                    #(#display_arms,)*
-                }
-            }
-        }
-
-        impl std::error::Error for #name {}
-
         impl ffier::FfiError for #name {
             fn code(&self) -> u32 {
                 match self {
@@ -857,6 +833,26 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
         proc_macro2::Span::call_site(),
         "missing #[ffier(code = N)] attribute on variant",
     ))
+}
+
+/// Extract the message string from a `#[error("...")]` attribute (thiserror).
+///
+/// Only handles the simple `#[error("literal string")]` form — format args
+/// like `#[error("bad value: {0}")]` are returned as-is (the static_message
+/// table gets the raw format template, which is good enough for strerror).
+fn parse_thiserror_message(attrs: &[syn::Attribute]) -> Option<String> {
+    for attr in attrs {
+        if !attr.path().is_ident("error") {
+            continue;
+        }
+        // #[error("message")] parses as a parenthesized group with a LitStr
+        if let syn::Meta::List(list) = &attr.meta {
+            if let Ok(lit) = syn::parse2::<LitStr>(list.tokens.clone()) {
+                return Some(lit.value());
+            }
+        }
+    }
+    None
 }
 
 /// Check if an attribute is `#[ffier(skip)]`.

@@ -3,15 +3,17 @@ use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 
 // -- Error types --
 
-#[derive(Clone, Copy, Debug, ffier::FfiError)]
+#[derive(Clone, Copy, Debug, thiserror::Error, ffier::FfiError)]
 pub enum CalcError {
+    #[error("division by zero")]
     #[ffier(code = 1)]
     DivisionByZero,
 }
 
-#[derive(Clone, Copy, Debug, ffier::FfiError)]
+#[derive(Clone, Copy, Debug, thiserror::Error, ffier::FfiError)]
 pub enum BufferError {
-    #[ffier(code = 1, message = "write failed")]
+    #[error("write failed")]
+    #[ffier(code = 1)]
     WriteFailed,
 }
 

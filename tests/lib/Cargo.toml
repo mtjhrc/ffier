@@ -9,3 +9,4 @@ fruit-label = []
 
 [dependencies]
 ffier = { path = "../../ffier" }
+thiserror = "2"

@@ -408,3 +408,51 @@ pub const FFIER_RESULT_SUCCESS: FfierResult = 0;
 pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
     ffier_result(type_tag, e.code())
 }
+
+// ---------------------------------------------------------------------------
+// FfierErrorBox --- type-erased boxed error with cached Display message
+// ---------------------------------------------------------------------------
+
+/// Type-erased error box. Stores the packed `FfierResult` and the cached
+/// `Display` output. This is what `FtError` (`void*`) points to.
+///
+/// The concrete error type is erased — `ft_error_message()` just reads the
+/// cached string, and `ft_strerror()` can decode the result via type tag.
+pub struct FfierErrorBox {
+    /// Pre-computed `FfierResult` (type_tag << 32 | code).
+    pub result: FfierResult,
+    /// Cached `Display::fmt()` output.
+    pub cached_msg: String,
+}
+
+impl FfierErrorBox {
+    /// Box an error into a type-erased handle.
+    pub fn new<E: FfiError>(error: E, type_tag: u32) -> *mut core::ffi::c_void {
+        use std::fmt::Write;
+        let mut cached_msg = String::new();
+        let _ = write!(cached_msg, "{error}");
+        let result = ffier_result(type_tag, error.code());
+        let boxed = Box::new(FfierErrorBox { result, cached_msg });
+        Box::into_raw(boxed) as *mut core::ffi::c_void
+    }
+
+    /// Read the cached message from a raw handle pointer.
+    ///
+    /// # Safety
+    /// `handle` must be a valid pointer from `FfierErrorBox::new`.
+    pub unsafe fn message(handle: *const core::ffi::c_void) -> FfierBytes {
+        let boxed = unsafe { &*(handle as *const FfierErrorBox) };
+        unsafe { FfierBytes::from_str(&boxed.cached_msg) }
+    }
+
+    /// Free a boxed error handle.
+    ///
+    /// # Safety
+    /// `handle` must be a valid pointer from `FfierErrorBox::new`,
+    /// or null (in which case this is a no-op).
+    pub unsafe fn destroy(handle: *mut core::ffi::c_void) {
+        if !handle.is_null() {
+            drop(unsafe { Box::from_raw(handle as *mut FfierErrorBox) });
+        }
+    }
+}

@@ -151,14 +151,14 @@ void method_with_borrowed_fd_returning_owned_fd(void) {
 
 void method_returning_result_void_ok(void) {
     FtWidget w = ft_widget_new();
-    FtResult r = ft_widget_validate(w);
+    FtResult r = ft_widget_validate(w, NULL);
     assert(r == FT_RESULT_SUCCESS);
     ft_widget_destroy(w);
 }
 
 void method_returning_result_void_err(void) {
     FtWidget w = ft_widget_new();
-    FtResult r = ft_widget_fail_always(w);
+    FtResult r = ft_widget_fail_always(w, NULL);
     assert(r == FT_ERROR_TEST_CUSTOM_MESSAGE);
     ft_widget_destroy(w);
 }
@@ -166,7 +166,7 @@ void method_returning_result_void_err(void) {
 void method_returning_result_value_ok(void) {
     FtWidget w = ft_widget_new();
     int32_t result = -1;
-    FtResult r = ft_widget_parse_count(w, FT_STR("hello"), &result);
+    FtResult r = ft_widget_parse_count(w, FT_STR("hello"), &result, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert(result == 5); /* len("hello") == 5 */
     ft_widget_destroy(w);
@@ -175,7 +175,7 @@ void method_returning_result_value_ok(void) {
 void method_returning_result_value_err(void) {
     FtWidget w = ft_widget_new();
     int32_t result = -1;
-    FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result);
+    FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
     ft_widget_destroy(w);
 }
@@ -183,7 +183,7 @@ void method_returning_result_value_err(void) {
 void method_returning_result_str_ok(void) {
     FtWidget w = ft_widget_new();
     FtStr result = { 0 };
-    FtResult r = ft_widget_describe(w, 0, &result);
+    FtResult r = ft_widget_describe(w, 0, &result, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert_ft_str_eq(result, "zero");
     ft_widget_destroy(w);
@@ -192,7 +192,7 @@ void method_returning_result_str_ok(void) {
 void method_returning_result_str_err(void) {
     FtWidget w = ft_widget_new();
     FtStr result = { 0 };
-    FtResult r = ft_widget_describe(w, 99, &result);
+    FtResult r = ft_widget_describe(w, 99, &result, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
     ft_widget_destroy(w);
 }
@@ -201,7 +201,7 @@ void method_returning_result_handle_ok(void) {
     FtWidget w = ft_widget_new();
     ft_widget_set_count(w, 7);
     FtGadget g = NULL;
-    FtResult r = ft_widget_try_create_gadget(w, true, &g);
+    FtResult r = ft_widget_try_create_gadget(w, true, &g, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert(g != NULL);
     assert(ft_gadget_get(g) == 7);
@@ -212,7 +212,7 @@ void method_returning_result_handle_ok(void) {
 void method_returning_result_handle_err(void) {
     FtWidget w = ft_widget_new();
     FtGadget g = NULL;
-    FtResult r = ft_widget_try_create_gadget(w, false, &g);
+    FtResult r = ft_widget_try_create_gadget(w, false, &g, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
     assert(g == NULL); /* should remain NULL on error */
     ft_widget_destroy(w);
@@ -221,7 +221,7 @@ void method_returning_result_handle_err(void) {
 void method_returning_result_fail_with_value(void) {
     FtWidget w = ft_widget_new();
     int32_t result = -1;
-    FtResult r = ft_widget_fail_with_value(w, &result);
+    FtResult r = ft_widget_fail_with_value(w, &result, NULL);
     assert(r == FT_ERROR_TEST_INVALID_INPUT);
     ft_widget_destroy(w);
 }
@@ -275,7 +275,7 @@ void builder_method_returning_self(void) {
 void builder_method_returning_result_self_ok(void) {
     FtConfig c = ft_config_new();
     ft_config_set_name(&c, FT_STR("valid"));
-    FtResult r = ft_config_validated(&c);
+    FtResult r = ft_config_validated(&c, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert_ft_str_eq(ft_config_get_name(c), "valid");
     ft_config_destroy(c);
@@ -284,7 +284,7 @@ void builder_method_returning_result_self_ok(void) {
 void builder_method_returning_result_self_err(void) {
     FtConfig c = ft_config_new();
     /* name is empty — validated() should fail */
-    FtResult r = ft_config_validated(&c);
+    FtResult r = ft_config_validated(&c, NULL);
     assert(r == FT_ERROR_TEST_INVALID_INPUT);
     /* After error, the handle is consumed (by-value self).
      * The builder took ownership — don't destroy. */
@@ -308,7 +308,7 @@ void builder_consuming_self_returning_result_handle_ok(void) {
     ft_gizmo_builder_set_name(b, FT_STR("valid"));
     ft_gizmo_builder_set_size(b, 50);
     FtGizmo g = NULL;
-    FtResult r = ft_gizmo_builder_try_build(b, &g);
+    FtResult r = ft_gizmo_builder_try_build(b, &g, NULL);
     /* b is consumed */
     assert(r == FT_RESULT_SUCCESS);
     assert(g != NULL);
@@ -321,7 +321,7 @@ void builder_consuming_self_returning_result_handle_err(void) {
     FtGizmoBuilder b = ft_gizmo_builder_new();
     /* name empty — try_build() should fail */
     FtGizmo g = NULL;
-    FtResult r = ft_gizmo_builder_try_build(b, &g);
+    FtResult r = ft_gizmo_builder_try_build(b, &g, NULL);
     /* b is consumed */
     assert(r == FT_ERROR_TEST_INVALID_INPUT);
     assert(g == NULL);
@@ -343,7 +343,7 @@ void error_result_constants(void) {
 
 void strerror_custom_message(void) {
     FtWidget w = ft_widget_new();
-    FtResult r = ft_widget_fail_always(w);
+    FtResult r = ft_widget_fail_always(w, NULL);
     assert(r == FT_ERROR_TEST_CUSTOM_MESSAGE);
     const char* msg = ft_strerror(r);
     assert(msg != NULL);
@@ -354,7 +354,7 @@ void strerror_custom_message(void) {
 void strerror_not_found(void) {
     FtWidget w = ft_widget_new();
     int32_t result;
-    FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result);
+    FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
     const char* msg = ft_strerror(r);
     assert(msg != NULL);
@@ -366,6 +366,25 @@ void strerror_success(void) {
     const char* msg = ft_strerror(FT_RESULT_SUCCESS);
     assert(msg != NULL);
     assert(strcmp(msg, "success") == 0);
+}
+
+void error_handle_message_and_destroy(void) {
+    FtWidget w = ft_widget_new();
+    FtError err = NULL;
+    FtResult r = ft_widget_fail_always(w, &err);
+    assert(r != FT_RESULT_SUCCESS);
+    assert(err != NULL);
+    FtStr msg = ft_error_message(err);
+    assert(msg.len > 0);
+    assert(memcmp(msg.data, "custom error message", msg.len) == 0);
+    ft_error_destroy(err);
+    ft_widget_destroy(w);
+}
+
+void error_handle_null_safe(void) {
+    ft_error_destroy(NULL); /* should not crash */
+    FtStr msg = ft_error_message(NULL);
+    assert(msg.len == 0);
 }
 
 /* ===================================================================== */
@@ -424,7 +443,7 @@ void vtable_dyn_dispatch_process(void) {
     assert(g_last_notify_code == 42);
     assert(ft_pipeline_result_count(p) == 1);
     int32_t last = -1;
-    FtResult r = ft_pipeline_last_result(p, &last);
+    FtResult r = ft_pipeline_last_result(p, &last, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert(last == 42);
     ft_pipeline_destroy(p);
@@ -562,6 +581,8 @@ int main(void) {
     RUN_TEST(strerror_custom_message);
     RUN_TEST(strerror_not_found);
     RUN_TEST(strerror_success);
+    RUN_TEST(error_handle_message_and_destroy);
+    RUN_TEST(error_handle_null_safe);
 
     printf("\n[vtable/implementable]\n");
     RUN_TEST(vtable_dyn_dispatch_process);
