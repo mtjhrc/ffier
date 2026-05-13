@@ -200,9 +200,8 @@ void method_returning_result_str_err(void) {
 void method_returning_result_handle_ok(void) {
     FtWidget w = ft_widget_new();
     ft_widget_set_count(w, 7);
-    FtGadget g = NULL;
-    FtResult r = ft_widget_try_create_gadget(w, true, &g, NULL);
-    assert(r == FT_RESULT_SUCCESS);
+    /* GLib-style: handle returned directly, NULL on error */
+    FtGadget g = ft_widget_try_create_gadget(w, true, NULL);
     assert(g != NULL);
     assert(ft_gadget_get(g) == 7);
     ft_gadget_destroy(g);
@@ -211,10 +210,13 @@ void method_returning_result_handle_ok(void) {
 
 void method_returning_result_handle_err(void) {
     FtWidget w = ft_widget_new();
-    FtGadget g = NULL;
-    FtResult r = ft_widget_try_create_gadget(w, false, &g, NULL);
+    FtError err = NULL;
+    FtGadget g = ft_widget_try_create_gadget(w, false, &err);
+    assert(g == NULL);
+    assert(err != NULL);
+    FtResult r = ft_error_result(err);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
-    assert(g == NULL); /* should remain NULL on error */
+    ft_error_destroy(err);
     ft_widget_destroy(w);
 }
 
@@ -307,10 +309,9 @@ void builder_consuming_self_returning_result_handle_ok(void) {
     FtGizmoBuilder b = ft_gizmo_builder_new();
     ft_gizmo_builder_set_name(b, FT_STR("valid"));
     ft_gizmo_builder_set_size(b, 50);
-    FtGizmo g = NULL;
-    FtResult r = ft_gizmo_builder_try_build(b, &g, NULL);
+    /* GLib-style: handle returned directly */
+    FtGizmo g = ft_gizmo_builder_try_build(b, NULL);
     /* b is consumed */
-    assert(r == FT_RESULT_SUCCESS);
     assert(g != NULL);
     assert_ft_str_eq(ft_gizmo_name(g), "valid");
     assert(ft_gizmo_size(g) == 50);
@@ -320,11 +321,14 @@ void builder_consuming_self_returning_result_handle_ok(void) {
 void builder_consuming_self_returning_result_handle_err(void) {
     FtGizmoBuilder b = ft_gizmo_builder_new();
     /* name empty — try_build() should fail */
-    FtGizmo g = NULL;
-    FtResult r = ft_gizmo_builder_try_build(b, &g, NULL);
+    FtError err = NULL;
+    FtGizmo g = ft_gizmo_builder_try_build(b, &err);
     /* b is consumed */
-    assert(r == FT_ERROR_TEST_INVALID_INPUT);
     assert(g == NULL);
+    assert(err != NULL);
+    FtResult r = ft_error_result(err);
+    assert(r == FT_ERROR_TEST_INVALID_INPUT);
+    ft_error_destroy(err);
 }
 
 /* ===================================================================== */

@@ -102,9 +102,8 @@ unsafe extern "C" {
     pub fn ft_widget_try_create_gadget(
         handle: *mut core::ffi::c_void,
         ok: <bool as ffier::FfiType>::CRepr,
-        result: *mut <Gadget as ffier::FfiType>::CRepr,
         err_out: *mut *mut core::ffi::c_void,
-    ) -> ffier::FfierResult;
+    ) -> *mut core::ffi::c_void;
     pub fn ft_widget_read_gadget(
         handle: *mut core::ffi::c_void,
         g: <&'static Gadget as ffier::FfiType>::CRepr,
@@ -314,20 +313,14 @@ impl Widget {
     }
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
-        let mut __out = std::mem::MaybeUninit::uninit();
-        let __r = unsafe {
-            ft_widget_try_create_gadget(
-                self.0,
-                <bool as ffier::FfiType>::into_c(ok),
-                __out.as_mut_ptr(),
-                core::ptr::null_mut(),
-            )
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __ptr = unsafe {
+            ft_widget_try_create_gadget(self.0, <bool as ffier::FfiType>::into_c(ok), &mut __err)
         };
-        if __r == 0 {
-            Ok(<Gadget as ffier::FfiType>::from_c(unsafe {
-                __out.assume_init()
-            }))
+        if !__ptr.is_null() {
+            Ok(<Gadget as ffier::FfiType>::from_c(__ptr))
         } else {
+            let __r = unsafe { ffier::ffier_error_result(__err) };
             Err(TestError::from_ffi(__r))
         }
     }
@@ -603,9 +596,8 @@ unsafe extern "C" {
     ) -> <Gizmo as ffier::FfiType>::CRepr;
     pub fn ft_gizmo_builder_try_build(
         handle: *mut core::ffi::c_void,
-        result: *mut <Gizmo as ffier::FfiType>::CRepr,
         err_out: *mut *mut core::ffi::c_void,
-    ) -> ffier::FfierResult;
+    ) -> *mut core::ffi::c_void;
 }
 pub struct GizmoBuilder(*mut core::ffi::c_void);
 impl GizmoBuilder {
@@ -670,15 +662,12 @@ impl GizmoBuilder {
             let this = std::mem::ManuallyDrop::new(self);
             this.0
         };
-        let mut __out = std::mem::MaybeUninit::uninit();
-        let __r = unsafe {
-            ft_gizmo_builder_try_build(__handle, __out.as_mut_ptr(), core::ptr::null_mut())
-        };
-        if __r == 0 {
-            Ok(<Gizmo as ffier::FfiType>::from_c(unsafe {
-                __out.assume_init()
-            }))
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __ptr = unsafe { ft_gizmo_builder_try_build(__handle, &mut __err) };
+        if !__ptr.is_null() {
+            Ok(<Gizmo as ffier::FfiType>::from_c(__ptr))
         } else {
+            let __r = unsafe { ffier::ffier_error_result(__err) };
             Err(TestError::from_ffi(__r))
         }
     }

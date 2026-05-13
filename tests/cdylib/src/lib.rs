@@ -292,9 +292,8 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             ft_widget_set_count(w, 7);
-            let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let r = ft_widget_try_create_gadget(w, true, &mut g, ptr::null_mut());
-            assert_eq!(r, 0);
+            // GLib-style: handle returned directly, NULL on error
+            let g = ft_widget_try_create_gadget(w, true, ptr::null_mut());
             assert!(!g.is_null());
             assert_eq!(ft_gadget_get(g), 7);
             ft_gadget_destroy(g);
@@ -306,11 +305,14 @@ mod tests {
     fn method_returning_result_handle_err() {
         unsafe {
             let w = ft_widget_new();
-            let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let r = ft_widget_try_create_gadget(w, false, &mut g, ptr::null_mut());
-            assert_ne!(r, 0);
-            assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let g = ft_widget_try_create_gadget(w, false, &mut err);
             assert!(g.is_null());
+            assert!(!err.is_null());
+            // Extract result code from error handle
+            let r = ft_error_result(err);
+            assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
+            ft_error_destroy(err);
             ft_widget_destroy(w);
         }
     }
@@ -462,10 +464,9 @@ mod tests {
             let b = ft_gizmo_builder_new();
             ft_gizmo_builder_set_name(b, ffier::FfierBytes::from_str("valid"));
             ft_gizmo_builder_set_size(b, 50);
-            let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let r = ft_gizmo_builder_try_build(b, &mut g, ptr::null_mut());
+            // GLib-style: handle returned directly
+            let g = ft_gizmo_builder_try_build(b, ptr::null_mut());
             // b is consumed
-            assert_eq!(r, 0);
             assert!(!g.is_null());
             assert_eq!(ft_gizmo_name(g).as_str_unchecked(), "valid");
             assert_eq!(ft_gizmo_size(g), 50);
@@ -478,12 +479,14 @@ mod tests {
         unsafe {
             let b = ft_gizmo_builder_new();
             // name empty — try_build() should fail
-            let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let r = ft_gizmo_builder_try_build(b, &mut g, ptr::null_mut());
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let g = ft_gizmo_builder_try_build(b, &mut err);
             // b is consumed
-            assert_ne!(r, 0);
-            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
             assert!(g.is_null());
+            assert!(!err.is_null());
+            let r = ft_error_result(err);
+            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
+            ft_error_destroy(err);
         }
     }
 
