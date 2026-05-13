@@ -70,6 +70,7 @@ unsafe extern "C" {
         a: <i32 as ffier::FfiType>::CRepr,
         b: <i32 as ffier::FfiType>::CRepr,
         result: *mut <i32 as ffier::FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierResult;
 }
 pub struct Calculator(*mut core::ffi::c_void);
@@ -137,6 +138,7 @@ impl Calculator {
                 <i32 as ffier::FfiType>::into_c(a),
                 <i32 as ffier::FfiType>::into_c(b),
                 __out.as_mut_ptr(),
+                core::ptr::null_mut(),
             )
         };
         if __r == 0 {
@@ -176,7 +178,10 @@ unsafe extern "C" {
     pub fn mylib_text_buffer_as_bytes(
         handle: *mut core::ffi::c_void,
     ) -> <&'static [u8] as ffier::FfiType>::CRepr;
-    pub fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierResult;
+    pub fn mylib_text_buffer_flush(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
     pub fn mylib_text_buffer_clear(handle: *mut core::ffi::c_void);
 }
 pub struct TextBuffer(*mut core::ffi::c_void);
@@ -249,7 +254,7 @@ impl TextBuffer {
     }
     #[doc = " Flush the buffer contents to the output file descriptor."]
     pub fn flush(&self) -> Result<(), BufferError> {
-        let __r = unsafe { mylib_text_buffer_flush(self.0) };
+        let __r = unsafe { mylib_text_buffer_flush(self.0, core::ptr::null_mut()) };
         if __r == 0 {
             Ok(())
         } else {

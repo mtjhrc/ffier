@@ -445,6 +445,7 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
     let bytes_c = format!("{type_pfx}Bytes");
     let path_c = format!("{type_pfx}Path");
     let result_c = format!("{type_pfx}Result");
+    let error_c = format!("{type_pfx}Error");
     let result_success = format!("{upper_pfx}RESULT_SUCCESS");
     let str_macro = format!("{upper_pfx}STR");
     let bytes_macro = format!("{upper_pfx}BYTES");
@@ -454,6 +455,9 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
             [
                 concat!("typedef uint64_t ", #result_c, ";"),
                 concat!("#define ", #result_success, " 0"),
+                "",
+                concat!("/* Opaque error handle — pass to *_error_message() for details, free with *_error_destroy() */"),
+                concat!("typedef void* ", #error_c, ";"),
                 "",
                 concat!("/* Caller must ensure data is valid UTF-8 */"),
                 "typedef struct {",
@@ -498,11 +502,16 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
 
     let strerror_name = format_ident!("{fn_pfx}strerror");
     let strerror_s_name = format_ident!("{fn_pfx}strerror_s");
+    let error_message_name = format_ident!("{fn_pfx}error_message");
+    let error_destroy_name = format_ident!("{fn_pfx}error_destroy");
     let strerror_name_str = strerror_name.to_string();
     let strerror_s_name_str = strerror_s_name.to_string();
+    let error_message_name_str = error_message_name.to_string();
+    let error_destroy_name_str = error_destroy_name.to_string();
 
     let result_c_name = format!("{type_pfx}Result");
     let str_c_name = format!("{type_pfx}Str");
+    let error_c_name = format!("{type_pfx}Error");
 
     // Build dispatch arms for each error type
     let mut dispatch_arms = Vec::new();
@@ -551,6 +560,28 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
 
+        /// Rich Display message from a boxed error handle.
+        ///
+        /// Returns the cached `Display::fmt()` output. The returned pointer
+        /// is valid until the error handle is destroyed.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #error_message_name(
+            err: *const core::ffi::c_void,
+        ) -> ffier::FfierBytes {
+            if err.is_null() {
+                return ffier::FfierBytes::EMPTY;
+            }
+            unsafe { ffier::FfierErrorBox::message(err) }
+        }
+
+        /// Free a boxed error handle. NULL is a no-op.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #error_destroy_name(
+            err: *mut core::ffi::c_void,
+        ) {
+            unsafe { ffier::FfierErrorBox::destroy(err) };
+        }
+
         fn __ffier_strerror_header() -> ffier_gen_c::HeaderSection {
             let mut decls = String::new();
             decls.push_str(&format!(
@@ -558,8 +589,16 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
                 #strerror_name_str, #result_c_name,
             ));
             decls.push_str(&format!(
-                "{} {}({} r);",
+                "{} {}({} r);\n",
                 #str_c_name, #strerror_s_name_str, #result_c_name,
+            ));
+            decls.push_str(&format!(
+                "{} {}({} err);\n",
+                #str_c_name, #error_message_name_str, #error_c_name,
+            ));
+            decls.push_str(&format!(
+                "void {}({} err);",
+                #error_destroy_name_str, #error_c_name,
             ));
             ffier_gen_c::HeaderSection {
                 struct_name: "strerror".to_string(),
@@ -965,6 +1004,8 @@ fn generate_exportable_bridge(
                     &c_type_exprs,
                     &param_name_str_refs,
                     None,
+                    false,
+                    None,
                 );
                 decl_exprs.push(header_line);
 
@@ -1007,6 +1048,8 @@ fn generate_exportable_bridge(
                     &c_type_exprs,
                     &param_name_str_refs,
                     None,
+                    false,
+                    None,
                 );
                 decl_exprs.push(header_line);
 
@@ -1033,6 +1076,7 @@ fn generate_exportable_bridge(
                     }
                 });
 
+                let err_handle_c_name = format!("{type_pfx}Error");
                 let header_line = build_header_line(
                     quote! { #result_c_name },
                     &ffi_name_str,
@@ -1040,6 +1084,8 @@ fn generate_exportable_bridge(
                     &c_type_exprs,
                     &param_name_str_refs,
                     out_c_type.as_ref(),
+                    true,
+                    Some(&err_handle_c_name),
                 );
                 decl_exprs.push(header_line);
 
@@ -1048,15 +1094,24 @@ fn generate_exportable_bridge(
                 let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
                 let err_path = err_info.map(|i| &i.path);
 
-                let err_branch = if let Some(path) = err_path {
+                let err_branch = {
+                    let box_expr = if err_path.is_some() {
+                        quote! {
+                            if !err_out.is_null() {
+                                unsafe {
+                                    *err_out = ffier::FfierErrorBox::new(e, #err_type_tag);
+                                }
+                            }
+                        }
+                    } else {
+                        quote! {}
+                    };
                     quote! {
-                        Err(e) => ffier::ffier_result_from_err::<#path>(&e, #err_type_tag),
-                    }
-                } else {
-                    // Fallback: use the error type's code directly (shouldn't happen
-                    // with proper library_definition! but avoids a hard error)
-                    quote! {
-                        Err(e) => ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e)),
+                        Err(e) => {
+                            let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
+                            #box_expr
+                            __r
+                        }
                     }
                 };
 
@@ -1446,6 +1501,11 @@ pub fn c_signature_for_method(
                     c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
                 });
             }
+            // Optional error handle out-param (nullable — caller can pass NULL)
+            params.push(CExternParam {
+                name: format_ident!("err_out"),
+                c_type: quote! { *mut *mut core::ffi::c_void },
+            });
             quote! { -> ffier::FfierResult }
         }
     };
@@ -1576,6 +1636,10 @@ fn build_header_line(
     param_c_type_exprs: &[TokenStream2],
     param_name_strs: &[&String],
     out_param_c_type: Option<&TokenStream2>,
+    // If true, append `FtError* err_out` as the last parameter.
+    has_err_out: bool,
+    // C type name for error handle (e.g. "FtError"), used only when has_err_out.
+    err_handle_c_name: Option<&str>,
 ) -> TokenStream2 {
     let out_snippet = out_param_c_type.map(|ct| {
         quote! {
@@ -1585,6 +1649,17 @@ fn build_header_line(
             need_comma = true;
         }
     });
+    let err_out_snippet = if has_err_out {
+        let err_c = err_handle_c_name.unwrap_or("void*");
+        Some(quote! {
+            if need_comma { s.push_str(", "); }
+            s.push_str(#err_c);
+            s.push_str("* err_out");
+            need_comma = true;
+        })
+    } else {
+        None
+    };
     let handle_snippet = handle_type.map(|ht| {
         quote! {
             s.push_str(#ht);
@@ -1609,6 +1684,7 @@ fn build_header_line(
             need_comma = true;
         }
         #out_snippet
+        #err_out_snippet
         if !need_comma { s.push_str("void"); }
         s.push_str(");");
         s

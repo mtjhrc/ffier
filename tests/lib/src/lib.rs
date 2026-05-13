@@ -1,15 +1,18 @@
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
 // ---------------------------------------------------------------------------
-// Error type
+// Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ffier::FfiError)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
 pub enum TestError {
+    #[error("not found")]
     #[ffier(code = 1)]
     NotFound,
-    #[ffier(code = 2, message = "custom error message")]
+    #[error("custom error message")]
+    #[ffier(code = 2)]
     CustomMessage,
+    #[error("invalid input")]
     #[ffier(code = 3)]
     InvalidInput,
 }

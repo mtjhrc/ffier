@@ -349,7 +349,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                             this.0
                         };
                         #(#wrapper_pre_bindings)*
-                        let __r = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
+                        let __r = unsafe { #ffi_name(&mut __handle, #(#wrapper_args,)* core::ptr::null_mut()) };
                         if __r == 0 {
                             Ok(Self(__handle #client_phantom_init))
                         } else {
@@ -377,7 +377,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     let err_ty = format_ident!("{err_ident}");
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __r = unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
+                        let __r = unsafe { #ffi_name(self.0, #(#wrapper_args,)* core::ptr::null_mut()) };
                         if __r == 0 {
                             Ok(self)
                         } else {
@@ -974,7 +974,7 @@ fn build_client_body(
                 None => {
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* core::ptr::null_mut()) };
                         if __r == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
@@ -983,7 +983,7 @@ fn build_client_body(
                     quote! {
                         #(#wrapper_pre_bindings)*
                         #out_decl
-                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr) };
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr, core::ptr::null_mut()) };
                         if __r == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
