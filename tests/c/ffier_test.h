@@ -546,8 +546,8 @@ void ft_processor_destroy(void* handle);
 
 /* error ------------------------------------------------------------- */
 
-const char* ft_error_name(FtResult r);
-FtStr ft_error_name_s(FtResult r);
+FtStr ft_error_name(FtResult r);
+const char* ft_error_name_cstr(FtResult r);
 FtStr ft_error_message(FtError err);
 void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

@@ -345,7 +345,7 @@ void error_name_custom_message(void) {
     FtWidget w = ft_widget_new();
     FtResult r = ft_widget_fail_always(w, NULL);
     assert(r == FT_ERROR_TEST_CUSTOM_MESSAGE);
-    const char* msg = ft_error_name(r);
+    const char* msg = ft_error_name_cstr(r);
     assert(msg != NULL);
     assert(strcmp(msg, "CustomMessage") == 0);
     ft_widget_destroy(w);
@@ -356,14 +356,14 @@ void error_name_not_found(void) {
     int32_t result;
     FtResult r = ft_widget_parse_count(w, FT_STR("error"), &result, NULL);
     assert(r == FT_ERROR_TEST_NOT_FOUND);
-    const char* msg = ft_error_name(r);
+    const char* msg = ft_error_name_cstr(r);
     assert(msg != NULL);
     assert(strcmp(msg, "NotFound(...)") == 0);
     ft_widget_destroy(w);
 }
 
 void error_name_success(void) {
-    const char* msg = ft_error_name(FT_RESULT_SUCCESS);
+    const char* msg = ft_error_name_cstr(FT_RESULT_SUCCESS);
     assert(msg != NULL);
     assert(strcmp(msg, "success") == 0);
 }
