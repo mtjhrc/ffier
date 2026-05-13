@@ -11,13 +11,16 @@ pub enum TestError {
     InvalidInput,
 }
 impl TestError {
-    pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-        let code = err.code;
-        unsafe { err.free() };
+    #[doc = r" Reconstruct the error from a packed `FfierResult`."]
+    #[doc = r""]
+    #[doc = r" Extracts the error code from the lower 32 bits and matches"]
+    #[doc = r" against known variant codes."]
+    pub fn from_ffi(r: ffier::FfierResult) -> Self {
+        let code = ffier::ffier_result_code(r);
         match code {
-            1u64 => Self::NotFound,
-            2u64 => Self::CustomMessage,
-            3u64 => Self::InvalidInput,
+            1u32 => Self::NotFound,
+            2u32 => Self::CustomMessage,
+            3u32 => Self::InvalidInput,
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
@@ -60,22 +63,22 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         v: <i64 as ffier::FfiType>::CRepr,
     ) -> <i64 as ffier::FfiType>::CRepr;
-    pub fn ft_widget_validate(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn ft_widget_validate(handle: *mut core::ffi::c_void) -> ffier::FfierResult;
     pub fn ft_widget_parse_count(
         handle: *mut core::ffi::c_void,
         s: <&'static str as ffier::FfiType>::CRepr,
         result: *mut <i32 as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
     pub fn ft_widget_describe(
         handle: *mut core::ffi::c_void,
         code: <i32 as ffier::FfiType>::CRepr,
         result: *mut <&'static str as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
-    pub fn ft_widget_fail_always(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_always(handle: *mut core::ffi::c_void) -> ffier::FfierResult;
     pub fn ft_widget_fail_with_value(
         handle: *mut core::ffi::c_void,
         result: *mut <i32 as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
     pub fn ft_widget_set_tags(
         handle: *mut core::ffi::c_void,
         tags: *const ffier::FfierBytes,
@@ -91,7 +94,7 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         ok: <bool as ffier::FfiType>::CRepr,
         result: *mut <Gadget as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
     pub fn ft_widget_read_gadget(
         handle: *mut core::ffi::c_void,
         g: <&'static Gadget as ffier::FfiType>::CRepr,
@@ -202,11 +205,11 @@ impl Widget {
     }
     #[doc = " Validate internal state (always succeeds for default widget)."]
     pub fn validate(&self) -> Result<(), TestError> {
-        let __err = unsafe { ft_widget_validate(self.0) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_widget_validate(self.0) };
+        if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Parse a count value from the name length, returning error if name matches trigger."]
@@ -220,19 +223,19 @@ impl Widget {
     #[doc = " The count derived from the name length."]
     pub fn parse_count(&self, s: &str) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe {
+        let __r = unsafe {
             ft_widget_parse_count(
                 self.0,
                 <&str as ffier::FfiType>::into_c(s),
                 __out.as_mut_ptr(),
             )
         };
-        if __err.code == 0 {
+        if __r == 0 {
             Ok(<i32 as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Describe a code as a string."]
@@ -242,40 +245,40 @@ impl Widget {
     #[doc = " * `code` - the numeric code to look up."]
     pub fn describe(&self, code: i32) -> Result<&str, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe {
+        let __r = unsafe {
             ft_widget_describe(
                 self.0,
                 <i32 as ffier::FfiType>::into_c(code),
                 __out.as_mut_ptr(),
             )
         };
-        if __err.code == 0 {
+        if __r == 0 {
             Ok(<&str as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Always fails with an error."]
     pub fn fail_always(&self) -> Result<(), TestError> {
-        let __err = unsafe { ft_widget_fail_always(self.0) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_widget_fail_always(self.0) };
+        if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Always fails with an error (value variant)."]
     pub fn fail_with_value(&self) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe { ft_widget_fail_with_value(self.0, __out.as_mut_ptr()) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_widget_fail_with_value(self.0, __out.as_mut_ptr()) };
+        if __r == 0 {
             Ok(<i32 as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Set tags from a string slice."]
@@ -299,19 +302,19 @@ impl Widget {
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe {
+        let __r = unsafe {
             ft_widget_try_create_gadget(
                 self.0,
                 <bool as ffier::FfiType>::into_c(ok),
                 __out.as_mut_ptr(),
             )
         };
-        if __err.code == 0 {
+        if __r == 0 {
             Ok(<Gadget as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Read a gadget's value."]
@@ -417,7 +420,7 @@ unsafe extern "C" {
         handle: *mut *mut core::ffi::c_void,
         size: <i32 as ffier::FfiType>::CRepr,
     );
-    pub fn ft_config_validated(handle: *mut *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn ft_config_validated(handle: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
     pub fn ft_config_get_name(
         handle: *mut core::ffi::c_void,
     ) -> <&'static str as ffier::FfiType>::CRepr;
@@ -487,11 +490,11 @@ impl Config {
             let this = std::mem::ManuallyDrop::new(self);
             this.0
         };
-        let __err = unsafe { ft_config_validated(&mut __handle) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_config_validated(&mut __handle) };
+        if __r == 0 {
             Ok(Self(__handle))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
     #[doc = " Get the config name."]
@@ -584,7 +587,7 @@ unsafe extern "C" {
     pub fn ft_gizmo_builder_try_build(
         handle: *mut core::ffi::c_void,
         result: *mut <Gizmo as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
 }
 pub struct GizmoBuilder(*mut core::ffi::c_void);
 impl GizmoBuilder {
@@ -650,13 +653,13 @@ impl GizmoBuilder {
             this.0
         };
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe { ft_gizmo_builder_try_build(__handle, __out.as_mut_ptr()) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_gizmo_builder_try_build(__handle, __out.as_mut_ptr()) };
+        if __r == 0 {
             Ok(<Gizmo as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
 }
@@ -840,7 +843,7 @@ unsafe extern "C" {
     pub fn ft_pipeline_last_result(
         handle: *mut core::ffi::c_void,
         result: *mut <i32 as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
 }
 pub struct Pipeline(*mut core::ffi::c_void);
 impl Pipeline {
@@ -900,13 +903,13 @@ impl Pipeline {
     #[doc = " Get the last result, or error if empty."]
     pub fn last_result(&self) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe { ft_pipeline_last_result(self.0, __out.as_mut_ptr()) };
-        if __err.code == 0 {
+        let __r = unsafe { ft_pipeline_last_result(self.0, __out.as_mut_ptr()) };
+        if __r == 0 {
             Ok(<i32 as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__err))
+            Err(TestError::from_ffi(__r))
         }
     }
 }

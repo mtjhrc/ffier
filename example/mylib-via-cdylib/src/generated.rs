@@ -8,11 +8,14 @@ pub enum CalcError {
     DivisionByZero,
 }
 impl CalcError {
-    pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-        let code = err.code;
-        unsafe { err.free() };
+    #[doc = r" Reconstruct the error from a packed `FfierResult`."]
+    #[doc = r""]
+    #[doc = r" Extracts the error code from the lower 32 bits and matches"]
+    #[doc = r" against known variant codes."]
+    pub fn from_ffi(r: ffier::FfierResult) -> Self {
+        let code = ffier::ffier_result_code(r);
         match code {
-            1u64 => Self::DivisionByZero,
+            1u32 => Self::DivisionByZero,
             other => panic!("unknown {} error code {}", "CalcError", other),
         }
     }
@@ -30,11 +33,14 @@ pub enum BufferError {
     WriteFailed,
 }
 impl BufferError {
-    pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-        let code = err.code;
-        unsafe { err.free() };
+    #[doc = r" Reconstruct the error from a packed `FfierResult`."]
+    #[doc = r""]
+    #[doc = r" Extracts the error code from the lower 32 bits and matches"]
+    #[doc = r" against known variant codes."]
+    pub fn from_ffi(r: ffier::FfierResult) -> Self {
+        let code = ffier::ffier_result_code(r);
         match code {
-            1u64 => Self::WriteFailed,
+            1u32 => Self::WriteFailed,
             other => panic!("unknown {} error code {}", "BufferError", other),
         }
     }
@@ -64,7 +70,7 @@ unsafe extern "C" {
         a: <i32 as ffier::FfiType>::CRepr,
         b: <i32 as ffier::FfiType>::CRepr,
         result: *mut <i32 as ffier::FfiType>::CRepr,
-    ) -> ffier::FfierError;
+    ) -> ffier::FfierResult;
 }
 pub struct Calculator(*mut core::ffi::c_void);
 impl Calculator {
@@ -125,7 +131,7 @@ impl Calculator {
     #[doc = " Divide `a` by `b`, returning an error if `b` is zero."]
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
         let mut __out = std::mem::MaybeUninit::uninit();
-        let __err = unsafe {
+        let __r = unsafe {
             mylib_calculator_divide(
                 self.0,
                 <i32 as ffier::FfiType>::into_c(a),
@@ -133,12 +139,12 @@ impl Calculator {
                 __out.as_mut_ptr(),
             )
         };
-        if __err.code == 0 {
+        if __r == 0 {
             Ok(<i32 as ffier::FfiType>::from_c(unsafe {
                 __out.assume_init()
             }))
         } else {
-            Err(CalcError::from_ffi(__err))
+            Err(CalcError::from_ffi(__r))
         }
     }
 }
@@ -170,7 +176,7 @@ unsafe extern "C" {
     pub fn mylib_text_buffer_as_bytes(
         handle: *mut core::ffi::c_void,
     ) -> <&'static [u8] as ffier::FfiType>::CRepr;
-    pub fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierError;
+    pub fn mylib_text_buffer_flush(handle: *mut core::ffi::c_void) -> ffier::FfierResult;
     pub fn mylib_text_buffer_clear(handle: *mut core::ffi::c_void);
 }
 pub struct TextBuffer(*mut core::ffi::c_void);
@@ -243,11 +249,11 @@ impl TextBuffer {
     }
     #[doc = " Flush the buffer contents to the output file descriptor."]
     pub fn flush(&self) -> Result<(), BufferError> {
-        let __err = unsafe { mylib_text_buffer_flush(self.0) };
-        if __err.code == 0 {
+        let __r = unsafe { mylib_text_buffer_flush(self.0) };
+        if __r == 0 {
             Ok(())
         } else {
-            Err(BufferError::from_ffi(__err))
+            Err(BufferError::from_ffi(__r))
         }
     }
     pub fn clear(&mut self) {

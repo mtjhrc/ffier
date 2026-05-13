@@ -212,8 +212,8 @@ mod tests {
     fn method_returning_result_void_ok() {
         unsafe {
             let w = ft_widget_new();
-            let err = ft_widget_validate(w);
-            assert_eq!(err.code, 0);
+            let r = ft_widget_validate(w);
+            assert_eq!(r, 0);
             ft_widget_destroy(w);
         }
     }
@@ -222,9 +222,9 @@ mod tests {
     fn method_returning_result_void_err() {
         unsafe {
             let w = ft_widget_new();
-            let mut err = ft_widget_fail_always(w);
-            assert_eq!(err.code, 2); // CustomMessage
-            err.free();
+            let r = ft_widget_fail_always(w);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 2); // CustomMessage
             ft_widget_destroy(w);
         }
     }
@@ -234,8 +234,8 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
-            let err = ft_widget_parse_count(w, ffier::FfierBytes::from_str("hello"), &mut result);
-            assert_eq!(err.code, 0);
+            let r = ft_widget_parse_count(w, ffier::FfierBytes::from_str("hello"), &mut result);
+            assert_eq!(r, 0);
             assert_eq!(result, 5);
             ft_widget_destroy(w);
         }
@@ -246,10 +246,9 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
-            let mut err =
-                ft_widget_parse_count(w, ffier::FfierBytes::from_str("error"), &mut result);
-            assert_eq!(err.code, 1); // NotFound
-            err.free();
+            let r = ft_widget_parse_count(w, ffier::FfierBytes::from_str("error"), &mut result);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
             ft_widget_destroy(w);
         }
     }
@@ -259,8 +258,8 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut result = ffier::FfierBytes::EMPTY;
-            let err = ft_widget_describe(w, 0, &mut result);
-            assert_eq!(err.code, 0);
+            let r = ft_widget_describe(w, 0, &mut result);
+            assert_eq!(r, 0);
             assert_eq!(result.as_str_unchecked(), "zero");
             ft_widget_destroy(w);
         }
@@ -271,9 +270,9 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut result = ffier::FfierBytes::EMPTY;
-            let mut err = ft_widget_describe(w, 99, &mut result);
-            assert_eq!(err.code, 1); // NotFound
-            err.free();
+            let r = ft_widget_describe(w, 99, &mut result);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
             ft_widget_destroy(w);
         }
     }
@@ -284,8 +283,8 @@ mod tests {
             let w = ft_widget_new();
             ft_widget_set_count(w, 7);
             let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let err = ft_widget_try_create_gadget(w, true, &mut g);
-            assert_eq!(err.code, 0);
+            let r = ft_widget_try_create_gadget(w, true, &mut g);
+            assert_eq!(r, 0);
             assert!(!g.is_null());
             assert_eq!(ft_gadget_get(g), 7);
             ft_gadget_destroy(g);
@@ -298,10 +297,10 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let mut err = ft_widget_try_create_gadget(w, false, &mut g);
-            assert_eq!(err.code, 1); // NotFound
+            let r = ft_widget_try_create_gadget(w, false, &mut g);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
             assert!(g.is_null());
-            err.free();
             ft_widget_destroy(w);
         }
     }
@@ -311,9 +310,9 @@ mod tests {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
-            let mut err = ft_widget_fail_with_value(w, &mut result);
-            assert_eq!(err.code, 3); // InvalidInput
-            err.free();
+            let r = ft_widget_fail_with_value(w, &mut result);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
             ft_widget_destroy(w);
         }
     }
@@ -381,8 +380,8 @@ mod tests {
         unsafe {
             let mut c = ft_config_new();
             ft_config_set_name(&mut c, ffier::FfierBytes::from_str("valid"));
-            let err = ft_config_validated(&mut c);
-            assert_eq!(err.code, 0);
+            let r = ft_config_validated(&mut c);
+            assert_eq!(r, 0);
             assert_eq!(ft_config_get_name(c).as_str_unchecked(), "valid");
             ft_config_destroy(c);
         }
@@ -393,10 +392,10 @@ mod tests {
         unsafe {
             let mut c = ft_config_new();
             // name is empty — validated() should fail
-            let mut err = ft_config_validated(&mut c);
-            assert_eq!(err.code, 3); // InvalidInput
-            err.free();
-            // After error with by-value self, handle is consumed
+            let r = ft_config_validated(&mut c);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
+                                                        // After error with by-value self, handle is consumed
         }
     }
 
@@ -422,9 +421,9 @@ mod tests {
             ft_gizmo_builder_set_name(b, ffier::FfierBytes::from_str("valid"));
             ft_gizmo_builder_set_size(b, 50);
             let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let err = ft_gizmo_builder_try_build(b, &mut g);
+            let r = ft_gizmo_builder_try_build(b, &mut g);
             // b is consumed
-            assert_eq!(err.code, 0);
+            assert_eq!(r, 0);
             assert!(!g.is_null());
             assert_eq!(ft_gizmo_name(g).as_str_unchecked(), "valid");
             assert_eq!(ft_gizmo_size(g), 50);
@@ -438,11 +437,11 @@ mod tests {
             let b = ft_gizmo_builder_new();
             // name empty — try_build() should fail
             let mut g: *mut core::ffi::c_void = ptr::null_mut();
-            let mut err = ft_gizmo_builder_try_build(b, &mut g);
+            let r = ft_gizmo_builder_try_build(b, &mut g);
             // b is consumed
-            assert_eq!(err.code, 3); // InvalidInput
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
             assert!(g.is_null());
-            err.free();
         }
     }
 
@@ -454,63 +453,58 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
-    fn error_message_auto_generated() {
+    fn strerror_auto_generated() {
         unsafe {
             let w = ft_widget_new();
-            let mut err = ft_widget_fail_always(w);
-            assert_eq!(err.code, 2);
-            let msg = CStr::from_ptr(ft_test_error_message(&err))
-                .to_str()
-                .unwrap();
+            let r = ft_widget_fail_always(w);
+            assert_ne!(r, 0);
+            let msg = CStr::from_ptr(ft_strerror(r)).to_str().unwrap();
             assert_eq!(msg, "custom error message");
-            err.free();
             ft_widget_destroy(w);
         }
     }
 
     #[test]
-    fn error_message_not_found() {
+    fn strerror_not_found() {
         unsafe {
             let w = ft_widget_new();
             let mut result: i32 = -1;
-            let mut err =
-                ft_widget_parse_count(w, ffier::FfierBytes::from_str("error"), &mut result);
-            assert_eq!(err.code, 1);
-            let msg = CStr::from_ptr(ft_test_error_message(&err))
-                .to_str()
-                .unwrap();
+            let r = ft_widget_parse_count(w, ffier::FfierBytes::from_str("error"), &mut result);
+            assert_ne!(r, 0);
+            let msg = CStr::from_ptr(ft_strerror(r)).to_str().unwrap();
             assert_eq!(msg, "not found");
-            err.free();
             ft_widget_destroy(w);
         }
     }
 
     #[test]
-    fn error_free_resets_to_ok() {
+    fn strerror_success() {
+        unsafe {
+            let msg = CStr::from_ptr(ft_strerror(0)).to_str().unwrap();
+            assert_eq!(msg, "success");
+        }
+    }
+
+    #[test]
+    fn result_type_tag_and_code() {
         unsafe {
             let w = ft_widget_new();
-            let mut err = ft_widget_fail_always(w);
-            assert_ne!(err.code, 0);
-            err.free();
-            assert_eq!(err.code, 0);
+            let r = ft_widget_fail_always(w);
+            // TestError has type_tag=1, CustomMessage has code=2
+            assert_eq!(ffier::ffier_result_type_tag(r), 1);
+            assert_eq!(ffier::ffier_result_code(r), 2);
             ft_widget_destroy(w);
         }
     }
@@ -566,8 +560,8 @@ mod tests {
             assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 42);
             assert_eq!(ft_pipeline_result_count(p), 1);
             let mut last: i32 = -1;
-            let err = ft_pipeline_last_result(p, &mut last);
-            assert_eq!(err.code, 0);
+            let r = ft_pipeline_last_result(p, &mut last);
+            assert_eq!(r, 0);
             assert_eq!(last, 42);
             ft_pipeline_destroy(p);
         }

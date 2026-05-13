@@ -349,11 +349,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                             this.0
                         };
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
-                        if __err.code == 0 {
+                        let __r = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
+                        if __r == 0 {
                             Ok(Self(__handle #client_phantom_init))
                         } else {
-                            Err(#err_ty::from_ffi(__err))
+                            Err(#err_ty::from_ffi(__r))
                         }
                     }
                 }
@@ -377,11 +377,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     let err_ty = format_ident!("{err_ident}");
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
-                        if __err.code == 0 {
+                        let __r = unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
+                        if __r == 0 {
                             Ok(self)
                         } else {
-                            Err(#err_ty::from_ffi(__err))
+                            Err(#err_ty::from_ffi(__r))
                         }
                     }
                 }
@@ -564,9 +564,12 @@ fn generate_error_client(meta: MetaError) -> TokenStream2 {
         }
 
         impl #name {
-            pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-                let code = err.code;
-                unsafe { err.free() };
+            /// Reconstruct the error from a packed `FfierResult`.
+            ///
+            /// Extracts the error code from the lower 32 bits and matches
+            /// against known variant codes.
+            pub fn from_ffi(r: ffier::FfierResult) -> Self {
+                let code = ffier::ffier_result_code(r);
                 match code {
                     #(#match_arms_from_ffi)*
                     other => panic!("unknown {} error code {}", #name_str, other),
@@ -971,8 +974,8 @@ fn build_client_body(
                 None => {
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
-                        if __err.code == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__err)) }
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
+                        if __r == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
                 Some(vk) => {
@@ -980,8 +983,8 @@ fn build_client_body(
                     quote! {
                         #(#wrapper_pre_bindings)*
                         #out_decl
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr) };
-                        if __err.code == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__err)) }
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr) };
+                        if __r == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
             }

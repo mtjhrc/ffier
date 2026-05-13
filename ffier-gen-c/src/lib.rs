@@ -18,6 +18,17 @@ use ffier_meta::{
 /// Maps trait names to their concrete dispatch variants.
 pub type TraitMap = HashMap<String, TraitDispatchInfo>;
 
+/// Maps error type names to their metadata (type tag, path, variants).
+///
+/// Used by exportable bridge generation to emit `ffier_result_from_err`
+/// with the correct type tag for `Result<T, E>` returns.
+pub type ErrorMap = HashMap<String, ErrorInfo>;
+
+pub struct ErrorInfo {
+    pub type_tag: u32,
+    pub path: TokenStream2,
+}
+
 pub struct TraitDispatchInfo {
     pub variants: Vec<TraitVariant>,
     /// If the trait is `#[implementable]`, the wrapper type path and vtable struct path.
@@ -94,7 +105,11 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
     map
 }
 
-fn generate_one(item: TokenStream2, trait_map: &TraitMap) -> TokenStream2 {
+fn generate_one(
+    item: TokenStream2,
+    trait_map: &TraitMap,
+    error_map: &ErrorMap,
+) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
     match tag.as_str() {
         "exportable" => {
@@ -102,7 +117,7 @@ fn generate_one(item: TokenStream2, trait_map: &TraitMap) -> TokenStream2 {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_exportable_bridge(meta, trait_map)
+            generate_exportable_bridge(meta, trait_map, error_map)
         }
         "error" => {
             let meta: MetaError = match syn::parse2(item) {
@@ -170,6 +185,23 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Pass 1: Build trait-to-impls map from trait_impl and implementable entries.
     // This allows resolving `impl Trait` params automatically.
     let trait_map = build_trait_map(&implementables, &trait_impls);
+
+    // Build error map: error name → (type_tag, path)
+    let error_map: ErrorMap = {
+        let mut map = ErrorMap::new();
+        for item in &errors {
+            if let Ok(meta) = syn::parse2::<MetaError>(item.clone()) {
+                map.insert(
+                    meta.name.to_string(),
+                    ErrorInfo {
+                        type_tag: meta.type_tag,
+                        path: meta.path.clone(),
+                    },
+                );
+            }
+        }
+        map
+    };
 
     // Pass 1.5: Validate type tags — check for missing (tag=0) and duplicates.
     // Also builds a tag→name map used to generate __ffier_type_name() for
@@ -329,7 +361,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         };
         header_fn_names.push(header_fn);
 
-        all_code.push(generate_one(item.clone(), &trait_map));
+        all_code.push(generate_one(item.clone(), &trait_map, &error_map));
     }
 
     // Extract prefix from any item for shared types (all items share the same prefix)
@@ -378,6 +410,10 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     }
     let shared_types_fn = emit_shared_types_fn(&first_prefix);
 
+    // Generate strerror dispatch function — dispatches by type tag to per-error
+    // static_message tables.
+    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors);
+
     // Generate unified header function
     quote! {
         #dispatch_helpers
@@ -388,15 +424,19 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         #shared_types_fn
 
+        #strerror_fn
+
         pub fn __ffier_header(guard: &str) -> ffier_gen_c::HeaderBuilder {
             ffier_gen_c::HeaderBuilder::new(guard, __ffier_shared_types())
                 #(.push(#header_fn_names()))*
+                .push(__ffier_strerror_header())
         }
     }
 }
 
 /// Emit a function `__ffier_shared_types()` that returns the Str/Bytes/Path
-/// typedefs and macros for the C header. Called once per library, not per type.
+/// typedefs, Result typedef, and macros for the C header. Called once per
+/// library, not per type.
 fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
     let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
@@ -404,12 +444,17 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
     let str_c = format!("{type_pfx}Str");
     let bytes_c = format!("{type_pfx}Bytes");
     let path_c = format!("{type_pfx}Path");
+    let result_c = format!("{type_pfx}Result");
+    let result_success = format!("{upper_pfx}RESULT_SUCCESS");
     let str_macro = format!("{upper_pfx}STR");
     let bytes_macro = format!("{upper_pfx}BYTES");
 
     quote! {
         fn __ffier_shared_types() -> String {
             [
+                concat!("typedef uint64_t ", #result_c, ";"),
+                concat!("#define ", #result_success, " 0"),
+                "",
                 concat!("/* Caller must ensure data is valid UTF-8 */"),
                 "typedef struct {",
                 "    const char* data;",
@@ -442,10 +487,98 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 }
 
 // ===========================================================================
+// Strerror bridge generation (batch-level, all errors)
+// ===========================================================================
+
+/// Generate `{prefix}_strerror()` and `{prefix}_strerror_s()` functions
+/// that dispatch by type tag to per-error static message tables.
+fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
+    let fn_pfx = format!("{prefix}_");
+    let type_pfx = ffier_meta::snake_to_pascal(prefix);
+
+    let strerror_name = format_ident!("{fn_pfx}strerror");
+    let strerror_s_name = format_ident!("{fn_pfx}strerror_s");
+    let strerror_name_str = strerror_name.to_string();
+    let strerror_s_name_str = strerror_s_name.to_string();
+
+    let result_c_name = format!("{type_pfx}Result");
+    let str_c_name = format!("{type_pfx}Str");
+
+    // Build dispatch arms for each error type
+    let mut dispatch_arms = Vec::new();
+    for item in errors {
+        if let Ok(meta) = syn::parse2::<MetaError>(item.clone()) {
+            let type_tag = meta.type_tag;
+            let path = &meta.path;
+            dispatch_arms.push(quote! {
+                #type_tag => {
+                    let code = ffier::ffier_result_code(r);
+                    <#path as ffier::FfiError>::static_message(code).as_ptr()
+                }
+            });
+        }
+    }
+
+    let unknown_msg_bytes = proc_macro2::Literal::byte_string(b"unknown error\0");
+
+    quote! {
+        /// Static message lookup from a packed `FtResult`.
+        ///
+        /// Returns a pointer to a null-terminated static string describing the
+        /// error variant. Returns "unknown error" for unrecognized codes.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #strerror_name(
+            r: ffier::FfierResult,
+        ) -> *const core::ffi::c_char {
+            if r == 0 { return b"success\0".as_ptr() as *const core::ffi::c_char; }
+            let type_tag = ffier::ffier_result_type_tag(r);
+            match type_tag {
+                #(#dispatch_arms)*
+                _ => unsafe {
+                    core::ffi::CStr::from_bytes_with_nul_unchecked(#unknown_msg_bytes).as_ptr()
+                },
+            }
+        }
+
+        /// Static message lookup returning an `FfierBytes` (length-prefixed,
+        /// null-terminated). For higher-level bindings.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #strerror_s_name(
+            r: ffier::FfierResult,
+        ) -> ffier::FfierBytes {
+            let ptr = unsafe { #strerror_name(r) };
+            let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
+            ffier::FfierBytes { data: ptr as *const u8, len }
+        }
+
+        fn __ffier_strerror_header() -> ffier_gen_c::HeaderSection {
+            let mut decls = String::new();
+            decls.push_str(&format!(
+                "const char* {}({} r);\n",
+                #strerror_name_str, #result_c_name,
+            ));
+            decls.push_str(&format!(
+                "{} {}({} r);",
+                #str_c_name, #strerror_s_name_str, #result_c_name,
+            ));
+            ffier_gen_c::HeaderSection {
+                struct_name: "strerror".to_string(),
+                handle_typedef: String::new(),
+                declarations: decls,
+            }
+        }
+    }
+}
+
+// ===========================================================================
 // Exportable bridge generation
 // ===========================================================================
 
-fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> TokenStream2 {
+fn generate_exportable_bridge(
+    meta: MetaExportable,
+    trait_map: &TraitMap,
+    error_map: &ErrorMap,
+) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
     let fn_pfx = meta.fn_pfx();
@@ -797,8 +930,8 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
         // Doxygen comment
         let (has_out_param, err_c_name_for_doc) = match &m.ret {
-            MetaReturn::Result { ok, err_ident, .. } => {
-                (ok.is_some(), Some(format!("{type_pfx}{err_ident}")))
+            MetaReturn::Result { ok, .. } => {
+                (ok.is_some(), Some(format!("{type_pfx}Result")))
             }
             _ => (false, None),
         };
@@ -891,7 +1024,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 });
             }
             MetaReturn::Result { ok, err_ident } => {
-                let err_c_name = format!("{type_pfx}{err_ident}");
+                let result_c_name = format!("{type_pfx}Result");
 
                 let out_c_type = ok.as_ref().map(|vk| {
                     let bridge_type = &vk.bridge_type;
@@ -901,7 +1034,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 });
 
                 let header_line = build_header_line(
-                    quote! { #err_c_name },
+                    quote! { #result_c_name },
                     &ffi_name_str,
                     header_handle,
                     &c_type_exprs,
@@ -910,24 +1043,41 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                 );
                 decl_exprs.push(header_line);
 
+                // Look up the error type's type_tag from the error map
+                let err_info = error_map.get(err_ident);
+                let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
+                let err_path = err_info.map(|i| &i.path);
+
+                let err_branch = if let Some(path) = err_path {
+                    quote! {
+                        Err(e) => ffier::ffier_result_from_err::<#path>(&e, #err_type_tag),
+                    }
+                } else {
+                    // Fallback: use the error type's code directly (shouldn't happen
+                    // with proper library_definition! but avoids a hard error)
+                    quote! {
+                        Err(e) => ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e)),
+                    }
+                };
+
                 let ok_branch = match ok {
                     Some(vk) => {
                         let bridge_type = &vk.bridge_type;
                         quote! {
                             Ok(ok_val) => {
                                 unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
-                                ffier::FfierError::ok()
+                                ffier::FFIER_RESULT_SUCCESS
                             }
                         }
                     }
                     None if handle_is_indirect => quote! {
                         Ok(new_self) => {
                             unsafe { *handle_ptr = <#struct_path as ffier::FfiType>::into_c(new_self) };
-                            ffier::FfierError::ok()
+                            ffier::FFIER_RESULT_SUCCESS
                         }
                     },
                     None => quote! {
-                        Ok(_) => ffier::FfierError::ok(),
+                        Ok(_) => ffier::FFIER_RESULT_SUCCESS,
                     },
                 };
 
@@ -948,7 +1098,7 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
                         #(#pre_bindings)*
                         match #method_call {
                             #ok_branch
-                            Err(e) => ffier::FfierError::from_err(e),
+                            #err_branch
                         }
                     }
                 });
@@ -1011,68 +1161,39 @@ fn generate_exportable_bridge(meta: MetaExportable, trait_map: &TraitMap) -> Tok
 
 fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
     let name = &meta.name;
-    let path = &meta.path;
-    let fn_pfx = meta.fn_pfx();
-    let type_pfx = meta.type_pfx();
-    let upper_pfx = meta.upper_pfx();
-
     let name_str = name.to_string();
-    let err_snake = camel_to_snake(&name_str);
-    let err_upper = camel_to_upper_snake(&name_str);
+    let upper_pfx = meta.upper_pfx();
+    let type_tag = meta.type_tag;
+    let path = &meta.path;
 
-    let message_fn_name = format_ident!("{fn_pfx}{err_snake}_message");
-    let free_fn_name = format_ident!("{fn_pfx}{err_snake}_free");
+    // Strip "Error" suffix from type name for constant prefix:
+    // TestError → TEST, CalcError → CALC, BufferError → BUFFER
+    let stripped_name = name_str
+        .strip_suffix("Error")
+        .unwrap_or(&name_str);
+    let err_upper = camel_to_upper_snake(stripped_name);
+    let full_upper_pfx = format!("{upper_pfx}ERROR_{err_upper}");
+
+    let err_snake = camel_to_snake(&name_str);
+    let fn_pfx = meta.fn_pfx();
     let header_fn_name = format_ident!("{fn_pfx}{err_snake}__header");
 
-    let err_c_name = format!("{type_pfx}{name_str}");
-    let message_fn_str = format!("{fn_pfx}{err_snake}_message");
-    let free_fn_str = format!("{fn_pfx}{err_snake}_free");
-    let full_upper_pfx = format!("{upper_pfx}{err_upper}");
-
+    // No per-type bridge functions needed — strerror is emitted at batch level.
+    // Only emit the header section with constants.
     quote! {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #message_fn_name(
-            err: *const ffier::FfierError,
-        ) -> *const core::ffi::c_char {
-            let err = unsafe { &*err };
-            let ptr = err.msg_ptr();
-            if !ptr.is_null() { return ptr; }
-            <#path as ffier::FfiError>::static_message(err.code).as_ptr()
-        }
-
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #free_fn_name(
-            err: *mut ffier::FfierError,
-        ) {
-            unsafe { (*err).free() };
-        }
-
         pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
-            let err_c_name = #err_c_name;
-            let message_fn_str = #message_fn_str;
-            let free_fn_str = #free_fn_str;
             let full_upper_pfx = #full_upper_pfx;
 
             let mut decls = String::new();
-            decls.push_str("typedef struct {\n");
-            decls.push_str("    uint64_t code;\n");
-            decls.push_str("    char* _msg; /* private */\n");
-            decls.push_str(&format!("}} {};\n\n", err_c_name));
 
-            for (variant_name, val) in <#path as ffier::FfiError>::codes() {
+            // Emit constants with baked-in type tags:
+            // #define FT_ERROR_TEST_NOT_FOUND ((uint64_t)1 << 32 | 1)
+            for (variant_name, code) in <#path as ffier::FfiError>::codes() {
                 decls.push_str(&format!(
-                    "#define {}_{} {}\n",
-                    full_upper_pfx, variant_name, val
+                    "#define {}_{} ((uint64_t){} << 32 | {})\n",
+                    full_upper_pfx, variant_name, #type_tag, code,
                 ));
             }
-            decls.push_str(&format!(
-                "\nconst char* {}(const {}* err);\n",
-                message_fn_str, err_c_name
-            ));
-            decls.push_str(&format!(
-                "void {}({}* err);\n",
-                free_fn_str, err_c_name
-            ));
 
             ffier_gen_c::HeaderSection {
                 struct_name: #name_str.to_string(),
@@ -1325,7 +1446,7 @@ pub fn c_signature_for_method(
                     c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
                 });
             }
-            quote! { -> ffier::FfierError }
+            quote! { -> ffier::FfierResult }
         }
     };
 
