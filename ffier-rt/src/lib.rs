@@ -410,49 +410,80 @@ pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
 }
 
 // ---------------------------------------------------------------------------
-// FfierErrorBox --- type-erased boxed error with cached Display message
+// FfierErrorPayload --- real error boxed in FfierHandleBox with RTTI
 // ---------------------------------------------------------------------------
 
-/// Type-erased error box. Stores the packed `FfierResult` and the cached
-/// `Display` output. This is what `FtError` (`void*`) points to.
+/// Payload stored inside `FfierHandleBox<FfierErrorPayload<E>>` for error
+/// handles. Preserves the concrete Rust error value alongside a cached
+/// `Display` message.
 ///
-/// The concrete error type is erased — `ft_error_message()` just reads the
-/// cached string, and `ft_strerror()` can decode the result via type tag.
-pub struct FfierErrorBox {
+/// `cached_msg` is first so `ft_error_message()` can read it without
+/// knowing `E` — it's always at offset 0 of the payload regardless of
+/// the error type's size.
+#[repr(C)]
+pub struct FfierErrorPayload<E> {
+    /// Cached `Display::fmt()` output (first field — fixed offset).
+    pub cached_msg: String,
     /// Pre-computed `FfierResult` (type_tag << 32 | code).
     pub result: FfierResult,
-    /// Cached `Display::fmt()` output.
-    pub cached_msg: String,
+    /// The concrete Rust error value.
+    pub error: E,
 }
 
-impl FfierErrorBox {
-    /// Box an error into a type-erased handle.
-    pub fn new<E: FfiError>(error: E, type_tag: u32) -> *mut core::ffi::c_void {
-        use std::fmt::Write;
-        let mut cached_msg = String::new();
-        let _ = write!(cached_msg, "{error}");
-        let result = ffier_result(type_tag, error.code());
-        let boxed = Box::new(FfierErrorBox { result, cached_msg });
-        Box::into_raw(boxed) as *mut core::ffi::c_void
-    }
+/// Box an `FfiError` value into a `FfierHandleBox`-based error handle.
+///
+/// The handle gets the error enum's type tag in the `FfierHandleBox` header,
+/// making it a proper RTTI-tagged handle. The concrete error value `E` is
+/// preserved for future `source()` chain traversal and downcasting.
+pub fn ffier_error_box<E: FfiError>(error: E, type_tag: u32) -> *mut c_void {
+    use std::fmt::Write;
+    let mut cached_msg = String::new();
+    let _ = write!(cached_msg, "{error}");
+    let result = ffier_result(type_tag, error.code());
+    let payload = FfierErrorPayload {
+        cached_msg,
+        result,
+        error,
+    };
+    let boxed = Box::new(FfierHandleBox {
+        type_tag,
+        metadata: 0,
+        value: payload,
+    });
+    Box::into_raw(boxed) as *mut c_void
+}
 
-    /// Read the cached message from a raw handle pointer.
-    ///
-    /// # Safety
-    /// `handle` must be a valid pointer from `FfierErrorBox::new`.
-    pub unsafe fn message(handle: *const core::ffi::c_void) -> FfierBytes {
-        let boxed = unsafe { &*(handle as *const FfierErrorBox) };
-        unsafe { FfierBytes::from_str(&boxed.cached_msg) }
+/// Read the cached message from an error handle.
+///
+/// Works without knowing the concrete error type because `cached_msg`
+/// is the first field of `FfierErrorPayload<E>` (`#[repr(C)]` — fixed
+/// offset from the `FfierHandleBox` header).
+///
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box`, or null.
+pub unsafe fn ffier_error_message(handle: *const c_void) -> FfierBytes {
+    if handle.is_null() {
+        return FfierBytes::EMPTY;
     }
+    // Handle points to start of FfierHandleBox { type_tag: u32, metadata: u32, value: ... }
+    // value starts at offset 8. cached_msg is the first field of value (#[repr(C)]).
+    let msg_ptr = unsafe { (handle as *const u8).add(8) as *const String };
+    let msg = unsafe { &*msg_ptr };
+    unsafe { FfierBytes::from_str(msg) }
+}
 
-    /// Free a boxed error handle.
-    ///
-    /// # Safety
-    /// `handle` must be a valid pointer from `FfierErrorBox::new`,
-    /// or null (in which case this is a no-op).
-    pub unsafe fn destroy(handle: *mut core::ffi::c_void) {
-        if !handle.is_null() {
-            drop(unsafe { Box::from_raw(handle as *mut FfierErrorBox) });
-        }
+/// Typed destroy — drops `FfierHandleBox<FfierErrorPayload<E>>`.
+///
+/// The caller (generated dispatch code) provides `E` via the type parameter.
+/// This ensures `E`'s drop glue runs correctly.
+///
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box::<E>`, or null.
+pub unsafe fn ffier_error_destroy_typed<E>(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
     }
+    // handle points to start of FfierHandleBox — cast directly.
+    let box_ptr = handle as *mut FfierHandleBox<FfierErrorPayload<E>>;
+    drop(unsafe { Box::from_raw(box_ptr) });
 }

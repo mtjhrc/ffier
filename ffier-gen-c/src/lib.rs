@@ -515,6 +515,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
 
     // Build dispatch arms for each error type
     let mut dispatch_arms = Vec::new();
+    let mut destroy_dispatch_arms = Vec::new();
     for item in errors {
         if let Ok(meta) = syn::parse2::<MetaError>(item.clone()) {
             let type_tag = meta.type_tag;
@@ -523,6 +524,11 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
                 #type_tag => {
                     let code = ffier::ffier_result_code(r);
                     <#path as ffier::FfiError>::static_message(code).as_ptr()
+                }
+            });
+            destroy_dispatch_arms.push(quote! {
+                #type_tag => {
+                    unsafe { ffier::ffier_error_destroy_typed::<#path>(err) };
                 }
             });
         }
@@ -571,15 +577,26 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             if err.is_null() {
                 return ffier::FfierBytes::EMPTY;
             }
-            unsafe { ffier::FfierErrorBox::message(err) }
+            unsafe { ffier::ffier_error_message(err) }
         }
 
         /// Free a boxed error handle. NULL is a no-op.
+        ///
+        /// Dispatches by type tag to drop the correct concrete error type,
+        /// ensuring `E`'s drop glue runs properly.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #error_destroy_name(
             err: *mut core::ffi::c_void,
         ) {
-            unsafe { ffier::FfierErrorBox::destroy(err) };
+            if err.is_null() { return; }
+            let __type_tag = unsafe { ffier::handle_type_tag(err) };
+            match __type_tag {
+                #(#destroy_dispatch_arms)*
+                _ => {
+                    // Unknown error type — fall back to leaking rather than UB.
+                    // This shouldn't happen with proper library_definition! usage.
+                }
+            }
         }
 
         fn __ffier_strerror_header() -> ffier_gen_c::HeaderSection {
@@ -1099,7 +1116,7 @@ fn generate_exportable_bridge(
                         quote! {
                             if !err_out.is_null() {
                                 unsafe {
-                                    *err_out = ffier::FfierErrorBox::new(e, #err_type_tag);
+                                    *err_out = ffier::ffier_error_box(e, #err_type_tag);
                                 }
                             }
                         }

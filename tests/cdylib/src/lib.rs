@@ -541,6 +541,23 @@ mod tests {
     }
 
     #[test]
+    fn error_handle_has_rtti_type_tag() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let r = ft_widget_fail_always(w, &mut err);
+            assert_ne!(r, 0);
+            assert!(!err.is_null());
+            // The error handle is a proper FfierHandleBox — type tag is readable
+            let tag = ffier::handle_type_tag(err);
+            // TestError has type_tag=1
+            assert_eq!(tag, 1);
+            ft_error_destroy(err);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
     fn error_handle_null_is_safe() {
         unsafe {
             // Passing NULL err_out is fine — no box is written
