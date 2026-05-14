@@ -306,7 +306,7 @@ impl HasPrefix for MetaError {
 
 pub struct MetaErrorVariant {
     pub name: Ident,
-    pub code: u64,
+    pub code: u32,
     pub message: String,
 }
 
@@ -771,7 +771,7 @@ impl syn::parse::Parse for MetaError {
             parse_comma(&inner)?;
             expect_key(&inner, "code")?;
             let code: syn::LitInt = inner.parse()?;
-            let code = code.base10_parse::<u64>()?;
+            let code = code.base10_parse::<u32>()?;
             parse_comma(&inner)?;
             expect_key(&inner, "message")?;
             let message = parse_string(&inner)?;

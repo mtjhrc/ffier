@@ -57,6 +57,22 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         }
     }
 
+    // Build handle set from exportables — needed for GLib-style Result<Handle, E> returns.
+    let handle_types: HashSet<String> = {
+        let mut set = HashSet::new();
+        for item in &exportables {
+            if let Ok(meta) = syn::parse2::<MetaExportable>(item.clone()) {
+                set.insert(meta.struct_name.to_string());
+            }
+        }
+        for item in &implementables {
+            if let Ok(meta) = syn::parse2::<MetaImplementable>(item.clone()) {
+                set.insert(format!("Vtable{}", meta.trait_name));
+            }
+        }
+        set
+    };
+
     // Track which traits have been defined to avoid duplicate definitions.
     let mut defined_traits = HashSet::new();
     let mut all_source = String::new();
@@ -77,7 +93,7 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
-        let code = generate_exportable_client(meta);
+        let code = generate_exportable_client(meta, &handle_types);
         all_source.push_str(&code.to_string());
         all_source.push('\n');
     }
@@ -133,7 +149,7 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
 // Exportable client generation
 // ===========================================================================
 
-fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
+fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<String>) -> TokenStream2 {
     let struct_name = &meta.struct_name;
     let struct_name_str = struct_name.to_string();
     let struct_lower = camel_to_snake(&struct_name_str);
@@ -231,6 +247,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
             m,
             &meta.prefix,
             ffier_gen_c::SignatureContext::Client,
+            &handle_types,
         );
         let ffi_name = format_ident!("{}", c_sig.fn_name);
         let sig_param_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
@@ -349,11 +366,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                             this.0
                         };
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(&mut __handle, #(#wrapper_args),*) };
-                        if __err.code == 0 {
+                        let __r = unsafe { #ffi_name(&mut __handle, #(#wrapper_args,)* core::ptr::null_mut()) };
+                        if __r == 0 {
                             Ok(Self(__handle #client_phantom_init))
                         } else {
-                            Err(#err_ty::from_ffi(__err))
+                            Err(#err_ty::from_ffi(__r))
                         }
                     }
                 }
@@ -377,11 +394,11 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                     let err_ty = format_ident!("{err_ident}");
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(self.0, #(#wrapper_args),*) };
-                        if __err.code == 0 {
+                        let __r = unsafe { #ffi_name(self.0, #(#wrapper_args,)* core::ptr::null_mut()) };
+                        if __r == 0 {
                             Ok(self)
                         } else {
-                            Err(#err_ty::from_ffi(__err))
+                            Err(#err_ty::from_ffi(__r))
                         }
                     }
                 }
@@ -396,6 +413,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
+                &handle_types,
             )
         } else if is_by_value {
             // By-value self, non-builder
@@ -406,6 +424,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
+                &handle_types,
             );
             quote! {
                 let __handle = {
@@ -423,6 +442,7 @@ fn generate_exportable_client(meta: MetaExportable) -> TokenStream2 {
                 &wrapper_args,
                 &wrapper_pre_bindings,
                 &m.rust_ret,
+                &handle_types,
             )
         };
 
@@ -564,9 +584,12 @@ fn generate_error_client(meta: MetaError) -> TokenStream2 {
         }
 
         impl #name {
-            pub fn from_ffi(mut err: ffier::FfierError) -> Self {
-                let code = err.code;
-                unsafe { err.free() };
+            /// Reconstruct the error from a packed `FfierResult`.
+            ///
+            /// Extracts the error code from the lower 32 bits and matches
+            /// against known variant codes.
+            pub fn from_ffi(r: ffier::FfierResult) -> Self {
+                let code = ffier::ffier_result_code(r);
                 match code {
                     #(#match_arms_from_ffi)*
                     other => panic!("unknown {} error code {}", #name_str, other),
@@ -949,6 +972,7 @@ fn build_client_body(
     wrapper_args: &[TokenStream2],
     wrapper_pre_bindings: &[TokenStream2],
     rust_ret: &TokenStream2,
+    handle_types: &HashSet<String>,
 ) -> TokenStream2 {
     match ret {
         MetaReturn::Void => {
@@ -967,12 +991,34 @@ fn build_client_body(
         }
         MetaReturn::Result { ok, err_ident, .. } => {
             let err_ty = format_ident!("{err_ident}");
+            let ok_is_handle = ok.is_some()
+                && ffier_gen_c::is_result_ok_handle(rust_ret, handle_types);
+
             match ok {
                 None => {
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
-                        if __err.code == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__err)) }
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* core::ptr::null_mut()) };
+                        if __r == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__r)) }
+                    }
+                }
+                Some(_vk) if ok_is_handle => {
+                    // GLib-style: function returns *mut c_void (handle or NULL).
+                    // We pass a local FtError to extract the result code on failure.
+                    // The error handle is leaked — the Rust client reconstructs
+                    // the error from the code and doesn't need the handle.
+                    let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
+                    quote! {
+                        #(#wrapper_pre_bindings)*
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                        let __ptr = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* &mut __err) };
+                        if !__ptr.is_null() {
+                            Ok(<#ok_type as ffier::FfiType>::from_c(__ptr))
+                        } else {
+                            let __r = unsafe { ffier::ffier_error_result(__err) };
+                            // TODO: call {prefix}_error_destroy(__err) to avoid leak
+                            Err(#err_ty::from_ffi(__r))
+                        }
                     }
                 }
                 Some(vk) => {
@@ -980,8 +1026,8 @@ fn build_client_body(
                     quote! {
                         #(#wrapper_pre_bindings)*
                         #out_decl
-                        let __err = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr) };
-                        if __err.code == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__err)) }
+                        let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr, core::ptr::null_mut()) };
+                        if __r == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
             }
