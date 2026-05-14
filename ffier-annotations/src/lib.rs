@@ -107,6 +107,7 @@ fn emit_ffi_handle_impls(
         impl ffier::FfiType for #ty {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &str = #c_handle_name;
+            const IS_HANDLE: bool = true;
             fn into_c(self) -> *mut core::ffi::c_void {
                 let tagged = ffier::FfierHandleBox {
                     type_tag: #tag_const,
@@ -701,12 +702,26 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
-        let message = attrs
-            .message
-            .unwrap_or_else(|| camel_to_human(&var_ident.to_string()));
+        // Static message for strerror: #[ffier(message="...")] > raw variant name
+        // Data-carrying variants get "Name(...)" / "Name{..}" to signal
+        // that ft_error_message() has richer detail.
+        let message = attrs.message.unwrap_or_else(|| {
+            let name = var_ident.to_string();
+            match &variant.fields {
+                syn::Fields::Unit => name,
+                syn::Fields::Unnamed(_) => format!("{name}(...)"),
+                syn::Fields::Named(_) => format!("{name}{{..}}"),
+            }
+        });
         let upper_name = camel_to_upper_snake(&var_ident.to_string());
 
-        code_arms.push(quote! { #name::#var_ident => #code });
+        // Wildcard pattern for variants with fields
+        let match_pattern = match &variant.fields {
+            syn::Fields::Unit => quote! { #name::#var_ident },
+            syn::Fields::Unnamed(_) => quote! { #name::#var_ident(..) },
+            syn::Fields::Named(_) => quote! { #name::#var_ident { .. } },
+        };
+        code_arms.push(quote! { #match_pattern => #code });
 
         let msg_with_nul = format!("{message}\0");
         let msg_lit = proc_macro2::Literal::byte_string(msg_with_nul.as_bytes());
@@ -737,13 +752,13 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
     let output = quote! {
         impl ffier::FfiError for #name {
-            fn code(&self) -> u64 {
+            fn code(&self) -> u32 {
                 match self {
                     #(#code_arms,)*
                 }
             }
 
-            fn static_message(code: u64) -> &'static core::ffi::CStr {
+            fn static_message(code: u32) -> &'static core::ffi::CStr {
                 match code {
                     #(#message_arms,)*
                     _ => unsafe {
@@ -752,7 +767,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                 }
             }
 
-            fn codes() -> &'static [(&'static str, u64)] {
+            fn codes() -> &'static [(&'static str, u32)] {
                 &[#(#codes_entries),*]
             }
         }
@@ -793,7 +808,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 }
 
 struct FfierVariantAttrs {
-    code: u64,
+    code: u32,
     message: Option<String>,
 }
 
@@ -810,7 +825,7 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
             if meta.path.is_ident("code") {
                 let value = meta.value()?;
                 let lit: syn::LitInt = value.parse()?;
-                code = Some(lit.base10_parse::<u64>()?);
+                code = Some(lit.base10_parse::<u32>()?);
                 Ok(())
             } else if meta.path.is_ident("message") {
                 let value = meta.value()?;
@@ -909,11 +924,6 @@ fn extract_impl_trait_name(ty: &Type) -> Option<String> {
         }
     }
     None
-}
-
-/// `DivisionByZero` → `"division by zero"`
-fn camel_to_human(s: &str) -> String {
-    camel_to_snake(s).replace('_', " ")
 }
 
 /// Extract `/// doc` comments from attributes.

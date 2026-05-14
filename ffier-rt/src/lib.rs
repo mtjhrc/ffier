@@ -1,4 +1,4 @@
-use std::ffi::{CStr, CString, c_char};
+use std::ffi::CStr;
 
 // ---------------------------------------------------------------------------
 // FfiType --- maps Rust types to C-compatible representations
@@ -7,6 +7,8 @@ use std::ffi::{CStr, CString, c_char};
 pub trait FfiType {
     type CRepr;
     const C_TYPE_NAME: &'static str;
+    /// True for types backed by an opaque handle (`void*`).
+    const IS_HANDLE: bool = false;
     fn into_c(self) -> Self::CRepr;
     fn from_c(repr: Self::CRepr) -> Self;
 }
@@ -249,6 +251,7 @@ impl VtableHandle {
 impl<T: FfiHandle> FfiType for &T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut c_void {
         // Safety: into_c is only called by generated bridge code on references
         // that point into a valid FfierHandleBox<T>.
@@ -262,6 +265,7 @@ impl<T: FfiHandle> FfiType for &T {
 impl<T: FfiHandle> FfiType for &mut T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut c_void {
         // Safety: into_c is only called by generated bridge code on references
         // that point into a valid FfierHandleBox<T>.
@@ -352,60 +356,157 @@ impl FfierBytes {
 }
 
 // ---------------------------------------------------------------------------
-// FfiError --- per-type C error struct: { code, _msg }
+// FfiError --- trait for error enums exported via FFI
 // ---------------------------------------------------------------------------
 
-pub trait FfiError: Sized {
-    fn code(&self) -> u64;
+/// Trait for error enums exported across the FFI boundary.
+///
+/// Requires `std::error::Error` (which implies `Display`). The `Display`
+/// impl is used for rich error messages cached inside the error handle.
+pub trait FfiError: std::error::Error + Sized {
+    /// Variant code (lower 32 bits of `FfierResult`).
+    fn code(&self) -> u32;
 
-    fn message(&self) -> Option<String> {
-        None
-    }
-
-    fn static_message(code: u64) -> &'static CStr;
+    /// Static human-readable message for a variant code (no allocation).
+    fn static_message(code: u32) -> &'static CStr;
 
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
-    fn codes() -> &'static [(&'static str, u64)];
+    fn codes() -> &'static [(&'static str, u32)];
 }
 
+// ---------------------------------------------------------------------------
+// FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
+// ---------------------------------------------------------------------------
+
+/// Packed error result: `0` = success, nonzero = `(type_tag << 32) | code`.
+///
+/// Users compare against generated constants (`FT_ERROR_CALC_OVERFLOW` etc.).
+/// The internal layout is an implementation detail.
+pub type FfierResult = u64;
+
+/// Build a `FfierResult` from a type tag and variant code.
+#[inline]
+pub fn ffier_result(type_tag: u32, code: u32) -> FfierResult {
+    ((type_tag as u64) << 32) | (code as u64)
+}
+
+/// Extract the type tag from a `FfierResult` (upper 32 bits).
+#[inline]
+pub fn ffier_result_type_tag(r: FfierResult) -> u32 {
+    (r >> 32) as u32
+}
+
+/// Extract the error code from a `FfierResult` (lower 32 bits).
+#[inline]
+pub fn ffier_result_code(r: FfierResult) -> u32 {
+    r as u32
+}
+
+/// Success value.
+pub const FFIER_RESULT_SUCCESS: FfierResult = 0;
+
+/// Convert an error value into a `FfierResult`.
+///
+/// `type_tag` identifies the error enum (assigned in `library_definition!`).
+#[inline]
+pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
+    ffier_result(type_tag, e.code())
+}
+
+// ---------------------------------------------------------------------------
+// FfierErrorPayload --- real error boxed in FfierHandleBox with RTTI
+// ---------------------------------------------------------------------------
+
+/// Payload stored inside `FfierHandleBox<FfierErrorPayload<E>>` for error
+/// handles. Preserves the concrete Rust error value alongside a cached
+/// `Display` message.
+///
+/// Field order: `result`, `cached_msg`, then `error`. The first two are
+/// at fixed offsets regardless of `E`, so `FfierErrorHeader` can read
+/// them without knowing the concrete error type.
 #[repr(C)]
-pub struct FfierError {
-    pub code: u64,
-    _msg: *mut c_char,
+pub struct FfierErrorPayload<E> {
+    /// Pre-computed `FfierResult` (type_tag << 32 | code).
+    pub result: FfierResult,
+    /// Cached `Display::fmt()` output.
+    pub cached_msg: String,
+    /// The concrete Rust error value.
+    pub error: E,
 }
 
-impl FfierError {
-    pub fn ok() -> Self {
-        Self {
-            code: 0,
-            _msg: core::ptr::null_mut(),
-        }
-    }
+/// Fixed-layout prefix of every `FfierHandleBox<FfierErrorPayload<E>>`.
+///
+/// Since both `FfierHandleBox` and `FfierErrorPayload` are `#[repr(C)]`,
+/// the first fields have identical layout regardless of `E`. This struct
+/// lets `ffier_error_result()` and `ffier_error_message()` read them
+/// through a plain cast — no raw pointer arithmetic, no generics needed.
+#[repr(C)]
+struct FfierErrorHeader {
+    type_tag: u32,
+    metadata: u32,
+    result: FfierResult,
+    cached_msg: String,
+}
 
-    pub fn from_err<E: FfiError>(e: E) -> Self {
-        let code = e.code();
-        let msg_ptr = match e.message() {
-            Some(s) => CString::new(s)
-                .map(CString::into_raw)
-                .unwrap_or(core::ptr::null_mut()),
-            None => core::ptr::null_mut(),
-        };
-        Self {
-            code,
-            _msg: msg_ptr,
-        }
-    }
+/// Box an `FfiError` value into a `FfierHandleBox`-based error handle.
+///
+/// The handle gets the error enum's type tag in the `FfierHandleBox` header,
+/// making it a proper RTTI-tagged handle. The concrete error value `E` is
+/// preserved for future `source()` chain traversal and downcasting.
+pub fn ffier_error_box<E: FfiError>(error: E, type_tag: u32) -> *mut c_void {
+    use std::fmt::Write;
+    let mut cached_msg = String::new();
+    let _ = write!(cached_msg, "{error}");
+    let result = ffier_result(type_tag, error.code());
+    let payload = FfierErrorPayload {
+        cached_msg,
+        result,
+        error,
+    };
+    let boxed = Box::new(FfierHandleBox {
+        type_tag,
+        metadata: 0,
+        value: payload,
+    });
+    Box::into_raw(boxed) as *mut c_void
+}
 
-    pub fn msg_ptr(&self) -> *const c_char {
-        self._msg
+/// Read the `FfierResult` from a boxed error handle.
+///
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box`, or null.
+pub unsafe fn ffier_error_result(handle: *const c_void) -> FfierResult {
+    if handle.is_null() {
+        return FFIER_RESULT_SUCCESS;
     }
+    let header = unsafe { &*(handle as *const FfierErrorHeader) };
+    header.result
+}
 
-    /// # Safety
-    /// `_msg` must be null or from `CString::into_raw`.
-    pub unsafe fn free(&mut self) {
-        if !self._msg.is_null() {
-            drop(unsafe { CString::from_raw(self._msg) });
-        }
-        *self = Self::ok();
+/// Read the cached message from an error handle.
+///
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box`, or null.
+pub unsafe fn ffier_error_message(handle: *const c_void) -> FfierBytes {
+    if handle.is_null() {
+        return FfierBytes::EMPTY;
     }
+    let header = unsafe { &*(handle as *const FfierErrorHeader) };
+    unsafe { FfierBytes::from_str(&header.cached_msg) }
+}
+
+/// Typed destroy — drops `FfierHandleBox<FfierErrorPayload<E>>`.
+///
+/// The caller (generated dispatch code) provides `E` via the type parameter.
+/// This ensures `E`'s drop glue runs correctly.
+///
+/// # Safety
+/// `handle` must be a valid error handle from `ffier_error_box::<E>`, or null.
+pub unsafe fn ffier_error_destroy_typed<E>(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
+    }
+    // handle points to start of FfierHandleBox — cast directly.
+    let box_ptr = handle as *mut FfierHandleBox<FfierErrorPayload<E>>;
+    drop(unsafe { Box::from_raw(box_ptr) });
 }
