@@ -793,6 +793,25 @@ impl<'a> Snapshot<'a> for Gadget {
 }
 
 // ---------------------------------------------------------------------------
+// Foreign trait — tests `extern trait` for traits from external crates
+// ---------------------------------------------------------------------------
+
+pub use foreign_trait_crate::Weighable;
+
+#[ffier::implementable(foreign)]
+trait Weighable {
+    #[ffier(index = 0)]
+    fn weight_grams(&self) -> i32;
+}
+
+#[ffier::trait_impl]
+impl Weighable for Apple {
+    fn weight_grams(&self) -> i32 {
+        self.weight * 10
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
@@ -820,4 +839,6 @@ ffier::library_definition!("ft",
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
+    trait Weighable = 23,
+    Weighable for Apple,
 );

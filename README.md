@@ -57,8 +57,6 @@ the C header to construct these from string literals.
 
 ## Example
 
-Annotate your library (from [`example/mylib`](example/mylib/src/lib.rs)):
-
 ```rust
 #[derive(Clone, Copy, Debug, ffier::FfiError)]
 pub enum CalcError {
@@ -76,39 +74,19 @@ impl Calculator {
 }
 ```
 
-Register types in the library (from [`example/mylib`](example/mylib/src/lib.rs)):
-
-```rust
-ffier::library_definition!("mylib",
-    Calculator, CalcError,
-);
-```
-
-Generate the C bridge in your cdylib crate (from [`example/mylib-cdylib`](example/mylib-cdylib/src/lib.rs)):
-
-```rust
-mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
-```
-
-Call from C:
+Calling from C:
 
 ```c
 MylibCalculator calc = mylib_calculator_new();
-printf("add(3, 4) = %d\n", mylib_calculator_add(calc, 3, 4));
+int32_t quotient;
+MylibCalcError err = mylib_calculator_divide(calc, 10, 3, &quotient);
+if (err.code != 0) { mylib_calc_error_free(&err); /* handle error */ }
 mylib_calculator_destroy(calc);
 ```
 
-Call from Rust via the generated C ABI bindings:
-
-```rust
-let calc = Calculator::new();
-println!("add(3, 4) = {}", calc.add(3, 4));
-println!("divide(10, 3) = {}", calc.divide(10, 3).unwrap());
-```
-
-See [`example/`](example/) for the full runnable example including a text buffer
-with file descriptors, generated Rust client bindings, and a swappable Rust
-consumer that works with both linking modes.
+This generates `extern "C"` bridge functions, a C header, and safe Rust client
+bindings. See [`tests/`](tests/) for the full test suite covering error types,
+builders, lifetimes, `impl Trait` dispatch, file descriptors, and more.
 
 ## TODO
 
