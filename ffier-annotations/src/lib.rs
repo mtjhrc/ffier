@@ -947,6 +947,9 @@ struct ImplementableArgs {
     /// Reserved vtable slot indices (retired methods). These slots are padded
     /// in the vtable struct to keep the layout stable.
     reserved: Vec<usize>,
+    /// If true, the trait is foreign (defined in another crate). The macro
+    /// will not emit the trait definition or `FfierBoxDyn` impl.
+    foreign: bool,
 }
 
 struct SupertraitBlock {
@@ -958,6 +961,7 @@ impl Parse for ImplementableArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut supers = Vec::new();
         let mut reserved = Vec::new();
+        let mut foreign = false;
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -991,16 +995,18 @@ impl Parse for ImplementableArgs {
                     reserved.push(lit.base10_parse::<usize>()?);
                     let _ = content.parse::<Token![,]>();
                 }
+            } else if ident == "foreign" {
+                foreign = true;
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
-                    "expected `prefix`, `supers`, or `reserved`",
+                    "expected `prefix`, `supers`, `reserved`, or `foreign`",
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { supers, reserved })
+        Ok(Self { supers, reserved, foreign })
     }
 }
 
@@ -1243,6 +1249,7 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as ImplementableArgs);
+    let is_foreign = args.foreign;
     let trait_item = parse_macro_input!(item as ItemTrait);
     let original_trait = trait_item.clone();
 
@@ -1492,6 +1499,24 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
 
+    // Foreign traits must not have default method bodies — the real defaults
+    // live in the foreign crate and can't be replicated here.
+    if is_foreign {
+        for item in &trait_item.items {
+            if let TraitItem::Fn(method) = item {
+                if method.default.is_some() {
+                    return syn::Error::new_spanned(
+                        &method.sig.ident,
+                        "foreign trait methods must not have default bodies \
+                         (the defaults live in the foreign crate)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
+            }
+        }
+    }
+
     let mut default_helpers: Vec<proc_macro2::TokenStream> = Vec::new();
     // Map from method name → helper fn ident (only for methods with defaults)
     let mut default_helper_names: HashMap<String, syn::Ident> = HashMap::new();
@@ -1640,23 +1665,35 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
-    let has_supertraits = !args.supers.is_empty()
-        || trait_item
-            .supertraits
-            .iter()
-            .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
-
-    let boxdyn_impl = if !has_supertraits {
-        emit_boxdyn_impl(&trait_item)
-    } else {
-        // TODO: generate supertrait delegation for FfierBoxDyn
+    // Skip for foreign traits (orphan rules: can't impl foreign trait for local type).
+    let boxdyn_impl = if is_foreign {
         quote! {}
+    } else {
+        let has_supertraits = !args.supers.is_empty()
+            || trait_item
+                .supertraits
+                .iter()
+                .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
+        if !has_supertraits {
+            emit_boxdyn_impl(&trait_item)
+        } else {
+            // TODO: generate supertrait delegation for FfierBoxDyn
+            quote! {}
+        }
+    };
+
+    // For foreign traits (`extern trait`), don't re-emit the trait definition —
+    // it already exists in the foreign crate. Only emit the generated plumbing.
+    let trait_tokens = if is_foreign {
+        quote! {}
+    } else {
+        quote! { #modified_trait }
     };
 
     let output = quote! {
         #(#default_helpers)*
 
-        #modified_trait
+        #trait_tokens
 
         #boxdyn_impl
 

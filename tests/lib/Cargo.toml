@@ -9,3 +9,4 @@ fruit-label = []
 
 [dependencies]
 ffier = { path = "../../ffier" }
+foreign-trait-crate = { path = "../foreign-trait-crate" }

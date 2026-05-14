@@ -92,6 +92,7 @@ name = "ffier-test-lib"
 version = "0.1.0"
 dependencies = [
  "ffier",
+ "foreign-trait-crate",
 ]
 
 [[package]]
@@ -117,6 +118,10 @@ version = "0.1.0"
 dependencies = [
  "ffier",
 ]
+
+[[package]]
+name = "foreign-trait-crate"
+version = "0.1.0"
 
 [[package]]
 name = "mylib"

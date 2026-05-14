@@ -454,21 +454,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -970,6 +964,56 @@ mod tests {
             assert_eq!(ft_fruit_value(handle), 42);
 
             ft_fruit_destroy(handle);
+        }
+    }
+
+    // ================================================================
+    // Foreign trait (Weighable from foreign-trait-crate)
+    // ================================================================
+
+    #[test]
+    fn foreign_trait_impl_via_bridge() {
+        unsafe {
+            let apple = ft_apple_new(150);
+            // Apple.weight_grams() returns weight * 10
+            assert_eq!(ft_apple_weight_grams(apple), 1500);
+            ft_apple_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn foreign_trait_self_dispatch() {
+        unsafe {
+            let apple = ft_apple_new(200);
+            // Self-dispatch through ft_weighable_weight_grams
+            assert_eq!(ft_weighable_weight_grams(apple), 2000);
+            ft_weighable_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn foreign_trait_vtable_dispatch() {
+        // Implement Weighable via vtable from C side
+        unsafe extern "C" fn custom_weight(self_data: *mut core::ffi::c_void) -> i32 {
+            self_data as usize as i32
+        }
+
+        static WEIGHABLE_VT: ffier_test_lib::WeighableVtable = ffier_test_lib::WeighableVtable {
+            drop: None,
+            weight_grams: Some(custom_weight),
+        };
+
+        unsafe {
+            let handle = ft_weighable_from_vtable(
+                77 as *mut core::ffi::c_void,
+                &WEIGHABLE_VT,
+                core::mem::size_of_val(&WEIGHABLE_VT),
+            );
+
+            // Self-dispatch should route through vtable
+            assert_eq!(ft_weighable_weight_grams(handle), 77);
+
+            ft_weighable_destroy(handle);
         }
     }
 }
