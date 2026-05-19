@@ -116,22 +116,7 @@ fn emit_ffi_handle_impls(
                 unimplemented!("into_c for owned handles — use init_handle instead")
             }
             fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                // Consumes the handle: resolves, moves value out, cleans up.
-                unsafe {
-                    let payload = (repr as *mut u8).add(ffier::HANDLE_PAYLOAD_OFFSET);
-                    let metadata = ffier::handle_metadata(repr);
-                    let value = if metadata & ffier::INLINE_BIT != 0 {
-                        // Inline: read directly from payload
-                        core::ptr::read(payload as *const Self)
-                    } else {
-                        // PTR: unbox — moves value out and frees allocation
-                        let heap_ptr = core::ptr::read(payload as *const *mut Self);
-                        *Box::from_raw(heap_ptr)
-                    };
-                    // Zero the tag — handle is now consumed
-                    core::ptr::write(repr as *mut u32, 0);
-                    value
-                }
+                unsafe { ffier::consume_handle::<Self>(repr) }
             }
         }
     }

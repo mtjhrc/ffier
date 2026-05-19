@@ -177,17 +177,29 @@ pub trait FfiHandle {
 }
 
 // ---------------------------------------------------------------------------
-// Handle layout constants
+// Handle layout
 // ---------------------------------------------------------------------------
 
+/// The raw handle layout. Caller-owned storage has this shape; the `payload`
+/// field is the minimum (one pointer) — actual handles may be larger.
+#[repr(C)]
+pub struct HandleLayout {
+    pub type_tag: u32,
+    pub metadata: u32,
+    /// Minimum payload: one pointer (PTR mode fallback).
+    pub payload: [u8; core::mem::size_of::<*const ()>()],
+}
+
 /// Bit 0 of the `metadata` field: 1 = value stored inline, 0 = pointer at
-/// offset 8 (PTR mode). After zeroing, a handle is in PTR mode with a NULL
-/// pointer — safe crash on misuse.
+/// the payload offset (PTR mode). After zeroing, a handle is in PTR mode
+/// with a NULL pointer — safe crash on misuse.
 pub const INLINE_BIT: u32 = 1;
 
-/// Byte offset from handle start to payload. The handle header is two `u32`
-/// fields (`type_tag` + `metadata`), so payload always starts at byte 8.
-pub const HANDLE_PAYLOAD_OFFSET: usize = 8;
+/// Byte offset from handle start to payload.
+pub const HANDLE_PAYLOAD_OFFSET: usize = core::mem::offset_of!(HandleLayout, payload);
+
+/// Minimum handle size in bytes (header + one-pointer payload).
+pub const HANDLE_MIN_SIZE: usize = core::mem::size_of::<HandleLayout>();
 
 // ---------------------------------------------------------------------------
 // Handle introspection
@@ -212,20 +224,20 @@ pub unsafe fn handle_metadata(handle: *const c_void) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Handle resolve --- read the value pointer from a handle
+// Handle borrow --- read the value pointer from a handle (non-consuming)
 // ---------------------------------------------------------------------------
 
-/// Resolve a handle to a shared reference to the contained value.
+/// Borrow a shared pointer to the value inside a handle.
 ///
-/// Checks the `INLINE_BIT` in metadata to determine whether the value is
-/// stored directly in the payload (inline) or behind a pointer (PTR mode).
+/// Checks `INLINE_BIT` to determine whether the value is stored directly
+/// in the payload (inline) or behind a heap pointer (PTR mode).
 ///
 /// # Safety
 /// - `handle` must point to a valid, initialized handle (type_tag != 0).
 /// - The handle must contain a value of type `T`.
 /// - The returned pointer is valid for the lifetime of the handle.
 #[inline]
-pub unsafe fn resolve<T>(handle: *const c_void) -> *const T {
+pub unsafe fn borrow_handle_ptr<T>(handle: *const c_void) -> *const T {
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
@@ -238,14 +250,12 @@ pub unsafe fn resolve<T>(handle: *const c_void) -> *const T {
     }
 }
 
-/// Resolve a handle to a mutable reference to the contained value.
-///
-/// Same as `resolve` but returns a mutable pointer.
+/// Borrow a mutable pointer to the value inside a handle.
 ///
 /// # Safety
-/// Same as `resolve`, plus the caller must have exclusive access.
+/// Same as `borrow_handle_ptr`, plus the caller must have exclusive access.
 #[inline]
-pub unsafe fn resolve_mut<T>(handle: *mut c_void) -> *mut T {
+pub unsafe fn borrow_handle_ptr_mut<T>(handle: *mut c_void) -> *mut T {
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
@@ -256,6 +266,37 @@ pub unsafe fn resolve_mut<T>(handle: *mut c_void) -> *mut T {
     } else {
         unsafe { *(payload as *const *mut T) }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Handle consume --- take ownership of the value, zero the handle
+// ---------------------------------------------------------------------------
+
+/// Consume a handle: move the value out and zero the entire handle.
+///
+/// After this call the handle is in a clean uninitialized state (all zeros).
+/// If the value was in PTR mode, the heap allocation is freed.
+///
+/// # Safety
+/// - `handle` must point to a valid, initialized handle containing a `T`.
+/// - After this call the handle must not be used (it's zeroed).
+#[inline]
+pub unsafe fn consume_handle<T>(handle: *mut c_void) -> T {
+    debug_assert!(
+        unsafe { handle_type_tag(handle) } != 0,
+        "consuming uninitialized handle"
+    );
+    let payload = unsafe { (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) };
+    let metadata = unsafe { handle_metadata(handle) };
+    let value = if metadata & INLINE_BIT != 0 {
+        unsafe { core::ptr::read(payload as *const T) }
+    } else {
+        let heap_ptr = unsafe { core::ptr::read(payload as *const *mut T) };
+        unsafe { *Box::from_raw(heap_ptr) }
+    };
+    // Zero the handle — clean uninit state.
+    unsafe { core::ptr::write_bytes(handle as *mut u8, 0, HANDLE_MIN_SIZE) };
+    value
 }
 
 // ---------------------------------------------------------------------------
@@ -364,8 +405,8 @@ pub unsafe fn drop_handle<T>(handle: *mut c_void) {
         let ptr = unsafe { core::ptr::read(payload as *const *mut T) };
         drop(unsafe { Box::from_raw(ptr) });
     }
-    // Zero the tag — use-after-drop hits tag==0 assertion
-    unsafe { core::ptr::write(handle as *mut u32, 0) };
+    // Zero the handle — clean uninit state.
+    unsafe { core::ptr::write_bytes(handle as *mut u8, 0, HANDLE_MIN_SIZE) };
 }
 
 // ---------------------------------------------------------------------------
@@ -382,7 +423,7 @@ impl<T: FfiHandle> FfiType for &T {
         unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &*resolve::<T>(repr) }
+        unsafe { &*borrow_handle_ptr::<T>(repr) }
     }
 }
 
@@ -396,7 +437,7 @@ impl<T: FfiHandle> FfiType for &mut T {
         unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &mut *resolve_mut::<T>(repr) }
+        unsafe { &mut *borrow_handle_ptr_mut::<T>(repr) }
     }
 }
 

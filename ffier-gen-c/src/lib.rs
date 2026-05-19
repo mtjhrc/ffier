@@ -552,7 +552,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             });
             error_result_dispatch_arms.push(quote! {
                 #type_tag => {
-                    let err_val = unsafe { &*ffier::resolve::<#path>(err) };
+                    let err_val = unsafe { &*ffier::borrow_handle_ptr::<#path>(err) };
                     ffier::ffier_result(#type_tag, ffier::FfiError::code(err_val))
                 }
             });
@@ -563,7 +563,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             });
             error_message_dispatch_arms.push(quote! {
                 #type_tag => {
-                    let err_val = unsafe { &*ffier::resolve::<#path>(err) };
+                    let err_val = unsafe { &*ffier::borrow_handle_ptr::<#path>(err) };
                     // TODO: use WriteStr trait for streaming Display output
                     let msg = format!("{}", err_val);
                     unsafe { ffier::FfierBytes::from_str(
@@ -766,17 +766,16 @@ fn generate_exportable_bridge(
                 }
             };
             let cast = if is_by_value {
-                // Consume: use FfiType::from_c which handles both inline and PTR
                 quote! {
-                    <#struct_path as ffier::FfiType>::from_c(handle)
+                    ffier::consume_handle::<#struct_path>(handle)
                 }
             } else if is_mut {
                 quote! {
-                    &mut *ffier::resolve_mut::<#struct_path>(handle)
+                    &mut *ffier::borrow_handle_ptr_mut::<#struct_path>(handle)
                 }
             } else {
                 quote! {
-                    &*ffier::resolve::<#struct_path>(handle)
+                    &*ffier::borrow_handle_ptr::<#struct_path>(handle)
                 }
             };
             Some(quote! { #type_assert let obj = unsafe { #cast }; })
@@ -970,7 +969,7 @@ fn generate_exportable_bridge(
                 let ty = &v.bridge_type;
                 branches.push(quote! {
                     if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                        let __val = <#ty as ffier::FfiType>::from_c(#dyn_id);
+                        let __val = ffier::consume_handle::<#ty>(#dyn_id);
                         ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
                     }
                 });
@@ -1008,7 +1007,7 @@ fn generate_exportable_bridge(
                         .map(|(_, ty_tokens)| {
                             quote! {
                                 if __type_tag == <#ty_tokens as ffier::FfiHandle>::TYPE_TAG {
-                                    let #dyn_id = <#ty_tokens as ffier::FfiType>::from_c(#dyn_id);
+                                    let #dyn_id = ffier::consume_handle::<#ty_tokens>(#dyn_id);
                                     #inner
                                 }
                             }
@@ -1071,15 +1070,16 @@ fn generate_exportable_bridge(
                 let body = if is_builder && is_by_value {
                     // Builder by-value: consume the old value from the handle,
                     // call the method (returns Self), write the result back.
-                    // The handle pointer doesn't change — caller owns the storage.
+                    // consume_handle zeros the handle, so init_handle sees
+                    // a clean uninit state with buf_size=0 → PTR fallback.
                     quote! {
                         #obj_binding
                         #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
-                        // Write result back into the same handle storage.
-                        // Tag was zeroed by from_c, so init_handle sees tag==0.
-                        unsafe { ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, result) };
+                        unsafe {
+                            ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, result);
+                        }
                     }
                 } else {
                     quote! {
@@ -1243,9 +1243,11 @@ fn generate_exportable_bridge(
                         }
                         None if is_builder && is_by_value => quote! {
                             Ok(new_self) => {
-                                // Write result back into same handle storage.
-                                // Tag was zeroed by from_c, so init_handle sees tag==0.
-                                unsafe { ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, new_self) };
+                                // consume_handle already zeroed the handle,
+                                // so init_handle sees clean uninit state.
+                                unsafe {
+                                    ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, new_self);
+                                }
                                 ffier::FFIER_RESULT_SUCCESS
                             }
                         },
@@ -2071,18 +2073,18 @@ impl HeaderBuilder {
 // ===========================================================================
 
 /// Emit a `let obj = ...` binding that borrows a value from a handle via
-/// `resolve()` / `resolve_mut()`.
+/// `borrow_handle_ptr()` / `borrow_handle_ptr_mut()`.
 ///
-/// - `mutable = false`: `let obj = &*resolve::<T>(handle);`
-/// - `mutable = true`:  `let obj = &mut *resolve_mut::<T>(handle);`
+/// - `mutable = false`: `let obj = &*borrow_handle_ptr::<T>(handle);`
+/// - `mutable = true`:  `let obj = &mut *borrow_handle_ptr_mut::<T>(handle);`
 fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
     if mutable {
         quote! {
-            let obj = unsafe { &mut *ffier::resolve_mut::<#ty>(handle) };
+            let obj = unsafe { &mut *ffier::borrow_handle_ptr_mut::<#ty>(handle) };
         }
     } else {
         quote! {
-            let obj = unsafe { &*ffier::resolve::<#ty>(handle) };
+            let obj = unsafe { &*ffier::borrow_handle_ptr::<#ty>(handle) };
         }
     }
 }
@@ -2391,7 +2393,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
-                let obj = unsafe { &*ffier::resolve::<#struct_path>(handle) };
+                let obj = unsafe { &*ffier::borrow_handle_ptr::<#struct_path>(handle) };
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
                 #ret_conversion
             }
