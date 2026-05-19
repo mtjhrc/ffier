@@ -1280,13 +1280,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let wrapper_name = format_ident!("Vtable{trait_name_str}");
     let wrapper_c_handle_suffix = format!("Vtable{trait_name_str}");
-    let tag_const_name = format_ident!("__ffier_type_tag_{trait_name}");
-    let tag_const = quote! { crate::#tag_const_name };
-    let wrapper_ffi_handle_impls = emit_ffi_handle_impls(
-        &quote! { #wrapper_name },
-        &wrapper_c_handle_suffix,
-        &tag_const,
-    );
 
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
@@ -1403,10 +1396,15 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // if bit 0 is set and the method index matches, we skip vtable dispatch and
     // call the library default directly. This prevents infinite re-entrancy when
     // a client trait default calls through self-dispatch.
+    // Helper: generate the vtable call expression for a method.
+    // `vtable_struct_ref` is the token stream referencing the vtable struct
+    // (e.g. `PushStrVtable` for direct output, or `$crate::PushStrVtable`
+    // for use inside a macro_rules! body that expands in another crate).
     let vtable_call_body = |vm: &VtableMethod,
                             sig: &syn::Signature,
                             fallback: Option<proc_macro2::TokenStream>,
-                            _method_index: Option<usize>|
+                            _method_index: Option<usize>,
+                            vtable_struct_ref: &proc_macro2::TokenStream|
      -> proc_macro2::TokenStream {
         let name = &vm.name;
         let name_str = name.to_string();
@@ -1469,7 +1467,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #metadata_check
                 let __field: Option<#fn_ptr_type> = unsafe {
                     self.value.field_or_none(
-                        core::mem::offset_of!(#vtable_struct_name, #name),
+                        core::mem::offset_of!(#vtable_struct_ref, #name),
                     )
                 };
                 match __field {
@@ -1613,6 +1611,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     // --- Generate VtableXxx method impls ---
+    // These are used inside the @reexport macro arm, so references to items
+    // in the defining crate use $crate:: prefix. This ensures correct resolution
+    // when the macro expands in a different crate.
+    let vtable_struct_ref = quote! { $crate::#vtable_struct_name };
     let own_method_impls: Vec<_> = trait_item_erased
         .items
         .iter()
@@ -1638,9 +1640,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                         None
                     })
                     .collect();
-                quote! { #helper(self #(, #params_pass)*) }
+                // Use $crate:: prefix so the helper resolves in the defining crate
+                // when @reexport expands in a different crate.
+                quote! { $crate::#helper(self #(, #params_pass)*) }
             });
-            Some(vtable_call_body(vm, &method.sig, fallback, method_index))
+            Some(vtable_call_body(vm, &method.sig, fallback, method_index, &vtable_struct_ref))
         })
         .collect();
 
@@ -1656,12 +1660,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|method| {
                     let name = &method.sig.ident;
                     let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(vm, &method.sig, None, None))
+                    Some(vtable_call_body(vm, &method.sig, None, None, &vtable_struct_ref))
                 })
                 .collect();
 
+            // Use $crate:: for supertrait path so it resolves in the defining crate.
             quote! {
-                impl #tn for #wrapper_name {
+                impl $crate::#tn for #wrapper_name {
                     #(#method_impls)*
                 }
             }
@@ -1683,6 +1688,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let internal_macro_name = format_ident!("__ffier_internal_{trait_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}");
+
 
     let vtable_method_meta = emit_vtable_method_meta(&vtable_methods);
 
@@ -1732,54 +1738,101 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             #(#vtable_fields,)*
         }
 
-        /// Wrapper type for vtable-dispatched trait implementations.
-        ///
-        /// Lives inline in the handle payload where:
-        /// - `type_tag` (offset 0) identifies this as a VtableFoo handle
-        /// - `metadata` (offset 4) has INLINE_BIT set, plus optional
-        ///   default-method dispatch skip encoding
-        /// - payload (offset 8) contains the VtableHandle data
-        ///
-        /// The vtable pointer points to a `&'static` const-promoted vtable
-        /// (Rust client) or a caller-owned vtable (C client via `FT_PTR_OBJECT`).
-        /// The vtable is **not** copied — the caller must ensure it outlives
-        /// all handles that reference it.
-        #[repr(C)]
-        pub struct #wrapper_name {
-            pub value: ffier::VtableHandle,
-        }
-
-        impl #trait_name #trait_ty_generics for #wrapper_name {
-            #(#own_method_impls)*
-        }
-
-        #(#super_impls)*
-
-        impl Drop for #wrapper_name {
-            fn drop(&mut self) {
-                let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
-                    self.value.field_or_none(
-                        core::mem::offset_of!(#vtable_struct_name, drop),
-                    )
-                };
-                if let Some(drop_fn) = drop_field {
-                    unsafe { drop_fn(self.value.user_data as *mut core::ffi::c_void) };
-                }
-            }
-        }
-
-        #wrapper_ffi_handle_impls
-
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@reexport) => {
+            // @reexport: generates the wrapper type, its trait impl, Drop,
+            // FfiHandle, and FfiType impls. Called by library_definition! with
+            // the type tag.
+            //
+            // The wrapper type is emitted at the crate root of the invoking
+            // crate, so orphan rules are satisfied even when the trait is
+            // defined in an upstream crate.
+            //
+            // The vtable struct and trait must be re-exported at the library
+            // crate root so that the shim's path overrides resolve correctly.
+            (@reexport, $type_tag:expr) => {
                 #[doc(hidden)]
                 pub mod #helper_mod_name {
                     #(#reexport_items_crate)*
                 }
+
+                /// Wrapper type for vtable-dispatched trait implementations.
+                #[repr(C)]
+                pub struct #wrapper_name {
+                    pub value: ffier::VtableHandle,
+                }
+
+                impl $crate::#trait_name #trait_ty_generics for #wrapper_name {
+                    #(#own_method_impls)*
+                }
+
+                #(#super_impls)*
+
+                impl Drop for #wrapper_name {
+                    fn drop(&mut self) {
+                        let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
+                            self.value.field_or_none(
+                                core::mem::offset_of!($crate::#vtable_struct_name, drop),
+                            )
+                        };
+                        if let Some(drop_fn) = drop_field {
+                            unsafe { drop_fn(self.value.user_data as *mut core::ffi::c_void) };
+                        }
+                    }
+                }
+
+                impl ffier::FfiHandle for #wrapper_name {
+                    const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
+                    const TYPE_TAG: u32 = $type_tag;
+                    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+                        let ptr = (self as *const Self as *const u8)
+                            .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
+                        ptr as *mut core::ffi::c_void
+                    }
+                }
+
+                impl ffier::FfiType for #wrapper_name {
+                    type CRepr = *mut core::ffi::c_void;
+                    const C_TYPE_NAME: &str = #wrapper_c_handle_suffix;
+                    const IS_HANDLE: bool = true;
+                    fn into_c(self) -> *mut core::ffi::c_void {
+                        ffier::ffier_handle_new(
+                            <Self as ffier::FfiHandle>::TYPE_TAG,
+                            self,
+                        )
+                    }
+                    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                        unsafe { ffier::ffier_handle_consume::<Self>(repr) }
+                    }
+                }
+
             };
-            // Tagged invocation (from library_definition! shim): includes type_tag
+            // Tagged invocation with path overrides (from library_definition!
+            // shim for trait entries): the shim passes wrapper_name,
+            // vtable_struct, and trait_path as parenthesized groups so the
+            // metadata blob uses the library crate's paths for cross-crate
+            // traits. Downstream crates in the chain only need the library
+            // crate, not the upstream crate that defined #[implementable].
+            ($prefix:literal, $type_tag:expr,
+             ($($wrapper:tt)*), ($($vstruct:tt)*), ($($tpath:tt)*),
+             $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @implementable,
+                    trait_name = #trait_name,
+                    trait_path = ($($tpath)*),
+                    prefix = $prefix,
+                    type_tag = $type_tag,
+                    vtable_struct = ($($vstruct)*),
+                    wrapper_name = ($($wrapper)*),
+                    vtable_methods = [#(#vtable_method_meta),*],
+                    own_method_count = #own_method_count,
+                    max_vtable_slot = #max_vtable_slot_val,
+                } $(, $($rest)*)? }
+            };
+            // Tagged invocation (legacy, same-crate): wrapper_name defaults to
+            // $crate::VtableFoo. Still works for same-crate traits but NOT for
+            // cross-crate (wrapper is now generated by @reexport in the user's crate).
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @implementable,
@@ -2053,21 +2106,41 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     pub const #tag_const_ident: u32 = #tag;
                 });
 
-                // Shim macro for trait entries
+                // The upstream metadata macro generates the wrapper type
+                // via @reexport. The shim passes path overrides (wrapper,
+                // vtable struct, trait path) using $crate:: which resolves
+                // to the library crate. Downstream crates in the chain only
+                // need the library crate, not the upstream crate.
                 let alias = meta_alias_for_type(path);
-                let alias_chain = to_chain_path(&alias);
+                let wrapper_ident = format_ident!("Vtable{last_ident}");
+                let vtable_struct_ident = format_ident!("{last_ident}Vtable");
+
+                // Re-export the upstream metadata macro so the shim can
+                // call it via $crate:: (library crate path). This way
+                // downstream crates don't need the upstream crate as a dep.
+                let upstream_alias = format_ident!("__ffier_upstream_{last_ident}");
+                reexport_invocations.push(quote! {
+                    #[doc(hidden)]
+                    pub use #alias as #upstream_alias;
+                });
+
                 let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{last_ident}");
                 shim_macros.push(quote! {
                     #[doc(hidden)]
                     #[macro_export]
                     macro_rules! #shim_name {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, #tag, $callback $(, $($rest)*)? }
+                            $crate::#upstream_alias! { $prefix, #tag,
+                                ($crate::#wrapper_ident),
+                                ($crate::#vtable_struct_ident),
+                                ($crate::#last_ident),
+                                $callback $(, $($rest)*)? }
                         };
                     }
                 });
 
-                reexport_invocations.push(quote! { #alias!(@reexport); });
+                // @reexport with type_tag generates the wrapper type + impls.
+                reexport_invocations.push(quote! { #alias!(@reexport, #tag); });
                 chain_paths.push(quote! { $crate::#shim_name });
             }
             LibraryEntry::TraitImpl {

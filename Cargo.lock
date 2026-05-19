@@ -7,6 +7,7 @@ name = "ffier"
 version = "0.1.0"
 dependencies = [
  "ffier-annotations",
+ "ffier-builtins",
  "ffier-rt",
 ]
 
@@ -18,6 +19,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "ffier-builtins"
+version = "0.1.0"
+dependencies = [
+ "ffier-annotations",
+ "ffier-rt",
 ]
 
 [[package]]
@@ -92,6 +101,7 @@ name = "ffier-test-lib"
 version = "0.1.0"
 dependencies = [
  "ffier",
+ "ffier-builtins",
  "foreign-trait-crate",
  "thiserror",
 ]

@@ -9,5 +9,6 @@ fruit-label = []
 
 [dependencies]
 ffier = { path = "../../ffier" }
+ffier-builtins = { path = "../../ffier-builtins" }
 foreign-trait-crate = { path = "../foreign-trait-crate" }
 thiserror = "2"
