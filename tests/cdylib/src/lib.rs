@@ -42,6 +42,42 @@ mod tests {
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
+    /// Helper: stream ft_error_message into a String via a stack-local PushStr handle.
+    unsafe fn error_message_to_string(err: *mut core::ffi::c_void) -> String {
+        use core::ffi::c_void;
+
+        // Vtable push callback: appends to a String via user_data.
+        unsafe extern "C" fn push_to_string(
+            self_data: *mut c_void,
+            data: ffier::FfierBytes,
+        ) -> bool {
+            let s = unsafe { &mut *(self_data as *mut String) };
+            s.push_str(unsafe { data.as_str_unchecked() });
+            true
+        }
+
+        let vtable = ffier_test_lib::PushStrVtable {
+            drop: None,
+            push: Some(push_to_string),
+        };
+
+        let mut buf = String::new();
+        let mut handle = ffier::FfierHandle {
+            type_tag: ffier_test_lib::VtablePushStr::TYPE_TAG,
+            metadata: 0,
+            value: ffier::VtableHandle {
+                vtable_ptr: &vtable as *const _ as *const c_void,
+                user_data: &mut buf as *mut String as *const c_void,
+                vtable_size: core::mem::size_of::<ffier_test_lib::PushStrVtable>() as u16,
+            },
+        };
+
+        unsafe {
+            ft_error_message(err as *const c_void, &mut handle as *mut _ as *mut c_void);
+        }
+        buf
+    }
+
     // ================================================================
     // Constructors
     // ================================================================
@@ -358,9 +394,9 @@ mod tests {
                 &mut err as *mut *mut core::ffi::c_void,
             );
             assert_ne!(r, 0);
-            // error_message returns the rich Display output with interpolated data
-            let msg = ft_error_message(err as *const core::ffi::c_void);
-            assert_eq!(msg.as_str_unchecked(), "not found: error");
+            // error_message streams the rich Display output with interpolated data
+            let msg = error_message_to_string(err);
+            assert_eq!(msg, "not found: error");
             // strerror shows data-carrying hint, not the Display output
             let static_msg = CStr::from_ptr(ft_result_name_cstr(r)).to_str().unwrap();
             assert_eq!(static_msg, "NotFound(...)");
@@ -575,9 +611,9 @@ mod tests {
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_widget_fail_always(w, &mut err as *mut *mut core::ffi::c_void);
             assert_ne!(r, 0);
-            // ft_error_message returns the Display output
-            let msg = ft_error_message(err as *const core::ffi::c_void);
-            assert_eq!(msg.as_str_unchecked(), "custom error message");
+            // ft_error_message streams the Display output through PushStr
+            let msg = error_message_to_string(err);
+            assert_eq!(msg, "custom error message");
             ft_error_destroy(err);
             ft_widget_destroy(w);
         }
@@ -635,9 +671,9 @@ mod tests {
             // Destroying NULL is a no-op
             ft_error_destroy(ptr::null_mut());
 
-            // Message on NULL returns empty
-            let msg = ft_error_message(ptr::null());
-            assert_eq!(msg.len, 0);
+            // Message on NULL is a no-op (writer not called)
+            let msg = error_message_to_string(ptr::null_mut());
+            assert_eq!(msg, "");
         }
     }
 

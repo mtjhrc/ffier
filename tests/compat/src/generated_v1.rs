@@ -1785,7 +1785,7 @@ impl Drop for VtableWeighable {
     fn drop(&mut self) {}
 }
 pub trait PushStr {
-    fn push(&self, s: &str);
+    fn push(&self, s: &str) -> bool;
     #[doc = r" Build a vtable with trampolines for all methods."]
     #[doc = r" The returned reference is `&'static` via const promotion per"]
     #[doc = r" monomorphization — zero allocation."]
@@ -1805,10 +1805,10 @@ pub trait PushStr {
                 unsafe extern "C" fn __trampoline<__T: PushStr>(
                     __ud: *mut core::ffi::c_void,
                     s: <&'static str as ffier::FfiType>::CRepr,
-                ) {
+                ) -> <bool as ffier::FfiType>::CRepr {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.push(<&str as ffier::FfiType>::from_c(s));
-                    __result
+                    <bool as ffier::FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
             }),
@@ -1845,7 +1845,10 @@ pub trait PushStr {
 pub struct PushStrVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub push: Option<
-        unsafe extern "C" fn(*mut core::ffi::c_void, <&'static str as ffier::FfiType>::CRepr),
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as ffier::FfiType>::CRepr,
+        ) -> <bool as ffier::FfiType>::CRepr,
     >,
 }
 unsafe extern "C" {}

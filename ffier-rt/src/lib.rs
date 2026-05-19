@@ -488,16 +488,27 @@ impl FfierBytes {
 /// C callers construct a stack-local handle wrapping a callback function.
 /// Rust bridge code uses the `fmt::Write` impl to stream `Display` output
 /// into the callback without allocating.
+///
+/// Returns `true` on success, `false` to abort formatting (e.g. buffer
+/// full). On `false`, `fmt::Write::write_str` returns `Err(fmt::Error)`
+/// which short-circuits `write!()`.
+///
+/// TODO: Change return type to `FfierResult` (0 = ok, non-zero = error
+/// code without a rich error object). Needs an annotation for
+/// result-without-error-type returns.
 pub trait PushStr {
-    fn push(&mut self, s: &str);
+    fn push(&mut self, s: &str) -> bool;
 }
 
 /// `fmt::Write` adapter — lets bridge code do `write!(writer, "{}", err)`
 /// where `writer` is a `&mut dyn PushStr`.
 impl core::fmt::Write for dyn PushStr + '_ {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        self.push(s);
-        Ok(())
+        if self.push(s) {
+            Ok(())
+        } else {
+            Err(core::fmt::Error)
+        }
     }
 }
 
