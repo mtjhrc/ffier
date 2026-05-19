@@ -684,6 +684,12 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &T
                 "{} {}({} err);\n",
                 #result_c_name, #error_result_name_str, #error_c_name,
             ));
+            // Emit FtPushStr typedef before ft_error_message if not
+            // already emitted as a handle typedef elsewhere.
+            decls.push_str(&format!(
+                "typedef void* {};\n",
+                #push_str_c_name,
+            ));
             decls.push_str(&format!(
                 "void {}({} err, {} writer);\n",
                 #error_message_name_str, #error_c_name, #push_str_c_name,
