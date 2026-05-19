@@ -361,6 +361,8 @@ pub struct MetaVtableMethod {
     /// Defaulted methods can be left as NULL in the C vtable — the Rust
     /// side falls back to the trait's default impl.
     pub has_default: bool,
+    /// Whether the receiver is `&mut self`.
+    pub is_mut: bool,
     /// Explicit vtable slot index from `#[ffier(index = N)]`.
     /// Determines position in the vtable struct (after `drop` at slot 0).
     pub index: usize,
@@ -875,6 +877,9 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
     expect_key(&inner, "has_default")?;
     let has_default: syn::LitBool = inner.parse()?;
     parse_comma(&inner)?;
+    expect_key(&inner, "is_mut")?;
+    let is_mut: syn::LitBool = inner.parse()?;
+    parse_comma(&inner)?;
     expect_key(&inner, "index")?;
     let index: syn::LitInt = inner.parse()?;
     let index = index.base10_parse::<usize>()?;
@@ -884,6 +889,7 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
         params,
         ret,
         has_default: has_default.value,
+        is_mut: is_mut.value,
         index,
     })
 }

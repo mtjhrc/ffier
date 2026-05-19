@@ -161,45 +161,39 @@ pub trait FfiHandle {
     /// across all types in a library.
     const TYPE_TAG: u32;
 
-    /// Returns the raw handle pointer for this value.
+    /// Returns the raw handle pointer (`*mut FfierHandle<Self>` as `*mut c_void`).
     ///
-    /// - **Client side**: returns a pointer to the inline storage.
-    /// - **Library side**: recovers the handle pointer by subtracting
-    ///   the payload offset (8 bytes) from `self`.
+    /// Recovers the handle pointer by subtracting the value field offset
+    /// from `&self`.
     ///
     /// # Safety
-    /// On the library side, `self` must point into a valid handle's
-    /// payload region. Calling this on a freestanding value (e.g. on the
-    /// stack or in a `Vec`) produces a garbage pointer. Safety is enforced
-    /// by the code generator: only generated bridge code calls `as_handle`,
-    /// and only on references obtained via `resolve()`.
+    /// `self` must point into a valid `FfierHandle<Self>::value` field.
+    /// Calling this on a freestanding value (e.g. on the stack or in a
+    /// `Vec`) produces a garbage pointer. Safety is enforced by the code
+    /// generator: only generated bridge code calls `as_handle`, and only
+    /// on references obtained via `ffier_handle_borrow`.
     unsafe fn as_handle(&self) -> *mut c_void;
 }
 
 // ---------------------------------------------------------------------------
-// Handle layout
+// Handle layout — heap-allocated box with RTTI header
 // ---------------------------------------------------------------------------
 
-/// The raw handle layout. Caller-owned storage has this shape; the `payload`
-/// field is the minimum (one pointer) — actual handles may be larger.
+/// The handle struct wrapping every value exported across FFI.
+///
+/// Always heap-allocated via `Box<FfierHandle<T>>`. The FFI pointer is
+/// `*mut c_void` pointing to the `FfierHandle<T>`. All handle types —
+/// regular exportable types, error types, vtable types — share this
+/// exact layout, differing only in `T`.
 #[repr(C)]
-pub struct HandleLayout {
+pub struct FfierHandle<T> {
     pub type_tag: u32,
     pub metadata: u32,
-    /// Minimum payload: one pointer (PTR mode fallback).
-    pub payload: [u8; core::mem::size_of::<*const ()>()],
+    pub value: T,
 }
 
-/// Bit 0 of the `metadata` field: 1 = value stored inline, 0 = pointer at
-/// the payload offset (PTR mode). After zeroing, a handle is in PTR mode
-/// with a NULL pointer — safe crash on misuse.
-pub const INLINE_BIT: u32 = 1;
-
-/// Byte offset from handle start to payload.
-pub const HANDLE_PAYLOAD_OFFSET: usize = core::mem::offset_of!(HandleLayout, payload);
-
-/// Minimum handle size in bytes (header + one-pointer payload).
-pub const HANDLE_MIN_SIZE: usize = core::mem::size_of::<HandleLayout>();
+/// Byte offset from handle start to the value field.
+pub const HANDLE_VALUE_OFFSET: usize = core::mem::offset_of!(FfierHandle<()>, value);
 
 // ---------------------------------------------------------------------------
 // Handle introspection
@@ -208,7 +202,7 @@ pub const HANDLE_MIN_SIZE: usize = core::mem::size_of::<HandleLayout>();
 /// Read the type tag from a raw handle pointer (offset 0).
 ///
 /// # Safety
-/// `handle` must point to a valid handle (at least 8 bytes, properly aligned).
+/// `handle` must point to a valid `FfierHandle<T>`.
 #[inline]
 pub unsafe fn handle_type_tag(handle: *const c_void) -> u32 {
     unsafe { *(handle as *const u32) }
@@ -217,203 +211,124 @@ pub unsafe fn handle_type_tag(handle: *const c_void) -> u32 {
 /// Read the metadata field from a raw handle pointer (offset 4).
 ///
 /// # Safety
-/// `handle` must point to a valid handle (at least 8 bytes, properly aligned).
+/// `handle` must point to a valid `FfierHandle<T>`.
 #[inline]
 pub unsafe fn handle_metadata(handle: *const c_void) -> u32 {
     unsafe { *((handle as *const u32).add(1)) }
 }
 
 // ---------------------------------------------------------------------------
-// Handle borrow --- read the value pointer from a handle (non-consuming)
+// Handle allocation
 // ---------------------------------------------------------------------------
 
-/// Borrow a shared pointer to the value inside a handle.
+/// Allocate a new handle on the heap and return a raw pointer.
 ///
-/// Checks `INLINE_BIT` to determine whether the value is stored directly
-/// in the payload (inline) or behind a heap pointer (PTR mode).
+/// The returned pointer must eventually be passed to `ffier_handle_drop`
+/// or `ffier_handle_consume` to avoid leaking.
+#[inline]
+pub fn ffier_handle_new<T>(tag: u32, value: T) -> *mut c_void {
+    debug_assert!(tag != 0, "type tag must be nonzero");
+    let handle = Box::new(FfierHandle {
+        type_tag: tag,
+        metadata: 0,
+        value,
+    });
+    Box::into_raw(handle) as *mut c_void
+}
+
+/// Allocate a new handle with custom metadata (e.g. for vtable handles).
+#[inline]
+pub fn ffier_handle_new_with_metadata<T>(tag: u32, metadata: u32, value: T) -> *mut c_void {
+    debug_assert!(tag != 0, "type tag must be nonzero");
+    let handle = Box::new(FfierHandle {
+        type_tag: tag,
+        metadata,
+        value,
+    });
+    Box::into_raw(handle) as *mut c_void
+}
+
+// ---------------------------------------------------------------------------
+// Handle borrow
+// ---------------------------------------------------------------------------
+
+/// Borrow a shared reference to the value inside a handle.
 ///
 /// # Safety
-/// - `handle` must point to a valid, initialized handle (type_tag != 0).
-/// - The handle must contain a value of type `T`.
-/// - The returned pointer is valid for the lifetime of the handle.
+/// - `handle` must point to a valid `FfierHandle<T>`.
+/// - The handle must be alive for the lifetime of the returned reference.
 #[inline]
-pub unsafe fn borrow_handle_ptr<T>(handle: *const c_void) -> *const T {
+pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void) -> &'static T {
+    debug_assert!(!handle.is_null(), "null handle");
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
     );
-    let payload = unsafe { (handle as *const u8).add(HANDLE_PAYLOAD_OFFSET) };
-    if unsafe { handle_metadata(handle) } & INLINE_BIT != 0 {
-        payload as *const T
-    } else {
-        unsafe { *(payload as *const *const T) }
-    }
+    unsafe { &(*(handle as *const FfierHandle<T>)).value }
 }
 
-/// Borrow a mutable pointer to the value inside a handle.
+/// Borrow a mutable reference to the value inside a handle.
 ///
 /// # Safety
-/// Same as `borrow_handle_ptr`, plus the caller must have exclusive access.
+/// - `handle` must point to a valid `FfierHandle<T>`.
+/// - The caller must have exclusive access.
 #[inline]
-pub unsafe fn borrow_handle_ptr_mut<T>(handle: *mut c_void) -> *mut T {
+pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T {
+    debug_assert!(!handle.is_null(), "null handle");
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
     );
-    let payload = unsafe { (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) };
-    if unsafe { handle_metadata(handle) } & INLINE_BIT != 0 {
-        payload as *mut T
-    } else {
-        unsafe { *(payload as *const *mut T) }
-    }
+    unsafe { &mut (*(handle as *mut FfierHandle<T>)).value }
 }
 
 // ---------------------------------------------------------------------------
-// Handle consume --- take ownership of the value, zero the handle
+// Handle consume — take ownership, free the box
 // ---------------------------------------------------------------------------
 
-/// Consume a handle: move the value out and zero the entire handle.
-///
-/// After this call the handle is in a clean uninitialized state (all zeros).
-/// If the value was in PTR mode, the heap allocation is freed.
+/// Consume a handle: move the value out and free the allocation.
 ///
 /// # Safety
-/// - `handle` must point to a valid, initialized handle containing a `T`.
-/// - After this call the handle must not be used (it's zeroed).
+/// - `handle` must point to a valid `FfierHandle<T>` created by
+///   `ffier_handle_new`.
+/// - After this call the handle pointer is dangling.
 #[inline]
-pub unsafe fn consume_handle<T>(handle: *mut c_void) -> T {
+pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
+    debug_assert!(!handle.is_null(), "consuming null handle");
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "consuming uninitialized handle"
     );
-    let payload = unsafe { (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) };
-    let metadata = unsafe { handle_metadata(handle) };
-    let value = if metadata & INLINE_BIT != 0 {
-        unsafe { core::ptr::read(payload as *const T) }
-    } else {
-        let heap_ptr = unsafe { core::ptr::read(payload as *const *mut T) };
-        unsafe { *Box::from_raw(heap_ptr) }
-    };
-    // Zero the handle — clean uninit state.
-    unsafe { core::ptr::write_bytes(handle as *mut u8, 0, HANDLE_MIN_SIZE) };
-    value
+    let boxed = unsafe { Box::from_raw(handle as *mut FfierHandle<T>) };
+    boxed.value
 }
 
 // ---------------------------------------------------------------------------
-// Handle initialization
+// Handle drop — drop the value and free the allocation
 // ---------------------------------------------------------------------------
 
-/// Initialize a handle in PTR mode: heap-allocates `value` and stores the
-/// pointer at the payload offset.
+/// Drop the value inside a handle and free the allocation.
 ///
 /// # Safety
-/// - `handle` must point to caller-owned storage with at least 16 bytes.
-/// - `handle` must be uninitialized (type_tag == 0).
+/// - `handle` must point to a valid `FfierHandle<T>` created by
+///   `ffier_handle_new`, or be null (no-op).
 #[inline]
-pub unsafe fn init_handle_ptr<T>(handle: *mut c_void, tag: u32, value: T) {
-    debug_assert!(tag != 0, "type tag must be nonzero");
-    let ptr = Box::into_raw(Box::new(value));
-    unsafe {
-        core::ptr::write(handle as *mut u32, tag);
-        // metadata = 0 → PTR mode
-        core::ptr::write((handle as *mut u32).add(1), 0);
-        core::ptr::write(
-            (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) as *mut *mut T,
-            ptr,
-        );
+pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
+    if handle.is_null() {
+        return;
     }
-}
-
-/// Initialize a handle in INLINE mode: writes `value` directly into the
-/// payload region.
-///
-/// # Safety
-/// - `handle` must point to caller-owned storage with at least
-///   `8 + size_of::<T>()` bytes.
-/// - `handle` must be uninitialized (type_tag == 0).
-/// - `metadata` must have `INLINE_BIT` set. Caller may OR in additional
-///   bits (e.g. vtable method index).
-#[inline]
-pub unsafe fn init_handle_inline<T>(handle: *mut c_void, tag: u32, metadata: u32, value: T) {
-    debug_assert!(tag != 0, "type tag must be nonzero");
-    debug_assert!(
-        metadata & INLINE_BIT != 0,
-        "init_handle_inline requires INLINE_BIT"
-    );
-    unsafe {
-        core::ptr::write(handle as *mut u32, tag);
-        core::ptr::write((handle as *mut u32).add(1), metadata);
-        core::ptr::write(
-            (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) as *mut T,
-            value,
-        );
-    }
-}
-
-/// Initialize a handle, choosing inline or PTR mode based on `buf_size`.
-///
-/// The caller must have written the available payload size as a `usize` at
-/// offset 8 before calling this (the `KRUN_OUT()` macro does this). If
-/// `buf_size >= size_of::<T>()`, the value is stored inline. Otherwise,
-/// it is heap-allocated and a pointer is stored (PTR mode).
-///
-/// # Safety
-/// - `handle` must point to caller-owned, zeroed storage.
-/// - type_tag at offset 0 must be 0 (uninitialized).
-/// - A `usize` at offset 8 must contain the available payload size.
-/// - The storage must be at least `8 + max(size_of::<T>(), 8)` bytes
-///   if inline, or at least 16 bytes if PTR fallback.
-pub unsafe fn init_handle<T>(handle: *mut c_void, tag: u32, value: T) {
-    debug_assert!(
-        unsafe { handle_type_tag(handle) } == 0,
-        "handle already initialized (double-init)"
-    );
-    let buf_size = unsafe {
-        core::ptr::read((handle as *const u8).add(HANDLE_PAYLOAD_OFFSET) as *const usize)
-    };
-    if buf_size >= core::mem::size_of::<T>() {
-        unsafe { init_handle_inline(handle, tag, INLINE_BIT, value) };
-    } else {
-        unsafe { init_handle_ptr(handle, tag, value) };
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Handle drop
-// ---------------------------------------------------------------------------
-
-/// Drop the value in a handle and zero the type tag.
-///
-/// Checks `INLINE_BIT` to determine whether to `drop_in_place` (inline)
-/// or `Box::from_raw` (PTR). Zeroing the tag ensures use-after-drop hits
-/// the tag==0 assertion.
-///
-/// # Safety
-/// - `handle` must point to a valid, initialized handle containing a `T`.
-/// - After this call, the handle is uninitialized (tag == 0).
-/// - The caller is responsible for freeing the outer storage if it was
-///   heap-allocated.
-pub unsafe fn drop_handle<T>(handle: *mut c_void) {
     debug_assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "dropping uninitialized handle"
     );
-    let payload = unsafe { (handle as *mut u8).add(HANDLE_PAYLOAD_OFFSET) };
-    if unsafe { handle_metadata(handle) } & INLINE_BIT != 0 {
-        unsafe { core::ptr::drop_in_place(payload as *mut T) };
-    } else {
-        let ptr = unsafe { core::ptr::read(payload as *const *mut T) };
-        drop(unsafe { Box::from_raw(ptr) });
-    }
-    // Zero the handle — clean uninit state.
-    unsafe { core::ptr::write_bytes(handle as *mut u8, 0, HANDLE_MIN_SIZE) };
+    drop(unsafe { Box::from_raw(handle as *mut FfierHandle<T>) });
 }
 
 // ---------------------------------------------------------------------------
 // Blanket FfiType impls for handle references
 // ---------------------------------------------------------------------------
 
-impl<T: FfiHandle> FfiType for &T {
+impl<T: FfiHandle + 'static> FfiType for &T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     const IS_HANDLE: bool = true;
@@ -423,11 +338,11 @@ impl<T: FfiHandle> FfiType for &T {
         unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &*borrow_handle_ptr::<T>(repr) }
+        unsafe { ffier_handle_borrow::<T>(repr) }
     }
 }
 
-impl<T: FfiHandle> FfiType for &mut T {
+impl<T: FfiHandle + 'static> FfiType for &mut T {
     type CRepr = *mut c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     const IS_HANDLE: bool = true;
@@ -437,7 +352,7 @@ impl<T: FfiHandle> FfiType for &mut T {
         unsafe { self.as_handle() }
     }
     fn from_c(repr: *mut c_void) -> Self {
-        unsafe { &mut *borrow_handle_ptr_mut::<T>(repr) }
+        unsafe { ffier_handle_borrow_mut::<T>(repr) }
     }
 }
 
@@ -557,6 +472,32 @@ impl FfierBytes {
     pub unsafe fn from_path(p: &std::path::Path) -> Self {
         use std::os::unix::ffi::OsStrExt;
         unsafe { Self::from_bytes(p.as_os_str().as_bytes()) }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PushStr --- streaming string output for error messages
+// ---------------------------------------------------------------------------
+
+/// Streaming string writer for error messages (and other display output).
+///
+/// This is a plain trait — users must annotate it with
+/// `#[ffier::implementable(foreign)]` in their library and register it in
+/// `library_definition!` to get vtable dispatch across FFI.
+///
+/// C callers construct a stack-local handle wrapping a callback function.
+/// Rust bridge code uses the `fmt::Write` impl to stream `Display` output
+/// into the callback without allocating.
+pub trait PushStr {
+    fn push(&mut self, s: &str);
+}
+
+/// `fmt::Write` adapter — lets bridge code do `write!(writer, "{}", err)`
+/// where `writer` is a `&mut dyn PushStr`.
+impl core::fmt::Write for dyn PushStr + '_ {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        self.push(s);
+        Ok(())
     }
 }
 
