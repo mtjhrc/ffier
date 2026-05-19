@@ -552,27 +552,28 @@ int32_t ft_fruit_value(void* handle);
 FtStr ft_fruit_label(void* handle);
 void ft_fruit_destroy(void* handle);
 
-/* Processor (dispatch) ---------------------------------------------- */
+/* PushStr (dispatch) ------------------------------------------------ */
 
-int32_t ft_processor_process(void* handle, int32_t input);
-FtStr ft_processor_name(void* handle);
-void ft_processor_destroy(void* handle);
+bool ft_push_str_push(void* handle, FtStr s);
+void ft_push_str_destroy(void* handle);
 
 /* Weighable (dispatch) ---------------------------------------------- */
 
 int32_t ft_weighable_weight_grams(void* handle);
 void ft_weighable_destroy(void* handle);
 
-/* PushStr (dispatch) ------------------------------------------------ */
+/* Processor (dispatch) ---------------------------------------------- */
 
-bool ft_push_str_push(void* handle, FtStr s);
-void ft_push_str_destroy(void* handle);
+int32_t ft_processor_process(void* handle, int32_t input);
+FtStr ft_processor_name(void* handle);
+void ft_processor_destroy(void* handle);
 
 /* error ------------------------------------------------------------- */
 
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 FtResult ft_error_result(FtError err);
+typedef void* FtPushStr;
 void ft_error_message(FtError err, FtPushStr writer);
 void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

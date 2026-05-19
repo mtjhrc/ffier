@@ -372,23 +372,65 @@ void error_name_success(void) {
     assert(strcmp(msg, "success") == 0);
 }
 
+/* Helper: PushStr callback that appends to a buffer */
+struct push_str_buf {
+    char data[256];
+    size_t len;
+};
+
+static bool push_str_to_buf(void* self_data, FtStr s) {
+    struct push_str_buf* buf = (struct push_str_buf*)self_data;
+    if (buf->len + s.len < sizeof(buf->data)) {
+        memcpy(buf->data + buf->len, s.data, s.len);
+        buf->len += s.len;
+    }
+    return true;
+}
+
+/* Helper: construct a stack-local PushStr handle wrapping push_str_to_buf */
+static void error_message_to_buf(FtError err, struct push_str_buf* buf) {
+    buf->len = 0;
+    FtPushStrVtable vtable = {
+        .drop = NULL,
+        .push = push_str_to_buf,
+    };
+    /* Stack-local FfierHandle layout: [type_tag(u32) | metadata(u32) | VtableHandle] */
+    struct {
+        uint32_t type_tag;
+        uint32_t metadata;
+        const void* vtable_ptr;
+        const void* user_data;
+        uint16_t vtable_size;
+    } handle = {
+        .type_tag = 24, /* PushStr tag from library_definition */
+        .metadata = 0,
+        .vtable_ptr = &vtable,
+        .user_data = buf,
+        .vtable_size = sizeof(vtable),
+    };
+    ft_error_message(err, &handle);
+}
+
 void error_handle_message_and_destroy(void) {
     FtWidget w = ft_widget_new();
     FtError err = NULL;
     FtResult r = ft_widget_fail_always(w, &err);
     assert(r != FT_RESULT_SUCCESS);
     assert(err != NULL);
-    FtStr msg = ft_error_message(err);
-    assert(msg.len > 0);
-    assert(memcmp(msg.data, "custom error message", msg.len) == 0);
+    struct push_str_buf buf;
+    error_message_to_buf(err, &buf);
+    assert(buf.len > 0);
+    assert(buf.len == strlen("custom error message"));
+    assert(memcmp(buf.data, "custom error message", buf.len) == 0);
     ft_error_destroy(err);
     ft_widget_destroy(w);
 }
 
 void error_handle_null_safe(void) {
     ft_error_destroy(NULL); /* should not crash */
-    FtStr msg = ft_error_message(NULL);
-    assert(msg.len == 0);
+    struct push_str_buf buf;
+    error_message_to_buf(NULL, &buf);
+    assert(buf.len == 0); /* no-op for NULL */
 }
 
 /* ===================================================================== */
@@ -427,8 +469,22 @@ static const FtProcessorVtable g_test_vtable = {
     .on_notify = test_on_notify,
 };
 
+/* Construct a heap-allocated processor handle (same layout as FfierHandle<VtableHandle>).
+ * In real usage this would be a library-provided macro or function. */
 static void* make_processor_handle(void* user_data) {
-    return ft_processor_from_vtable(user_data, &g_test_vtable, sizeof(g_test_vtable));
+    struct {
+        uint32_t type_tag;
+        uint32_t metadata;
+        const void* vtable_ptr;
+        const void* user_data;
+        uint16_t vtable_size;
+    } *handle = malloc(sizeof(*handle));
+    handle->type_tag = 10; /* Processor vtable tag from library_definition */
+    handle->metadata = 0;
+    handle->vtable_ptr = &g_test_vtable;
+    handle->user_data = user_data;
+    handle->vtable_size = sizeof(g_test_vtable);
+    return handle;
 }
 
 void vtable_constructor(void) {
