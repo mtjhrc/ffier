@@ -818,6 +818,18 @@ impl Weighable for Apple {
 }
 
 // ---------------------------------------------------------------------------
+// PushStr — streaming string output (from ffier-rt)
+// ---------------------------------------------------------------------------
+
+pub use ffier::PushStr;
+
+#[ffier::implementable(foreign)]
+trait PushStr {
+    #[ffier(index = 0)]
+    fn push(&mut self, s: &str);
+}
+
+// ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
@@ -847,4 +859,5 @@ ffier::library_definition!("ft",
     Snapshot for Gadget,
     trait Weighable = 23,
     Weighable for Apple,
+    trait PushStr = 24,
 );

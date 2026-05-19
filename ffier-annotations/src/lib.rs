@@ -85,11 +85,9 @@ fn is_str_slice(ty: &Type) -> bool {
 /// `crate::__ffier_type_tag_Widget`. The actual value is provided by
 /// `library_definition!` which emits `pub const __ffier_type_tag_Widget: u32 = N;`.
 ///
-/// With handle v2, values live in caller-owned storage. `as_handle` recovers
-/// the handle pointer by subtracting `HANDLE_PAYLOAD_OFFSET` (8 bytes) from
-/// `&self`. `FfiType::into_c` is no longer used for constructors (bridge code
-/// calls `init_handle` directly), but kept for `impl Trait` dispatch where
-/// owned values are passed across FFI as handles.
+/// All handles are heap-allocated via `Box<FfierHandle<T>>`. `as_handle`
+/// recovers the handle pointer by subtracting the value field offset from
+/// `&self`. `into_c` allocates a new handle box and returns the raw pointer.
 fn emit_ffi_handle_impls(
     ty: &proc_macro2::TokenStream,
     c_handle_name: &str,
@@ -101,7 +99,7 @@ fn emit_ffi_handle_impls(
             const TYPE_TAG: u32 = #tag_const;
             unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
                 let ptr = (self as *const Self as *const u8)
-                    .wrapping_sub(ffier::HANDLE_PAYLOAD_OFFSET);
+                    .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
                 ptr as *mut core::ffi::c_void
             }
         }
@@ -111,12 +109,13 @@ fn emit_ffi_handle_impls(
             const C_TYPE_NAME: &str = #c_handle_name;
             const IS_HANDLE: bool = true;
             fn into_c(self) -> *mut core::ffi::c_void {
-                // Not used for constructors (bridge uses init_handle).
-                // Used when passing owned handles across FFI for dispatch.
-                unimplemented!("into_c for owned handles — use init_handle instead")
+                ffier::ffier_handle_new(
+                    <Self as ffier::FfiHandle>::TYPE_TAG,
+                    self,
+                )
             }
             fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe { ffier::consume_handle::<Self>(repr) }
+                unsafe { ffier::ffier_handle_consume::<Self>(repr) }
             }
         }
     }
@@ -744,7 +743,17 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
     let error_path = quote! { $crate::#name };
 
+    // Error types get the same FfiHandle + FfiType impls as exportable types.
+    // The type tag constant is emitted by library_definition!.
+    let name_str = name.to_string();
+    let tag_const_name = format_ident!("__ffier_type_tag_{name}");
+    let tag_const = quote! { crate::#tag_const_name };
+    let ffi_handle_impls =
+        emit_ffi_handle_impls(&quote! { #name }, &name_str, &tag_const);
+
     let output = quote! {
+        #ffi_handle_impls
+
         impl ffier::FfiError for #name {
             fn code(&self) -> u32 {
                 match self {
@@ -1024,6 +1033,8 @@ struct VtableMethod {
     ret_rust_type: Option<proc_macro2::TokenStream>,
     /// Whether this method has a default implementation in the trait.
     has_default: bool,
+    /// Whether the receiver is `&mut self`.
+    is_mut: bool,
     /// Explicit vtable slot index from `#[ffier(index = N)]`.
     /// Determines position in the vtable struct (after `drop`).
     index: usize,
@@ -1121,9 +1132,11 @@ fn parse_trait_method_sig(
     has_default: bool,
 ) -> Option<VtableMethod> {
     let first = sig.inputs.first()?;
-    if !matches!(first, FnArg::Receiver(_)) {
-        return None;
-    }
+    let receiver = match first {
+        FnArg::Receiver(r) => r,
+        _ => return None,
+    };
+    let is_mut = receiver.mutability.is_some();
 
     let params: Vec<_> = sig
         .inputs
@@ -1159,6 +1172,7 @@ fn parse_trait_method_sig(
         ret_bridge_type,
         ret_rust_type,
         has_default,
+        is_mut,
         index: 0, // placeholder — caller sets the real index from #[ffier(index = N)]
     })
 }
@@ -1185,9 +1199,10 @@ fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenSt
                 _ => unreachable!(),
             };
             let hd = m.has_default;
+            let im = m.is_mut;
             let idx = m.index;
             quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, index = #idx, }
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, is_mut = #im, index = #idx, }
             }
         })
         .collect()
@@ -1363,7 +1378,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let (_, tg, _) = g.split_for_impl();
         tg.to_token_stream()
     };
-    // Also erase lifetimes in method signatures
+    // Erase lifetimes only on trait-level generics, not on method parameter types.
+    // Method signatures keep their original lifetimes (anonymous `'_` for input
+    // positions like `s: &str`) — erasing them to `'static` would make the impl
+    // unsatisfiable for callers with shorter borrows.
     let trait_item_erased = {
         let mut t = trait_item.clone();
         struct Eraser;
@@ -1371,6 +1389,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
                 *lt = syn::Lifetime::new("'static", lt.apostrophe);
             }
+            // Don't descend into method signatures — keep their lifetimes as-is.
+            fn visit_trait_item_fn_mut(&mut self, _: &mut syn::TraitItemFn) {}
         }
         Eraser.visit_item_trait_mut(&mut t);
         t
@@ -1395,8 +1415,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .iter()
             .map(|p| {
                 let id = &p.ident;
-                let bt = &p.bridge_type;
-                quote! { <#bt as ffier::FfiType>::into_c(#id) }
+                // Use rust_type (elided lifetimes) for the conversion call,
+                // not bridge_type ('static lifetimes). The actual value has
+                // the caller's lifetime, not 'static.
+                let rt = &p.rust_type;
+                quote! { <#rt as ffier::FfiType>::into_c(#id) }
             })
             .collect();
         // Build the concrete fn pointer type for this vtable field

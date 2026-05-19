@@ -552,18 +552,18 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             });
             error_result_dispatch_arms.push(quote! {
                 #type_tag => {
-                    let err_val = unsafe { &*ffier::borrow_handle_ptr::<#path>(err) };
+                    let err_val = unsafe { ffier::ffier_handle_borrow::<#path>(err) };
                     ffier::ffier_result(#type_tag, ffier::FfiError::code(err_val))
                 }
             });
             destroy_dispatch_arms.push(quote! {
                 #type_tag => {
-                    unsafe { ffier::drop_handle::<#path>(err) };
+                    unsafe { ffier::ffier_handle_drop::<#path>(err) };
                 }
             });
             error_message_dispatch_arms.push(quote! {
                 #type_tag => {
-                    let err_val = unsafe { &*ffier::borrow_handle_ptr::<#path>(err) };
+                    let err_val = unsafe { ffier::ffier_handle_borrow::<#path>(err) };
                     // TODO: use WriteStr trait for streaming Display output
                     let msg = format!("{}", err_val);
                     unsafe { ffier::FfierBytes::from_str(
@@ -638,15 +638,15 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             }
         }
 
-        /// Drop an error handle. Uninitialized (tag=0) is a no-op.
+        /// Drop an error handle. NULL is a no-op.
         ///
         /// Dispatches by type tag to drop the correct concrete error type.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #error_destroy_name(
             err: *mut core::ffi::c_void,
         ) {
+            if err.is_null() { return; }
             let __type_tag = unsafe { ffier::handle_type_tag(err) };
-            if __type_tag == 0 { return; } // uninitialized — no-op
             match __type_tag {
                 #(#destroy_dispatch_arms)*
                 _ => {
@@ -746,12 +746,21 @@ fn generate_exportable_bridge(
         let is_by_value = m.receiver == MetaReceiver::Value;
         let is_builder = m.is_builder;
 
-        let handle_type = format!("{handle_c_name} handle");
+        let handle_type = if is_builder && is_by_value {
+            // Builder by-value: C caller passes &handle (pointer-to-pointer).
+            format!("{handle_c_name}* handle")
+        } else {
+            format!("{handle_c_name} handle")
+        };
 
         // Single source of truth: the extern "C" fn signature.
         let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types);
 
-        // Self access via resolve() (instance methods only)
+        // Self access via borrow/consume (instance methods only).
+        //
+        // For builder by-value methods, the C param is a pointer-to-pointer
+        // (FtConfig* = void**). We dereference it first, storing the slot
+        // address for write-back later.
         let obj_binding = if has_receiver {
             let type_assert = quote! {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
@@ -765,20 +774,30 @@ fn generate_exportable_bridge(
                     );
                 }
             };
+            let deref_slot = if is_builder && is_by_value {
+                // `handle` param is *mut c_void but actually void**.
+                // Save the slot, read the real handle pointer.
+                quote! {
+                    let __handle_slot = handle as *mut *mut core::ffi::c_void;
+                    let handle = unsafe { *__handle_slot };
+                }
+            } else {
+                quote! {}
+            };
             let cast = if is_by_value {
                 quote! {
-                    ffier::consume_handle::<#struct_path>(handle)
+                    ffier::ffier_handle_consume::<#struct_path>(handle)
                 }
             } else if is_mut {
                 quote! {
-                    &mut *ffier::borrow_handle_ptr_mut::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow_mut::<#struct_path>(handle)
                 }
             } else {
                 quote! {
-                    &*ffier::borrow_handle_ptr::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow::<#struct_path>(handle)
                 }
             };
-            Some(quote! { #type_assert let obj = unsafe { #cast }; })
+            Some(quote! { #deref_slot #type_assert let obj = unsafe { #cast }; })
         } else {
             None
         };
@@ -969,7 +988,7 @@ fn generate_exportable_bridge(
                 let ty = &v.bridge_type;
                 branches.push(quote! {
                     if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                        let __val = ffier::consume_handle::<#ty>(#dyn_id);
+                        let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
                         ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
                     }
                 });
@@ -1007,7 +1026,7 @@ fn generate_exportable_bridge(
                         .map(|(_, ty_tokens)| {
                             quote! {
                                 if __type_tag == <#ty_tokens as ffier::FfiHandle>::TYPE_TAG {
-                                    let #dyn_id = ffier::consume_handle::<#ty_tokens>(#dyn_id);
+                                    let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
                                     #inner
                                 }
                             }
@@ -1068,18 +1087,16 @@ fn generate_exportable_bridge(
                 decl_exprs.push(header_line);
 
                 let body = if is_builder && is_by_value {
-                    // Builder by-value: consume the old value from the handle,
-                    // call the method (returns Self), write the result back.
-                    // consume_handle zeros the handle, so init_handle sees
-                    // a clean uninit state with buf_size=0 → PTR fallback.
+                    // Builder by-value: obj_binding dereferences the double
+                    // pointer (saving __handle_slot), consumes the old handle,
+                    // calls the method, writes the new pointer back.
                     quote! {
                         #obj_binding
                         #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
-                        unsafe {
-                            ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, result);
-                        }
+                        let __new_ptr = <#struct_path as ffier::FfiType>::into_c(result);
+                        unsafe { *__handle_slot = __new_ptr };
                     }
                 } else {
                     quote! {
@@ -1101,45 +1118,64 @@ fn generate_exportable_bridge(
             }
             MetaReturn::Value(vk) => {
                 let bridge_type = &vk.bridge_type;
-                let ret_is_handle = last_path_segment(&m.rust_ret)
-                    .map(|name| handle_types.contains(&name))
-                    .unwrap_or(false);
+                // All values (handles and primitives) returned via into_c.
+                // Handles → *mut c_void, primitives → their CRepr.
+                let ret_c_header = quote! {
+                    &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                };
+                let header_line = build_header_line(
+                    ret_c_header,
+                    &ffi_name_str,
+                    header_handle,
+                    &c_type_exprs,
+                    &param_name_str_refs,
+                    None,
+                    false,
+                    None,
+                );
+                decl_exprs.push(header_line);
 
-                if ret_is_handle {
-                    // Handle return: becomes void + out-param.
-                    // The out-param is added to c_sig by c_signature_for_method.
-                    let header_line = build_header_line(
-                        quote! { "void" },
-                        &ffi_name_str,
-                        header_handle,
-                        &c_type_exprs,
-                        &param_name_str_refs,
-                        None,
-                        false,
-                        None,
-                    );
-                    decl_exprs.push(header_line);
+                ffi_fns.push(quote! {
+                    #[unsafe(no_mangle)]
+                    pub unsafe extern "C" fn #ffi_name(
+                        #(#sig_names: #sig_types),*
+                    ) #sig_ret {
+                        #obj_binding
+                        #(#vtable_pre_bindings)*
+                        #(#pre_bindings)*
+                        let result = #method_call;
+                        <#bridge_type as ffier::FfiType>::into_c(result)
+                    }
+                });
+            }
+            MetaReturn::Result { ok, err_ident } => {
+                let ok_is_handle = ok.is_some()
+                    && is_result_ok_handle(&m.rust_ret, handle_types);
 
-                    ffi_fns.push(quote! {
-                        #[unsafe(no_mangle)]
-                        pub unsafe extern "C" fn #ffi_name(
-                            #(#sig_names: #sig_types),*
-                        ) #sig_ret {
-                            #obj_binding
-                            #(#vtable_pre_bindings)*
-                            #(#pre_bindings)*
-                            let result = #method_call;
+                // Look up the error type's type_tag from the error map
+                let err_info = error_map.get(err_ident);
+                let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
+                let err_path = err_info.map(|i| &i.path);
+
+                // Error boxing: allocate error as a handle via into_c,
+                // write the pointer through err_out (which is *mut *mut c_void).
+                let box_expr = if err_path.is_some() {
+                    quote! {
+                        if !err_out.is_null() {
                             unsafe {
-                                ffier::init_handle(
-                                    __out,
-                                    <#bridge_type as ffier::FfiHandle>::TYPE_TAG,
-                                    result,
-                                )
-                            };
+                                *err_out = <_ as ffier::FfiType>::into_c(e);
+                            }
                         }
-                    });
+                    }
                 } else {
-                    // Non-handle return: normal into_c
+                    quote! {}
+                };
+
+                let err_handle_c_name = format!("{type_pfx}Error");
+
+                if ok_is_handle {
+                    // GLib-style: return handle directly, NULL on error.
+                    let bridge_type = &ok.as_ref().unwrap().bridge_type;
                     let ret_c_header = quote! {
                         &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                     };
@@ -1150,10 +1186,22 @@ fn generate_exportable_bridge(
                         &c_type_exprs,
                         &param_name_str_refs,
                         None,
-                        false,
-                        None,
+                        true,
+                        Some(&err_handle_c_name),
                     );
                     decl_exprs.push(header_line);
+
+                    let ok_branch = quote! {
+                        Ok(ok_val) => {
+                            <_ as ffier::FfiType>::into_c(ok_val)
+                        }
+                    };
+                    let err_branch = quote! {
+                        Err(e) => {
+                            #box_expr
+                            core::ptr::null_mut()
+                        }
+                    };
 
                     ffi_fns.push(quote! {
                         #[unsafe(no_mangle)]
@@ -1163,75 +1211,37 @@ fn generate_exportable_bridge(
                             #obj_binding
                             #(#vtable_pre_bindings)*
                             #(#pre_bindings)*
-                            let result = #method_call;
-                            <#bridge_type as ffier::FfiType>::into_c(result)
+                            match #method_call {
+                                #ok_branch
+                                #err_branch
+                            }
                         }
                     });
-                }
-            }
-            MetaReturn::Result { ok, err_ident } => {
-                // Handle v2: all results use FtResult return + out-params.
-                // No GLib-style handle-as-return-value.
-                let result_c_name = format!("{type_pfx}Result");
-                let ret_c_name = quote! { #result_c_name };
-
-                let out_c_type = ok.as_ref().map(|vk| {
-                    let bridge_type = &vk.bridge_type;
-                    quote! {
-                        &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-                    }
-                });
-
-                let err_handle_c_name = format!("{type_pfx}Error");
-                let header_line = build_header_line(
-                    ret_c_name,
-                    &ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    out_c_type.as_ref(),
-                    true,
-                    Some(&err_handle_c_name),
-                );
-                decl_exprs.push(header_line);
-
-                // Look up the error type's type_tag from the error map
-                let err_info = error_map.get(err_ident);
-                let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
-                let err_path = err_info.map(|i| &i.path);
-
-                let box_expr = if err_path.is_some() {
-                    quote! {
-                        if !err_out.is_null() {
-                            unsafe {
-                                ffier::init_handle(err_out, #err_type_tag, e);
-                            }
-                        }
-                    }
                 } else {
-                    quote! {}
-                };
+                    // FtResult style: return packed error code, out-params for ok value.
+                    let result_c_name = format!("{type_pfx}Result");
+                    let ret_c_name = quote! { #result_c_name };
 
-                {
-                    let ok_is_handle = ok.is_some()
-                        && is_result_ok_handle(&m.rust_ret, handle_types);
-
-                    // FtResult style: out-param for ok value, return result code
-                    let ok_branch = match ok {
-                        Some(vk) if ok_is_handle => {
-                            let bridge_type = &vk.bridge_type;
-                            quote! {
-                                Ok(ok_val) => {
-                                    // Handle ok: write into out-param via init_handle
-                                    unsafe { ffier::init_handle(
-                                        result as *mut core::ffi::c_void,
-                                        <#bridge_type as ffier::FfiHandle>::TYPE_TAG,
-                                        ok_val,
-                                    ) };
-                                    ffier::FFIER_RESULT_SUCCESS
-                                }
-                            }
+                    let out_c_type = ok.as_ref().map(|vk| {
+                        let bridge_type = &vk.bridge_type;
+                        quote! {
+                            &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                         }
+                    });
+
+                    let header_line = build_header_line(
+                        ret_c_name,
+                        &ffi_name_str,
+                        header_handle,
+                        &c_type_exprs,
+                        &param_name_str_refs,
+                        out_c_type.as_ref(),
+                        true,
+                        Some(&err_handle_c_name),
+                    );
+                    decl_exprs.push(header_line);
+
+                    let ok_branch = match ok {
                         Some(vk) => {
                             let bridge_type = &vk.bridge_type;
                             quote! {
@@ -1243,11 +1253,8 @@ fn generate_exportable_bridge(
                         }
                         None if is_builder && is_by_value => quote! {
                             Ok(new_self) => {
-                                // consume_handle already zeroed the handle,
-                                // so init_handle sees clean uninit state.
-                                unsafe {
-                                    ffier::init_handle(handle, <#struct_path as ffier::FfiHandle>::TYPE_TAG, new_self);
-                                }
+                                let __new_ptr = <#struct_path as ffier::FfiType>::into_c(new_self);
+                                unsafe { *__handle_slot = __new_ptr };
                                 ffier::FFIER_RESULT_SUCCESS
                             }
                         },
@@ -1256,11 +1263,25 @@ fn generate_exportable_bridge(
                         },
                     };
 
-                    let err_branch = quote! {
-                        Err(e) => {
-                            let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
-                            #box_expr
-                            __r
+                    let err_branch = if is_builder && is_by_value {
+                        // Builder error: the old handle was already consumed.
+                        // Write NULL to the caller's variable so they don't use
+                        // a dangling pointer.
+                        quote! {
+                            Err(e) => {
+                                let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
+                                unsafe { *__handle_slot = core::ptr::null_mut() };
+                                #box_expr
+                                __r
+                            }
+                        }
+                    } else {
+                        quote! {
+                            Err(e) => {
+                                let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
+                                #box_expr
+                                __r
+                            }
                         }
                     };
 
@@ -1303,7 +1324,7 @@ fn generate_exportable_bridge(
                         __actual,
                     );
                 }
-                unsafe { ffier::drop_handle::<#struct_path>(handle) };
+                unsafe { ffier::ffier_handle_drop::<#struct_path>(handle) };
             }
         }
     });
@@ -1559,9 +1580,9 @@ pub fn c_signature_for_method(
     let has_receiver = method.receiver != MetaReceiver::None;
 
     if has_receiver {
-        // Handle v2: all handles are caller-owned storage, passed as *mut c_void.
-        // Builder by-value methods take the same pointer — they consume the old
-        // value and write the new one back into the same storage.
+        // All handles are heap-allocated, passed as *mut c_void.
+        // Builder by-value methods take *mut *mut c_void (pointer to the
+        // caller's handle variable) so the bridge can swap the pointer.
         params.push(CExternParam {
             name: format_ident!("handle"),
             c_type: quote! { *mut core::ffi::c_void },
@@ -1591,46 +1612,39 @@ pub fn c_signature_for_method(
     let ret = match &method.ret {
         MetaReturn::Void => quote! {},
         MetaReturn::Value(_vk) => {
-            let ret_is_handle = last_path_segment(&method.rust_ret)
-                .map(|name| handle_types.contains(&name))
-                .unwrap_or(false);
-            if ret_is_handle {
-                // Handle return: out-param + void return
-                params.push(CExternParam {
-                    name: format_ident!("__out"),
-                    c_type: quote! { *mut core::ffi::c_void },
-                });
-                quote! {}
-            } else {
-                let ty = c_return_type(_vk, &method.rust_ret, &ctx);
-                quote! { -> #ty }
-            }
+            // All values (handles and primitives) returned directly.
+            // Handles return *mut c_void, primitives return their CRepr.
+            let ty = c_return_type(_vk, &method.rust_ret, &ctx);
+            quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
-            // Handle v2: all results use out-params + FfierResult return.
-            // No GLib-style handle-as-return-value.
-            if let Some(vk) = ok {
-                let ok_is_handle = is_result_ok_handle(&method.rust_ret, handle_types);
-                if ok_is_handle {
-                    // Handle ok: out-param is *mut c_void (handle pointer)
-                    params.push(CExternParam {
-                        name: format_ident!("result"),
-                        c_type: quote! { *mut core::ffi::c_void },
-                    });
-                } else {
+            let ok_is_handle = ok.is_some()
+                && is_result_ok_handle(&method.rust_ret, handle_types);
+
+            if ok_is_handle {
+                // GLib-style: return handle directly (NULL on error).
+                // err_out is *mut *mut c_void (pointer to caller's FtError variable).
+                params.push(CExternParam {
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
+                });
+                quote! { -> *mut core::ffi::c_void }
+            } else {
+                // FtResult style: return packed error code.
+                if let Some(vk) = ok {
                     let ok_rust_type = extract_result_ok_type(&method.rust_ret);
                     params.push(CExternParam {
                         name: format_ident!("result"),
                         c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
                     });
                 }
+                // err_out is *mut *mut c_void (pointer to caller's FtError variable).
+                params.push(CExternParam {
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
+                });
+                quote! { -> ffier::FfierResult }
             }
-            // Error out-param: also a handle now
-            params.push(CExternParam {
-                name: format_ident!("err_out"),
-                c_type: quote! { *mut core::ffi::c_void },
-            });
-            quote! { -> ffier::FfierResult }
         }
     };
 
@@ -2072,19 +2086,18 @@ impl HeaderBuilder {
 // Self-dispatch bridge generation
 // ===========================================================================
 
-/// Emit a `let obj = ...` binding that borrows a value from a handle via
-/// `borrow_handle_ptr()` / `borrow_handle_ptr_mut()`.
+/// Emit a `let obj = ...` binding that borrows a value from a handle.
 ///
-/// - `mutable = false`: `let obj = &*borrow_handle_ptr::<T>(handle);`
-/// - `mutable = true`:  `let obj = &mut *borrow_handle_ptr_mut::<T>(handle);`
+/// - `mutable = false`: `let obj = ffier::ffier_handle_borrow::<T>(handle);`
+/// - `mutable = true`:  `let obj = ffier::ffier_handle_borrow_mut::<T>(handle);`
 fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
     if mutable {
         quote! {
-            let obj = unsafe { &mut *ffier::borrow_handle_ptr_mut::<#ty>(handle) };
+            let obj = unsafe { ffier::ffier_handle_borrow_mut::<#ty>(handle) };
         }
     } else {
         quote! {
-            let obj = unsafe { &*ffier::borrow_handle_ptr::<#ty>(handle) };
+            let obj = unsafe { ffier::ffier_handle_borrow::<#ty>(handle) };
         }
     }
 }
@@ -2188,7 +2201,7 @@ fn generate_self_dispatch_bridge(
             // before calling through the vtable.
             let metadata_guard = if is_vtable_variant && m.has_default {
                 if let Some(helper) = &default_helper_path {
-                    let obj_for_default = borrow_from_handle(ty, false);
+                    let obj_for_default = borrow_from_handle(ty, m.is_mut);
                     let default_call = match &m.ret {
                         MetaVtableRet::Void => quote! {
                             #helper(obj #(, #call_args)*);
@@ -2213,7 +2226,7 @@ fn generate_self_dispatch_bridge(
                 quote! {}
             };
 
-            let obj_binding = borrow_from_handle(ty, false);
+            let obj_binding = borrow_from_handle(ty, m.is_mut);
             let ret_conversion = match &m.ret {
                 MetaVtableRet::Void => quote! {
                     <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
@@ -2277,7 +2290,7 @@ fn generate_self_dispatch_bridge(
             let ty = &v.bridge_type;
             quote! {
                 if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                    unsafe { ffier::drop_handle::<#ty>(handle) };
+                    unsafe { ffier::ffier_handle_drop::<#ty>(handle) };
                 }
             }
         })
@@ -2393,7 +2406,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
-                let obj = unsafe { &*ffier::borrow_handle_ptr::<#struct_path>(handle) };
+                let obj = unsafe { ffier::ffier_handle_borrow::<#struct_path>(handle) };
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
                 #ret_conversion
             }
