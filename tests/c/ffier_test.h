@@ -469,8 +469,6 @@ typedef struct {
     void (*on_notify)(void* self_data, int32_t code);
 } FtProcessorVtable;
 
-void* ft_processor_from_vtable(void* user_data, const FtProcessorVtable* vtable, size_t vtable_size);
-
 /* VtableFruit ------------------------------------------------------- */
 
 typedef struct {
@@ -479,8 +477,6 @@ typedef struct {
     FtStr (*label)(void* self_data);
 } FtFruitVtable;
 
-void* ft_fruit_from_vtable(void* user_data, const FtFruitVtable* vtable, size_t vtable_size);
-
 /* VtableWeighable --------------------------------------------------- */
 
 typedef struct {
@@ -488,7 +484,12 @@ typedef struct {
     int32_t (*weight_grams)(void* self_data);
 } FtWeighableVtable;
 
-void* ft_weighable_from_vtable(void* user_data, const FtWeighableVtable* vtable, size_t vtable_size);
+/* VtablePushStr ----------------------------------------------------- */
+
+typedef struct {
+    void (*drop)(void* self_data);
+    bool (*push)(void* self_data, FtStr s);
+} FtPushStrVtable;
 
 /* Fruit for Apple --------------------------------------------------- */
 
@@ -545,6 +546,12 @@ int32_t ft_gadget_snap_source_count(FtGadget handle);
 
 int32_t ft_apple_weight_grams(FtApple handle);
 
+/* Fruit (dispatch) -------------------------------------------------- */
+
+int32_t ft_fruit_value(void* handle);
+FtStr ft_fruit_label(void* handle);
+void ft_fruit_destroy(void* handle);
+
 /* Processor (dispatch) ---------------------------------------------- */
 
 int32_t ft_processor_process(void* handle, int32_t input);
@@ -556,17 +563,16 @@ void ft_processor_destroy(void* handle);
 int32_t ft_weighable_weight_grams(void* handle);
 void ft_weighable_destroy(void* handle);
 
-/* Fruit (dispatch) -------------------------------------------------- */
+/* PushStr (dispatch) ------------------------------------------------ */
 
-int32_t ft_fruit_value(void* handle);
-FtStr ft_fruit_label(void* handle);
-void ft_fruit_destroy(void* handle);
+bool ft_push_str_push(void* handle, FtStr s);
+void ft_push_str_destroy(void* handle);
 
 /* error ------------------------------------------------------------- */
 
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 FtResult ft_error_result(FtError err);
-FtStr ft_error_message(FtError err);
+void ft_error_message(FtError err, FtPushStr writer);
 void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

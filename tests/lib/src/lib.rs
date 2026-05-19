@@ -826,7 +826,7 @@ pub use ffier::PushStr;
 #[ffier::implementable(foreign)]
 trait PushStr {
     #[ffier(index = 0)]
-    fn push(&mut self, s: &str);
+    fn push(&mut self, s: &str) -> bool;
 }
 
 // ---------------------------------------------------------------------------

@@ -431,7 +431,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Generate strerror dispatch function — dispatches by type tag to per-error
     // static_message tables.
-    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors);
+    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &trait_map);
 
     // Generate unified header function
     quote! {
@@ -515,7 +515,7 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 
 /// Generate `{prefix}_result_name()`, `{prefix}_error_message()`, and
 /// `{prefix}_error_destroy()` functions.
-fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
+fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &TraitMap) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
@@ -533,6 +533,13 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
     let result_c_name = format!("{type_pfx}Result");
     let str_c_name = format!("{type_pfx}Str");
     let error_c_name = format!("{type_pfx}Error");
+    let push_str_c_name = format!("{type_pfx}PushStr");
+
+    // Look up the PushStr wrapper type for ft_error_message.
+    let push_str_wrapper = trait_map
+        .get("PushStr")
+        .and_then(|info| info.implementable.as_ref())
+        .map(|imp| &imp.wrapper_path);
 
     // Build dispatch arms for each error type
     let mut result_name_dispatch_arms = Vec::new();
@@ -564,19 +571,31 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             error_message_dispatch_arms.push(quote! {
                 #type_tag => {
                     let err_val = unsafe { ffier::ffier_handle_borrow::<#path>(err) };
-                    // TODO: use WriteStr trait for streaming Display output
-                    let msg = format!("{}", err_val);
-                    unsafe { ffier::FfierBytes::from_str(
-                        // SAFETY: caller must use the bytes before error_destroy.
-                        // This leaks — placeholder until WriteStr is implemented.
-                        &*Box::leak(msg.into_boxed_str())
-                    ) }
+                    use core::fmt::Write;
+                    let _ = write!(__writer as &mut dyn ffier::PushStr, "{}", err_val);
+                    return;
                 }
             });
         }
     }
 
     let unknown_msg_bytes = proc_macro2::Literal::byte_string(b"unknown error\0");
+
+    // Build the error_message body. If PushStr is registered, dispatch by
+    // type tag and stream Display through the writer. Otherwise, no-op.
+    let error_message_body = if let Some(wrapper) = push_str_wrapper {
+        quote! {
+            let __writer = unsafe { ffier::ffier_handle_borrow_mut::<#wrapper>(writer) };
+            let __type_tag = unsafe { ffier::handle_type_tag(err) };
+            match __type_tag {
+                #(#error_message_dispatch_arms)*
+                _ => {}
+            }
+        }
+    } else {
+        // PushStr not registered — error_message is a no-op.
+        quote! {}
+    };
 
     quote! {
         /// Variant name as a null-terminated C string.
@@ -621,21 +640,17 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             }
         }
 
-        /// Display message from an error handle.
+        /// Stream the error's Display message into a PushStr writer.
         ///
-        /// TODO: This will be replaced by WriteStr-based streaming.
-        /// Currently returns a leaked string (placeholder).
+        /// The writer handle must point to a valid `FfierHandle<VtablePushStr>`.
+        /// C callers construct one on the stack via the vtable pattern.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #error_message_name(
             err: *const core::ffi::c_void,
-        ) -> ffier::FfierBytes {
-            if err.is_null() { return ffier::FfierBytes::EMPTY; }
-            let __type_tag = unsafe { ffier::handle_type_tag(err) };
-            match __type_tag {
-                #(#error_message_dispatch_arms)*
-                0 => ffier::FfierBytes::EMPTY, // uninitialized
-                _ => ffier::FfierBytes::EMPTY,
-            }
+            writer: *mut core::ffi::c_void,
+        ) {
+            if err.is_null() || writer.is_null() { return; }
+            #error_message_body
         }
 
         /// Drop an error handle. NULL is a no-op.
@@ -666,15 +681,15 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
                 #result_name_cstr_fn_str, #result_c_name,
             ));
             decls.push_str(&format!(
-                "{} {}(const {} *err);\n",
+                "{} {}({} err);\n",
                 #result_c_name, #error_result_name_str, #error_c_name,
             ));
             decls.push_str(&format!(
-                "{} {}(const {} *err);\n",
-                #str_c_name, #error_message_name_str, #error_c_name,
+                "void {}({} err, {} writer);\n",
+                #error_message_name_str, #error_c_name, #push_str_c_name,
             ));
             decls.push_str(&format!(
-                "void {}({} *err);",
+                "void {}({} err);",
                 #error_destroy_name_str, #error_c_name,
             ));
             ffier_gen_c::HeaderSection {
