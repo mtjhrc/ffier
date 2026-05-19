@@ -818,16 +818,15 @@ impl Weighable for Apple {
 }
 
 // ---------------------------------------------------------------------------
-// PushStr — streaming string output (from ffier-rt)
+// PushStr — streaming string output (from ffier-rt, annotated in ffier-builtins)
 // ---------------------------------------------------------------------------
 
 pub use ffier::PushStr;
+pub use ffier_builtins::PushStrVtable;
 
-#[ffier::implementable(foreign)]
-trait PushStr {
-    #[ffier(index = 0)]
-    fn push(&mut self, s: &str) -> bool;
-}
+// No #[ffier::implementable(foreign)] redeclaration needed — ffier-builtins
+// provides the vtable struct and metadata macro. We just register it in
+// library_definition! via `trait ffier_builtins::PushStr = 24`.
 
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
@@ -859,5 +858,5 @@ ffier::library_definition!("ft",
     Snapshot for Gadget,
     trait Weighable = 23,
     Weighable for Apple,
-    trait PushStr = 24,
+    trait ffier_builtins::PushStr = 24,
 );

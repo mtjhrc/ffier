@@ -1,13 +1,8 @@
 [package]
-name = "ffier"
+name = "ffier-builtins"
 version = "0.1.0"
 edition = "2024"
-
-[features]
-default = ["std"]
-std = ["ffier-rt/std"]
 
 [dependencies]
 ffier-rt = { path = "../ffier-rt" }
 ffier-annotations = { path = "../ffier-annotations" }
-ffier-builtins = { path = "../ffier-builtins" }
