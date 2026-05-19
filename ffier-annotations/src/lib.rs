@@ -76,15 +76,20 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
-/// Emit `impl FfiHandle for T` and `impl FfiType for T` blocks for an exported type.
+/// Emit `impl FfiHandle` and `impl FfiType` for a handle type.
 ///
 /// `ty` is the type (e.g. `Widget` or `VtableFruit`), `c_handle_name` is the
 /// C handle typedef name string (e.g. `"Widget"`, `"VtableFruit"`).
-/// Emit `impl FfiHandle` and `impl FfiType` for a handle type.
 ///
 /// `tag_const` is a token stream referencing the type tag constant, e.g.
 /// `crate::__ffier_type_tag_Widget`. The actual value is provided by
 /// `library_definition!` which emits `pub const __ffier_type_tag_Widget: u32 = N;`.
+///
+/// With handle v2, values live in caller-owned storage. `as_handle` recovers
+/// the handle pointer by subtracting `HANDLE_PAYLOAD_OFFSET` (8 bytes) from
+/// `&self`. `FfiType::into_c` is no longer used for constructors (bridge code
+/// calls `init_handle` directly), but kept for `impl Trait` dispatch where
+/// owned values are passed across FFI as handles.
 fn emit_ffi_handle_impls(
     ty: &proc_macro2::TokenStream,
     c_handle_name: &str,
@@ -95,12 +100,9 @@ fn emit_ffi_handle_impls(
             const C_HANDLE_NAME: &str = #c_handle_name;
             const TYPE_TAG: u32 = #tag_const;
             unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-                let value_offset = core::mem::offset_of!(
-                    ffier::FfierHandleBox<Self>, value
-                );
-                let box_ptr = (self as *const Self as *const u8)
-                    .wrapping_sub(value_offset);
-                box_ptr as *mut core::ffi::c_void
+                let ptr = (self as *const Self as *const u8)
+                    .wrapping_sub(ffier::HANDLE_PAYLOAD_OFFSET);
+                ptr as *mut core::ffi::c_void
             }
         }
 
@@ -109,19 +111,26 @@ fn emit_ffi_handle_impls(
             const C_TYPE_NAME: &str = #c_handle_name;
             const IS_HANDLE: bool = true;
             fn into_c(self) -> *mut core::ffi::c_void {
-                let tagged = ffier::FfierHandleBox {
-                    type_tag: #tag_const,
-                    metadata: 0,
-                    value: self,
-                };
-                Box::into_raw(Box::new(tagged)) as *mut core::ffi::c_void
+                // Not used for constructors (bridge uses init_handle).
+                // Used when passing owned handles across FFI for dispatch.
+                unimplemented!("into_c for owned handles — use init_handle instead")
             }
             fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                // Consumes the handle: resolves, moves value out, cleans up.
                 unsafe {
-                    let tagged = Box::from_raw(
-                        repr as *mut ffier::FfierHandleBox<Self>
-                    );
-                    tagged.value
+                    let payload = (repr as *mut u8).add(ffier::HANDLE_PAYLOAD_OFFSET);
+                    let metadata = ffier::handle_metadata(repr);
+                    let value = if metadata & ffier::INLINE_BIT != 0 {
+                        // Inline: read directly from payload
+                        core::ptr::read(payload as *const Self)
+                    } else {
+                        // PTR: unbox — moves value out and frees allocation
+                        let heap_ptr = core::ptr::read(payload as *const *mut Self);
+                        *Box::from_raw(heap_ptr)
+                    };
+                    // Zero the tag — handle is now consumed
+                    core::ptr::write(repr as *mut u32, 0);
+                    value
                 }
             }
         }
@@ -1444,8 +1453,8 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // No metadata check inside VtableFoo::method() — the metadata field
         // lives outside the provenance of `&self`. The self-dispatch function
         // reads metadata from the raw handle pointer (which has full provenance
-        // over the entire FfierHandleBox) and skips vtable dispatch if the
-        // metadata indicates a default-method dispatch skip.
+        // over the entire handle) and skips vtable dispatch if the metadata
+        // indicates a default-method dispatch skip.
         let metadata_check = quote! {};
         quote! {
             #sig {
@@ -1717,13 +1726,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         /// Wrapper type for vtable-dispatched trait implementations.
         ///
-        /// Lives inside `FfierHandleBox<VtableFoo>` where:
-        /// - `FfierHandleBox.type_tag` identifies this as a VtableFoo handle
-        /// - `FfierHandleBox.metadata` encodes default-method dispatch skip
-        /// - `value: VtableFoo` contains the vtable pointer and user data
+        /// Lives inline in the handle payload where:
+        /// - `type_tag` (offset 0) identifies this as a VtableFoo handle
+        /// - `metadata` (offset 4) has INLINE_BIT set, plus optional
+        ///   default-method dispatch skip encoding
+        /// - payload (offset 8) contains the VtableHandle data
         ///
         /// The vtable pointer points to a `&'static` const-promoted vtable
-        /// (Rust client) or a caller-owned vtable (C client via `from_vtable`).
+        /// (Rust client) or a caller-owned vtable (C client via `FT_PTR_OBJECT`).
         /// The vtable is **not** copied — the caller must ensure it outlives
         /// all handles that reference it.
         #[repr(C)]
