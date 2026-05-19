@@ -78,6 +78,21 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
     let mut all_source = String::new();
 
     // Process in sorted order: errors → exportables → implementables → trait_impls.
+    // Extract prefix from the first error (all items share the same prefix).
+    let prefix = errors
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaError>(item.clone()).ok())
+        .map(|m| m.fn_pfx().trim_end_matches('_').to_string())
+        .next()
+        .or_else(|| {
+            exportables
+                .iter()
+                .filter_map(|item| syn::parse2::<MetaExportable>(item.clone()).ok())
+                .map(|m| m.fn_pfx().trim_end_matches('_').to_string())
+                .next()
+        })
+        .unwrap_or_default();
+
     for item in &errors {
         let meta: MetaError = match syn::parse2(item.clone()) {
             Ok(m) => m,
@@ -85,6 +100,21 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         };
         let code = generate_error_client(meta);
         all_source.push_str(&code.to_string());
+        all_source.push('\n');
+    }
+
+    // Emit error utility externs (ft_error_result, ft_error_destroy).
+    // These are needed by the GLib-style Result<Handle, E> wrappers.
+    if !errors.is_empty() {
+        let error_result_fn = format_ident!("{prefix}_error_result");
+        let error_destroy_fn = format_ident!("{prefix}_error_destroy");
+        let externs = quote! {
+            unsafe extern "C" {
+                fn #error_result_fn(err: *const core::ffi::c_void) -> ffier::FfierResult;
+                fn #error_destroy_fn(err: *mut core::ffi::c_void);
+            }
+        };
+        all_source.push_str(&externs.to_string());
         all_source.push('\n');
     }
 
@@ -344,13 +374,19 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
             // zeros the tag (consumed), calls the method, writes result back.
             match &m.ret {
                 MetaReturn::Void => {
+                    // Builder by-value void: pass &mut handle (pointer-to-pointer).
+                    // The bridge swaps the handle pointer in-place.
                     quote! {
-                        let __handle = {
+                        let mut __handle = {
                             let this = std::mem::ManuallyDrop::new(self);
                             this.0
                         };
                         #(#wrapper_pre_bindings)*
-                        unsafe { #ffi_name(__handle, #(#wrapper_args),*) };
+                        unsafe { #ffi_name(
+                            &mut __handle as *mut *mut core::ffi::c_void
+                                as *mut core::ffi::c_void,
+                            #(#wrapper_args),*
+                        ) };
                         Self(__handle #client_phantom_init)
                     }
                 }
@@ -361,14 +397,18 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                 } => {
                     let err_ty = format_ident!("{err_ident}");
                     quote! {
-                        let __handle = {
+                        let mut __handle = {
                             let this = std::mem::ManuallyDrop::new(self);
                             this.0
                         };
                         #(#wrapper_pre_bindings)*
-                        let mut __err_storage = [0u8; 16];
-                        let __r = unsafe { #ffi_name(__handle, #(#wrapper_args,)*
-                            __err_storage.as_mut_ptr() as *mut core::ffi::c_void) };
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                        let __r = unsafe { #ffi_name(
+                            &mut __handle as *mut *mut core::ffi::c_void
+                                as *mut core::ffi::c_void,
+                            #(#wrapper_args,)*
+                            &mut __err as *mut *mut core::ffi::c_void,
+                        ) };
                         if __r == 0 {
                             Ok(Self(__handle #client_phantom_init))
                         } else {
@@ -380,6 +420,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
             }
         } else if is_builder && is_mut {
             // Builder pattern (&mut self -> &mut Self)
+            // &mut self borrows mutably; the handle pointer doesn't change.
             match &m.ret {
                 MetaReturn::Void => {
                     quote! {
@@ -396,9 +437,9 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                     let err_ty = format_ident!("{err_ident}");
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let mut __err_storage = [0u8; 16];
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
                         let __r = unsafe { #ffi_name(self.0, #(#wrapper_args,)*
-                            __err_storage.as_mut_ptr() as *mut core::ffi::c_void) };
+                            &mut __err as *mut *mut core::ffi::c_void) };
                         if __r == 0 {
                             Ok(self)
                         } else {
@@ -418,6 +459,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                 &wrapper_pre_bindings,
                 &m.rust_ret,
                 &handle_types,
+                &meta.prefix,
             )
         } else if is_by_value {
             // By-value self, non-builder
@@ -429,6 +471,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                 &wrapper_pre_bindings,
                 &m.rust_ret,
                 &handle_types,
+                &meta.prefix,
             );
             quote! {
                 let __handle = {
@@ -447,6 +490,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                 &wrapper_pre_bindings,
                 &m.rust_ret,
                 &handle_types,
+                &meta.prefix,
             )
         };
 
@@ -677,26 +721,24 @@ fn vtable_trait_method_sigs(
                             // all methods. Const-promoted per monomorphization
                             // — zero allocation.
                             let __vtable: &'static #vt_name = Self::__ffier_vtable();
-                            // Build temp handle on stack: [type_tag | metadata | VtableHandle]
-                            // metadata: INLINE_BIT | skip_flag(bit 1) | method_index(bits 2+)
-                            let __metadata: u32 = ffier::INLINE_BIT | 2 | (#method_index_u32 << 2);
-                            let mut __temp = [0u8; ffier::HANDLE_PAYLOAD_OFFSET
-                                + core::mem::size_of::<ffier::VtableHandle>()];
-                            unsafe {
-                                core::ptr::write(__temp.as_mut_ptr() as *mut u32, #tag);
-                                core::ptr::write((__temp.as_mut_ptr() as *mut u32).add(1), __metadata);
-                                core::ptr::write(
-                                    __temp.as_mut_ptr().add(ffier::HANDLE_PAYLOAD_OFFSET) as *mut ffier::VtableHandle,
-                                    ffier::VtableHandle {
-                                        vtable_ptr: __vtable as *const #vt_name as *const core::ffi::c_void,
-                                        user_data: self as *const Self as *const core::ffi::c_void,
-                                        vtable_size: core::mem::size_of::<#vt_name>() as u16,
-                                    },
-                                );
-                            }
+                            // Build a stack-local FfierHandle<VtableHandle> with
+                            // metadata encoding the skip flag + method index.
+                            // The skip flag (bit 1) tells the library-side dispatch
+                            // to call the default impl directly instead of going
+                            // through the vtable (prevents infinite re-entrancy).
+                            let __metadata: u32 = 2 | (#method_index_u32 << 2);
+                            let mut __temp = ffier::FfierHandle {
+                                type_tag: #tag,
+                                metadata: __metadata,
+                                value: ffier::VtableHandle {
+                                    vtable_ptr: __vtable as *const #vt_name as *const core::ffi::c_void,
+                                    user_data: self as *const Self as *const core::ffi::c_void,
+                                    vtable_size: core::mem::size_of::<#vt_name>() as u16,
+                                },
+                            };
                             let __raw = unsafe {
                                 #self_dispatch_fn(
-                                    __temp.as_mut_ptr() as *mut core::ffi::c_void
+                                    &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void
                                     #(, #fwd_args)*
                                 )
                             };
@@ -925,31 +967,22 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
             /// Known types (with `#[ffier::trait_impl]`) override this with
             /// direct handle passthrough. User types get the default
             /// implementation which boxes the value and constructs a vtable
-            /// handle inline.
+            /// handle via `ffier_handle_new_with_metadata`.
             #[doc(hidden)]
             fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
                 let __vtable: &'static #vtable_struct_name = Self::__ffier_vtable();
                 let __user_data = Box::into_raw(Box::new(self));
-                // Allocate handle storage (16 bytes: 8 header + 8 min payload for VtableHandle)
-                let vtable_handle_size = core::mem::size_of::<ffier::VtableHandle>();
-                let storage_size = ffier::HANDLE_PAYLOAD_OFFSET + vtable_handle_size;
-                let storage = vec![0u8; storage_size].into_boxed_slice();
-                let handle = Box::into_raw(storage) as *mut core::ffi::c_void;
                 let vtable_size: u16 = core::mem::size_of::<#vtable_struct_name>()
                     .try_into().expect("vtable_size exceeds u16::MAX");
-                unsafe {
-                    ffier::init_handle_inline(
-                        handle,
-                        #type_tag,
-                        ffier::INLINE_BIT,
-                        ffier::VtableHandle {
-                            vtable_ptr: __vtable as *const #vtable_struct_name as *const core::ffi::c_void,
-                            user_data: __user_data as *const core::ffi::c_void,
-                            vtable_size,
-                        },
-                    );
-                }
-                handle
+                ffier::ffier_handle_new_with_metadata(
+                    #type_tag,
+                    0,
+                    ffier::VtableHandle {
+                        vtable_ptr: __vtable as *const #vtable_struct_name as *const core::ffi::c_void,
+                        user_data: __user_data as *const core::ffi::c_void,
+                        vtable_size,
+                    },
+                )
             }
         }
 
@@ -995,6 +1028,7 @@ fn build_client_body(
     wrapper_pre_bindings: &[TokenStream2],
     rust_ret: &TokenStream2,
     handle_types: &HashSet<String>,
+    prefix: &str,
 ) -> TokenStream2 {
     match ret {
         MetaReturn::Void => {
@@ -1004,27 +1038,12 @@ fn build_client_body(
             }
         }
         MetaReturn::Value(vk) => {
-            let ret_is_handle = ffier_gen_c::last_path_segment(rust_ret)
-                .map(|name| handle_types.contains(&name))
-                .unwrap_or(false);
-            if ret_is_handle {
-                // Handle return: allocate storage, call with out-param
-                let ok_type = rust_ret;
-                quote! {
-                    #(#wrapper_pre_bindings)*
-                    let mut __out_storage = [0u8; 16]; // PTR mode
-                    unsafe { #ffi_name(#handle_arg #(#wrapper_args,)*
-                        __out_storage.as_mut_ptr() as *mut core::ffi::c_void) };
-                    <#ok_type as ffier::FfiType>::from_c(
-                        __out_storage.as_mut_ptr() as *mut core::ffi::c_void)
-                }
-            } else {
-                let convert = client_value_from_ffi(vk, rust_ret);
-                quote! {
-                    #(#wrapper_pre_bindings)*
-                    let __raw = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
-                    #convert
-                }
+            // All values (handles and primitives) returned directly via into_c.
+            let convert = client_value_from_ffi(vk, rust_ret);
+            quote! {
+                #(#wrapper_pre_bindings)*
+                let __raw = unsafe { #ffi_name(#handle_arg #(#wrapper_args),*) };
+                #convert
             }
         }
         MetaReturn::Result { ok, err_ident, .. } => {
@@ -1034,47 +1053,49 @@ fn build_client_body(
 
             match ok {
                 None => {
+                    // Result<(), E>: returns FfierResult, err_out is *mut *mut c_void.
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let mut __err_storage = [0u8; 16];
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
                         let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)*
-                            __err_storage.as_mut_ptr() as *mut core::ffi::c_void) };
+                            &mut __err as *mut *mut core::ffi::c_void) };
                         if __r == 0 { Ok(()) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }
                 Some(_vk) if ok_is_handle => {
-                    // Handle v2: ok handle is an out-param, returns FfierResult.
-                    // TODO: The ok handle needs proper inline storage allocation.
-                    // For now, use a zeroed 16-byte buffer (PTR mode).
+                    // GLib-style: returns handle pointer (NULL on error).
+                    // On error, call ft_error_result to get the packed code
+                    // for constructing the client error enum, then destroy
+                    // the error handle.
                     let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
+                    let error_result_fn = format_ident!("{}_error_result", prefix);
+                    let error_destroy_fn = format_ident!("{}_error_destroy", prefix);
                     quote! {
                         #(#wrapper_pre_bindings)*
-                        let mut __ok_storage = [0u8; 16];
-                        // No buf_size written → PTR mode
-                        let mut __err_storage = [0u8; 16];
-                        let __r = unsafe { #ffi_name(
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                        let __raw = unsafe { #ffi_name(
                             #handle_arg
                             #(#wrapper_args,)*
-                            __ok_storage.as_mut_ptr() as *mut core::ffi::c_void,
-                            __err_storage.as_mut_ptr() as *mut core::ffi::c_void,
+                            &mut __err as *mut *mut core::ffi::c_void,
                         ) };
-                        if __r == 0 {
-                            Ok(<#ok_type as ffier::FfiType>::from_c(
-                                __ok_storage.as_mut_ptr() as *mut core::ffi::c_void
-                            ))
+                        if !__raw.is_null() {
+                            Ok(<#ok_type as ffier::FfiType>::from_c(__raw))
                         } else {
+                            let __r = unsafe { #error_result_fn(__err) };
+                            unsafe { #error_destroy_fn(__err) };
                             Err(#err_ty::from_ffi(__r))
                         }
                     }
                 }
                 Some(vk) => {
+                    // Result<prim, E>: returns FfierResult, out-param for ok value.
                     let (out_decl, out_ptr, ok_convert) = client_result_ok_from_ffi(vk, rust_ret);
                     quote! {
                         #(#wrapper_pre_bindings)*
                         #out_decl
-                        let mut __err_storage = [0u8; 16];
+                        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
                         let __r = unsafe { #ffi_name(#handle_arg #(#wrapper_args,)* #out_ptr,
-                            __err_storage.as_mut_ptr() as *mut core::ffi::c_void) };
+                            &mut __err as *mut *mut core::ffi::c_void) };
                         if __r == 0 { Ok(#ok_convert) } else { Err(#err_ty::from_ffi(__r)) }
                     }
                 }

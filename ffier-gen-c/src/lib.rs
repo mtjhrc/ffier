@@ -1621,7 +1621,13 @@ pub fn c_signature_for_method(
             let ok_is_handle = ok.is_some()
                 && is_result_ok_handle(&method.rust_ret, handle_types);
 
-            if ok_is_handle {
+            // Builder by-value Result<Self, E>: the ok value is written back
+            // through the double-pointer handle param, not returned. Use
+            // FtResult style, not GLib-style.
+            let is_builder_self_result = method.is_builder
+                && method.receiver == MetaReceiver::Value;
+
+            if ok_is_handle && !is_builder_self_result {
                 // GLib-style: return handle directly (NULL on error).
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
@@ -1631,12 +1637,16 @@ pub fn c_signature_for_method(
                 quote! { -> *mut core::ffi::c_void }
             } else {
                 // FtResult style: return packed error code.
-                if let Some(vk) = ok {
-                    let ok_rust_type = extract_result_ok_type(&method.rust_ret);
-                    params.push(CExternParam {
-                        name: format_ident!("result"),
-                        c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
-                    });
+                // Builder-self-result writes ok back through the handle
+                // double-pointer, so no separate result out-param.
+                if !is_builder_self_result {
+                    if let Some(vk) = ok {
+                        let ok_rust_type = extract_result_ok_type(&method.rust_ret);
+                        params.push(CExternParam {
+                            name: format_ident!("result"),
+                            c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
+                        });
+                    }
                 }
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
