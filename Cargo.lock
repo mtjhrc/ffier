@@ -68,6 +68,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-gen-rust-client"
+version = "0.1.0"
+dependencies = [
+ "ffier-schema",
+ "serde_json",
+]
+
+[[package]]
 name = "ffier-meta"
 version = "0.1.0"
 dependencies = [
