@@ -429,7 +429,7 @@ fn build_extern_signature(
                 let ty = tr.to_rust_type_static();
                 params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { .. } => {
                 params.push(format!("{}: *const ffier::FfierBytes", p.name));
                 params.push(format!("{}_len: usize", p.name));
             }
@@ -585,7 +585,7 @@ fn emit_method_body(
 
     // Pre-bindings for StrSlice params
     for p in &m.params {
-        if matches!(&p.param_type, ParamType::StrSlice) {
+        if matches!(&p.param_type, ParamType::Slice { .. }) {
             writeln!(out, "        let __ffi_{}: Vec<ffier::FfierBytes> = {}.iter().map(|s| unsafe {{ ffier::FfierBytes::from_str(s) }}).collect();",
                 p.name, p.name).unwrap();
         }
@@ -618,7 +618,7 @@ fn emit_method_body(
                 let ty = tr.to_rust_type();
                 ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { .. } => {
                 ffi_args.push(format!("__ffi_{}.as_ptr()", p.name));
                 ffi_args.push(format!("__ffi_{}.len()", p.name));
             }
@@ -672,6 +672,19 @@ fn emit_method_body(
             .unwrap();
             writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
+        }
+        Return::Result { ok: None, err_type } if is_builder && m.receiver == Receiver::Mut => {
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(
+                out,
+                "        if __r == 0 {{ Ok(self) }} else {{ Err({err_type}::from_ffi(__r)) }}"
+            )
+            .unwrap();
         }
         Return::Result { ok: None, err_type } => {
             writeln!(
@@ -955,7 +968,7 @@ fn emit_default_dispatch_body(
                 let ty = tr.to_rust_type();
                 call_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { .. } => {
                 call_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
                 call_args.push(format!("{}.len()", p.name));
             }
@@ -1016,7 +1029,7 @@ fn emit_vtable_struct(
                         let ty = tr.to_rust_type_static();
                         params.push(format!("<{ty} as ffier::FfiType>::CRepr"));
                     }
-                    ParamType::StrSlice => {
+                    ParamType::Slice { .. } => {
                         params.push("*const ffier::FfierBytes".to_string());
                         params.push("usize".to_string());
                     }
@@ -1093,7 +1106,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                     ParamType::ImplTrait { .. } => {
                         tramp_params.push(format!("{}: *mut core::ffi::c_void", p.name));
                     }
-                    ParamType::StrSlice => {
+                    ParamType::Slice { .. } => {
                         tramp_params.push(format!("{}: *const ffier::FfierBytes", p.name));
                         tramp_params.push(format!("{}_len: usize", p.name));
                     }
@@ -1142,7 +1155,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                     ParamType::ImplTrait { .. } => {
                         call_args.push(p.name.clone());
                     }
-                    ParamType::StrSlice => {
+                    ParamType::Slice { .. } => {
                         call_args.push(format!("{}", p.name)); // TODO: proper slice conversion
                     }
                 }
@@ -1192,7 +1205,7 @@ fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> S
                 let ty = tr.to_rust_type_static();
                 params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { .. } => {
                 params.push(format!("{}: *const ffier::FfierBytes", p.name));
                 params.push(format!("{}_len: usize", p.name));
             }
@@ -1305,7 +1318,7 @@ fn emit_trait_impl(
                 ParamType::ImplTrait { .. } => {
                     ffi_args.push(format!("{}.__into_raw_handle()", p.name));
                 }
-                ParamType::StrSlice => {
+                ParamType::Slice { .. } => {
                     ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
                     ffi_args.push(format!("{}.len()", p.name));
                 }
@@ -1354,7 +1367,7 @@ fn emit_trait_impl(
                     ParamType::ImplTrait { .. } => {
                         ffi_args.push(format!("{}.__into_raw_handle()", p.name));
                     }
-                    ParamType::StrSlice => {
+                    ParamType::Slice { .. } => {
                         ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
                         ffi_args.push(format!("{}.len()", p.name));
                     }
@@ -1433,7 +1446,7 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {
     match &p.param_type {
         ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
-        ParamType::StrSlice => format!("{}: &[&str]", p.name),
+        ParamType::Slice { .. } => format!("{}: &[&str]", p.name),
         ParamType::ImplTrait {
             trait_name,
             type_args,

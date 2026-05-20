@@ -2572,16 +2572,17 @@ impl CTypeResolver {
     fn to_type_ref(&self, rust_type: &str) -> ffier_schema::TypeRef {
         let s = rust_type.trim();
 
-        // Parse reference: & or &mut, with optional lifetime
+        // Parse reference: & or &mut, with optional lifetime.
+        // TokenStream renders both `&mut 'a T` and `&'a mut T` forms.
         let (ref_kind, ref_lifetime, after_ref) = if let Some(rest) = s.strip_prefix('&') {
             let rest = rest.trim();
-            // Check for `mut`
-            let (is_mut, rest) = if let Some(r) = rest.strip_prefix("mut ") {
+            // Check for `mut` before lifetime: `& mut 'a T`
+            let (mut is_mut, rest) = if let Some(r) = rest.strip_prefix("mut ") {
                 (true, r.trim())
             } else {
                 (false, rest)
             };
-            // Check for lifetime
+            // Check for lifetime: `'a`
             let (lifetime, rest) = if rest.starts_with('\'') {
                 let after_tick = &rest[1..];
                 let lt_len = after_tick
@@ -2591,6 +2592,17 @@ impl CTypeResolver {
                 (Some(lt.to_string()), rest[1 + lt_len..].trim())
             } else {
                 (None, rest)
+            };
+            // Check for `mut` after lifetime: `& 'a mut T`
+            let rest = if !is_mut {
+                if let Some(r) = rest.strip_prefix("mut ") {
+                    is_mut = true;
+                    r.trim()
+                } else {
+                    rest
+                }
+            } else {
+                rest
             };
             let rk = if is_mut { ffier_schema::RefKind::Mut } else { ffier_schema::RefKind::Shared };
             (rk, lifetime, rest)
@@ -2655,6 +2667,7 @@ fn build_schema(
     for (name, c_type) in &[
         ("i8", "int8_t"), ("i16", "int16_t"), ("i32", "int32_t"), ("i64", "int64_t"),
         ("u8", "uint8_t"), ("u16", "uint16_t"), ("u32", "uint32_t"), ("u64", "uint64_t"),
+        ("f32", "float"), ("f64", "double"),
         ("isize", "intptr_t"), ("usize", "uintptr_t"), ("bool", "bool"),
     ] {
         type_registry.insert(name.to_string(), ffier_schema::TypeEntry {
@@ -2841,7 +2854,29 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
             let type_ref = r.to_type_ref(&rt);
             ffier_schema::ParamType::Regular(type_ref)
         }
-        MetaParamKind::StrSlice => ffier_schema::ParamType::StrSlice,
+        MetaParamKind::StrSlice => {
+            // &[&str] → two C params: pointer to FfierBytes array + length.
+            // The element type is &str (a reference to str).
+            let str_c = format!("{}Str", r.type_pfx);
+            ffier_schema::ParamType::Slice {
+                element: ffier_schema::TypeRef {
+                    type_name: "str".to_string(),
+                    ref_kind: ffier_schema::RefKind::Shared,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                },
+                c_params: vec![
+                    ffier_schema::CParam {
+                        name: p.name.to_string(),
+                        c_type: format!("const {str_c}*"),
+                    },
+                    ffier_schema::CParam {
+                        name: format!("{}_len", p.name),
+                        c_type: "uintptr_t".to_string(),
+                    },
+                ],
+            }
+        }
         MetaParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args, .. } => {
             ffier_schema::ParamType::ImplTrait {
                 trait_name: trait_name.clone(),
