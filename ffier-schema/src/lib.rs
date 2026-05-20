@@ -176,7 +176,14 @@ impl TypeRef {
         s.push_str(&self.type_name);
 
         if !self.type_args.is_empty() {
-            s.push_str("<'static>");
+            s.push('<');
+            for (i, _) in self.type_args.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str("'static");
+            }
+            s.push('>');
         }
 
         s
@@ -270,10 +277,19 @@ pub struct Param {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "param_kind", rename_all = "snake_case")]
 pub enum ParamType {
-    /// Normal parameter.
+    /// Normal parameter — one Rust param maps to one C param.
     Regular(TypeRef),
-    /// `&[&str]` — expands to two C params (ptr + len).
-    StrSlice,
+    /// Slice parameter — one Rust `&[T]` param expanded into N C params
+    /// (typically pointer + length). The `c_params` field describes exactly
+    /// what the bridge generated at the C ABI level.
+    Slice {
+        /// Element type reference (e.g. `{ type: "str", ref_kind: "shared" }` for `&[&str]`,
+        /// or `{ type: "u8" }` for `&[u8]`).
+        element: TypeRef,
+        /// The C parameters this single Rust param expanded into.
+        /// Consumers use these directly without inferring expansion rules.
+        c_params: Vec<CParam>,
+    },
     /// `impl Trait` parameter.
     ImplTrait {
         /// Trait name — key into `type_registry`.
@@ -285,6 +301,15 @@ pub enum ParamType {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         type_args: Vec<String>,
     },
+}
+
+/// A C-level parameter produced by slice expansion.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CParam {
+    /// C parameter name (e.g. `"tags"`, `"tags_len"`).
+    pub name: String,
+    /// C type (e.g. `"const FtStr*"`, `"uintptr_t"`).
+    pub c_type: String,
 }
 
 // ---------------------------------------------------------------------------

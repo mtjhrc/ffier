@@ -230,10 +230,10 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
                         let c_type = lib.c_type(type_ref);
                         params.push(format!("{} {}", c_type, p.name));
                     }
-                    ParamType::StrSlice => {
-                        let str_c = format!("{type_pfx}Str");
-                        params.push(format!("const {str_c}* {}", p.name));
-                        params.push(format!("uintptr_t {}_len", p.name));
+                    ParamType::Slice { c_params, .. } => {
+                        for cp in c_params {
+                            params.push(format!("{} {}", cp.c_type, cp.name));
+                        }
                     }
                     ParamType::ImplTrait { trait_name, .. } => {
                         let c_type = lib.trait_c_type(trait_name);
@@ -351,10 +351,10 @@ fn emit_dispatch_section(
                     let c_type = lib.c_type(type_ref);
                     params.push(format!("{} {}", c_type, p.name));
                 }
-                ParamType::StrSlice => {
-                    let str_c = format!("{type_pfx}Str");
-                    params.push(format!("const {str_c}* {}", p.name));
-                    params.push(format!("uintptr_t {}_len", p.name));
+                ParamType::Slice { c_params, .. } => {
+                    for cp in c_params {
+                        params.push(format!("{} {}", cp.c_type, cp.name));
+                    }
                 }
                 ParamType::ImplTrait { trait_name, .. } => {
                     let c_type = lib.trait_c_type(trait_name);
@@ -429,7 +429,7 @@ fn format_c_declaration(
                 let c_type = lib.c_type(type_ref);
                 params.push(format!("{} {}", c_type, p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { c_params, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("uintptr_t {}_len", p.name));
@@ -510,7 +510,7 @@ fn format_trait_method_declaration(
                 let c_type = lib.c_type(type_ref);
                 params.push(format!("{} {}", c_type, p.name));
             }
-            ParamType::StrSlice => {
+            ParamType::Slice { c_params, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("uintptr_t {}_len", p.name));
