@@ -751,15 +751,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let ffi_handle_impls =
         emit_ffi_handle_impls(&quote! { #name }, &name_str, &tag_const);
 
-    // --- trait_impl metadata for `Error for #name` ---
-    // Auto-generate the `@trait_impl` metadata macro so the user doesn't need
-    // a manual `#[ffier::trait_impl] impl Error for TestError { ... }` block.
-    let trait_impl_counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let trait_impl_internal = format_ident!(
-        "__ffier_internal_error_for_{error_snake}_{trait_impl_counter}"
-    );
-    let trait_impl_alias = format_ident!("__ffier_meta_Error_for_{name}");
-
     let output = quote! {
         #ffi_handle_impls
 
@@ -784,6 +775,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
+        #[ffier::trait_impl]
         impl ffier::Error for #name {
             fn code(&self) -> u32 {
                 ffier::FfiError::code(self)
@@ -825,53 +817,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
         #[doc(hidden)]
         pub use #internal_macro_name as #meta_alias_name;
-
-        /// Auto-generated `@trait_impl` metadata for `Error for #name`.
-        /// Registered via `Error for #name` in `library_definition!`.
-        #[doc(hidden)]
-        #[macro_export]
-        macro_rules! #trait_impl_internal {
-            (@reexport) => {};
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @trait_impl,
-                    trait_name = Error,
-                    struct_name = #name,
-                    struct_path = ($crate::#name),
-                    trait_path = ($crate::Error),
-                    prefix = $prefix,
-                    lifetimes = (),
-                    trait_lifetime_args = [],
-                    struct_lifetime_args = [],
-                    methods = [
-                        {
-                            name = code,
-                            params = [],
-                            ret = value(bridge_type = (u32), rust_type = (u32),),
-                            has_default = false,
-                            is_mut = false,
-                            index = 0,
-                        },
-                        {
-                            name = message,
-                            params = [{
-                                name = writer,
-                                bridge_type = (*mut core::ffi::c_void),
-                                rust_type = (*mut core::ffi::c_void),
-                                impl_trait = "PushStr",
-                            }],
-                            ret = void,
-                            has_default = false,
-                            is_mut = false,
-                            index = 1,
-                        },
-                    ],
-                } $(, $($rest)*)? }
-            };
-        }
-
-        #[doc(hidden)]
-        pub use #trait_impl_internal as #trait_impl_alias;
     };
 
     output.into()
