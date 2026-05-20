@@ -513,8 +513,11 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 // Strerror bridge generation (batch-level, all errors)
 // ===========================================================================
 
-/// Generate `{prefix}_result_name()`, `{prefix}_error_message()`, and
-/// `{prefix}_error_destroy()` functions.
+/// Generate `{prefix}_result_name()` and `{prefix}_result_name_cstr()`.
+///
+/// These decode packed `FfierResult` values (type_tag + code) into static
+/// variant name strings. Error handle dispatch (destroy, message, code,
+/// result) is handled by the Error trait's self-dispatch infrastructure.
 fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
@@ -2407,8 +2410,9 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
                 #ret_conversion
             }
         } else {
+            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut);
             quote! {
-                let obj = unsafe { ffier::ffier_handle_borrow::<#struct_path>(handle) };
+                #borrow
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
                 #ret_conversion
             }
