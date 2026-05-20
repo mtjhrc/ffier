@@ -2533,6 +2533,111 @@ fn emit_json(
     });
 }
 
+/// Context for C type resolution during schema conversion.
+struct CTypeResolver {
+    type_pfx: String,       // e.g. "Ft"
+    upper_pfx: String,      // e.g. "FT_"
+    fn_pfx: String,         // e.g. "ft_"
+    handle_names: HashSet<String>,
+}
+
+impl CTypeResolver {
+    fn new(prefix: &str, exportables: &[MetaExportable], implementables: &[MetaImplementable]) -> Self {
+        let type_pfx = ffier_meta::snake_to_pascal(prefix);
+        let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
+        let fn_pfx = format!("{prefix}_");
+        let mut handle_names = HashSet::new();
+        for e in exportables {
+            handle_names.insert(e.struct_name.to_string());
+        }
+        for i in implementables {
+            handle_names.insert(format!("Vtable{}", i.trait_name));
+        }
+        CTypeResolver { type_pfx, upper_pfx, fn_pfx, handle_names }
+    }
+
+    /// Map a Rust type token string to a C type name.
+    /// E.g. "i32" → "int32_t", "& str" → "FtStr", "Widget" → "FtWidget"
+    fn resolve(&self, rust_type: &str) -> String {
+        let s = rust_type.trim();
+
+        // Strip leading `&` or `& mut` (with optional lifetime like `'a` or `'static` or `'_`)
+        let inner = if let Some(rest) = s.strip_prefix('&') {
+            let rest = rest.trim();
+            // Strip optional `mut`
+            let rest = rest.strip_prefix("mut ").map_or(rest, |r| r.trim());
+            // Strip optional lifetime: 'a, 'static, '_
+            let rest = if rest.starts_with('\'') {
+                // Find end of lifetime: ' followed by ident chars
+                let after_tick = &rest[1..];
+                let lt_len = after_tick.find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .unwrap_or(after_tick.len());
+                rest[1 + lt_len..].trim()
+            } else {
+                rest
+            };
+            rest
+        } else {
+            s
+        };
+
+        // Direct match on the inner type
+        if self.handle_names.contains(inner) {
+            return format!("{}{}", self.type_pfx, inner);
+        }
+
+        match inner {
+            "i8" => "int8_t".to_string(),
+            "i16" => "int16_t".to_string(),
+            "i32" => "int32_t".to_string(),
+            "i64" => "int64_t".to_string(),
+            "u8" => "uint8_t".to_string(),
+            "u16" => "uint16_t".to_string(),
+            "u32" => "uint32_t".to_string(),
+            "u64" => "uint64_t".to_string(),
+            "isize" => "intptr_t".to_string(),
+            "usize" => "uintptr_t".to_string(),
+            "bool" => "bool".to_string(),
+            "str" => format!("{}Str", self.type_pfx),
+            "[u8]" => format!("{}Bytes", self.type_pfx),
+            _ if inner.starts_with("BorrowedFd") || inner.starts_with("OwnedFd") => {
+                "int".to_string()
+            }
+            _ => "void*".to_string(),
+        }
+    }
+
+    /// Resolve the C type for a handle (always opaque pointer typedef).
+    fn handle_c_name(&self, name: &str) -> String {
+        format!("{}{}", self.type_pfx, name)
+    }
+
+    /// FFI function name: prefix + ffi_name suffix.
+    fn ffi_fn_name(&self, ffi_name: &str) -> String {
+        format!("{}{}", self.fn_pfx, ffi_name)
+    }
+
+    /// Error constant name: FT_ERROR_TEST_NOT_FOUND
+    /// Strips "Error" suffix from the error type name: TestError → TEST.
+    fn error_const_name(&self, error_name: &str, variant_name: &str) -> String {
+        let stripped = error_name.strip_suffix("Error").unwrap_or(error_name);
+        let error_upper = camel_to_upper_snake(stripped);
+        let variant_upper = camel_to_upper_snake(variant_name);
+        format!("{}ERROR_{}_{}", self.upper_pfx, error_upper, variant_upper)
+    }
+
+    /// Is this rust_type a handle type?
+    fn is_handle_type(&self, rust_type: &str) -> bool {
+        // Reuse resolve — if it maps to {Prefix}{Name} where Name is a handle, it's a handle.
+        let c_type = self.resolve(rust_type);
+        if let Some(name) = c_type.strip_prefix(&self.type_pfx) {
+            self.handle_names.contains(name)
+        } else {
+            false
+        }
+    }
+}
+
 fn build_schema(
     prefix: &str,
     errors: &[TokenStream2],
@@ -2557,96 +2662,94 @@ fn build_schema(
         .filter_map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).ok())
         .collect();
 
+    let resolver = CTypeResolver::new(prefix, &exportables_parsed, &implementables_parsed);
+
     ffier_schema::Library {
         prefix: prefix.to_string(),
-        types: exportables_parsed.iter().map(convert_exportable).collect(),
-        errors: errors_parsed.iter().map(convert_error).collect(),
-        traits: implementables_parsed.iter().map(convert_implementable).collect(),
-        trait_impls: trait_impls_parsed.iter().map(convert_trait_impl).collect(),
+        types: exportables_parsed.iter().map(|e| convert_exportable(e, &resolver)).collect(),
+        errors: errors_parsed.iter().map(|e| convert_error(e, &resolver)).collect(),
+        traits: implementables_parsed.iter().map(|i| convert_implementable(i, &resolver)).collect(),
+        trait_impls: trait_impls_parsed.iter().map(|t| convert_trait_impl(t, &resolver)).collect(),
     }
 }
 
-fn convert_exportable(meta: &MetaExportable) -> ffier_schema::ExportedType {
+fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema::ExportedType {
     ffier_schema::ExportedType {
         name: meta.struct_name.to_string(),
+        c_name: r.handle_c_name(&meta.struct_name.to_string()),
         type_tag: meta.type_tag,
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
-        methods: meta.methods.iter().map(convert_method).collect(),
+        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
     }
 }
 
-fn convert_error(meta: &MetaError) -> ffier_schema::ErrorType {
+fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType {
     ffier_schema::ErrorType {
         name: meta.name.to_string(),
+        c_name: r.handle_c_name(&meta.name.to_string()),
         type_tag: meta.type_tag,
-        variants: meta
-            .variants
-            .iter()
-            .map(|v| ffier_schema::ErrorVariant {
+        variants: meta.variants.iter().map(|v| {
+            ffier_schema::ErrorVariant {
                 name: v.name.to_string(),
+                c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
                 code: v.code,
                 message: v.message.clone(),
-            })
-            .collect(),
+            }
+        }).collect(),
     }
 }
 
-fn convert_implementable(meta: &MetaImplementable) -> ffier_schema::ImplementableTrait {
+fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_schema::ImplementableTrait {
     ffier_schema::ImplementableTrait {
         name: meta.trait_name.to_string(),
         type_tag: meta.type_tag,
-        methods: meta.methods.iter().map(convert_trait_method).collect(),
+        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
     }
 }
 
-fn convert_trait_impl(meta: &MetaTraitImpl) -> ffier_schema::TraitImpl {
+fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::TraitImpl {
     ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
         struct_name: meta.struct_name.to_string(),
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
         trait_lifetime_args: meta.trait_lifetime_args.clone(),
         struct_lifetime_args: meta.struct_lifetime_args.clone(),
-        methods: meta.methods.iter().map(convert_trait_method).collect(),
+        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
     }
 }
 
-fn convert_method(meta: &MetaMethod) -> ffier_schema::Method {
+fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method {
+    let context = match &meta.context {
+        MetaMethodContext::Exportable { ffi_name, is_builder, .. } => {
+            ffier_schema::MethodContext::Exportable {
+                ffi_name: r.ffi_fn_name(ffi_name),
+                is_builder: *is_builder,
+            }
+        }
+        MetaMethodContext::Trait { has_default, index, raw_handle } => {
+            ffier_schema::MethodContext::Trait {
+                index: *index,
+                has_default: *has_default,
+                raw_handle: *raw_handle,
+            }
+        }
+    };
+
     ffier_schema::Method {
         name: meta.name.to_string(),
-        ffi_name: meta.ffi_name().to_string(),
         doc: meta.doc().iter().cloned().collect(),
         receiver: convert_receiver(meta.receiver),
         method_lifetimes: meta.method_lifetimes.iter().map(|lt| lt.to_string()).collect(),
-        params: meta.params.iter().map(convert_param).collect(),
-        rust_ret: tokens_to_string(&meta.rust_ret),
-        is_builder: meta.is_builder(),
-        c_ret_type: None,
+        params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
+        ret: convert_return(&meta.ret, &meta.rust_ret, r),
+        context,
     }
 }
 
-fn convert_trait_method(meta: &MetaMethod) -> ffier_schema::TraitMethod {
-    let (has_default, index, raw_handle) = match &meta.context {
-        MetaMethodContext::Trait { has_default, index, raw_handle } => {
-            (*has_default, *index, *raw_handle)
-        }
-        MetaMethodContext::Exportable { .. } => (false, 0, false),
-    };
-    ffier_schema::TraitMethod {
-        name: meta.name.to_string(),
-        index,
-        has_default,
-        raw_handle,
-        receiver: convert_receiver(meta.receiver),
-        params: meta.params.iter().map(convert_param).collect(),
-        rust_ret: tokens_to_string(&meta.rust_ret),
-        doc: meta.doc().iter().cloned().collect(),
-    }
-}
-
-fn convert_receiver(r: MetaReceiver) -> ffier_schema::Receiver {
-    match r {
+fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
+    match recv {
         MetaReceiver::None => ffier_schema::Receiver::None,
         MetaReceiver::Ref => ffier_schema::Receiver::Ref,
         MetaReceiver::Mut => ffier_schema::Receiver::Mut,
@@ -2654,32 +2757,61 @@ fn convert_receiver(r: MetaReceiver) -> ffier_schema::Receiver {
     }
 }
 
-fn convert_param(p: &ffier_meta::MetaParam) -> ffier_schema::Param {
-    let (rust_type, kind) = match &p.kind {
-        MetaParamKind::Regular(tp) => (
-            tokens_to_string(&tp.rust_type),
-            ffier_schema::ParamKind::Regular,
-        ),
-        MetaParamKind::StrSlice => (
-            "&[&str]".to_string(),
-            ffier_schema::ParamKind::StrSlice,
-        ),
-        MetaParamKind::ImplTrait { trait_name, dispatch, types } => (
-            tokens_to_string(&types.rust_type),
-            ffier_schema::ParamKind::ImplTrait {
-                trait_name: trait_name.clone(),
-                dispatch: match dispatch {
-                    ffier_meta::DispatchMode::Auto => "auto".to_string(),
-                    ffier_meta::DispatchMode::Concrete => "concrete".to_string(),
-                    ffier_meta::DispatchMode::Vtable => "vtable".to_string(),
+fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
+    let (rust_type, c_type, kind) = match &p.kind {
+        MetaParamKind::Regular(tp) => {
+            let rt = tokens_to_string(&tp.rust_type);
+            let ct = r.resolve(&rt);
+            (rt, ct, ffier_schema::ParamKind::Regular)
+        }
+        MetaParamKind::StrSlice => {
+            let str_c = format!("{}Str", r.type_pfx);
+            ("&[&str]".to_string(), str_c, ffier_schema::ParamKind::StrSlice)
+        }
+        MetaParamKind::ImplTrait { trait_name, dispatch, types } => {
+            let rt = tokens_to_string(&types.rust_type);
+            (
+                rt,
+                "void*".to_string(),
+                ffier_schema::ParamKind::ImplTrait {
+                    trait_name: trait_name.clone(),
+                    dispatch: match dispatch {
+                        ffier_meta::DispatchMode::Auto => "auto".to_string(),
+                        ffier_meta::DispatchMode::Concrete => "concrete".to_string(),
+                        ffier_meta::DispatchMode::Vtable => "vtable".to_string(),
+                    },
                 },
-            },
-        ),
+            )
+        }
     };
-    ffier_schema::Param {
-        name: p.name.to_string(),
-        rust_type,
-        kind,
+    ffier_schema::Param { name: p.name.to_string(), rust_type, c_type, kind }
+}
+
+fn convert_return(
+    ret: &MetaReturn,
+    rust_ret_tokens: &TokenStream2,
+    r: &CTypeResolver,
+) -> ffier_schema::Return {
+    let _rust_ret = tokens_to_string(rust_ret_tokens);
+    match ret {
+        MetaReturn::Void => ffier_schema::Return::Void,
+        MetaReturn::Value(tp) => {
+            let rt = tokens_to_string(&tp.rust_type);
+            let ct = r.resolve(&rt);
+            ffier_schema::Return::Value { rust_type: rt, c_type: ct }
+        }
+        MetaReturn::Result { ok, err_ident } => {
+            let ok_val = ok.as_ref().map(|tp| {
+                let rt = tokens_to_string(&tp.rust_type);
+                let ct = r.resolve(&rt);
+                let is_handle = r.is_handle_type(&rt);
+                ffier_schema::ReturnValue { rust_type: rt, c_type: ct, is_handle }
+            });
+            ffier_schema::Return::Result {
+                ok: ok_val,
+                err_type: err_ident.clone(),
+            }
+        }
     }
 }
 
