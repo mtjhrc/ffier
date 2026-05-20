@@ -280,6 +280,10 @@ pub enum ParamType {
         trait_name: String,
         /// Dispatch mode: "auto", "concrete", or "vtable".
         dispatch: String,
+        /// Lifetime arguments on the trait at this usage site
+        /// (e.g. `["a"]` for `impl Snapshot<'a>`).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        type_args: Vec<String>,
     },
 }
 

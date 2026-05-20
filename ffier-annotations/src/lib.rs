@@ -53,6 +53,8 @@ enum ParamKind {
         /// Dispatch mode: "auto", "concrete", or "vtable".
         /// For trait methods this defaults to "auto".
         dispatch: String,
+        /// Lifetime arguments on the trait (e.g. `["a"]` for `impl Snapshot<'a>`).
+        trait_lifetime_args: Vec<String>,
     },
 }
 
@@ -787,13 +789,24 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
 }
 
 /// Extract the trait name from an `impl Trait` type.
-fn extract_impl_trait_name(ty: &Type) -> Option<String> {
+/// Extract trait name and lifetime arguments from `impl Trait<'a, 'b>`.
+/// Returns `(trait_name, lifetime_args)` e.g. `("Snapshot", vec!["a"])`.
+fn extract_impl_trait_info(ty: &Type) -> Option<(String, Vec<String>)> {
     if let Type::ImplTrait(impl_trait) = ty {
         for bound in &impl_trait.bounds {
             if let syn::TypeParamBound::Trait(trait_bound) = bound
                 && let Some(seg) = trait_bound.path.segments.last()
             {
-                return Some(seg.ident.to_string());
+                let name = seg.ident.to_string();
+                let mut lt_args = Vec::new();
+                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
+                    for arg in &args.args {
+                        if let syn::GenericArgument::Lifetime(lt) = arg {
+                            lt_args.push(lt.ident.to_string());
+                        }
+                    }
+                }
+                return Some((name, lt_args));
             }
         }
     }
@@ -1034,12 +1047,12 @@ fn parse_method_sig(
                 other => other,
             };
 
-            if let Some(trait_name) = extract_impl_trait_name(inner_ty) {
+            if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
                 let dispatch = parse_ffier_param_dispatch(&pt.attrs)
                     .unwrap_or_else(|| "auto".to_string());
                 return Some(ParamInfo {
                     name: pi.ident.clone(),
-                    kind: ParamKind::ImplTrait { trait_name, dispatch },
+                    kind: ParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args },
                     types: Some(TypePair {
                         bridge: quote! { *mut core::ffi::c_void },
                         rust: quote! { *mut core::ffi::c_void },
@@ -1220,9 +1233,10 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         let kind_tokens = match &p.kind {
             ParamKind::Regular => quote! { regular },
             ParamKind::StrSlice => quote! { str_slice },
-            ParamKind::ImplTrait { trait_name, dispatch } => {
+            ParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args } => {
                 let dispatch_ident = format_ident!("{dispatch}");
-                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
+                let lt_idents: Vec<_> = trait_lifetime_args.iter().map(|lt| format_ident!("{lt}")).collect();
+                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, trait_lifetime_args = [#(#lt_idents),*] }
             }
         };
         let type_tokens = match &p.types {
@@ -1346,6 +1360,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_name = &trait_item.ident;
     let trait_name_str = trait_name.to_string();
     let trait_snake = camel_to_snake(&trait_name_str);
+
+    // Extract trait-level lifetime params (e.g. `<'a>` from `trait Snapshot<'a>`)
+    let trait_lifetime_idents: Vec<&syn::Ident> = trait_item
+        .generics
+        .lifetimes()
+        .map(|lt| &lt.lifetime.ident)
+        .collect();
 
     let vtable_struct_name = format_ident!("{trait_name_str}Vtable");
 
@@ -1945,6 +1966,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type_tag = $type_tag,
                     vtable_struct = ($($vstruct)*),
                     wrapper_name = ($($wrapper)*),
+                    trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
@@ -1962,6 +1984,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type_tag = $type_tag,
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
+                    trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
@@ -1977,6 +2000,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type_tag = 0,
                     vtable_struct = ($crate::#vtable_struct_name),
                     wrapper_name = ($crate::#wrapper_name),
+                    trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
