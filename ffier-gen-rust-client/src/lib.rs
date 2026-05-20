@@ -19,6 +19,15 @@ pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
     let fn_pfx = format!("{}_", lib.prefix);
 
+    // Emit imports for std types that might be referenced in extern declarations
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(
+        out,
+        "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd}};"
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
     // 1. Error enums
     for err in &lib.errors {
         emit_error(&mut out, err, lib);
@@ -83,6 +92,12 @@ pub fn generate(lib: &Library) -> String {
 
     let mut defined_traits: HashSet<String> = HashSet::new();
     for tr in &lib.traits {
+        // Skip the Error trait — its dispatch functions (ft_error_result, etc.)
+        // are handled as shared error externs above.
+        if tr.name == "Error" {
+            defined_traits.insert(tr.name.clone());
+            continue;
+        }
         emit_implementable_trait(&mut out, tr, lib, &fn_pfx);
         defined_traits.insert(tr.name.clone());
     }
@@ -235,14 +250,18 @@ fn emit_exported_type(
 
     // Struct definition
     if has_lifetimes {
-        let phantom = format!(
-            "std::marker::PhantomData<({})>",
-            lifetimes
-                .iter()
-                .map(|lt| format!("&'{lt} ()"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
+        let phantom = if lifetimes.len() == 1 {
+            format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
+        } else {
+            format!(
+                "std::marker::PhantomData<({})>",
+                lifetimes
+                    .iter()
+                    .map(|lt| format!("&'{lt} ()"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         writeln!(
             out,
             "pub struct {}{lt_params}(*mut core::ffi::c_void, {phantom});",
@@ -393,12 +412,11 @@ fn build_extern_signature(
 ) -> String {
     let mut params = Vec::new();
 
-    // Self param
+    // Self param — always *mut c_void in extern declarations.
+    // Builder by-value self methods receive a single pointer; the caller
+    // casts &mut handle_ptr to *mut *mut c_void → *mut c_void at the call site.
     match m.receiver {
         Receiver::None => {}
-        Receiver::Value if is_builder_type => {
-            params.push("handle: *mut *mut core::ffi::c_void".to_string());
-        }
         _ => {
             params.push("handle: *mut core::ffi::c_void".to_string());
         }
@@ -495,15 +513,7 @@ fn emit_method_wrapper(
         Receiver::Value => "self, ",
     };
 
-    let param_sigs: Vec<String> = m
-        .params
-        .iter()
-        .map(|p| match &p.param_type {
-            ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
-            ParamType::StrSlice => format!("{}: &[&str]", p.name),
-            ParamType::ImplTrait { trait_name, .. } => format!("{}: impl {trait_name}", p.name),
-        })
-        .collect();
+    let param_sigs: Vec<String> = m.params.iter().map(|p| format_param_sig(p, lib)).collect();
     let params_str = param_sigs.join(", ");
 
     let ret_type = build_wrapper_return_type(m, is_builder, struct_name);
@@ -762,7 +772,7 @@ fn emit_implementable_trait(
             continue;
         };
 
-        let method_sig = build_trait_method_sig(m);
+        let method_sig = build_trait_method_sig(m, lib);
 
         if *has_default {
             // Default impl via self-dispatch
@@ -868,7 +878,7 @@ fn emit_implementable_trait(
     writeln!(out).unwrap();
 }
 
-fn build_trait_method_sig(m: &Method) -> String {
+fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
     let receiver_str = match m.receiver {
         Receiver::None => "",
         Receiver::Ref => "&self, ",
@@ -876,15 +886,7 @@ fn build_trait_method_sig(m: &Method) -> String {
         Receiver::Value => "self, ",
     };
 
-    let params: Vec<String> = m
-        .params
-        .iter()
-        .map(|p| match &p.param_type {
-            ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
-            ParamType::StrSlice => format!("{}: &[&str]", p.name),
-            ParamType::ImplTrait { trait_name, .. } => format!("{}: impl {trait_name}", p.name),
-        })
-        .collect();
+    let params: Vec<String> = m.params.iter().map(|p| format_param_sig(p, lib)).collect();
     let params_str = params.join(", ");
 
     let ret = match &m.ret {
@@ -984,7 +986,12 @@ fn emit_default_dispatch_body(
     }
 }
 
-fn emit_vtable_struct(out: &mut String, tr: &ImplementableTrait, _lib: &Library, vtable_name: &str) {
+fn emit_vtable_struct(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    _lib: &Library,
+    vtable_name: &str,
+) {
     writeln!(out, "#[repr(C)]").unwrap();
     writeln!(out, "pub struct {vtable_name} {{").unwrap();
     writeln!(
@@ -1222,7 +1229,7 @@ fn emit_trait_impl(
 
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
-        emit_simple_trait_def(out, ti);
+        emit_simple_trait_def(out, ti, lib);
         defined_traits.insert(ti.trait_name.clone());
     }
 
@@ -1284,7 +1291,7 @@ fn emit_trait_impl(
 
     for m in &ti.methods {
         let extern_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
-        let sig = build_trait_method_sig(m);
+        let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
         // Simple dispatch body
@@ -1334,7 +1341,7 @@ fn emit_trait_impl(
             }
 
             let dispatch_fn = format!("{fn_pfx}{trait_snake}_{}", dm.name);
-            let sig = build_trait_method_sig(dm);
+            let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
             let mut ffi_args = vec!["self.0".to_string()];
@@ -1390,7 +1397,7 @@ fn emit_trait_impl(
     writeln!(out).unwrap();
 }
 
-fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl) {
+fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
     // Build trait lifetime generics from trait_lifetime_args (excluding 'static)
     let trait_lt_params: Vec<String> = ti
         .trait_lifetime_args
@@ -1406,7 +1413,7 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl) {
 
     writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
     for m in &ti.methods {
-        let sig = build_trait_method_sig(m);
+        let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig};").unwrap();
     }
     writeln!(out, "    #[doc(hidden)]").unwrap();
@@ -1422,6 +1429,29 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl) {
 // ===========================================================================
 // Helpers
 // ===========================================================================
+
+fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {
+    match &p.param_type {
+        ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
+        ParamType::StrSlice => format!("{}: &[&str]", p.name),
+        ParamType::ImplTrait {
+            trait_name,
+            type_args,
+            ..
+        } => {
+            if type_args.is_empty() {
+                format!("{}: impl {trait_name}", p.name)
+            } else {
+                let args = type_args
+                    .iter()
+                    .map(|lt| format!("'{lt}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}: impl {trait_name}<{args}>", p.name)
+            }
+        }
+    }
+}
 
 fn camel_to_snake(name: &str) -> String {
     let mut result = String::new();

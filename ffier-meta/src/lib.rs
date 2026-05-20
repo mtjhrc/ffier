@@ -372,6 +372,8 @@ pub enum MetaParamKind {
         trait_name: String,
         dispatch: DispatchMode,
         types: MetaTypePair,
+        /// Lifetime arguments on the trait at this usage site (e.g. `["a"]` for `impl Snapshot<'a>`).
+        trait_lifetime_args: Vec<Ident>,
     },
 }
 
@@ -421,6 +423,8 @@ pub struct MetaImplementable {
     pub type_tag: u32,
     pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
+    /// Lifetime parameters on the trait definition (e.g. `[a]` for `trait Snapshot<'a>`).
+    pub trait_lifetimes: Vec<Ident>,
     pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
     /// The first `own_method_count` entries in `methods` are this trait's
@@ -741,8 +745,11 @@ impl syn::parse::Parse for MetaParam {
                     }
                 };
                 parse_comma(input)?;
+                expect_key(input, "trait_lifetime_args")?;
+                let trait_lifetime_args = parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
+                parse_comma(input)?;
                 let types = parse_type_pair(input)?;
-                MetaParamKind::ImplTrait { trait_name, dispatch, types }
+                MetaParamKind::ImplTrait { trait_name, dispatch, types, trait_lifetime_args }
             }
             other => {
                 return Err(syn::Error::new(
@@ -898,6 +905,10 @@ impl syn::parse::Parse for MetaImplementable {
         let wrapper_name = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "trait_lifetimes")?;
+        let trait_lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
+        parse_comma(input)?;
+
         expect_key(input, "vtable_methods")?;
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
@@ -919,6 +930,7 @@ impl syn::parse::Parse for MetaImplementable {
             type_tag,
             vtable_struct_name,
             wrapper_name,
+            trait_lifetimes,
             methods,
             own_method_count,
             max_vtable_slot,

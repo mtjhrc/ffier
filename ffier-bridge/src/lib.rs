@@ -2722,18 +2722,24 @@ fn build_schema(
             kind: ffier_schema::TypeKind::Trait,
             c_type: resolver.handle_c_name(&name),
             type_tag: Some(i.type_tag),
-            lifetime_params: vec![],
+            lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
         });
     }
 
-    // Traits discovered via trait_impls (no implementable annotation)
+    // Traits discovered via trait_impls (no implementable annotation).
+    // Infer lifetime params from the trait_lifetime_args of the impls
+    // (filtering out 'static which is a concrete binding, not a param).
     for ti in &trait_impls_parsed {
         let name = ti.trait_name.to_string();
+        let lifetime_params: Vec<String> = ti.trait_lifetime_args.iter()
+            .filter(|lt| *lt != "static")
+            .cloned()
+            .collect();
         type_registry.entry(name.clone()).or_insert_with(|| ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Trait,
             c_type: resolver.handle_c_name(&name),
             type_tag: None,
-            lifetime_params: vec![],
+            lifetime_params,
         });
     }
 
@@ -2836,7 +2842,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
             ffier_schema::ParamType::Regular(type_ref)
         }
         MetaParamKind::StrSlice => ffier_schema::ParamType::StrSlice,
-        MetaParamKind::ImplTrait { trait_name, dispatch, .. } => {
+        MetaParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args, .. } => {
             ffier_schema::ParamType::ImplTrait {
                 trait_name: trait_name.clone(),
                 dispatch: match dispatch {
@@ -2844,6 +2850,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                     ffier_meta::DispatchMode::Concrete => "concrete".to_string(),
                     ffier_meta::DispatchMode::Vtable => "vtable".to_string(),
                 },
+                type_args: trait_lifetime_args.iter().map(|lt| lt.to_string()).collect(),
             }
         }
     };
