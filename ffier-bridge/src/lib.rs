@@ -1450,10 +1450,19 @@ pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
 /// but use different token streams for the type `T`:
 /// - `Bridge`: uses `bridge_type` ($crate:: paths that resolve in cdylib)
 /// - `Client`: uses `rust_type` (plain types for standalone source)
+///
+/// TODO(remove): This enum and the `Client` variant exist solely because
+/// `ffier-gen-rust` calls `c_signature_for_method` with `Client` to generate
+/// extern declarations. Once `ffier-gen-rust` is ported to consume the JSON
+/// schema instead of calling into `ffier-bridge`, delete `SignatureContext`,
+/// the `Client` variant, and all `rust_type` branches in `c_param_type` /
+/// `c_return_type` / `c_out_param_type`. The bridge should only deal with
+/// `bridge_type`.
 pub enum SignatureContext {
     /// C bridge in cdylib — types via $crate:: paths
     Bridge,
-    /// Standalone Rust client source — types via original names
+    /// Standalone Rust client source — types via original names.
+    /// TODO(remove): see enum-level doc comment.
     Client,
 }
 

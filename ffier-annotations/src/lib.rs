@@ -1047,16 +1047,21 @@ fn parse_method_sig(
                 });
             }
 
-            // Replace Self with concrete type if available
-            let param_ty = match self_ty {
+            // Replace Self with concrete type — lifetime-erased for bridge,
+            // lifetime-preserving for rust (client codegen needs real lifetimes).
+            let param_ty_bridge = match self_ty {
                 Some(sty) => {
                     let static_ty = erase_lifetimes(sty);
                     replace_self_type(&pt.ty, &static_ty)
                 }
                 None => (*pt.ty).clone(),
             };
+            let param_ty_rust = match self_ty {
+                Some(sty) => replace_self_type(&pt.ty, sty),
+                None => (*pt.ty).clone(),
+            };
 
-            if is_str_slice(&param_ty) {
+            if is_str_slice(&param_ty_bridge) {
                 return Some(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::StrSlice,
@@ -1064,14 +1069,13 @@ fn parse_method_sig(
                 });
             }
 
-            let bridge = ctx.bridge_tokens(&param_ty);
-            let erased = erase_lifetimes(&param_ty);
+            let bridge = ctx.bridge_tokens(&param_ty_bridge);
             Some(ParamInfo {
                 name: pi.ident.clone(),
                 kind: ParamKind::Regular,
                 types: Some(TypePair {
                     bridge,
-                    rust: quote! { #erased },
+                    rust: quote! { #param_ty_rust },
                 }),
             })
         })
@@ -1099,47 +1103,54 @@ fn parse_method_sig(
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
         ReturnType::Type(_, ty) => {
-            let ty = match &self_ty_static {
+            // Bridge path: Self replaced with lifetime-erased type
+            let ty_bridge = match &self_ty_static {
+                Some(sty) => replace_self_type(ty, sty),
+                None => (**ty).clone(),
+            };
+            // Rust path: Self replaced with original type (lifetimes preserved)
+            let ty_rust = match self_ty {
                 Some(sty) => replace_self_type(ty, sty),
                 None => (**ty).clone(),
             };
 
-            if is_builder && extract_result_types(&ty).is_none() {
+            if is_builder && extract_result_types(&ty_bridge).is_none() {
                 // Builder returning Self → void in C
                 ReturnKind::Void
-            } else if let Some((ok, err)) = extract_result_types(&ty) {
+            } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
-                let ok_pair = if is_unit_type(&ok)
-                    || (is_builder && self_ty_static.as_ref().is_some_and(|sty| is_self_return(&ok, sty)))
+                let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
+                let ok_pair = if is_unit_type(&ok_bridge)
+                    || (is_builder && self_ty_static.as_ref().is_some_and(|sty| is_self_return(&ok_bridge, sty)))
                 {
                     None
                 } else if raw_handle {
-                    let erased = erase_lifetimes(&ok);
+                    let erased = erase_lifetimes(&ok_bridge);
+                    let rust = ok_rust.as_ref().unwrap_or(&ok_bridge);
                     Some(TypePair {
                         bridge: quote! { #erased },
-                        rust: quote! { #erased },
+                        rust: quote! { #rust },
                     })
                 } else {
-                    let bridge = ctx.bridge_tokens(&ok);
-                    let erased = erase_lifetimes(&ok);
+                    let bridge = ctx.bridge_tokens(&ok_bridge);
+                    let rust = ok_rust.as_ref().unwrap_or(&ok_bridge);
                     Some(TypePair {
                         bridge,
-                        rust: quote! { #erased },
+                        rust: quote! { #rust },
                     })
                 };
                 ReturnKind::Result { ok: ok_pair, err_ident }
             } else if raw_handle {
-                let erased = erase_lifetimes(&ty);
+                let erased = erase_lifetimes(&ty_bridge);
                 ReturnKind::Value(TypePair {
                     bridge: quote! { #erased },
-                    rust: quote! { #erased },
+                    rust: quote! { #ty_rust },
                 })
             } else {
-                let bridge = ctx.bridge_tokens(&ty);
-                let erased = erase_lifetimes(&ty);
+                let bridge = ctx.bridge_tokens(&ty_bridge);
                 ReturnKind::Value(TypePair {
                     bridge,
-                    rust: quote! { #erased },
+                    rust: quote! { #ty_rust },
                 })
             }
         }
