@@ -2643,19 +2643,19 @@ fn build_schema(
 ) -> ffier_schema::Library {
     let errors_parsed: Vec<_> = errors
         .iter()
-        .filter_map(|item| syn::parse2::<MetaError>(item.clone()).ok())
+        .map(|item| syn::parse2::<MetaError>(item.clone()).expect("failed to parse @error metadata"))
         .collect();
     let exportables_parsed: Vec<_> = exportables
         .iter()
-        .filter_map(|item| syn::parse2::<MetaExportable>(item.clone()).ok())
+        .map(|item| syn::parse2::<MetaExportable>(item.clone()).expect("failed to parse @exportable metadata"))
         .collect();
     let implementables_parsed: Vec<_> = implementables
         .iter()
-        .filter_map(|item| syn::parse2::<MetaImplementable>(item.clone()).ok())
+        .map(|item| syn::parse2::<MetaImplementable>(item.clone()).expect("failed to parse @implementable metadata"))
         .collect();
     let trait_impls_parsed: Vec<_> = trait_impls
         .iter()
-        .filter_map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).ok())
+        .map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).expect("failed to parse @trait_impl metadata"))
         .collect();
 
     let resolver = CTypeResolver::new(prefix);
@@ -2833,7 +2833,7 @@ fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method 
         receiver: convert_receiver(meta.receiver),
         method_lifetimes: meta.method_lifetimes.iter().map(|lt| lt.to_string()).collect(),
         params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
-        ret: convert_return(&meta.ret, &meta.rust_ret, r),
+        ret: convert_return(&meta.ret, r),
         context,
     }
 }
@@ -2850,7 +2850,7 @@ fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
 fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
     let param_type = match &p.kind {
         MetaParamKind::Regular(tp) => {
-            let rt = tokens_to_string(&tp.rust_type);
+            let rt = tp.rust_type.to_string();
             let type_ref = r.to_type_ref(&rt);
             ffier_schema::ParamType::Regular(type_ref)
         }
@@ -2877,14 +2877,9 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                 ],
             }
         }
-        MetaParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args, .. } => {
+        MetaParamKind::ImplTrait { trait_name, trait_lifetime_args, .. } => {
             ffier_schema::ParamType::ImplTrait {
                 trait_name: trait_name.clone(),
-                dispatch: match dispatch {
-                    ffier_meta::DispatchMode::Auto => "auto".to_string(),
-                    ffier_meta::DispatchMode::Concrete => "concrete".to_string(),
-                    ffier_meta::DispatchMode::Vtable => "vtable".to_string(),
-                },
                 type_args: trait_lifetime_args.iter().map(|lt| lt.to_string()).collect(),
             }
         }
@@ -2892,20 +2887,16 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
     ffier_schema::Param { name: p.name.to_string(), param_type }
 }
 
-fn convert_return(
-    ret: &MetaReturn,
-    _rust_ret_tokens: &TokenStream2,
-    r: &CTypeResolver,
-) -> ffier_schema::Return {
+fn convert_return(ret: &MetaReturn, r: &CTypeResolver) -> ffier_schema::Return {
     match ret {
         MetaReturn::Void => ffier_schema::Return::Void,
         MetaReturn::Value(tp) => {
-            let rt = tokens_to_string(&tp.rust_type);
+            let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
         }
         MetaReturn::Result { ok, err_ident } => {
             let ok_ref = ok.as_ref().map(|tp| {
-                let rt = tokens_to_string(&tp.rust_type);
+                let rt = tp.rust_type.to_string();
                 r.to_type_ref(&rt)
             });
             ffier_schema::Return::Result {
@@ -2916,7 +2907,3 @@ fn convert_return(
     }
 }
 
-/// Convert a token stream to a string representation.
-fn tokens_to_string(tokens: &TokenStream2) -> String {
-    tokens.to_string()
-}

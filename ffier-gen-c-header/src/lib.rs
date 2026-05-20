@@ -12,8 +12,8 @@
 //! - Utility functions (result_name)
 
 use ffier_schema::{
-    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl, TypeKind,
+    camel_to_snake, ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext,
+    ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
@@ -227,7 +227,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
             for p in &m.params {
                 match &p.param_type {
                     ParamType::Regular(type_ref) => {
-                        let c_type = lib.c_type(type_ref);
+                        let c_type = lib.c_type_of(&type_ref.type_name);
                         params.push(format!("{} {}", c_type, p.name));
                     }
                     ParamType::Slice { c_params, .. } => {
@@ -236,7 +236,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
                         }
                     }
                     ParamType::ImplTrait { trait_name, .. } => {
-                        let c_type = lib.trait_c_type(trait_name);
+                        let c_type = lib.c_type_of(trait_name);
                         params.push(format!("{} {}", c_type, p.name));
                     }
                 }
@@ -348,7 +348,7 @@ fn emit_dispatch_section(
         for p in &m.params {
             match &p.param_type {
                 ParamType::Regular(type_ref) => {
-                    let c_type = lib.c_type(type_ref);
+                    let c_type = lib.c_type_of(&type_ref.type_name);
                     params.push(format!("{} {}", c_type, p.name));
                 }
                 ParamType::Slice { c_params, .. } => {
@@ -357,7 +357,7 @@ fn emit_dispatch_section(
                     }
                 }
                 ParamType::ImplTrait { trait_name, .. } => {
-                    let c_type = lib.trait_c_type(trait_name);
+                    let c_type = lib.c_type_of(trait_name);
                     params.push(format!("{} {}", c_type, p.name));
                 }
             }
@@ -426,7 +426,7 @@ fn format_c_declaration(
     for p in &m.params {
         match &p.param_type {
             ParamType::Regular(type_ref) => {
-                let c_type = lib.c_type(type_ref);
+                let c_type = lib.c_type_of(&type_ref.type_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
             ParamType::Slice { c_params, .. } => {
@@ -435,7 +435,7 @@ fn format_c_declaration(
                 params.push(format!("uintptr_t {}_len", p.name));
             }
             ParamType::ImplTrait { trait_name, .. } => {
-                let c_type = lib.trait_c_type(trait_name);
+                let c_type = lib.c_type_of(trait_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
         }
@@ -449,7 +449,7 @@ fn format_c_declaration(
             if is_builder {
                 ("void".to_string(), vec![])
             } else {
-                (lib.c_type(type_ref).to_string(), vec![])
+                (lib.c_type_of(&type_ref.type_name).to_string(), vec![])
             }
         }
         Return::Result { ok, .. } => {
@@ -467,13 +467,13 @@ fn format_c_declaration(
                     if is_handle {
                         // Result<Handle, E> — return handle, NULL on error
                         (
-                            lib.c_type(ok_ref).to_string(),
+                            lib.c_type_of(&ok_ref.type_name).to_string(),
                             vec![format!("{error_c}* err_out")],
                         )
                     } else {
                         // Result<T, E> — out-param
                         let result_c = format!("{type_pfx}Result");
-                        let c_type = lib.c_type(ok_ref).to_string();
+                        let c_type = lib.c_type_of(&ok_ref.type_name).to_string();
                         (
                             result_c,
                             vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
@@ -507,7 +507,7 @@ fn format_trait_method_declaration(
     for p in &m.params {
         match &p.param_type {
             ParamType::Regular(type_ref) => {
-                let c_type = lib.c_type(type_ref);
+                let c_type = lib.c_type_of(&type_ref.type_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
             ParamType::Slice { c_params, .. } => {
@@ -516,7 +516,7 @@ fn format_trait_method_declaration(
                 params.push(format!("uintptr_t {}_len", p.name));
             }
             ParamType::ImplTrait { trait_name, .. } => {
-                let c_type = lib.trait_c_type(trait_name);
+                let c_type = lib.c_type_of(trait_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
         }
@@ -536,7 +536,7 @@ fn format_trait_method_declaration(
 fn format_return_type(ret: &Return, type_pfx: &str, lib: &Library) -> String {
     match ret {
         Return::Void => "void".to_string(),
-        Return::Value(type_ref) => lib.c_type(type_ref).to_string(),
+        Return::Value(type_ref) => lib.c_type_of(&type_ref.type_name).to_string(),
         Return::Result { .. } => format!("{type_pfx}Result"),
     }
 }
@@ -581,19 +581,4 @@ fn snake_to_pascal(s: &str) -> String {
             }
         })
         .collect()
-}
-
-fn camel_to_snake(name: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_lowercase().next().unwrap());
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }
