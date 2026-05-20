@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 // ---------------------------------------------------------------------------
 
 /// Complete description of an ffier library.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
     /// FFI prefix (e.g. "ft" → functions are `ft_widget_new`, C types are `FtWidget`).
     pub prefix: String,
@@ -36,7 +36,7 @@ pub struct Library {
 // ---------------------------------------------------------------------------
 
 /// An entry in the type registry.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeEntry {
     /// What kind of type this is.
     pub kind: TypeKind,
@@ -81,7 +81,7 @@ pub enum TypeKind {
 // ---------------------------------------------------------------------------
 
 /// A reference to a type in the registry, with usage-site modifiers.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeRef {
     /// Key into `type_registry` (e.g. `"Widget"`, `"i32"`, `"str"`).
     #[serde(rename = "type")]
@@ -195,7 +195,7 @@ impl TypeRef {
 // ---------------------------------------------------------------------------
 
 /// A struct exported via `#[ffier::exportable]`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedType {
     /// Rust struct name — key into `type_registry`.
     pub name: String,
@@ -211,7 +211,7 @@ pub struct ExportedType {
 // ---------------------------------------------------------------------------
 
 /// A method. Used in exported types, implementable traits, and trait impls.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Method {
     /// Rust method name (e.g. "get_count").
     pub name: String,
@@ -230,7 +230,7 @@ pub struct Method {
 }
 
 /// Context-specific fields for a method.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "method_context", rename_all = "snake_case")]
 pub enum MethodContext {
     /// Method from an `#[exportable]` impl block.
@@ -264,7 +264,7 @@ pub enum Receiver {
 // ---------------------------------------------------------------------------
 
 /// A method parameter.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
     /// Parameter name as written in the source.
     pub name: String,
@@ -274,7 +274,7 @@ pub struct Param {
 }
 
 /// The type of a parameter.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "param_kind", rename_all = "snake_case")]
 pub enum ParamType {
     /// Normal parameter — one Rust param maps to one C param.
@@ -302,7 +302,7 @@ pub enum ParamType {
 }
 
 /// A C-level parameter produced by slice expansion.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CParam {
     /// C parameter name (e.g. `"tags"`, `"tags_len"`).
     pub name: String,
@@ -315,7 +315,7 @@ pub struct CParam {
 // ---------------------------------------------------------------------------
 
 /// Return type of a method.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "return_kind", rename_all = "snake_case")]
 pub enum Return {
     /// Returns nothing.
@@ -355,7 +355,7 @@ impl Return {
 // ---------------------------------------------------------------------------
 
 /// An error enum exported via `#[derive(FfiError)]`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ErrorType {
     /// Rust enum name — key into `type_registry`.
     pub name: String,
@@ -363,7 +363,7 @@ pub struct ErrorType {
 }
 
 /// A variant of an error enum.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorVariant {
     /// Variant name (e.g. "NotFound").
     pub name: String,
@@ -380,7 +380,7 @@ pub struct ErrorVariant {
 // ---------------------------------------------------------------------------
 
 /// A trait exported via `#[ffier::implementable]`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImplementableTrait {
     /// Trait name — key into `type_registry`.
     pub name: String,
@@ -396,7 +396,7 @@ pub struct ImplementableTrait {
 // ---------------------------------------------------------------------------
 
 /// An `impl Trait for Struct` exported via `#[ffier::trait_impl]`.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
     /// Trait name — key into `type_registry`.
     pub trait_name: String,

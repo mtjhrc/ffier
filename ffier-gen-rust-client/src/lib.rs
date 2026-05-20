@@ -236,14 +236,7 @@ fn emit_exported_type(
         else {
             continue;
         };
-        let sig = build_extern_signature(
-            ffi_name,
-            m,
-            *is_builder,
-            ty.is_builder_type,
-            lib,
-            handle_types,
-        );
+        let sig = build_extern_signature(ffi_name, m, *is_builder, handle_types);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -407,8 +400,6 @@ fn build_extern_signature(
     ffi_name: &str,
     m: &Method,
     is_builder: bool,
-    is_builder_type: bool,
-    _lib: &Library,
     handle_types: &HashSet<&str>,
 ) -> String {
     let mut params = Vec::new();
@@ -584,13 +575,7 @@ fn emit_method_body(
         .unwrap();
     }
 
-    // Pre-bindings for StrSlice params
-    for p in &m.params {
-        if matches!(&p.param_type, ParamType::Slice { .. }) {
-            writeln!(out, "        let __ffi_{}: Vec<ffier::FfierBytes> = {}.iter().map(|s| unsafe {{ ffier::FfierBytes::from_str(s) }}).collect();",
-                p.name, p.name).unwrap();
-        }
-    }
+    emit_slice_pre_bindings(out, &m.params, "        ");
 
     // Build the FFI call argument list
     let mut ffi_args = Vec::new();
@@ -612,23 +597,7 @@ fn emit_method_body(
         }
     }
 
-    // Param args
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type();
-                ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
-            }
-            ParamType::Slice { .. } => {
-                ffi_args.push(format!("__ffi_{}.as_ptr()", p.name));
-                ffi_args.push(format!("__ffi_{}.len()", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                ffi_args.push(format!("{}.__into_raw_handle()", p.name));
-            }
-        }
-    }
-
+    ffi_args.extend(build_ffi_param_args(&m.params));
     let args_str = ffi_args.join(", ");
 
     // Emit body based on return kind
@@ -957,47 +926,16 @@ fn emit_default_dispatch_body(
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
 
-    // Build call args
-    let handle_arg = format!(
+    emit_slice_pre_bindings(out, &m.params, "        ");
+
+    let mut call_args = vec![
         "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
-    );
-
-    let mut call_args = vec![handle_arg];
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type();
-                call_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
-            }
-            ParamType::Slice { .. } => {
-                call_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
-                call_args.push(format!("{}.len()", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                call_args.push(format!("{}.__into_raw_handle()", p.name));
-            }
-        }
-    }
-
+            .to_string(),
+    ];
+    call_args.extend(build_ffi_param_args(&m.params));
     let args_str = call_args.join(", ");
 
-    match &m.ret {
-        Return::Void => {
-            writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
-        }
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type();
-            writeln!(
-                out,
-                "        let __raw = unsafe {{ {dispatch_fn}({args_str}) }};"
-            )
-            .unwrap();
-            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
-        }
-        _ => {
-            writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
-        }
-    }
+    emit_ffi_call_return(out, &dispatch_fn, &args_str, &m.ret, "        ");
 }
 
 fn emit_vtable_struct(
@@ -1308,42 +1246,12 @@ fn emit_trait_impl(
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
-        // Simple dispatch body
+        emit_slice_pre_bindings(out, &m.params, "        ");
         let mut ffi_args = vec!["self.0".to_string()];
-        for p in &m.params {
-            match &p.param_type {
-                ParamType::Regular(tr) => {
-                    let ty = tr.to_rust_type();
-                    ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
-                }
-                ParamType::ImplTrait { .. } => {
-                    ffi_args.push(format!("{}.__into_raw_handle()", p.name));
-                }
-                ParamType::Slice { .. } => {
-                    ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
-                    ffi_args.push(format!("{}.len()", p.name));
-                }
-            }
-        }
+        ffi_args.extend(build_ffi_param_args(&m.params));
         let args_str = ffi_args.join(", ");
 
-        match &m.ret {
-            Return::Void => {
-                writeln!(out, "        unsafe {{ {extern_name}({args_str}) }}").unwrap();
-            }
-            Return::Value(tr) => {
-                let ty = tr.to_rust_type();
-                writeln!(
-                    out,
-                    "        let __raw = unsafe {{ {extern_name}({args_str}) }};"
-                )
-                .unwrap();
-                writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
-            }
-            _ => {
-                writeln!(out, "        unsafe {{ {extern_name}({args_str}) }}").unwrap();
-            }
-        }
+        emit_ffi_call_return(out, &extern_name, &args_str, &m.ret, "        ");
         writeln!(out, "    }}").unwrap();
     }
 
@@ -1358,41 +1266,12 @@ fn emit_trait_impl(
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
+            emit_slice_pre_bindings(out, &dm.params, "        ");
             let mut ffi_args = vec!["self.0".to_string()];
-            for p in &dm.params {
-                match &p.param_type {
-                    ParamType::Regular(tr) => {
-                        let ty = tr.to_rust_type();
-                        ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
-                    }
-                    ParamType::ImplTrait { .. } => {
-                        ffi_args.push(format!("{}.__into_raw_handle()", p.name));
-                    }
-                    ParamType::Slice { .. } => {
-                        ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
-                        ffi_args.push(format!("{}.len()", p.name));
-                    }
-                }
-            }
+            ffi_args.extend(build_ffi_param_args(&dm.params));
             let args_str = ffi_args.join(", ");
 
-            match &dm.ret {
-                Return::Void => {
-                    writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
-                }
-                Return::Value(tr) => {
-                    let ty = tr.to_rust_type();
-                    writeln!(
-                        out,
-                        "        let __raw = unsafe {{ {dispatch_fn}({args_str}) }};"
-                    )
-                    .unwrap();
-                    writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
-                }
-                _ => {
-                    writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
-                }
-            }
+            emit_ffi_call_return(out, &dispatch_fn, &args_str, &dm.ret, "        ");
             writeln!(out, "    }}").unwrap();
         }
     }
@@ -1443,6 +1322,69 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 // ===========================================================================
 // Helpers
 // ===========================================================================
+
+/// Build FFI call arguments from method params. Each param is converted
+/// via `FfiType::into_c`, `__into_raw_handle()`, or pre-bound slice reference.
+/// Assumes slice params have pre-bindings emitted as `__ffi_{name}`.
+fn build_ffi_param_args(params: &[ffier_schema::Param]) -> Vec<String> {
+    let mut args = Vec::new();
+    for p in params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type();
+                args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+            }
+            ParamType::Slice { .. } => {
+                args.push(format!("__ffi_{}.as_ptr()", p.name));
+                args.push(format!("__ffi_{}.len()", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                args.push(format!("{}.__into_raw_handle()", p.name));
+            }
+        }
+    }
+    args
+}
+
+/// Emit slice pre-bindings (converting `&[&str]` to `Vec<FfierBytes>`)
+/// for all slice params in the method.
+fn emit_slice_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
+    for p in params {
+        if matches!(&p.param_type, ParamType::Slice { .. }) {
+            writeln!(out, "{indent}let __ffi_{}: Vec<ffier::FfierBytes> = {}.iter().map(|s| unsafe {{ ffier::FfierBytes::from_str(s) }}).collect();",
+                p.name, p.name).unwrap();
+        }
+    }
+}
+
+/// Emit an FFI call and handle the return value conversion.
+fn emit_ffi_call_return(
+    out: &mut String,
+    ffi_name: &str,
+    args_str: &str,
+    ret: &Return,
+    indent: &str,
+) {
+    match ret {
+        Return::Void => {
+            writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        }
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "{indent}let __raw = unsafe {{ {ffi_name}({args_str}) }};"
+            )
+            .unwrap();
+            writeln!(out, "{indent}<{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+        }
+        Return::Result { .. } => {
+            // Result returns have complex dispatch (void/handle/out-param) —
+            // handled inline by caller, not here.
+            unreachable!("Result returns must be handled by caller");
+        }
+    }
+}
 
 fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {
     match &p.param_type {
