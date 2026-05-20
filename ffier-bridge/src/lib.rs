@@ -445,8 +445,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         #strerror_fn
 
-        pub fn __ffier_header(guard: &str) -> ffier_gen_c::HeaderBuilder {
-            ffier_gen_c::HeaderBuilder::new(guard, __ffier_shared_types())
+        pub fn __ffier_header(guard: &str) -> ffier_bridge::HeaderBuilder {
+            ffier_bridge::HeaderBuilder::new(guard, __ffier_shared_types())
                 #(.push(#header_fn_names()))*
                 .push(__ffier_strerror_header())
         }
@@ -573,7 +573,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
 
-        fn __ffier_strerror_header() -> ffier_gen_c::HeaderSection {
+        fn __ffier_strerror_header() -> ffier_bridge::HeaderSection {
             let mut decls = String::new();
             decls.push_str(&format!(
                 "{} {}({} r);\n",
@@ -583,7 +583,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
                 "const char* {}({} r);",
                 #result_name_cstr_fn_str, #result_c_name,
             ));
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: "error".to_string(),
                 handle_typedef: String::new(),
                 declarations: decls,
@@ -1028,7 +1028,7 @@ fn generate_exportable_bridge(
                 // All values (handles and primitives) returned via into_c.
                 // Handles → *mut c_void, primitives → their CRepr.
                 let ret_c_header = quote! {
-                    &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                    &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                 };
                 let header_line = build_header_line(
                     ret_c_header,
@@ -1084,7 +1084,7 @@ fn generate_exportable_bridge(
                     // GLib-style: return handle directly, NULL on error.
                     let bridge_type = &ok.as_ref().unwrap().bridge_type;
                     let ret_c_header = quote! {
-                        &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                        &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                     };
                     let header_line = build_header_line(
                         ret_c_header,
@@ -1132,7 +1132,7 @@ fn generate_exportable_bridge(
                     let out_c_type = ok.as_ref().map(|vk| {
                         let bridge_type = &vk.bridge_type;
                         quote! {
-                            &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                            &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
                         }
                     });
 
@@ -1243,13 +1243,13 @@ fn generate_exportable_bridge(
     quote! {
         #(#ffi_fns)*
 
-        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
             let handle_typedef = #handle_typedef_expr .to_string();
             let decl_lines: [String; #num_decls] = [
                 #(#decl_exprs .to_string()),*
             ];
             let declarations = decl_lines.join("\n");
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: #struct_name.to_string(),
                 handle_typedef,
                 declarations,
@@ -1286,7 +1286,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
     let type_pfx = meta.type_pfx();
     let handle_c_name = format!("{type_pfx}{name_str}");
     quote! {
-        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
             let full_upper_pfx = #full_upper_pfx;
 
             let mut decls = String::new();
@@ -1300,7 +1300,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
                 ));
             }
 
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: #name_str.to_string(),
                 handle_typedef: format!("typedef void* {};", #handle_c_name),
                 declarations: decls,
@@ -1388,12 +1388,12 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
     let num_header_lines = header_lines.len();
 
     quote! {
-        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
             let decl_lines: [String; #num_header_lines] = [
                 #(#header_lines .to_string()),*
             ];
             let declarations = decl_lines.join("\n");
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: #vtable_section_name.to_string(),
                 handle_typedef: String::new(),
                 declarations,
@@ -1403,7 +1403,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 }
 
 // ===========================================================================
-// Shared C ABI type resolution — used by both ffier-gen-c and ffier-gen-rust
+// Shared C ABI type resolution — used by both ffier-bridge and ffier-gen-rust
 // ===========================================================================
 
 /// Extract the last path segment name from a token stream like `$crate::Gadget`.
@@ -1659,7 +1659,7 @@ fn meta_param_conversion(
 fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
+            quote! { &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
         }
         MetaParamKind::StrSlice => {
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
@@ -2296,11 +2296,11 @@ fn generate_self_dispatch_bridge(
     quote! {
         #(#bridge_fns)*
 
-        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
             let decl_lines: [String; #num_header_lines] = [
                 #(#header_lines .to_string()),*
             ];
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: #section_name.to_string(),
                 handle_typedef: String::new(),
                 declarations: decl_lines.join("\n"),
@@ -2328,7 +2328,7 @@ fn vtable_param_c_types(
         } else {
             let bt = p.bridge_type();
             types.push(quote! {
-                &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                &ffier_bridge::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
             });
         }
     }
@@ -2340,7 +2340,7 @@ fn vtable_ret_c_expr(ret: &MetaReturn, type_pfx: &str) -> TokenStream2 {
     match ret {
         MetaReturn::Void => quote! { "void" },
         MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
-            &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+            &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
         },
         MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
     }
@@ -2464,11 +2464,11 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
     quote! {
         #(#bridge_fns)*
 
-        pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
+        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
             let decl_lines: [String; #num_header_lines] = [
                 #(#header_lines .to_string()),*
             ];
-            ffier_gen_c::HeaderSection {
+            ffier_bridge::HeaderSection {
                 struct_name: #section_name.to_string(),
                 handle_typedef: String::new(),
                 declarations: decl_lines.join("\n"),

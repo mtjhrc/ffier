@@ -22,15 +22,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffier-builtins"
-version = "0.1.0"
-dependencies = [
- "ffier-annotations",
- "ffier-rt",
-]
-
-[[package]]
-name = "ffier-gen-c"
+name = "ffier-bridge"
 version = "0.1.0"
 dependencies = [
  "ffier-meta",
@@ -40,17 +32,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffier-gen-c-macros"
+name = "ffier-bridge-macros"
 version = "0.1.0"
 dependencies = [
- "ffier-gen-c",
+ "ffier-bridge",
+]
+
+[[package]]
+name = "ffier-builtins"
+version = "0.1.0"
+dependencies = [
+ "ffier-annotations",
+ "ffier-rt",
 ]
 
 [[package]]
 name = "ffier-gen-rust"
 version = "0.1.0"
 dependencies = [
- "ffier-gen-c",
+ "ffier-bridge",
  "ffier-meta",
  "proc-macro2",
  "quote",
@@ -75,8 +75,8 @@ name = "ffier-test-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-gen-c",
- "ffier-gen-c-macros",
+ "ffier-bridge",
+ "ffier-bridge-macros",
  "ffier-gen-rust",
  "ffier-test-lib",
 ]
@@ -118,8 +118,8 @@ name = "ffier-test-submodule-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-gen-c",
- "ffier-gen-c-macros",
+ "ffier-bridge",
+ "ffier-bridge-macros",
  "ffier-test-submodule-lib",
 ]
 
@@ -147,8 +147,8 @@ name = "mylib-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-gen-c",
- "ffier-gen-c-macros",
+ "ffier-bridge",
+ "ffier-bridge-macros",
  "ffier-gen-rust",
  "mylib",
 ]

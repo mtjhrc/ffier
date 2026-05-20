@@ -284,10 +284,10 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
         let is_builder = m.is_builder();
         // --- Build extern "C" declaration from C generator's signature ---
         // for_client=true uses rust_type instead of bridge_type ($crate:: paths)
-        let c_sig = ffier_gen_c::c_signature_for_method(
+        let c_sig = ffier_bridge::c_signature_for_method(
             m,
             &meta.prefix,
-            ffier_gen_c::SignatureContext::Client,
+            ffier_bridge::SignatureContext::Client,
             &handle_types,
         );
         let ffi_name = format_ident!("{}", c_sig.fn_name);
@@ -1102,7 +1102,7 @@ fn build_client_body(
         MetaReturn::Result { ok, err_ident, .. } => {
             let err_ty = format_ident!("{err_ident}");
             let ok_is_handle = ok.is_some()
-                && ffier_gen_c::is_result_ok_handle(rust_ret, handle_types);
+                && ffier_bridge::is_result_ok_handle(rust_ret, handle_types);
 
             match ok {
                 None => {
@@ -1120,7 +1120,7 @@ fn build_client_body(
                     // On error, call ft_error_result to get the packed code
                     // for constructing the client error enum, then destroy
                     // the error handle.
-                    let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
+                    let ok_type = ffier_bridge::extract_result_ok_type(rust_ret);
                     let error_result_fn = format_ident!("{}_error_result", prefix);
                     let error_destroy_fn = format_ident!("{}_error_destroy", prefix);
                     quote! {
@@ -1167,7 +1167,7 @@ fn client_result_ok_from_ffi(
     _vk: &MetaTypePair,
     rust_ret: &TokenStream2,
 ) -> (TokenStream2, TokenStream2, TokenStream2) {
-    let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
+    let ok_type = ffier_bridge::extract_result_ok_type(rust_ret);
     (
         quote! { let mut __out = std::mem::MaybeUninit::uninit(); },
         quote! { __out.as_mut_ptr() },
