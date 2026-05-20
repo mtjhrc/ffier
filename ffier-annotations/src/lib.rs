@@ -2153,7 +2153,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// );
 ///
 /// // In cdylib:
-/// mylib::__ffier_mylib_library!(ffier_gen_c_macros::generate);
+/// mylib::__ffier_mylib_library!(ffier_bridge_macros::generate);
 /// ```
 ///
 /// Supports three entry kinds:

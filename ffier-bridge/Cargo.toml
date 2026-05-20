@@ -1,5 +1,5 @@
 [package]
-name = "ffier-gen-c"
+name = "ffier-bridge"
 version = "0.1.0"
 edition = "2024"
 

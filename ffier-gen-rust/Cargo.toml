@@ -8,7 +8,7 @@ proc-macro = true
 
 [dependencies]
 ffier-meta = { path = "../ffier-meta" }
-ffier-gen-c = { path = "../ffier-gen-c" }
+ffier-bridge = { path = "../ffier-bridge" }
 syn = "2"
 quote = "1"
 proc-macro2 = "1"

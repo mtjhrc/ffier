@@ -7,5 +7,5 @@ use proc_macro::TokenStream;
 /// category and generates all bridge code + a unified header function.
 #[proc_macro]
 pub fn generate(input: TokenStream) -> TokenStream {
-    ffier_gen_c::generate_batch_impl(input.into()).into()
+    ffier_bridge::generate_batch_impl(input.into()).into()
 }

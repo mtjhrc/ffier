@@ -1,5 +1,5 @@
 [package]
-name = "ffier-gen-c-macros"
+name = "ffier-bridge-macros"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,4 +7,4 @@ edition = "2024"
 proc-macro = true
 
 [dependencies]
-ffier-gen-c = { path = "../ffier-gen-c" }
+ffier-bridge = { path = "../ffier-bridge" }
