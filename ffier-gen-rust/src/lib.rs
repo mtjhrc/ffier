@@ -10,9 +10,8 @@ use quote::{format_ident, quote};
 use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
-    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableMethod, MetaVtableRet, camel_to_snake,
-    peek_meta_tag,
+    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
+    MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, peek_meta_tag,
 };
 
 /// Info about defaulted methods for an implementable trait.
@@ -20,7 +19,7 @@ use ffier_meta::{
 struct TraitDefaults {
     prefix: String,
     trait_name: String,
-    methods: Vec<MetaVtableMethod>,
+    methods: Vec<MetaMethod>,
 }
 
 /// Generates Rust client source code from batched metadata.
@@ -138,11 +137,12 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
-        let defaulted: Vec<_> = meta
-            .vtable_methods
-            .iter()
-            .filter(|m| m.has_default)
-            .cloned()
+        // Re-parse to get owned defaulted methods for TraitDefaults (MetaMethod is not Clone).
+        let meta2: MetaImplementable = syn::parse2(item.clone()).unwrap();
+        let defaulted: Vec<_> = meta2
+            .methods
+            .into_iter()
+            .filter(|m| m.has_default())
             .collect();
         if !defaulted.is_empty() {
             trait_defaults.insert(
@@ -281,7 +281,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
         let has_receiver = m.receiver != MetaReceiver::None;
         let is_mut = m.receiver == MetaReceiver::Mut;
         let is_by_value = m.receiver == MetaReceiver::Value;
-        let is_builder = m.is_builder;
+        let is_builder = m.is_builder();
         // --- Build extern "C" declaration from C generator's signature ---
         // for_client=true uses rust_type instead of bridge_type ($crate:: paths)
         let c_sig = ffier_gen_c::c_signature_for_method(
@@ -321,11 +321,11 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                 match &p.kind {
                     MetaParamKind::StrSlice => quote! { #id: &[&str] },
                     MetaParamKind::ImplTrait { .. } => {
-                        let rust_type = p.rust_type.as_ref().unwrap();
+                        let rust_type = p.rust_type();
                         quote! { #id: #rust_type }
                     }
                     _ => {
-                        let rust_type = p.rust_type.as_ref().expect("param must have rust_type");
+                        let rust_type = p.rust_type();
                         quote! { #id: #rust_type }
                     }
                 }
@@ -345,8 +345,8 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
                     MetaParamKind::ImplTrait { .. } => {
                         quote! { #id.__into_raw_handle() }
                     }
-                    MetaParamKind::Regular { .. } => {
-                        let rust_type = p.rust_type.as_ref().unwrap();
+                    MetaParamKind::Regular(_) => {
+                        let rust_type = p.rust_type();
                         quote! { <#rust_type as ffier::FfiType>::into_c(#id) }
                     }
                 }
@@ -508,7 +508,7 @@ fn generate_exportable_client(meta: MetaExportable, handle_types: &HashSet<Strin
         };
 
         // Doc comments
-        let doc_attrs: Vec<_> = m.doc.iter().map(|line| quote! { #[doc = #line] }).collect();
+        let doc_attrs: Vec<_> = m.doc().iter().map(|line| quote! { #[doc = #line] }).collect();
 
         // Return type for safe wrapper signature
         let rust_ret = &m.rust_ret;
@@ -683,35 +683,36 @@ fn generate_error_client(meta: MetaError) -> TokenStream2 {
 /// and skip vtable dispatch, calling the library's default
 /// implementation instead.
 fn vtable_trait_method_sigs(
-    methods: &[ffier_meta::MetaVtableMethod],
+    methods: &[MetaMethod],
     self_dispatch_prefix: Option<&str>,
     vtable_struct_name: Option<&syn::Ident>,
     type_tag: Option<u32>,
 ) -> Vec<TokenStream2> {
     methods
         .iter()
-        .filter(|m| !m.raw_handle) // raw_handle methods are dispatch-only, not in client trait
+        .filter(|m| !m.raw_handle()) // raw_handle methods are dispatch-only, not in client trait
         .map(|m| {
-            let method_index = m.index;
+            let method_index = m.index();
             let mname = &m.name;
             let params: Vec<_> = m
                 .params
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id: *mut core::ffi::c_void }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { #id: #rt }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => { let rust_type = &tp.rust_type; quote! { -> #rust_type } },
+                MetaReturn::Result { .. } => unreachable!(),
             };
-            if m.has_default {
+            if m.has_default() {
                 if let (Some(dispatch_pfx), Some(vt_name), Some(tag)) =
                     (self_dispatch_prefix, vtable_struct_name, type_tag)
                 {
@@ -722,19 +723,21 @@ fn vtable_trait_method_sigs(
                     // Forward args to self-dispatch
                     let fwd_args: Vec<_> = m.params.iter().map(|p| {
                         let id = &p.name;
-                        if p.impl_trait.is_some() {
+                        if p.is_impl_trait() {
                             quote! { #id }
                         } else {
-                            let bt = &p.bridge_type;
+                            let bt = p.bridge_type();
                             quote! { <#bt as ffier::FfiType>::into_c(#id) }
                         }
                     }).collect();
 
                     let ret_conversion = match &m.ret {
-                        MetaVtableRet::Void => quote! { __raw },
-                        MetaVtableRet::Value { rust_type, .. } => {
+                        MetaReturn::Void => quote! { __raw },
+                        MetaReturn::Value(tp) => {
+                            let rust_type = &tp.rust_type;
                             quote! { <#rust_type as ffier::FfiType>::from_c(__raw) }
                         }
+                        MetaReturn::Result { .. } => unreachable!(),
                     };
 
                     quote! {
@@ -779,6 +782,7 @@ fn vtable_trait_method_sigs(
         .collect()
 }
 
+
 fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // Use plain ident names for client types (not $crate:: paths from bridge)
     let vtable_struct_name = format_ident!(
@@ -808,14 +812,14 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
 
     // Vtable method function pointer fields, sorted by explicit index with padding for gaps.
     let vtable_method_fields: Vec<_> = {
-        let mut sorted: Vec<_> = meta.vtable_methods.iter().collect();
-        sorted.sort_by_key(|m| m.index);
+        let mut sorted: Vec<_> = meta.methods.iter().collect();
+        sorted.sort_by_key(|m| m.index());
 
         let mut fields = Vec::new();
         let mut next_slot = 0usize;
         for m in &sorted {
-            if m.raw_handle { continue; }
-            while next_slot < m.index {
+            if m.raw_handle() { continue; }
+            while next_slot < m.index() {
                 let pad_name = format_ident!("__reserved_{next_slot}");
                 fields.push(quote! {
                     pub #pad_name: Option<unsafe extern "C" fn()>,
@@ -827,19 +831,21 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 .params
                 .iter()
                 .map(|p| {
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { *mut core::ffi::c_void }
                     } else {
-                        let bt = &p.bridge_type;
+                        let bt = p.bridge_type();
                         quote! { <#bt as ffier::FfiType>::CRepr }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { bridge_type, .. } => {
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => {
+                    let bridge_type = &tp.bridge_type;
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
             fields.push(quote! {
                 pub #mname: Option<unsafe extern "C" fn(
@@ -847,7 +853,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     #(, #params)*
                 ) #ret>,
             });
-            next_slot = m.index + 1;
+            next_slot = m.index() + 1;
         }
         // Pad trailing reserved slots
         while next_slot <= meta.max_vtable_slot {
@@ -861,7 +867,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     };
 
     let trait_method_sigs = vtable_trait_method_sigs(
-        &meta.vtable_methods,
+        &meta.methods,
         Some(&self_dispatch_prefix),
         Some(&vtable_struct_name),
         Some(type_tag),
@@ -871,14 +877,14 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // with `None` padding for gaps. All methods get a simple trampoline that
     // expects user_data = *const T and calls the method directly.
     let vtable_trampoline_fields: Vec<_> = {
-        let mut sorted: Vec<_> = meta.vtable_methods.iter().collect();
-        sorted.sort_by_key(|m| m.index);
+        let mut sorted: Vec<_> = meta.methods.iter().collect();
+        sorted.sort_by_key(|m| m.index());
 
         let mut fields = Vec::new();
         let mut next_slot = 0usize;
         for m in &sorted {
-            if m.raw_handle { continue; }
-            while next_slot < m.index {
+            if m.raw_handle() { continue; }
+            while next_slot < m.index() {
                 let pad_name = format_ident!("__reserved_{next_slot}");
                 fields.push(quote! { #pad_name: None });
                 next_slot += 1;
@@ -890,39 +896,43 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id: *mut core::ffi::c_void }
                     } else {
-                        let bt = &p.bridge_type;
+                        let bt = p.bridge_type();
                         quote! { #id: <#bt as ffier::FfiType>::CRepr }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { bridge_type, .. } => {
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => {
+                    let bridge_type = &tp.bridge_type;
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
             let arg_conversions: Vec<_> = m
                 .params
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         // impl Trait — pass raw handle pointer directly
                         quote! { #id }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { <#rt as ffier::FfiType>::from_c(#id) }
                     }
                 })
                 .collect();
             let ret_conversion = match &m.ret {
-                MetaVtableRet::Void => quote! { __result },
-                MetaVtableRet::Value { rust_type, .. } => {
+                MetaReturn::Void => quote! { __result },
+                MetaReturn::Value(tp) => {
+                    let rust_type = &tp.rust_type;
                     quote! { <#rust_type as ffier::FfiType>::into_c(__result) }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
 
             // Simple trampoline: user_data points directly to &T.
@@ -940,7 +950,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                     __trampoline::<Self>
                 })
             });
-            next_slot = m.index + 1;
+            next_slot = m.index() + 1;
         }
         // Pad trailing reserved slots
         while next_slot <= meta.max_vtable_slot {
@@ -954,28 +964,30 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     // Self-dispatch extern declarations for defaulted methods
     // (trait defaults call these via temp handle)
     let self_dispatch_externs: Vec<_> = meta
-        .vtable_methods
+        .methods
         .iter()
-        .filter(|m| m.has_default && !m.raw_handle)
+        .filter(|m| m.has_default() && !m.raw_handle())
         .map(|m| {
             let ffi_name = format_ident!("{self_dispatch_prefix}_{}", m.name);
             let params: Vec<_> = m
                 .params
                 .iter()
                 .map(|p| {
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { *mut core::ffi::c_void }
                     } else {
-                        let bt = &p.bridge_type;
+                        let bt = p.bridge_type();
                         quote! { <#bt as ffier::FfiType>::CRepr }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { bridge_type, .. } => {
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => {
+                    let bridge_type = &tp.bridge_type;
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
             quote! { pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
         })
@@ -1146,13 +1158,13 @@ fn build_client_body(
 }
 
 /// Convert a raw FFI return value to the Rust type for Value returns.
-fn client_value_from_ffi(_vk: &MetaValueKind, rust_ret: &TokenStream2) -> TokenStream2 {
+fn client_value_from_ffi(_vk: &MetaTypePair, rust_ret: &TokenStream2) -> TokenStream2 {
     quote! { <#rust_ret as ffier::FfiType>::from_c(__raw) }
 }
 
 /// For Result<T, E> returns, build (out_decl, out_ptr_expr, ok_convert).
 fn client_result_ok_from_ffi(
-    _vk: &MetaValueKind,
+    _vk: &MetaTypePair,
     rust_ret: &TokenStream2,
 ) -> (TokenStream2, TokenStream2, TokenStream2) {
     let ok_type = ffier_gen_c::extract_result_ok_type(rust_ret);
@@ -1250,19 +1262,21 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id: *mut core::ffi::c_void }
                     } else {
-                        let bt = &p.bridge_type;
+                        let bt = p.bridge_type();
                         quote! { #id: <#bt as ffier::FfiType>::CRepr }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { bridge_type, .. } => {
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => {
+                    let bridge_type = &tp.bridge_type;
                     quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
             quote! { pub fn #ffi_name(handle: *mut core::ffi::c_void #(, #params)*) #ret; }
         })
@@ -1281,18 +1295,19 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id: *mut core::ffi::c_void }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { #id: #rt }
                     }
                 })
                 .collect();
 
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => { let rust_type = &tp.rust_type; quote! { -> #rust_type } },
+                MetaReturn::Result { .. } => unreachable!(),
             };
 
             // Convert Rust args to C repr for the call
@@ -1301,11 +1316,11 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         // impl Trait — pass raw handle pointer directly
                         quote! { #id }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { <#rt as ffier::FfiType>::into_c(#id) }
                     }
                 })
@@ -1313,15 +1328,17 @@ fn generate_trait_impl_client(
 
             // Convert C return to Rust type
             let body = match &m.ret {
-                MetaVtableRet::Void => {
+                MetaReturn::Void => {
                     quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
                 }
-                MetaVtableRet::Value { rust_type, .. } => {
+                MetaReturn::Value(tp) => {
+                    let rust_type = &tp.rust_type;
                     quote! {
                         let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
                         <#rust_type as ffier::FfiType>::from_c(__raw)
                     }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
 
             quote! {
@@ -1357,17 +1374,18 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id: *mut core::ffi::c_void }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { #id: #rt }
                     }
                 })
                 .collect();
             let ret = match &m.ret {
-                MetaVtableRet::Void => quote! {},
-                MetaVtableRet::Value { rust_type, .. } => quote! { -> #rust_type },
+                MetaReturn::Void => quote! {},
+                MetaReturn::Value(tp) => { let rust_type = &tp.rust_type; quote! { -> #rust_type } },
+                MetaReturn::Result { .. } => unreachable!(),
             };
 
             // Convert args and call
@@ -1376,24 +1394,26 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    if p.impl_trait.is_some() {
+                    if p.is_impl_trait() {
                         quote! { #id }
                     } else {
-                        let rt = &p.rust_type;
+                        let rt = p.rust_type();
                         quote! { <#rt as ffier::FfiType>::into_c(#id) }
                     }
                 })
                 .collect();
             let body = match &m.ret {
-                MetaVtableRet::Void => {
+                MetaReturn::Void => {
                     quote! { unsafe { #ffi_name(self.0, #(#call_args),*) } }
                 }
-                MetaVtableRet::Value { rust_type, .. } => {
+                MetaReturn::Value(tp) => {
+                    let rust_type = &tp.rust_type;
                     quote! {
                         let __raw = unsafe { #ffi_name(self.0, #(#call_args),*) };
                         <#rust_type as ffier::FfiType>::from_c(__raw)
                     }
                 }
+                MetaReturn::Result { .. } => unreachable!(),
             };
             default_method_impls.push(quote! {
                 fn #method_name(&self, #(#params),*) #ret {

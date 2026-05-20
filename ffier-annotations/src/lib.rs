@@ -20,46 +20,109 @@ static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 // Type classification for params and return values
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Unified method/param/return types — shared by all annotation macros
+// ---------------------------------------------------------------------------
+
+/// A bridge/rust type pair. Used for params and return types.
+struct TypePair {
+    bridge: proc_macro2::TokenStream,
+    rust: proc_macro2::TokenStream,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Receiver {
+    /// Static method (no receiver).
+    None,
+    /// `&self`
+    Ref,
+    /// `&mut self`
+    Mut,
+    /// `self` (consuming, by value)
+    Value,
+}
+
 enum ParamKind {
     /// Uniform: bridge_type resolves via `<T as FfiType>::CRepr`.
-    Regular(proc_macro2::TokenStream),
+    Regular,
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
     ImplTrait {
         trait_name: String,
+        /// Dispatch mode: "auto", "concrete", or "vtable".
+        /// For trait methods this defaults to "auto".
         dispatch: String,
     },
 }
 
 enum ReturnKind {
     Void,
-    Value(proc_macro2::TokenStream),
+    Value(TypePair),
     Result {
-        ok_ty: Option<proc_macro2::TokenStream>,
+        ok: Option<TypePair>,
         err_ident: String,
     },
 }
 
+struct ParamInfo {
+    name: syn::Ident,
+    kind: ParamKind,
+    /// Type pair for this param. Present for `Regular` and `ImplTrait`,
+    /// `None` for `StrSlice` (which expands to two C params).
+    types: Option<TypePair>,
+}
+
 struct MethodInfo {
-    method_name: syn::Ident,
-    ffi_name_str: String,
-    has_receiver: bool,
-    is_mut: bool,
-    is_by_value: bool,
-    /// True if this method returns Self (builder pattern) — C gets void but
-    /// the bridge macro writes the returned Self back into the handle.
-    is_builder: bool,
-    param_idents: Vec<syn::Ident>,
-    param_kinds: Vec<ParamKind>,
-    /// Original Rust parameter types (lifetime-erased, Self-replaced) for client codegen.
-    param_orig_types: Vec<Type>,
+    name: syn::Ident,
+    receiver: Receiver,
+    params: Vec<ParamInfo>,
     ret: ReturnKind,
-    /// Original Rust return type for client codegen.
-    ret_orig_type: ReturnType,
-    /// Method-level lifetime params (e.g. `['a, 'b]` from `fn foo<'a, 'b>(...)`).
+    // --- exportable-specific (defaults for trait methods) ---
+    /// FFI function name suffix (e.g. `"widget_new"`). Empty for trait methods.
+    ffi_name: String,
+    /// True if this method returns Self (builder pattern).
+    is_builder: bool,
+    /// Method-level lifetime params.
     method_lifetimes: Vec<syn::Ident>,
     doc_lines: Vec<String>,
+    /// Original Rust return type for client codegen.
+    rust_ret: Option<proc_macro2::TokenStream>,
+    // --- trait-specific (defaults for exportable methods) ---
+    /// Whether this method has a default impl in the trait.
+    has_default: bool,
+    /// Vtable slot index.
+    index: usize,
+    /// Raw handle method (receives `*const FfierHandle<Self>` instead of `&self`).
+    raw_handle: bool,
+}
+
+impl ParamInfo {
+    fn is_impl_trait(&self) -> bool {
+        matches!(self.kind, ParamKind::ImplTrait { .. })
+    }
+
+    /// Bridge type tokens. Panics for `StrSlice` (which has no single bridge type).
+    fn bridge_type(&self) -> &proc_macro2::TokenStream {
+        &self.types.as_ref().expect("StrSlice has no bridge_type").bridge
+    }
+
+    /// Rust type tokens. Panics for `StrSlice`.
+    fn rust_type(&self) -> &proc_macro2::TokenStream {
+        &self.types.as_ref().expect("StrSlice has no rust_type").rust
+    }
+}
+
+impl MethodInfo {
+    /// Bridge type for the return value. None for void returns.
+    fn ret_bridge_type(&self) -> Option<&proc_macro2::TokenStream> {
+        match &self.ret {
+            ReturnKind::Void => None,
+            ReturnKind::Value(tp) => Some(&tp.bridge),
+            ReturnKind::Result { ok, .. } => ok.as_ref().map(|tp| &tp.bridge),
+        }
+    }
+
 }
 
 /// Detect `&[&str]` — a slice of string references.
@@ -170,17 +233,12 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
-        let method_name = &method.sig.ident;
-        let ffi_name_str = format!("{struct_lower}_{method_name}");
-
-        let self_arg = method.sig.inputs.first();
-        let has_receiver = matches!(self_arg, Some(FnArg::Receiver(_)));
 
         // Skip non-public methods in inherent impls (bridge crate can't call them)
         if is_inherent && !matches!(method.vis, syn::Visibility::Public(_)) {
             let msg = format!(
                 "ffier: skipping non-public method `{}`; make it `pub` to export via FFI",
-                method_name
+                method.sig.ident
             );
             warnings.push(quote::quote_spanned! { method.sig.ident.span() =>
                 const _: () = {
@@ -191,127 +249,18 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             });
             continue;
         }
-        let (is_mut, is_by_value) = if has_receiver {
-            let receiver = match self_arg.unwrap() {
-                FnArg::Receiver(r) => r,
-                _ => unreachable!(),
-            };
-            (receiver.mutability.is_some(), receiver.reference.is_none())
-        } else {
-            (false, false)
-        };
 
-        let mut param_idents = Vec::new();
-        let mut param_kinds = Vec::new();
-        let mut param_orig_types = Vec::new();
-
-        let skip_n = if has_receiver { 1 } else { 0 };
-        for arg in method.sig.inputs.iter().skip(skip_n) {
-            let FnArg::Typed(pat_ty) = arg else { continue };
-            let Pat::Ident(pat_ident) = &*pat_ty.pat else {
-                continue;
-            };
-            param_idents.push(pat_ident.ident.clone());
-
-            // Capture original type (Self-replaced, lifetimes preserved) for client codegen
-            let param_ty_orig = replace_self_type(&pat_ty.ty, self_ty);
-            param_orig_types.push(param_ty_orig);
-
-            // Auto-detect `impl Trait` params — generator resolves dispatch types
-            if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
-                let dispatch =
-                    parse_ffier_param_dispatch(&pat_ty.attrs).unwrap_or_else(|| "auto".to_string());
-                param_kinds.push(ParamKind::ImplTrait {
-                    trait_name,
-                    dispatch,
-                });
-                continue;
-            }
-
-            // Replace `Self` with the concrete (lifetime-erased) struct type
-            let param_ty = replace_self_type(&pat_ty.ty, &self_ty_static);
-
-            let kind = if is_str_slice(&param_ty) {
-                ParamKind::StrSlice
-            } else {
-                ParamKind::Regular(ctx.bridge_tokens(&param_ty))
-            };
-            param_kinds.push(kind);
+        if let Some(mut m) = parse_method_sig(
+            &method.sig,
+            &method.attrs,
+            &mut ctx,
+            Some(self_ty),
+            false,
+            false,
+        ) {
+            m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);
+            methods.push(m);
         }
-
-        // Detect builder pattern: method returns Self (by value or reference)
-        let is_builder_return = if has_receiver {
-            match &method.sig.output {
-                ReturnType::Default => false,
-                ReturnType::Type(_, ty) => {
-                    let ty = &replace_self_type(ty, &self_ty_static);
-                    is_self_return(ty, &self_ty_static)
-                        || extract_result_types(ty)
-                            .is_some_and(|(ok, _)| is_self_return(&ok, &self_ty_static))
-                }
-            }
-        } else {
-            false
-        };
-
-        let ret = match &method.sig.output {
-            ReturnType::Default => ReturnKind::Void,
-            ReturnType::Type(_, ty) => {
-                // Replace `Self` and erase lifetimes for FFI boundary
-                let ty = &replace_self_type(ty, &self_ty_static);
-
-                // Builder pattern: self -> Self (or &mut self -> &mut Self)
-                // generates void in C — the caller already has the handle.
-                if is_builder_return && extract_result_types(ty).is_none() {
-                    ReturnKind::Void
-                } else if let Some((ok, err)) = extract_result_types(ty) {
-                    let err_ident = type_ident_name(&err);
-                    // Result<Self, E> in builder context → treat as Result<(), E> for C
-                    let ok_kind = if is_unit_type(&ok)
-                        || (is_builder_return && is_self_return(&ok, &self_ty_static))
-                    {
-                        None
-                    } else {
-                        Some(ctx.bridge_tokens(&ok))
-                    };
-                    ReturnKind::Result {
-                        ok_ty: ok_kind,
-                        err_ident,
-                    }
-                } else {
-                    ReturnKind::Value(ctx.bridge_tokens(ty))
-                }
-            }
-        };
-
-        let doc_lines = extract_doc_comments(&method.attrs);
-
-        methods.push(MethodInfo {
-            method_name: method_name.clone(),
-            ffi_name_str,
-            has_receiver,
-            is_mut,
-            is_by_value,
-            is_builder: is_builder_return,
-            param_idents,
-            param_kinds,
-            param_orig_types,
-            ret,
-            ret_orig_type: {
-                let mut out = method.sig.output.clone();
-                if let ReturnType::Type(_, ty) = &mut out {
-                    **ty = replace_self_type(ty, self_ty);
-                }
-                out
-            },
-            method_lifetimes: method
-                .sig
-                .generics
-                .lifetimes()
-                .map(|lt| lt.lifetime.ident.clone())
-                .collect(),
-            doc_lines,
-        });
     }
 
     // -----------------------------------------------------------------------
@@ -324,73 +273,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{struct_ident}");
 
-    // Build method metadata tokens
-    let method_meta_tokens: Vec<_> = methods
-        .iter()
-        .map(|m| {
-            let name = &m.method_name;
-            let ffi_name_str = &m.ffi_name_str;
-            let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
-
-            let receiver_ident = if !m.has_receiver {
-                format_ident!("none")
-            } else if m.is_by_value {
-                format_ident!("value")
-            } else if m.is_mut {
-                // "mut" is a keyword, so we use r#mut
-                format_ident!("r#mut")
-            } else {
-                // "ref" is a keyword, so we use r#ref
-                format_ident!("r#ref")
-            };
-
-            let is_builder = m.is_builder;
-
-            let param_tokens: Vec<_> = m
-                .param_idents
-                .iter()
-                .zip(m.param_kinds.iter())
-                .zip(m.param_orig_types.iter())
-                .map(|((id, kind), orig_ty)| {
-                    let kind_tokens = emit_param_kind(kind);
-                    quote! {
-                        {
-                            name = #id,
-                            kind = #kind_tokens,
-                            rust_type = (#orig_ty),
-                        }
-                    }
-                })
-                .collect();
-
-            let ret_tokens = emit_return_kind(&m.ret);
-            let rust_ret: proc_macro2::TokenStream = match &m.ret_orig_type {
-                ReturnType::Default => quote! { () },
-                ReturnType::Type(_, ty) => quote! { #ty },
-            };
-
-            // Method lifetime idents for metadata
-            let method_lt_idents: Vec<_> = m
-                .method_lifetimes
-                .iter()
-                .map(|lt| format_ident!("{}", lt))
-                .collect();
-
-            quote! {
-                {
-                    name = #name,
-                    ffi_name = #ffi_name_str,
-                    doc = [#(#doc_tokens),*],
-                    receiver = #receiver_ident,
-                    is_builder = #is_builder,
-                    method_lifetimes = [#(#method_lt_idents),*],
-                    params = [#(#param_tokens),*],
-                    ret = #ret_tokens,
-                    rust_ret = (#rust_ret),
-                }
-            }
-        })
-        .collect();
+    let method_meta_tokens = emit_method_meta(&methods);
 
     // Lifetime idents (without the tick) for metadata
     let lifetime_idents: Vec<_> = input
@@ -613,43 +496,7 @@ fn is_primitive(ty: &Type) -> bool {
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
 }
 
-// ---------------------------------------------------------------------------
-// Emission helpers — convert internal types to metadata tokens
-// ---------------------------------------------------------------------------
 
-fn emit_param_kind(k: &ParamKind) -> proc_macro2::TokenStream {
-    match k {
-        ParamKind::Regular(bridge_type) => {
-            quote! { regular, bridge_type = (#bridge_type) }
-        }
-        ParamKind::StrSlice => quote! { str_slice },
-        ParamKind::ImplTrait {
-            trait_name,
-            dispatch,
-        } => {
-            let dispatch_ident = format_ident!("{dispatch}");
-            quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
-        }
-    }
-}
-
-fn emit_return_kind(ret: &ReturnKind) -> proc_macro2::TokenStream {
-    match ret {
-        ReturnKind::Void => quote! { void },
-        ReturnKind::Value(bridge_type) => {
-            quote! { value(regular, bridge_type = (#bridge_type),) }
-        }
-        ReturnKind::Result { ok_ty, err_ident } => {
-            let ok_tokens = match ok_ty {
-                None => quote! { ok = void },
-                Some(bridge_type) => {
-                    quote! { ok = some(regular, bridge_type = (#bridge_type),) }
-                }
-            };
-            quote! { result(#ok_tokens, err_ident = #err_ident,) }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // #[derive(FfiError)]
@@ -1047,43 +894,16 @@ impl Parse for ImplementableArgs {
     }
 }
 
-/// A method signature extracted from a trait for vtable generation.
-struct VtableMethod {
-    name: syn::Ident,
-    params: Vec<VtableMethodParam>,
-    /// bridge_type for return (None = void)
-    ret_bridge_type: Option<proc_macro2::TokenStream>,
-    /// rust_type for return (None = void)
-    ret_rust_type: Option<proc_macro2::TokenStream>,
-    /// Whether this method has a default implementation in the trait.
-    has_default: bool,
-    /// Whether the receiver is `&mut self`.
-    is_mut: bool,
-    /// Explicit vtable slot index from `#[ffier(index = N)]`.
-    /// Determines position in the vtable struct (after `drop`).
-    index: usize,
-    /// If true, this is a raw-handle method: no `&self` receiver, the first
-    /// param is `*const FfierHandle<Self>`. The bridge passes the raw handle
-    /// pointer directly instead of borrowing the value.
-    raw_handle: bool,
-}
-
-struct VtableMethodParam {
-    ident: syn::Ident,
-    bridge_type: proc_macro2::TokenStream,
-    rust_type: proc_macro2::TokenStream,
-    /// If this param is `impl Trait`, the trait name (e.g. "PushStr").
-    /// The bridge_type is set to `*mut c_void` for handle passing; the
-    /// codegen resolves the concrete wrapper type from `TraitMap`.
-    impl_trait: Option<String>,
-}
+// ---------------------------------------------------------------------------
+// Unified method parsing — shared by #[exportable], #[implementable], #[trait_impl]
+// ---------------------------------------------------------------------------
 
 fn extract_vtable_methods(
     trait_item: &ItemTrait,
     supers: &[SupertraitBlock],
     reserved: &[usize],
     ctx: &mut AliasContext,
-) -> syn::Result<Vec<VtableMethod>> {
+) -> syn::Result<Vec<MethodInfo>> {
     let mut methods = Vec::new();
 
     for item in &trait_item.items {
@@ -1092,7 +912,7 @@ fn extract_vtable_methods(
         };
         let has_default = method.default.is_some();
         let mattrs = parse_ffier_method_attrs(&method.attrs)?;
-        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default, mattrs.raw_handle) {
+        if let Some(mut m) = parse_method_sig(&method.sig, &method.attrs, ctx, None, has_default, mattrs.raw_handle) {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
                     &method.sig.ident,
@@ -1102,8 +922,8 @@ fn extract_vtable_methods(
                     ),
                 )
             })?;
-            vm.index = index;
-            methods.push(vm);
+            m.index = index;
+            methods.push(m);
         }
     }
 
@@ -1112,7 +932,7 @@ fn extract_vtable_methods(
     for sup in supers {
         for method in &sup.methods {
             let mattrs = parse_ffier_method_attrs(&method.attrs)?;
-            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false, mattrs.raw_handle) {
+            if let Some(mut m) = parse_method_sig(&method.sig, &method.attrs, ctx, None, false, mattrs.raw_handle) {
                 let index = mattrs.index.ok_or_else(|| {
                     syn::Error::new_spanned(
                         &method.sig.ident,
@@ -1122,8 +942,8 @@ fn extract_vtable_methods(
                         ),
                     )
                 })?;
-                vm.index = index;
-                methods.push(vm);
+                m.index = index;
+                methods.push(m);
             }
         }
     }
@@ -1158,34 +978,49 @@ fn extract_vtable_methods(
     Ok(methods)
 }
 
-fn parse_trait_method_sig(
+/// Parse a single method signature into a unified `MethodInfo`.
+///
+/// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
+/// - `self_ty`: if `Some`, `Self` in param/return types is replaced with this type
+///   and builder pattern is detected. Typically `Some` for `#[exportable]`, `None`
+///   for `#[implementable]`/`#[trait_impl]`.
+/// - `has_default`: whether this method has a default impl body (trait methods only)
+/// - `raw_handle`: whether this is a raw-handle method
+fn parse_method_sig(
     sig: &syn::Signature,
+    attrs: &[syn::Attribute],
     ctx: &mut AliasContext,
+    self_ty: Option<&Type>,
     has_default: bool,
     raw_handle: bool,
-) -> Option<VtableMethod> {
-    let is_mut;
-
-    if raw_handle {
-        // raw_handle methods have no &self receiver — first param is
-        // `handle: *const FfierHandle<Self>`. We skip it (it's injected
-        // by the bridge) and treat remaining params normally.
-        is_mut = false;
+) -> Option<MethodInfo> {
+    // --- Determine receiver ---
+    let receiver = if raw_handle {
+        Receiver::None
     } else {
-        let first = sig.inputs.first()?;
-        let receiver = match first {
-            FnArg::Receiver(r) => r,
-            _ => return None,
-        };
-        is_mut = receiver.mutability.is_some();
-    }
+        match sig.inputs.first() {
+            Some(FnArg::Receiver(r)) => {
+                if r.reference.is_none() {
+                    Receiver::Value
+                } else if r.mutability.is_some() {
+                    Receiver::Mut
+                } else {
+                    Receiver::Ref
+                }
+            }
+            _ if self_ty.is_some() => Receiver::None, // static method in exportable
+            _ => return None, // trait method without receiver — skip
+        }
+    };
 
-    // For raw_handle methods, skip the first param (the handle pointer).
-    // For normal methods, skip the receiver (&self / &mut self).
+    // Skip receiver or raw_handle's first param (the handle pointer)
+    let skip_n = if receiver != Receiver::None || raw_handle { 1 } else { 0 };
+
+    // --- Parse params ---
     let params: Vec<_> = sig
         .inputs
         .iter()
-        .skip(1)
+        .skip(skip_n)
         .filter_map(|arg| {
             let FnArg::Typed(pt) = arg else { return None };
             let Pat::Ident(pi) = &*pt.pat else {
@@ -1200,90 +1035,237 @@ fn parse_trait_method_sig(
             };
 
             if let Some(trait_name) = extract_impl_trait_name(inner_ty) {
-                // impl Trait param — bridge type is a raw handle pointer.
-                // The codegen resolves the concrete wrapper type from TraitMap.
-                Some(VtableMethodParam {
-                    ident: pi.ident.clone(),
-                    bridge_type: quote! { *mut core::ffi::c_void },
-                    rust_type: quote! { *mut core::ffi::c_void },
-                    impl_trait: Some(trait_name),
-                })
-            } else {
-                let bridge_type = ctx.bridge_tokens(&pt.ty);
-                let erased = erase_lifetimes(&pt.ty);
-                Some(VtableMethodParam {
-                    ident: pi.ident.clone(),
-                    bridge_type,
-                    rust_type: quote! { #erased },
-                    impl_trait: None,
-                })
+                let dispatch = parse_ffier_param_dispatch(&pt.attrs)
+                    .unwrap_or_else(|| "auto".to_string());
+                return Some(ParamInfo {
+                    name: pi.ident.clone(),
+                    kind: ParamKind::ImplTrait { trait_name, dispatch },
+                    types: Some(TypePair {
+                        bridge: quote! { *mut core::ffi::c_void },
+                        rust: quote! { *mut core::ffi::c_void },
+                    }),
+                });
             }
+
+            // Replace Self with concrete type if available
+            let param_ty = match self_ty {
+                Some(sty) => {
+                    let static_ty = erase_lifetimes(sty);
+                    replace_self_type(&pt.ty, &static_ty)
+                }
+                None => (*pt.ty).clone(),
+            };
+
+            if is_str_slice(&param_ty) {
+                return Some(ParamInfo {
+                    name: pi.ident.clone(),
+                    kind: ParamKind::StrSlice,
+                    types: None,
+                });
+            }
+
+            let bridge = ctx.bridge_tokens(&param_ty);
+            let erased = erase_lifetimes(&param_ty);
+            Some(ParamInfo {
+                name: pi.ident.clone(),
+                kind: ParamKind::Regular,
+                types: Some(TypePair {
+                    bridge,
+                    rust: quote! { #erased },
+                }),
+            })
         })
         .collect();
 
-    let (ret_bridge_type, ret_rust_type) = match &sig.output {
-        ReturnType::Default => (None, None),
+    // --- Parse return type ---
+    let self_ty_static = self_ty.map(erase_lifetimes);
+
+    // Builder detection: method returns Self (only for exportable, requires a receiver)
+    let has_receiver = receiver != Receiver::None;
+    let is_builder = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
+        match &sig.output {
+            ReturnType::Default => false,
+            ReturnType::Type(_, ty) => {
+                let ty = &replace_self_type(ty, sty_static);
+                is_self_return(ty, sty_static)
+                    || extract_result_types(ty)
+                        .is_some_and(|(ok, _)| is_self_return(&ok, sty_static))
+            }
+        }
+    } else {
+        false
+    };
+
+    let ret = match &sig.output {
+        ReturnType::Default => ReturnKind::Void,
         ReturnType::Type(_, ty) => {
-            if raw_handle {
-                // raw_handle methods don't go through the vtable — skip
-                // AliasContext to avoid creating cross-crate type aliases
-                // that would reference $crate in the wrong context.
-                let erased = erase_lifetimes(ty);
-                (Some(quote! { #erased }), Some(quote! { #erased }))
+            let ty = match &self_ty_static {
+                Some(sty) => replace_self_type(ty, sty),
+                None => (**ty).clone(),
+            };
+
+            if is_builder && extract_result_types(&ty).is_none() {
+                // Builder returning Self → void in C
+                ReturnKind::Void
+            } else if let Some((ok, err)) = extract_result_types(&ty) {
+                let err_ident = type_ident_name(&err);
+                let ok_pair = if is_unit_type(&ok)
+                    || (is_builder && self_ty_static.as_ref().is_some_and(|sty| is_self_return(&ok, sty)))
+                {
+                    None
+                } else if raw_handle {
+                    let erased = erase_lifetimes(&ok);
+                    Some(TypePair {
+                        bridge: quote! { #erased },
+                        rust: quote! { #erased },
+                    })
+                } else {
+                    let bridge = ctx.bridge_tokens(&ok);
+                    let erased = erase_lifetimes(&ok);
+                    Some(TypePair {
+                        bridge,
+                        rust: quote! { #erased },
+                    })
+                };
+                ReturnKind::Result { ok: ok_pair, err_ident }
+            } else if raw_handle {
+                let erased = erase_lifetimes(&ty);
+                ReturnKind::Value(TypePair {
+                    bridge: quote! { #erased },
+                    rust: quote! { #erased },
+                })
             } else {
-                let bt = ctx.bridge_tokens(ty);
-                let erased = erase_lifetimes(ty);
-                (Some(bt), Some(quote! { #erased }))
+                let bridge = ctx.bridge_tokens(&ty);
+                let erased = erase_lifetimes(&ty);
+                ReturnKind::Value(TypePair {
+                    bridge,
+                    rust: quote! { #erased },
+                })
             }
         }
     };
 
-    Some(VtableMethod {
+    // --- Original rust_ret for client codegen ---
+    let rust_ret = match &sig.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, ty) => {
+            let replaced = match self_ty {
+                Some(sty) => replace_self_type(ty, sty),
+                None => (**ty).clone(),
+            };
+            Some(quote! { #replaced })
+        }
+    };
+
+    Some(MethodInfo {
         name: sig.ident.clone(),
+        receiver,
         params,
-        ret_bridge_type,
-        ret_rust_type,
+        ret,
+        ffi_name: String::new(),
+        is_builder,
+        method_lifetimes: sig
+            .generics
+            .lifetimes()
+            .map(|lt| lt.lifetime.ident.clone())
+            .collect(),
+        doc_lines: extract_doc_comments(attrs),
+        rust_ret,
         has_default,
-        is_mut,
-        index: 0, // placeholder — caller sets the real index from #[ffier(index = N)]
+        index: 0,
         raw_handle,
     })
 }
 
-/// Emit metadata tokens for a list of vtable methods (shared by `#[implementable]` and `#[trait_impl]`).
-fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenStream> {
-    methods
+/// Emit metadata tokens for a method list (unified format for all annotation macros).
+fn emit_method_meta(methods: &[MethodInfo]) -> Vec<proc_macro2::TokenStream> {
+    methods.iter().map(emit_one_method_meta).collect()
+}
+
+fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
+    let mname = &m.name;
+    let ffi_name = &m.ffi_name;
+    let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
+
+    let receiver_ident = match m.receiver {
+        Receiver::None => format_ident!("none"),
+        Receiver::Ref => format_ident!("r#ref"),
+        Receiver::Mut => format_ident!("r#mut"),
+        Receiver::Value => format_ident!("value"),
+    };
+
+    let is_builder = m.is_builder;
+    let has_default = m.has_default;
+    let index = m.index;
+    let raw_handle = m.raw_handle;
+
+    let method_lt_idents: Vec<_> = m.method_lifetimes
         .iter()
-        .map(|m| {
-            let mname = &m.name;
-            let param_meta: Vec<_> = m
-                .params
-                .iter()
-                .map(|p| {
-                    let id = &p.ident;
-                    let bt = &p.bridge_type;
-                    let rt = &p.rust_type;
-                    let it = match &p.impl_trait {
-                        Some(name) => quote! { impl_trait = #name, },
-                        None => quote! {},
-                    };
-                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), #it } }
-                })
-                .collect();
-            let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
-                (None, _) => quote! { void },
-                (Some(bt), Some(rt)) => quote! { value(bridge_type = (#bt), rust_type = (#rt),) },
-                _ => unreachable!(),
-            };
-            let hd = m.has_default;
-            let im = m.is_mut;
-            let idx = m.index;
-            let rh = m.raw_handle;
-            quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, is_mut = #im, index = #idx, raw_handle = #rh, }
+        .map(|lt| format_ident!("{}", lt))
+        .collect();
+
+    let param_tokens: Vec<_> = m.params.iter().map(|p| {
+        let id = &p.name;
+        let kind_tokens = match &p.kind {
+            ParamKind::Regular => quote! { regular },
+            ParamKind::StrSlice => quote! { str_slice },
+            ParamKind::ImplTrait { trait_name, dispatch } => {
+                let dispatch_ident = format_ident!("{dispatch}");
+                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident }
             }
-        })
-        .collect()
+        };
+        let type_tokens = match &p.types {
+            Some(tp) => {
+                let bt = &tp.bridge;
+                let rt = &tp.rust;
+                quote! { bridge_type = (#bt), rust_type = (#rt), }
+            }
+            None => quote! {},
+        };
+        quote! { { name = #id, kind = #kind_tokens, #type_tokens } }
+    }).collect();
+
+    let ret_tokens = match &m.ret {
+        ReturnKind::Void => quote! { void },
+        ReturnKind::Value(tp) => {
+            let bt = &tp.bridge;
+            let rt = &tp.rust;
+            quote! { value(bridge_type = (#bt), rust_type = (#rt),) }
+        }
+        ReturnKind::Result { ok, err_ident } => {
+            let ok_tokens = match ok {
+                None => quote! { ok = void },
+                Some(tp) => {
+                    let bt = &tp.bridge;
+                    let rt = &tp.rust;
+                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt),) }
+                }
+            };
+            quote! { result(#ok_tokens, err_ident = #err_ident,) }
+        }
+    };
+
+    let rust_ret_tokens = match &m.rust_ret {
+        Some(rt) => quote! { rust_ret = (#rt), },
+        None => quote! { rust_ret = (()), },
+    };
+
+    quote! {
+        {
+            name = #mname,
+            ffi_name = #ffi_name,
+            doc = [#(#doc_tokens),*],
+            receiver = #receiver_ident,
+            is_builder = #is_builder,
+            has_default = #has_default,
+            index = #index,
+            raw_handle = #raw_handle,
+            method_lifetimes = [#(#method_lt_idents),*],
+            params = [#(#param_tokens),*],
+            ret = #ret_tokens,
+            #rust_ret_tokens
+        }
+    }
 }
 
 /// Generate `impl Trait for FfierBoxDyn<dyn Trait>` — delegates each method to `self.0`.
@@ -1376,7 +1358,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // --- Generate vtable struct fields (ordered by explicit index, with padding for gaps) ---
     // Sort methods by their explicit index to determine vtable layout.
-    let mut sorted_methods: Vec<&VtableMethod> = vtable_methods.iter().collect();
+    let mut sorted_methods: Vec<&MethodInfo> = vtable_methods.iter().collect();
     sorted_methods.sort_by_key(|m| m.index);
 
     let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
@@ -1404,16 +1386,16 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .params
             .iter()
             .map(|p| {
-                if p.impl_trait.is_some() {
+                if p.is_impl_trait() {
                     // impl Trait → raw handle pointer in the vtable fn signature
                     quote! { *mut core::ffi::c_void }
                 } else {
-                    let bt = &p.bridge_type;
+                    let bt = p.bridge_type();
                     quote! { <#bt as ffier::FfiType>::CRepr }
                 }
             })
             .collect();
-        let ret = match &m.ret_bridge_type {
+        let ret = match m.ret_bridge_type() {
             None => quote! {},
             Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
         };
@@ -1476,7 +1458,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `vtable_struct_ref` is the token stream referencing the vtable struct
     // (e.g. `PushStrVtable` for direct output, or `$crate::PushStrVtable`
     // for use inside a macro_rules! body that expands in another crate).
-    let vtable_call_body = |vm: &VtableMethod,
+    let vtable_call_body = |vm: &MethodInfo,
                             sig: &syn::Signature,
                             fallback: Option<proc_macro2::TokenStream>,
                             _method_index: Option<usize>,
@@ -1488,14 +1470,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         // function pointers can't handle impl Trait params generically
         // (the value might not be an FFI handle). If so, the vtable branch
         // panics at runtime.
-        let has_impl_trait_params = vm.params.iter().any(|p| p.impl_trait.is_some());
+        let has_impl_trait_params = vm.params.iter().any(|p| p.is_impl_trait());
 
         let vtable_args: Vec<_> = vm
             .params
             .iter()
             .map(|p| {
-                let id = &p.ident;
-                if p.impl_trait.is_some() {
+                let id = &p.name;
+                if p.is_impl_trait() {
                     // Placeholder — won't actually be reached due to the panic
                     // guard below, but needed for the code to compile.
                     quote! { core::ptr::null_mut() }
@@ -1503,7 +1485,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // Use rust_type (elided lifetimes) for the conversion call,
                     // not bridge_type ('static lifetimes). The actual value has
                     // the caller's lifetime, not 'static.
-                    let rt = &p.rust_type;
+                    let rt = p.rust_type();
                     quote! { <#rt as ffier::FfiType>::into_c(#id) }
                 }
             })
@@ -1513,16 +1495,16 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .params
             .iter()
             .map(|p| {
-                if p.impl_trait.is_some() {
+                if p.is_impl_trait() {
                     // impl Trait → *mut c_void in the function pointer signature
                     quote! { *mut core::ffi::c_void }
                 } else {
-                    let bt = &p.bridge_type;
+                    let bt = p.bridge_type();
                     quote! { <#bt as ffier::FfiType>::CRepr }
                 }
             })
             .collect();
-        let fn_ret = match &vm.ret_bridge_type {
+        let fn_ret = match vm.ret_bridge_type() {
             None => quote! {},
             Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
         };
@@ -1546,7 +1528,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 )
             }
         } else {
-            match &vm.ret_bridge_type {
+            match vm.ret_bridge_type() {
                 None => raw_call,
                 Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
             }
@@ -1817,7 +1799,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}");
 
 
-    let vtable_method_meta = emit_vtable_method_meta(&vtable_methods);
+    let vtable_method_meta = emit_method_meta(&vtable_methods);
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -2080,7 +2062,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Extract methods, skipping any marked with #[ffier(skip)].
-    let methods: Vec<VtableMethod> = {
+    let methods: Vec<MethodInfo> = {
         let mut ms = Vec::new();
         for item in &input.items {
             let ImplItem::Fn(method) = item else { continue };
@@ -2090,8 +2072,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             if mattrs.skip { continue; }
             // trait_impl methods are concrete overrides, not defaults
-            if let Some(vm) = parse_trait_method_sig(&method.sig, &mut ctx, false, mattrs.raw_handle) {
-                ms.push(vm);
+            if let Some(m) = parse_method_sig(&method.sig, &method.attrs, &mut ctx, None, false, mattrs.raw_handle) {
+                ms.push(m);
             }
         }
         ms
@@ -2099,7 +2081,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let reexport_items_crate = ctx.reexport_items_crate();
 
-    let method_meta = emit_vtable_method_meta(&methods);
+    let method_meta = emit_method_meta(&methods);
 
     let lifetime_idents: Vec<_> = input
         .generics
