@@ -232,17 +232,38 @@ pub enum DispatchMode {
     Vtable,
 }
 
+/// A bridge/rust type pair used in params and return types.
+#[derive(Clone)]
+pub struct MetaTypePair {
+    pub bridge_type: TokenStream,
+    pub rust_type: TokenStream,
+}
+
 pub struct MetaMethod {
     pub name: Ident,
-    pub ffi_name: String,
-    pub doc: Vec<String>,
     pub receiver: MetaReceiver,
-    pub is_builder: bool,
     /// Method-level lifetime params (e.g. `[a, b]` from `fn foo<'a, 'b>(...)`).
     pub method_lifetimes: Vec<Ident>,
     pub params: Vec<MetaParam>,
     pub ret: MetaReturn,
     pub rust_ret: TokenStream,
+    pub context: MetaMethodContext,
+}
+
+/// Context-specific fields that are always present together.
+pub enum MetaMethodContext {
+    /// Method from an `#[exportable]` impl block.
+    Exportable {
+        ffi_name: String,
+        is_builder: bool,
+        doc: Vec<String>,
+    },
+    /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
+    Trait {
+        has_default: bool,
+        index: usize,
+        raw_handle: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -253,36 +274,114 @@ pub enum MetaReceiver {
     Value,
 }
 
+impl MetaMethod {
+    // --- Exportable context accessors ---
+
+    pub fn ffi_name(&self) -> &str {
+        match &self.context {
+            MetaMethodContext::Exportable { ffi_name, .. } => ffi_name,
+            MetaMethodContext::Trait { .. } => "",
+        }
+    }
+
+    pub fn is_builder(&self) -> bool {
+        matches!(&self.context, MetaMethodContext::Exportable { is_builder: true, .. })
+    }
+
+    pub fn doc(&self) -> &[String] {
+        match &self.context {
+            MetaMethodContext::Exportable { doc, .. } => doc,
+            MetaMethodContext::Trait { .. } => &[],
+        }
+    }
+
+    // --- Trait context accessors ---
+
+    pub fn has_default(&self) -> bool {
+        matches!(&self.context, MetaMethodContext::Trait { has_default: true, .. })
+    }
+
+    pub fn index(&self) -> usize {
+        match &self.context {
+            MetaMethodContext::Trait { index, .. } => *index,
+            MetaMethodContext::Exportable { .. } => 0,
+        }
+    }
+
+    pub fn raw_handle(&self) -> bool {
+        matches!(&self.context, MetaMethodContext::Trait { raw_handle: true, .. })
+    }
+
+    // --- Return type accessors ---
+
+    pub fn ret_bridge_type(&self) -> Option<&TokenStream> {
+        match &self.ret {
+            MetaReturn::Void => None,
+            MetaReturn::Value(tp) => Some(&tp.bridge_type),
+            MetaReturn::Result { ok, .. } => ok.as_ref().map(|tp| &tp.bridge_type),
+        }
+    }
+
+    pub fn is_mut(&self) -> bool {
+        self.receiver == MetaReceiver::Mut
+    }
+}
+
 pub struct MetaParam {
     pub name: Ident,
     pub kind: MetaParamKind,
-    pub rust_type: Option<TokenStream>,
+}
+
+impl MetaParam {
+    pub fn is_impl_trait(&self) -> bool {
+        matches!(self.kind, MetaParamKind::ImplTrait { .. })
+    }
+
+    pub fn impl_trait_name(&self) -> Option<&str> {
+        match &self.kind {
+            MetaParamKind::ImplTrait { trait_name, .. } => Some(trait_name),
+            _ => None,
+        }
+    }
+
+    /// Bridge type. Panics for StrSlice.
+    pub fn bridge_type(&self) -> &TokenStream {
+        match &self.kind {
+            MetaParamKind::Regular(tp) => &tp.bridge_type,
+            MetaParamKind::ImplTrait { types, .. } => &types.bridge_type,
+            MetaParamKind::StrSlice => panic!("StrSlice has no single bridge_type"),
+        }
+    }
+
+    /// Rust type. Panics for StrSlice.
+    pub fn rust_type(&self) -> &TokenStream {
+        match &self.kind {
+            MetaParamKind::Regular(tp) => &tp.rust_type,
+            MetaParamKind::ImplTrait { types, .. } => &types.rust_type,
+            MetaParamKind::StrSlice => panic!("StrSlice has no single rust_type"),
+        }
+    }
 }
 
 pub enum MetaParamKind {
-    Regular {
-        bridge_type: TokenStream,
-    },
+    Regular(MetaTypePair),
     StrSlice,
     /// `impl Trait` parameter — the generator resolves concrete dispatch
     /// types from the trait map built from `@trait_impl`/`@implementable` entries.
     ImplTrait {
         trait_name: String,
         dispatch: DispatchMode,
+        types: MetaTypePair,
     },
 }
 
 pub enum MetaReturn {
     Void,
-    Value(MetaValueKind),
+    Value(MetaTypePair),
     Result {
-        ok: Option<MetaValueKind>,
+        ok: Option<MetaTypePair>,
         err_ident: String,
     },
-}
-
-pub struct MetaValueKind {
-    pub bridge_type: TokenStream,
 }
 
 // ---------------------------------------------------------------------------
@@ -322,9 +421,9 @@ pub struct MetaImplementable {
     pub type_tag: u32,
     pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
-    pub vtable_methods: Vec<MetaVtableMethod>,
+    pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
-    /// The first `own_method_count` entries in `vtable_methods` are this trait's
+    /// The first `own_method_count` entries in `methods` are this trait's
     /// own methods; the rest are from supertrait `supers(...)` blocks.
     pub own_method_count: usize,
     /// Highest vtable slot index (including reserved/retired slots).
@@ -352,45 +451,6 @@ impl MetaImplementable {
     }
 }
 
-#[derive(Clone)]
-pub struct MetaVtableMethod {
-    pub name: Ident,
-    pub params: Vec<MetaVtableParam>,
-    pub ret: MetaVtableRet,
-    /// Whether this method has a default implementation in the trait.
-    /// Defaulted methods can be left as NULL in the C vtable — the Rust
-    /// side falls back to the trait's default impl.
-    pub has_default: bool,
-    /// Whether the receiver is `&mut self`.
-    pub is_mut: bool,
-    /// Explicit vtable slot index from `#[ffier(index = N)]`.
-    /// Determines position in the vtable struct (after `drop` at slot 0).
-    pub index: usize,
-    /// If true, this method receives the raw handle pointer
-    /// (`*const FfierHandle<Self>`) instead of `&self`. The bridge casts
-    /// the dispatch pointer and passes it directly.
-    pub raw_handle: bool,
-}
-
-#[derive(Clone)]
-pub struct MetaVtableParam {
-    pub name: Ident,
-    pub bridge_type: TokenStream,
-    pub rust_type: TokenStream,
-    /// If this param is `impl Trait`, the trait name (e.g. "PushStr").
-    /// Codegen resolves the concrete wrapper type from `TraitMap`.
-    pub impl_trait: Option<String>,
-}
-
-#[derive(Clone)]
-pub enum MetaVtableRet {
-    Void,
-    Value {
-        bridge_type: TokenStream,
-        rust_type: TokenStream,
-    },
-}
-
 // ---------------------------------------------------------------------------
 // Trait impl metadata (impl Trait for Struct, exported via C ABI)
 // ---------------------------------------------------------------------------
@@ -410,7 +470,7 @@ pub struct MetaTraitImpl {
     /// or `[]` from `impl<'a> Trait<'a> for Widget`). Used to correctly parameterize the struct
     /// in generated impl blocks — only the struct's own lifetimes, not the impl block's.
     pub struct_lifetime_args: Vec<String>,
-    pub methods: Vec<MetaVtableMethod>,
+    pub methods: Vec<MetaMethod>,
 }
 
 impl HasPrefix for MetaTraitImpl {
@@ -580,6 +640,19 @@ impl syn::parse::Parse for MetaMethod {
         let is_builder = parse_bool(input)?;
         parse_comma(input)?;
 
+        expect_key(input, "has_default")?;
+        let has_default = parse_bool(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "index")?;
+        let index: syn::LitInt = input.parse()?;
+        let index = index.base10_parse::<usize>()?;
+        parse_comma(input)?;
+
+        expect_key(input, "raw_handle")?;
+        let raw_handle = parse_bool(input)?;
+        parse_comma(input)?;
+
         expect_key(input, "method_lifetimes")?;
         let method_lifetimes = parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
@@ -596,18 +669,35 @@ impl syn::parse::Parse for MetaMethod {
         let rust_ret = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
+        // Determine context from the fields: if ffi_name is non-empty, it's
+        // from an exportable; otherwise it's from a trait.
+        let context = if !ffi_name.is_empty() {
+            MetaMethodContext::Exportable { ffi_name, is_builder, doc }
+        } else {
+            MetaMethodContext::Trait { has_default, index, raw_handle }
+        };
+
         Ok(MetaMethod {
             name,
-            ffi_name,
-            doc,
             receiver,
-            is_builder,
             method_lifetimes,
             params,
             ret,
             rust_ret,
+            context,
         })
     }
+}
+
+/// Parse optional `bridge_type = (...), rust_type = (...),` pair.
+fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
+    expect_key(input, "bridge_type")?;
+    let bridge_type = parse_parenthesized_tokens(input)?;
+    parse_comma(input)?;
+    expect_key(input, "rust_type")?;
+    let rust_type = parse_parenthesized_tokens(input)?;
+    parse_comma(input)?;
+    Ok(MetaTypePair { bridge_type, rust_type })
 }
 
 impl syn::parse::Parse for MetaParam {
@@ -625,11 +715,13 @@ impl syn::parse::Parse for MetaParam {
         let kind = match kind_ident.to_string().as_str() {
             "regular" => {
                 parse_comma(input)?;
-                expect_key(input, "bridge_type")?;
-                let bridge_type = parse_parenthesized_tokens(input)?;
-                MetaParamKind::Regular { bridge_type }
+                let types = parse_type_pair(input)?;
+                MetaParamKind::Regular(types)
             }
-            "str_slice" => MetaParamKind::StrSlice,
+            "str_slice" => {
+                parse_comma(input)?;
+                MetaParamKind::StrSlice
+            }
             "impl_trait" => {
                 parse_comma(input)?;
                 expect_key(input, "trait_name")?;
@@ -648,10 +740,9 @@ impl syn::parse::Parse for MetaParam {
                         ));
                     }
                 };
-                MetaParamKind::ImplTrait {
-                    trait_name,
-                    dispatch,
-                }
+                parse_comma(input)?;
+                let types = parse_type_pair(input)?;
+                MetaParamKind::ImplTrait { trait_name, dispatch, types }
             }
             other => {
                 return Err(syn::Error::new(
@@ -660,23 +751,8 @@ impl syn::parse::Parse for MetaParam {
                 ));
             }
         };
-        parse_comma(input)?;
 
-        // rust_type is optional (not present for some kinds)
-        let rust_type = if !input.is_empty() {
-            expect_key(input, "rust_type")?;
-            let rt = parse_parenthesized_tokens(input)?;
-            parse_comma(input)?;
-            Some(rt)
-        } else {
-            None
-        };
-
-        Ok(MetaParam {
-            name,
-            kind,
-            rust_type,
-        })
+        Ok(MetaParam { name, kind })
     }
 }
 
@@ -688,8 +764,8 @@ impl syn::parse::Parse for MetaReturn {
             "value" => {
                 let content;
                 syn::parenthesized!(content in input);
-                let vk = content.parse::<MetaValueKind>()?;
-                Ok(MetaReturn::Value(vk))
+                let tp = parse_type_pair(&content)?;
+                Ok(MetaReturn::Value(tp))
             }
             "result" => {
                 let content;
@@ -702,7 +778,7 @@ impl syn::parse::Parse for MetaReturn {
                 } else if ok_kind == "some" {
                     let inner;
                     syn::parenthesized!(inner in content);
-                    Some(inner.parse::<MetaValueKind>()?)
+                    Some(parse_type_pair(&inner)?)
                 } else {
                     return Err(syn::Error::new(ok_kind.span(), "expected `void` or `some`"));
                 };
@@ -717,25 +793,6 @@ impl syn::parse::Parse for MetaReturn {
             other => Err(syn::Error::new(
                 kind.span(),
                 format!("unknown return kind `{other}`"),
-            )),
-        }
-    }
-}
-
-impl syn::parse::Parse for MetaValueKind {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        let kind: Ident = input.parse()?;
-        match kind.to_string().as_str() {
-            "regular" => {
-                parse_comma(input)?;
-                expect_key(input, "bridge_type")?;
-                let bridge_type = parse_parenthesized_tokens(input)?;
-                parse_comma(input)?;
-                Ok(MetaValueKind { bridge_type })
-            }
-            other => Err(syn::Error::new(
-                kind.span(),
-                format!("unknown value kind `{other}`"),
             )),
         }
     }
@@ -842,7 +899,7 @@ impl syn::parse::Parse for MetaImplementable {
         parse_comma(input)?;
 
         expect_key(input, "vtable_methods")?;
-        let vtable_methods = parse_bracketed_list(input, parse_vtable_method)?;
+        let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
         expect_key(input, "own_method_count")?;
@@ -862,110 +919,10 @@ impl syn::parse::Parse for MetaImplementable {
             type_tag,
             vtable_struct_name,
             wrapper_name,
-            vtable_methods,
+            methods,
             own_method_count,
             max_vtable_slot,
         })
-    }
-}
-
-fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
-    let inner;
-    syn::braced!(inner in input);
-    expect_key(&inner, "name")?;
-    let mname: Ident = inner.parse()?;
-    parse_comma(&inner)?;
-    expect_key(&inner, "params")?;
-    let params = parse_bracketed_list(&inner, parse_vtable_param)?;
-    parse_comma(&inner)?;
-    expect_key(&inner, "ret")?;
-    let ret = parse_vtable_ret(&inner)?;
-    parse_comma(&inner)?;
-    expect_key(&inner, "has_default")?;
-    let has_default: syn::LitBool = inner.parse()?;
-    parse_comma(&inner)?;
-    expect_key(&inner, "is_mut")?;
-    let is_mut: syn::LitBool = inner.parse()?;
-    parse_comma(&inner)?;
-    expect_key(&inner, "index")?;
-    let index: syn::LitInt = inner.parse()?;
-    let index = index.base10_parse::<usize>()?;
-    parse_comma(&inner)?;
-
-    // Optional: `raw_handle = true,`
-    let raw_handle = if inner.peek(Ident) && inner.fork().parse::<Ident>().map_or(false, |id| id == "raw_handle") {
-        expect_key(&inner, "raw_handle")?;
-        let val: syn::LitBool = inner.parse()?;
-        parse_comma(&inner)?;
-        val.value
-    } else {
-        false
-    };
-
-    Ok(MetaVtableMethod {
-        name: mname,
-        params,
-        ret,
-        has_default: has_default.value,
-        is_mut: is_mut.value,
-        index,
-        raw_handle,
-    })
-}
-
-fn parse_vtable_param(input: ParseStream) -> syn::Result<MetaVtableParam> {
-    let content;
-    syn::braced!(content in input);
-    expect_key(&content, "name")?;
-    let name: Ident = content.parse()?;
-    parse_comma(&content)?;
-    expect_key(&content, "bridge_type")?;
-    let bridge_type = parse_parenthesized_tokens(&content)?;
-    parse_comma(&content)?;
-    expect_key(&content, "rust_type")?;
-    let rust_type = parse_parenthesized_tokens(&content)?;
-    parse_comma(&content)?;
-
-    // Optional: `impl_trait = "TraitName",`
-    let impl_trait = if content.peek(Ident) && content.fork().parse::<Ident>().map_or(false, |id| id == "impl_trait") {
-        expect_key(&content, "impl_trait")?;
-        let name = parse_string(&content)?;
-        parse_comma(&content)?;
-        Some(name)
-    } else {
-        None
-    };
-
-    Ok(MetaVtableParam {
-        name,
-        bridge_type,
-        rust_type,
-        impl_trait,
-    })
-}
-
-fn parse_vtable_ret(input: ParseStream) -> syn::Result<MetaVtableRet> {
-    let kind: Ident = input.parse()?;
-    match kind.to_string().as_str() {
-        "void" => Ok(MetaVtableRet::Void),
-        "value" => {
-            let content;
-            syn::parenthesized!(content in input);
-            expect_key(&content, "bridge_type")?;
-            let bridge_type = parse_parenthesized_tokens(&content)?;
-            parse_comma(&content)?;
-            expect_key(&content, "rust_type")?;
-            let rust_type = parse_parenthesized_tokens(&content)?;
-            parse_comma(&content)?;
-            Ok(MetaVtableRet::Value {
-                bridge_type,
-                rust_type,
-            })
-        }
-        other => Err(syn::Error::new(
-            kind.span(),
-            format!("unknown vtable ret type `{other}`"),
-        )),
     }
 }
 
@@ -1015,7 +972,7 @@ impl syn::parse::Parse for MetaTraitImpl {
         parse_comma(input)?;
 
         expect_key(input, "methods")?;
-        let methods = parse_bracketed_list(input, parse_vtable_method)?;
+        let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
         Ok(MetaTraitImpl {

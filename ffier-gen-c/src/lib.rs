@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
     HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
-    MetaReceiver, MetaReturn, MetaTraitImpl, MetaValueKind, MetaVtableRet, camel_to_snake,
-    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
+    MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
+    erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -44,7 +44,7 @@ pub struct ImplementableInfo {
     pub trait_path: TokenStream2,
     pub wrapper_path: TokenStream2,
     pub vtable_struct_path: TokenStream2,
-    pub methods: Vec<ffier_meta::MetaVtableMethod>,
+    pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
     /// Only the first `own_method_count` methods are dispatched in self-dispatch
     /// functions. Supertrait methods need separate dispatch through their own trait.
@@ -81,7 +81,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             let wrapper_name = format!("Vtable{trait_name}");
             let wrapper_path = meta.wrapper_name.clone();
             let vtable_struct_path = meta.vtable_struct_name.clone();
-            let methods = meta.vtable_methods;
+            let methods = meta.methods;
             let own_method_count = meta.own_method_count;
 
             let info = map.entry(trait_name).or_insert_with(|| TraitDispatchInfo {
@@ -643,14 +643,14 @@ fn generate_exportable_bridge(
 
     // Method FFI functions
     for m in &meta.methods {
-        let ffi_name_str = format!("{}{}", fn_pfx, m.ffi_name);
+        let ffi_name_str = format!("{}{}", fn_pfx, m.ffi_name());
         let ffi_name = format_ident!("{}", ffi_name_str);
         let method_name = &m.name;
 
         let has_receiver = m.receiver != MetaReceiver::None;
         let is_mut = m.receiver == MetaReceiver::Mut;
         let is_by_value = m.receiver == MetaReceiver::Value;
-        let is_builder = m.is_builder;
+        let is_builder = m.is_builder();
 
         let handle_type = if is_builder && is_by_value {
             // Builder by-value: C caller passes &handle (pointer-to-pointer).
@@ -736,9 +736,10 @@ fn generate_exportable_bridge(
             .params
             .iter()
             .filter_map(|p| {
-                if let MetaParamKind::ImplTrait {
+                  if let MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
+                    ..
                 } = &p.kind
                 {
                     trait_map.get(trait_name).map(|info| ImplTraitParam {
@@ -959,7 +960,7 @@ fn generate_exportable_bridge(
         };
         let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
         if let Some(doc) = build_doxygen_comment(
-            &m.doc,
+            &m.doc(),
             &param_name_strs,
             has_out_param,
             err_c_name_for_doc.as_deref(),
@@ -1332,16 +1333,16 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 
     // Method function pointers, sorted by explicit index with padding for gaps.
     {
-        let mut sorted_methods: Vec<_> = meta.vtable_methods.iter().collect();
-        sorted_methods.sort_by_key(|m| m.index);
+        let mut sorted_methods: Vec<_> = meta.methods.iter().collect();
+        sorted_methods.sort_by_key(|m| m.index());
 
         let mut next_slot = 0usize;
         for m in &sorted_methods {
             // raw_handle methods don't occupy vtable slots
-            if m.raw_handle {
+            if m.raw_handle() {
                 continue;
             }
-            while next_slot < m.index {
+            while next_slot < m.index() {
                 let pad_comment = format!(
                     "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
                 );
@@ -1369,7 +1370,7 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
                 s.push_str(");");
                 s
             }});
-            next_slot = m.index + 1;
+            next_slot = m.index() + 1;
         }
         // Pad trailing reserved slots
         while next_slot <= meta.max_vtable_slot {
@@ -1485,7 +1486,7 @@ pub fn c_signature_for_method(
     ctx: SignatureContext,
     handle_types: &HashSet<String>,
 ) -> CExternSignature {
-    let fn_name = format!("{}_{}", prefix, method.ffi_name);
+    let fn_name = format!("{}_{}", prefix, method.ffi_name());
     let mut params = Vec::new();
 
     // Handle param (receiver)
@@ -1506,7 +1507,7 @@ pub fn c_signature_for_method(
         if matches!(p.kind, MetaParamKind::StrSlice) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), &ctx),
+                c_type: c_param_type(&p.kind, None, &ctx),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -1515,7 +1516,7 @@ pub fn c_signature_for_method(
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, p.rust_type.as_ref(), &ctx),
+                c_type: c_param_type(&p.kind, Some(p.rust_type()), &ctx),
             });
         }
     }
@@ -1536,7 +1537,7 @@ pub fn c_signature_for_method(
             // Builder by-value Result<Self, E>: the ok value is written back
             // through the double-pointer handle param, not returned. Use
             // FtResult style, not GLib-style.
-            let is_builder_self_result = method.is_builder
+            let is_builder_self_result = method.is_builder()
                 && method.receiver == MetaReceiver::Value;
 
             if ok_is_handle && !is_builder_self_result {
@@ -1590,7 +1591,7 @@ pub fn c_param_type(
     ctx: &SignatureContext,
 ) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular { bridge_type } => {
+        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
             let ty = match ctx {
                 SignatureContext::Client => {
                     let rt = rust_type.expect("Regular param must have rust_type");
@@ -1607,7 +1608,7 @@ pub fn c_param_type(
 
 /// Produce the C return type tokens for a value kind.
 pub fn c_return_type(
-    kind: &MetaValueKind,
+    kind: &MetaTypePair,
     rust_ret: &TokenStream2,
     ctx: &SignatureContext,
 ) -> TokenStream2 {
@@ -1621,7 +1622,7 @@ pub fn c_return_type(
 
 /// Produce the C type for a Result ok-value out-parameter.
 pub fn c_out_param_type(
-    kind: &MetaValueKind,
+    kind: &MetaTypePair,
     rust_ret: &TokenStream2,
     ctx: &SignatureContext,
 ) -> TokenStream2 {
@@ -1635,7 +1636,7 @@ fn meta_param_conversion(
     len_ident: Option<&syn::Ident>,
 ) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular { bridge_type } => {
+        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
             quote! { <#bridge_type as ffier::FfiType>::from_c(#id) }
         }
         MetaParamKind::StrSlice => {
@@ -1657,7 +1658,7 @@ fn meta_param_conversion(
 
 fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular { bridge_type } => {
+        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
             quote! { &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
         }
         MetaParamKind::StrSlice => {
@@ -2081,13 +2082,13 @@ fn generate_self_dispatch_bridge(
 
         for p in &m.params {
             let param_name = &p.name;
-            if let Some(trait_name) = &p.impl_trait {
+            if let Some(trait_name) = p.impl_trait_name() {
                 // impl Trait param — the C param is a raw handle pointer.
                 bridge_params.push(quote! { #param_name: *mut core::ffi::c_void });
 
                 // Resolve the wrapper type from TraitMap.
                 let wrapper_path = trait_map
-                    .get(trait_name.as_str())
+                    .get(trait_name)
                     .and_then(|info| info.implementable.as_ref())
                     .map(|imp| &imp.wrapper_path)
                     .unwrap_or_else(|| panic!(
@@ -2103,7 +2104,7 @@ fn generate_self_dispatch_bridge(
                 });
                 call_args.push(quote! { #borrow_name });
             } else {
-                let bt = &p.bridge_type;
+                let bt = p.bridge_type();
                 bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
                 call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
             }
@@ -2111,17 +2112,18 @@ fn generate_self_dispatch_bridge(
 
         // Return type
         let ret_type = match &m.ret {
-            MetaVtableRet::Void => quote! {},
-            MetaVtableRet::Value { bridge_type, .. } => {
+            MetaReturn::Void => quote! {},
+            MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
                 quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
             }
+            MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
         };
 
         // Build dispatch branches — one per variant.
         // TODO: Support `&mut self` and consuming `self` receivers once
         //       MetaVtableMethod tracks receiver kind.
         let wrapper_path = &imp.wrapper_path;
-        let method_index_u32 = m.index as u32;
+        let method_index_u32 = m.index() as u32;
 
         // For defaulted methods, the VtableFoo dispatch branch needs a
         // metadata check: if the handle's metadata field has bit 0 set
@@ -2131,7 +2133,7 @@ fn generate_self_dispatch_bridge(
         // Build the full path to the default helper function.
         // The helper is generated by #[ffier::implementable] next to the trait
         // definition, so its path is: trait_path's parent module :: __ffier_default_TraitName_method
-        let default_helper_path = if m.has_default {
+        let default_helper_path = if m.has_default() {
             let helper_ident = format_ident!("__ffier_default_{}_{}", trait_name, method_name);
             // Replace the last segment of trait_path with the helper name
             let mut tokens: Vec<proc_macro2::TokenTree> = trait_path.clone().into_iter().collect();
@@ -2149,18 +2151,19 @@ fn generate_self_dispatch_bridge(
 
             // For the VtableFoo variant of defaulted methods, check metadata
             // before calling through the vtable.
-            let metadata_guard = if is_vtable_variant && m.has_default {
+            let metadata_guard = if is_vtable_variant && m.has_default() {
                 if let Some(helper) = &default_helper_path {
-                    let obj_for_default = borrow_from_handle(ty, m.is_mut);
+                    let obj_for_default = borrow_from_handle(ty, m.is_mut());
                     let default_call = match &m.ret {
-                        MetaVtableRet::Void => quote! {
+                        MetaReturn::Void => quote! {
                             #helper(obj #(, #call_args)*);
                             return;
                         },
-                        MetaVtableRet::Value { bridge_type, .. } => quote! {
+                        MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
                             let call_result = #helper(obj #(, #call_args)*);
                             return <#bridge_type as ffier::FfiType>::into_c(call_result);
                         },
+                        MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                     };
                     quote! {
                         let __metadata = unsafe { ffier::handle_metadata(handle) };
@@ -2176,20 +2179,21 @@ fn generate_self_dispatch_bridge(
                 quote! {}
             };
 
-            if m.raw_handle {
+            if m.raw_handle() {
                 // raw_handle: cast handle to *const FfierHandle<T> and pass directly
                 let ret_conversion = match &m.ret {
-                    MetaVtableRet::Void => quote! {
+                    MetaReturn::Void => quote! {
                         <#ty as #trait_path>::#method_name(
                             handle as *const ffier::FfierHandle<#ty> #(, #call_args)*
                         );
                     },
-                    MetaVtableRet::Value { bridge_type, .. } => quote! {
+                    MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
                         let call_result = <#ty as #trait_path>::#method_name(
                             handle as *const ffier::FfierHandle<#ty> #(, #call_args)*
                         );
                         return <#bridge_type as ffier::FfiType>::into_c(call_result);
                     },
+                    MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                 };
                 quote! {
                     if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
@@ -2197,15 +2201,16 @@ fn generate_self_dispatch_bridge(
                     }
                 }
             } else {
-                let obj_binding = borrow_from_handle(ty, m.is_mut);
+                let obj_binding = borrow_from_handle(ty, m.is_mut());
                 let ret_conversion = match &m.ret {
-                    MetaVtableRet::Void => quote! {
+                    MetaReturn::Void => quote! {
                         <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
                     },
-                    MetaVtableRet::Value { bridge_type, .. } => quote! {
+                    MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
                         let call_result = <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
                         return <#bridge_type as ffier::FfiType>::into_c(call_result);
                     },
+                    MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                 };
                 quote! {
                     if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
@@ -2310,18 +2315,18 @@ fn generate_self_dispatch_bridge(
 
 /// Extract C type expressions and param names from vtable method params.
 fn vtable_param_c_types(
-    params: &[ffier_meta::MetaVtableParam],
+    params: &[ffier_meta::MetaParam],
     type_pfx: &str,
 ) -> (Vec<String>, Vec<TokenStream2>) {
     let mut names = Vec::new();
     let mut types = Vec::new();
     for p in params {
         names.push(p.name.to_string());
-        if p.impl_trait.is_some() {
+        if p.is_impl_trait() {
             // impl Trait params are raw handle pointers in C.
             types.push(quote! { "void*" });
         } else {
-            let bt = &p.bridge_type;
+            let bt = p.bridge_type();
             types.push(quote! {
                 &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
             });
@@ -2331,12 +2336,13 @@ fn vtable_param_c_types(
 }
 
 /// C return type expression for a vtable return.
-fn vtable_ret_c_expr(ret: &MetaVtableRet, type_pfx: &str) -> TokenStream2 {
+fn vtable_ret_c_expr(ret: &MetaReturn, type_pfx: &str) -> TokenStream2 {
     match ret {
-        MetaVtableRet::Void => quote! { "void" },
-        MetaVtableRet::Value { bridge_type, .. } => quote! {
+        MetaReturn::Void => quote! { "void" },
+        MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
             &ffier_gen_c::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
         },
+        MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
     }
 }
 
@@ -2368,10 +2374,10 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
 
         for p in &m.params {
             let param_name = &p.name;
-            if let Some(impl_trait_name) = &p.impl_trait {
+            if let Some(impl_trait_name) = p.impl_trait_name() {
                 bridge_params.push(quote! { #param_name: *mut core::ffi::c_void });
                 let wrapper_path = trait_map
-                    .get(impl_trait_name.as_str())
+                    .get(impl_trait_name)
                     .and_then(|info| info.implementable.as_ref())
                     .map(|imp| &imp.wrapper_path)
                     .unwrap_or_else(|| panic!(
@@ -2386,7 +2392,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
                 });
                 call_args.push(quote! { #borrow_name });
             } else {
-                let bt = &p.bridge_type;
+                let bt = p.bridge_type();
                 bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
                 call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
             }
@@ -2394,14 +2400,15 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
 
         // Return type
         let (ret_type, ret_conversion) = match &m.ret {
-            MetaVtableRet::Void => (quote! {}, quote! { call_result }),
-            MetaVtableRet::Value { bridge_type, .. } => (
+            MetaReturn::Void => (quote! {}, quote! { call_result }),
+            MetaReturn::Value(MetaTypePair { bridge_type, .. }) => (
                 quote! { -> <#bridge_type as ffier::FfiType>::CRepr },
                 quote! { <#bridge_type as ffier::FfiType>::into_c(call_result) },
             ),
+            MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
         };
 
-        let fn_body = if m.raw_handle {
+        let fn_body = if m.raw_handle() {
             // raw_handle: cast handle and pass directly, no &self borrow
             quote! {
                 let call_result = <#struct_path as #trait_path>::#method_name(
@@ -2410,7 +2417,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
                 #ret_conversion
             }
         } else {
-            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut);
+            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut());
             quote! {
                 #borrow
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
