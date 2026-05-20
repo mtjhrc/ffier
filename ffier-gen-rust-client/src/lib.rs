@@ -597,7 +597,7 @@ fn emit_method_body(
         }
     }
 
-    ffi_args.extend(build_ffi_param_args(&m.params));
+    ffi_args.extend(build_ffi_param_args(&m.params, lib));
     let args_str = ffi_args.join(", ");
 
     // Emit body based on return kind
@@ -884,7 +884,7 @@ fn emit_default_dispatch_body(
     out: &mut String,
     m: &Method,
     tr: &ImplementableTrait,
-    _lib: &Library,
+    lib: &Library,
     fn_pfx: &str,
     type_tag: u32,
     vtable_name: &str,
@@ -932,7 +932,7 @@ fn emit_default_dispatch_body(
         "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
             .to_string(),
     ];
-    call_args.extend(build_ffi_param_args(&m.params));
+    call_args.extend(build_ffi_param_args(&m.params, lib));
     let args_str = call_args.join(", ");
 
     emit_ffi_call_return(out, &dispatch_fn, &args_str, &m.ret, "        ");
@@ -1248,7 +1248,7 @@ fn emit_trait_impl(
 
         emit_slice_pre_bindings(out, &m.params, "        ");
         let mut ffi_args = vec!["self.0".to_string()];
-        ffi_args.extend(build_ffi_param_args(&m.params));
+        ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
 
         emit_ffi_call_return(out, &extern_name, &args_str, &m.ret, "        ");
@@ -1268,7 +1268,7 @@ fn emit_trait_impl(
 
             emit_slice_pre_bindings(out, &dm.params, "        ");
             let mut ffi_args = vec!["self.0".to_string()];
-            ffi_args.extend(build_ffi_param_args(&dm.params));
+            ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
 
             emit_ffi_call_return(out, &dispatch_fn, &args_str, &dm.ret, "        ");
@@ -1324,15 +1324,29 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 // ===========================================================================
 
 /// Build FFI call arguments from method params. Each param is converted
-/// via `FfiType::into_c`, `__into_raw_handle()`, or pre-bound slice reference.
-/// Assumes slice params have pre-bindings emitted as `__ffi_{name}`.
-fn build_ffi_param_args(params: &[ffier_schema::Param]) -> Vec<String> {
+/// via `FfiType::into_c`, `as_handle()`, `__into_raw_handle()`, or pre-bound
+/// slice reference. For borrowed handle params (`&Handle`), uses `as_handle()`
+/// instead of `into_c()` to avoid lifetime escape.
+fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
     let mut args = Vec::new();
     for p in params {
         match &p.param_type {
             ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type();
-                args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+                // For borrowed references to handle types, use as_handle()
+                // to avoid lifetime escape from into_c().
+                let is_borrowed_handle = tr.ref_kind != ffier_schema::RefKind::None
+                    && lib
+                        .type_entry(&tr.type_name)
+                        .is_some_and(|e| e.kind == ffier_schema::TypeKind::Handle);
+                if is_borrowed_handle {
+                    args.push(format!(
+                        "unsafe {{ ffier::FfiHandle::as_handle({}) }}",
+                        p.name
+                    ));
+                } else {
+                    let ty = tr.to_rust_type();
+                    args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+                }
             }
             ParamType::Slice { .. } => {
                 args.push(format!("__ffi_{}.as_ptr()", p.name));
