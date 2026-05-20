@@ -220,7 +220,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             // Auto-detect `impl Trait` params — generator resolves dispatch types
             if let Some(trait_name) = extract_impl_trait_name(&pat_ty.ty) {
                 let dispatch =
-                    parse_ffier_dispatch(&pat_ty.attrs).unwrap_or_else(|| "auto".to_string());
+                    parse_ffier_param_dispatch(&pat_ty.attrs).unwrap_or_else(|| "auto".to_string());
                 param_kinds.push(ParamKind::ImplTrait {
                     trait_name,
                     dispatch,
@@ -920,81 +920,78 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
 }
 
 /// Check if an attribute is `#[ffier(skip)]`.
-fn is_ffier_skip(attr: &syn::Attribute) -> bool {
-    if !attr.path().is_ident("ffier") {
-        return false;
-    }
-    let mut found = false;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("skip") {
-            found = true;
-        }
-        Ok(())
-    });
-    found
-}
 
-/// Parse `#[ffier(index = N)]` from a trait method's attributes.
-/// Returns `Some(N)` if present, `None` if no such attribute.
-fn parse_ffier_index(attrs: &[syn::Attribute]) -> syn::Result<Option<usize>> {
+/// Parse `#[ffier(dispatch = concrete|vtable)]` from a parameter's attributes.
+/// Only `dispatch` is recognized; unknown keys are rejected.
+fn parse_ffier_param_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
+    let mut result = None;
     for attr in attrs {
         if !attr.path().is_ident("ffier") {
             continue;
         }
-        let mut index = None;
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("index") {
-                let value = meta.value()?;
-                let lit: syn::LitInt = value.parse()?;
-                index = Some(lit.base10_parse::<usize>()?);
-                Ok(())
-            } else {
-                // Not our attribute key — skip (may be `dispatch`, etc.)
-                Ok(())
-            }
-        })?;
-        if index.is_some() {
-            return Ok(index);
-        }
-    }
-    Ok(None)
-}
-
-/// Check if `#[ffier(raw_handle)]` is present on a method.
-fn parse_ffier_raw_handle(attrs: &[syn::Attribute]) -> bool {
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
-            continue;
-        }
-        // Check if `raw_handle` appears as a token in the attribute body.
-        let tokens = attr.meta.to_token_stream().to_string();
-        if tokens.contains("raw_handle") {
-            return true;
-        }
-    }
-    false
-}
-
-/// Parse `#[ffier(dispatch = concrete)]` or `#[ffier(dispatch = vtable)]` from method attrs.
-fn parse_ffier_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
-            continue;
-        }
-        let mut result = None;
         let _ = attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("dispatch") {
                 let value = meta.value()?;
                 let mode: syn::Ident = value.parse()?;
                 result = Some(mode.to_string());
+            } else {
+                return Err(meta.error(format!(
+                    "unknown #[ffier] key `{}` on parameter",
+                    meta.path.to_token_stream(),
+                )));
             }
             Ok(())
         });
-        if result.is_some() {
-            return result;
-        }
     }
-    None
+    result
+}
+
+/// All recognized keys from `#[ffier(...)]` on a trait/impl method.
+struct FfierMethodAttrs {
+    index: Option<usize>,
+    raw_handle: bool,
+    dispatch: Option<String>,
+    skip: bool,
+}
+
+/// Parse all `#[ffier(...)]` attributes on a method in one pass.
+/// Rejects unknown keys.
+fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethodAttrs> {
+    let mut result = FfierMethodAttrs {
+        index: None,
+        raw_handle: false,
+        dispatch: None,
+        skip: false,
+    };
+
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("index") {
+                let value = meta.value()?;
+                let lit: syn::LitInt = value.parse()?;
+                result.index = Some(lit.base10_parse::<usize>()?);
+            } else if meta.path.is_ident("raw_handle") {
+                result.raw_handle = true;
+            } else if meta.path.is_ident("dispatch") {
+                let value = meta.value()?;
+                let mode: syn::Ident = value.parse()?;
+                result.dispatch = Some(mode.to_string());
+            } else if meta.path.is_ident("skip") {
+                result.skip = true;
+            } else {
+                return Err(meta.error(format!(
+                    "unknown #[ffier] key `{}`",
+                    meta.path.to_token_stream(),
+                )));
+            }
+            Ok(())
+        })?;
+    }
+
+    Ok(result)
 }
 
 /// Extract the trait name from an `impl Trait` type.
@@ -1149,10 +1146,9 @@ fn extract_vtable_methods(
             continue;
         };
         let has_default = method.default.is_some();
-        let raw_handle = parse_ffier_raw_handle(&method.attrs);
-        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default, raw_handle) {
-            let index = parse_ffier_index(&method.attrs)?;
-            let index = index.ok_or_else(|| {
+        let mattrs = parse_ffier_method_attrs(&method.attrs)?;
+        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default, mattrs.raw_handle) {
+            let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
                     &method.sig.ident,
                     format!(
@@ -1170,9 +1166,9 @@ fn extract_vtable_methods(
     // syntax only declares signatures, not default bodies).
     for sup in supers {
         for method in &sup.methods {
-            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false, false) {
-                let index = parse_ffier_index(&method.attrs)?;
-                let index = index.ok_or_else(|| {
+            let mattrs = parse_ffier_method_attrs(&method.attrs)?;
+            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false, mattrs.raw_handle) {
+                let index = mattrs.index.ok_or_else(|| {
                     syn::Error::new_spanned(
                         &method.sig.ident,
                         format!(
@@ -1428,24 +1424,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             Ok(v) => v,
             Err(e) => return e.to_compile_error().into(),
         };
-    let own_method_count = trait_item
-        .items
-        .iter()
-        .filter(|item| {
-            if let TraitItem::Fn(m) = item {
-                // Count methods with a receiver (&self, &mut self, self)
-                // or raw_handle methods (no receiver but annotated with
-                // #[ffier(raw_handle)]).
-                let has_receiver = m.sig
-                    .inputs
-                    .first()
-                    .map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)));
-                has_receiver || parse_ffier_raw_handle(&m.attrs)
-            } else {
-                false
-            }
-        })
-        .count();
+    // Count own methods (excluding supertrait methods which are appended
+    // by extract_vtable_methods after the trait's own methods).
+    let super_method_count: usize = args.supers.iter().map(|s| s.methods.len()).sum();
+    let own_method_count = vtable_methods.len() - super_method_count;
 
     // --- Generate vtable struct fields (ordered by explicit index, with padding for gaps) ---
     // Sort methods by their explicit index to determine vtable layout.
@@ -1711,7 +1693,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     if is_foreign {
         for item in &trait_item.items {
             if let TraitItem::Fn(method) = item {
-                if method.default.is_some() && !parse_ffier_raw_handle(&method.attrs) {
+                let is_raw_handle = vtable_methods
+                    .iter()
+                    .any(|vm| vm.name == method.sig.ident && vm.raw_handle);
+                if method.default.is_some() && !is_raw_handle {
                     return syn::Error::new_spanned(
                         &method.sig.ident,
                         "foreign trait methods must not have default bodies \
@@ -1736,7 +1721,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             continue;
         };
         // Strip all #[ffier(...)] from emitted method attrs (consumed by this macro)
-        let is_raw_handle = parse_ffier_raw_handle(&method.attrs);
+        let is_raw_handle = vtable_methods
+            .iter()
+            .any(|vm| vm.name == method.sig.ident && vm.raw_handle);
         method.attrs.retain(|attr| !attr.path().is_ident("ffier"));
         let Some(default_block) = &method.default else {
             continue;
@@ -2078,7 +2065,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut clean_impl = input.clone();
     for item in &mut clean_impl.items {
         if let ImplItem::Fn(method) = item {
-            method.attrs.retain(|a| !is_ffier_skip(a));
+            method.attrs.retain(|a| !a.path().is_ident("ffier"));
         }
     }
 
@@ -2148,21 +2135,22 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Extract methods, skipping any marked with #[ffier(skip)].
-    let methods: Vec<VtableMethod> = input
-        .items
-        .iter()
-        .filter_map(|item| {
-            let ImplItem::Fn(method) = item else {
-                return None;
+    let methods: Vec<VtableMethod> = {
+        let mut ms = Vec::new();
+        for item in &input.items {
+            let ImplItem::Fn(method) = item else { continue };
+            let mattrs = match parse_ffier_method_attrs(&method.attrs) {
+                Ok(a) => a,
+                Err(e) => return e.to_compile_error().into(),
             };
-            if method.attrs.iter().any(is_ffier_skip) {
-                return None;
-            }
+            if mattrs.skip { continue; }
             // trait_impl methods are concrete overrides, not defaults
-            let raw_handle = parse_ffier_raw_handle(&method.attrs);
-            parse_trait_method_sig(&method.sig, &mut ctx, false, raw_handle)
-        })
-        .collect();
+            if let Some(vm) = parse_trait_method_sig(&method.sig, &mut ctx, false, mattrs.raw_handle) {
+                ms.push(vm);
+            }
+        }
+        ms
+    };
 
     let reexport_items_crate = ctx.reexport_items_crate();
 
