@@ -2544,7 +2544,12 @@ struct CTypeResolver {
 }
 
 impl CTypeResolver {
-    fn new(prefix: &str, exportables: &[MetaExportable], implementables: &[MetaImplementable]) -> Self {
+    fn new(
+        prefix: &str,
+        exportables: &[MetaExportable],
+        implementables: &[MetaImplementable],
+        trait_impls: &[MetaTraitImpl],
+    ) -> Self {
         let type_pfx = ffier_meta::snake_to_pascal(prefix);
         let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
         let fn_pfx = format!("{prefix}_");
@@ -2558,6 +2563,14 @@ impl CTypeResolver {
             let trait_name = i.trait_name.to_string();
             let c_name = format!("{type_pfx}{trait_name}");
             trait_c_names.insert(trait_name, c_name);
+        }
+        // Also register traits discovered via trait_impls (traits that have
+        // concrete impls but may not have #[implementable]).
+        for ti in trait_impls {
+            let trait_name = ti.trait_name.to_string();
+            trait_c_names
+                .entry(trait_name.clone())
+                .or_insert_with(|| format!("{type_pfx}{trait_name}"));
         }
         CTypeResolver { type_pfx, upper_pfx, fn_pfx, handle_names, trait_c_names }
     }
@@ -2686,7 +2699,7 @@ fn build_schema(
         .filter_map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).ok())
         .collect();
 
-    let resolver = CTypeResolver::new(prefix, &exportables_parsed, &implementables_parsed);
+    let resolver = CTypeResolver::new(prefix, &exportables_parsed, &implementables_parsed, &trait_impls_parsed);
 
     ffier_schema::Library {
         prefix: prefix.to_string(),
