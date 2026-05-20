@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <string.h>
 
+typedef void* FtTestError;
 typedef void* FtWidget;
 typedef void* FtGadget;
 typedef void* FtConfig;
@@ -491,6 +492,15 @@ typedef struct {
     bool (*push)(void* self_data, FtStr s);
 } FtPushStrVtable;
 
+/* VtableError ------------------------------------------------------- */
+
+typedef struct {
+    void (*drop)(void* self_data);
+    uint32_t (*code)(void* self_data);
+    void (*message)(void* self_data, void* writer);
+    void (*__reserved_2)(void); /* reserved slot 2 */
+} FtErrorVtable;
+
 /* Fruit for Apple --------------------------------------------------- */
 
 int32_t ft_apple_value(FtApple handle);
@@ -546,6 +556,11 @@ int32_t ft_gadget_snap_source_count(FtGadget handle);
 
 int32_t ft_apple_weight_grams(FtApple handle);
 
+/* Error for TestError ----------------------------------------------- */
+
+uint32_t ft_test_error_code(FtTestError handle);
+void ft_test_error_message(FtTestError handle, void* writer);
+
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(void* handle);
@@ -562,6 +577,13 @@ void ft_push_str_destroy(void* handle);
 int32_t ft_weighable_weight_grams(void* handle);
 void ft_weighable_destroy(void* handle);
 
+/* Error (dispatch) -------------------------------------------------- */
+
+uint32_t ft_error_code(void* handle);
+void ft_error_message(void* handle, void* writer);
+uint64_t ft_error_result(void* handle);
+void ft_error_destroy(void* handle);
+
 /* Processor (dispatch) ---------------------------------------------- */
 
 int32_t ft_processor_process(void* handle, int32_t input);
@@ -572,8 +594,4 @@ void ft_processor_destroy(void* handle);
 
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
-FtResult ft_error_result(FtError err);
-typedef void* FtPushStr;
-void ft_error_message(FtError err, FtPushStr writer);
-void ft_error_destroy(FtError err);
 #endif /* FFIER_TEST_H */

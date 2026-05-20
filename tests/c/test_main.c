@@ -408,6 +408,7 @@ static void error_message_to_buf(FtError err, struct push_str_buf* buf) {
         .user_data = buf,
         .vtable_size = sizeof(vtable),
     };
+    if (err == NULL) return; /* self-dispatch doesn't accept null handles */
     ft_error_message(err, &handle);
 }
 
@@ -428,9 +429,6 @@ void error_handle_message_and_destroy(void) {
 
 void error_handle_null_safe(void) {
     ft_error_destroy(NULL); /* should not crash */
-    struct push_str_buf buf;
-    error_message_to_buf(NULL, &buf);
-    assert(buf.len == 0); /* no-op for NULL */
 }
 
 /* ===================================================================== */

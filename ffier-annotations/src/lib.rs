@@ -751,6 +751,15 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let ffi_handle_impls =
         emit_ffi_handle_impls(&quote! { #name }, &name_str, &tag_const);
 
+    // --- trait_impl metadata for `Error for #name` ---
+    // Auto-generate the `@trait_impl` metadata macro so the user doesn't need
+    // a manual `#[ffier::trait_impl] impl Error for TestError { ... }` block.
+    let trait_impl_counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let trait_impl_internal = format_ident!(
+        "__ffier_internal_error_for_{error_snake}_{trait_impl_counter}"
+    );
+    let trait_impl_alias = format_ident!("__ffier_meta_Error_for_{name}");
+
     let output = quote! {
         #ffi_handle_impls
 
@@ -772,6 +781,17 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
             fn codes() -> &'static [(&'static str, u32)] {
                 &[#(#codes_entries),*]
+            }
+        }
+
+        impl ffier::Error for #name {
+            fn code(&self) -> u32 {
+                ffier::FfiError::code(self)
+            }
+            fn message(&self, writer: &mut impl ffier::PushStr) {
+                use core::fmt::Write;
+                let writer: &mut dyn ffier::PushStr = writer;
+                let _ = write!(writer, "{}", self);
             }
         }
 
@@ -805,6 +825,53 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
         #[doc(hidden)]
         pub use #internal_macro_name as #meta_alias_name;
+
+        /// Auto-generated `@trait_impl` metadata for `Error for #name`.
+        /// Registered via `Error for #name` in `library_definition!`.
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #trait_impl_internal {
+            (@reexport) => {};
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @trait_impl,
+                    trait_name = Error,
+                    struct_name = #name,
+                    struct_path = ($crate::#name),
+                    trait_path = ($crate::Error),
+                    prefix = $prefix,
+                    lifetimes = (),
+                    trait_lifetime_args = [],
+                    struct_lifetime_args = [],
+                    methods = [
+                        {
+                            name = code,
+                            params = [],
+                            ret = value(bridge_type = (u32), rust_type = (u32),),
+                            has_default = false,
+                            is_mut = false,
+                            index = 0,
+                        },
+                        {
+                            name = message,
+                            params = [{
+                                name = writer,
+                                bridge_type = (*mut core::ffi::c_void),
+                                rust_type = (*mut core::ffi::c_void),
+                                impl_trait = "PushStr",
+                            }],
+                            ret = void,
+                            has_default = false,
+                            is_mut = false,
+                            index = 1,
+                        },
+                    ],
+                } $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        pub use #trait_impl_internal as #trait_impl_alias;
     };
 
     output.into()
@@ -891,6 +958,21 @@ fn parse_ffier_index(attrs: &[syn::Attribute]) -> syn::Result<Option<usize>> {
         }
     }
     Ok(None)
+}
+
+/// Check if `#[ffier(raw_handle)]` is present on a method.
+fn parse_ffier_raw_handle(attrs: &[syn::Attribute]) -> bool {
+    for attr in attrs {
+        if !attr.path().is_ident("ffier") {
+            continue;
+        }
+        // Check if `raw_handle` appears as a token in the attribute body.
+        let tokens = attr.meta.to_token_stream().to_string();
+        if tokens.contains("raw_handle") {
+            return true;
+        }
+    }
+    false
 }
 
 /// Parse `#[ffier(dispatch = concrete)]` or `#[ffier(dispatch = vtable)]` from method attrs.
@@ -1038,12 +1120,20 @@ struct VtableMethod {
     /// Explicit vtable slot index from `#[ffier(index = N)]`.
     /// Determines position in the vtable struct (after `drop`).
     index: usize,
+    /// If true, this is a raw-handle method: no `&self` receiver, the first
+    /// param is `*const FfierHandle<Self>`. The bridge passes the raw handle
+    /// pointer directly instead of borrowing the value.
+    raw_handle: bool,
 }
 
 struct VtableMethodParam {
     ident: syn::Ident,
     bridge_type: proc_macro2::TokenStream,
     rust_type: proc_macro2::TokenStream,
+    /// If this param is `impl Trait`, the trait name (e.g. "PushStr").
+    /// The bridge_type is set to `*mut c_void` for handle passing; the
+    /// codegen resolves the concrete wrapper type from `TraitMap`.
+    impl_trait: Option<String>,
 }
 
 fn extract_vtable_methods(
@@ -1059,7 +1149,8 @@ fn extract_vtable_methods(
             continue;
         };
         let has_default = method.default.is_some();
-        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default) {
+        let raw_handle = parse_ffier_raw_handle(&method.attrs);
+        if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, has_default, raw_handle) {
             let index = parse_ffier_index(&method.attrs)?;
             let index = index.ok_or_else(|| {
                 syn::Error::new_spanned(
@@ -1079,7 +1170,7 @@ fn extract_vtable_methods(
     // syntax only declares signatures, not default bodies).
     for sup in supers {
         for method in &sup.methods {
-            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false) {
+            if let Some(mut vm) = parse_trait_method_sig(&method.sig, ctx, false, false) {
                 let index = parse_ffier_index(&method.attrs)?;
                 let index = index.ok_or_else(|| {
                     syn::Error::new_spanned(
@@ -1130,14 +1221,26 @@ fn parse_trait_method_sig(
     sig: &syn::Signature,
     ctx: &mut AliasContext,
     has_default: bool,
+    raw_handle: bool,
 ) -> Option<VtableMethod> {
-    let first = sig.inputs.first()?;
-    let receiver = match first {
-        FnArg::Receiver(r) => r,
-        _ => return None,
-    };
-    let is_mut = receiver.mutability.is_some();
+    let is_mut;
 
+    if raw_handle {
+        // raw_handle methods have no &self receiver — first param is
+        // `handle: *const FfierHandle<Self>`. We skip it (it's injected
+        // by the bridge) and treat remaining params normally.
+        is_mut = false;
+    } else {
+        let first = sig.inputs.first()?;
+        let receiver = match first {
+            FnArg::Receiver(r) => r,
+            _ => return None,
+        };
+        is_mut = receiver.mutability.is_some();
+    }
+
+    // For raw_handle methods, skip the first param (the handle pointer).
+    // For normal methods, skip the receiver (&self / &mut self).
     let params: Vec<_> = sig
         .inputs
         .iter()
@@ -1147,22 +1250,50 @@ fn parse_trait_method_sig(
             let Pat::Ident(pi) = &*pt.pat else {
                 return None;
             };
-            let bridge_type = ctx.bridge_tokens(&pt.ty);
-            let erased = erase_lifetimes(&pt.ty);
-            Some(VtableMethodParam {
-                ident: pi.ident.clone(),
-                bridge_type,
-                rust_type: quote! { #erased },
-            })
+
+            // Unwrap reference for impl Trait detection:
+            // `&mut impl PushStr` → inner type is `impl PushStr`
+            let inner_ty = match &*pt.ty {
+                Type::Reference(r) => &*r.elem,
+                other => other,
+            };
+
+            if let Some(trait_name) = extract_impl_trait_name(inner_ty) {
+                // impl Trait param — bridge type is a raw handle pointer.
+                // The codegen resolves the concrete wrapper type from TraitMap.
+                Some(VtableMethodParam {
+                    ident: pi.ident.clone(),
+                    bridge_type: quote! { *mut core::ffi::c_void },
+                    rust_type: quote! { *mut core::ffi::c_void },
+                    impl_trait: Some(trait_name),
+                })
+            } else {
+                let bridge_type = ctx.bridge_tokens(&pt.ty);
+                let erased = erase_lifetimes(&pt.ty);
+                Some(VtableMethodParam {
+                    ident: pi.ident.clone(),
+                    bridge_type,
+                    rust_type: quote! { #erased },
+                    impl_trait: None,
+                })
+            }
         })
         .collect();
 
     let (ret_bridge_type, ret_rust_type) = match &sig.output {
         ReturnType::Default => (None, None),
         ReturnType::Type(_, ty) => {
-            let bt = ctx.bridge_tokens(ty);
-            let erased = erase_lifetimes(ty);
-            (Some(bt), Some(quote! { #erased }))
+            if raw_handle {
+                // raw_handle methods don't go through the vtable — skip
+                // AliasContext to avoid creating cross-crate type aliases
+                // that would reference $crate in the wrong context.
+                let erased = erase_lifetimes(ty);
+                (Some(quote! { #erased }), Some(quote! { #erased }))
+            } else {
+                let bt = ctx.bridge_tokens(ty);
+                let erased = erase_lifetimes(ty);
+                (Some(bt), Some(quote! { #erased }))
+            }
         }
     };
 
@@ -1174,6 +1305,7 @@ fn parse_trait_method_sig(
         has_default,
         is_mut,
         index: 0, // placeholder — caller sets the real index from #[ffier(index = N)]
+        raw_handle,
     })
 }
 
@@ -1190,7 +1322,11 @@ fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenSt
                     let id = &p.ident;
                     let bt = &p.bridge_type;
                     let rt = &p.rust_type;
-                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), } }
+                    let it = match &p.impl_trait {
+                        Some(name) => quote! { impl_trait = #name, },
+                        None => quote! {},
+                    };
+                    quote! { { name = #id, bridge_type = (#bt), rust_type = (#rt), #it } }
                 })
                 .collect();
             let ret = match (&m.ret_bridge_type, &m.ret_rust_type) {
@@ -1201,8 +1337,9 @@ fn emit_vtable_method_meta(methods: &[VtableMethod]) -> Vec<proc_macro2::TokenSt
             let hd = m.has_default;
             let im = m.is_mut;
             let idx = m.index;
+            let rh = m.raw_handle;
             quote! {
-                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, is_mut = #im, index = #idx, }
+                { name = #mname, params = [#(#param_meta),*], ret = #ret, has_default = #hd, is_mut = #im, index = #idx, raw_handle = #rh, }
             }
         })
         .collect()
@@ -1296,13 +1433,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         .iter()
         .filter(|item| {
             if let TraitItem::Fn(m) = item {
-                // Only count methods with a receiver (&self, &mut self, self).
-                // Static methods (no receiver) are excluded from vtable_methods
-                // by parse_trait_method_sig.
-                m.sig
+                // Count methods with a receiver (&self, &mut self, self)
+                // or raw_handle methods (no receiver but annotated with
+                // #[ffier(raw_handle)]).
+                let has_receiver = m.sig
                     .inputs
                     .first()
-                    .map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)))
+                    .map_or(false, |arg| matches!(arg, syn::FnArg::Receiver(_)));
+                has_receiver || parse_ffier_raw_handle(&m.attrs)
             } else {
                 false
             }
@@ -1318,6 +1456,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut next_slot = 0usize;
 
     for m in &sorted_methods {
+        // raw_handle methods don't occupy vtable slots — they're dispatched
+        // via the bridge directly (composing other trait methods).
+        if m.raw_handle {
+            continue;
+        }
+
         // Insert padding fields for any gaps
         while next_slot < m.index {
             let pad_name = format_ident!("__reserved_{next_slot}");
@@ -1333,8 +1477,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .params
             .iter()
             .map(|p| {
-                let bt = &p.bridge_type;
-                quote! { <#bt as ffier::FfiType>::CRepr }
+                if p.impl_trait.is_some() {
+                    // impl Trait → raw handle pointer in the vtable fn signature
+                    quote! { *mut core::ffi::c_void }
+                } else {
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::CRepr }
+                }
             })
             .collect();
         let ret = match &m.ret_bridge_type {
@@ -1408,16 +1557,28 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
      -> proc_macro2::TokenStream {
         let name = &vm.name;
         let name_str = name.to_string();
+        // Check if any param is impl Trait — vtable dispatch through C
+        // function pointers can't handle impl Trait params generically
+        // (the value might not be an FFI handle). If so, the vtable branch
+        // panics at runtime.
+        let has_impl_trait_params = vm.params.iter().any(|p| p.impl_trait.is_some());
+
         let vtable_args: Vec<_> = vm
             .params
             .iter()
             .map(|p| {
                 let id = &p.ident;
-                // Use rust_type (elided lifetimes) for the conversion call,
-                // not bridge_type ('static lifetimes). The actual value has
-                // the caller's lifetime, not 'static.
-                let rt = &p.rust_type;
-                quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                if p.impl_trait.is_some() {
+                    // Placeholder — won't actually be reached due to the panic
+                    // guard below, but needed for the code to compile.
+                    quote! { core::ptr::null_mut() }
+                } else {
+                    // Use rust_type (elided lifetimes) for the conversion call,
+                    // not bridge_type ('static lifetimes). The actual value has
+                    // the caller's lifetime, not 'static.
+                    let rt = &p.rust_type;
+                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                }
             })
             .collect();
         // Build the concrete fn pointer type for this vtable field
@@ -1425,8 +1586,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .params
             .iter()
             .map(|p| {
-                let bt = &p.bridge_type;
-                quote! { <#bt as ffier::FfiType>::CRepr }
+                if p.impl_trait.is_some() {
+                    // impl Trait → *mut c_void in the function pointer signature
+                    quote! { *mut core::ffi::c_void }
+                } else {
+                    let bt = &p.bridge_type;
+                    quote! { <#bt as ffier::FfiType>::CRepr }
+                }
             })
             .collect();
         let fn_ret = match &vm.ret_bridge_type {
@@ -1440,9 +1606,23 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         let raw_call = quote! {
             unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
         };
-        let vtable_branch = match &vm.ret_bridge_type {
-            None => raw_call,
-            Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
+        let vtable_branch = if has_impl_trait_params {
+            // Methods with impl Trait params can't dispatch through C vtable
+            // function pointers — the generic param isn't necessarily an FFI
+            // handle. Panic if this path is ever reached at runtime.
+            let wrapper_str = wrapper_name.to_string();
+            quote! {
+                let _ = __f;
+                panic!(
+                    "{}: vtable dispatch for method `{}` with impl Trait params is not supported",
+                    #wrapper_str, #name_str,
+                )
+            }
+        } else {
+            match &vm.ret_bridge_type {
+                None => raw_call,
+                Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
+            }
         };
         let none_branch = match &fallback {
             Some(fb) => fb.clone(),
@@ -1526,10 +1706,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Foreign traits must not have default method bodies — the real defaults
     // live in the foreign crate and can't be replicated here.
+    // Exception: raw_handle methods always need their default body because
+    // they're not dispatched through the vtable.
     if is_foreign {
         for item in &trait_item.items {
             if let TraitItem::Fn(method) = item {
-                if method.default.is_some() {
+                if method.default.is_some() && !parse_ffier_raw_handle(&method.attrs) {
                     return syn::Error::new_spanned(
                         &method.sig.ident,
                         "foreign trait methods must not have default bodies \
@@ -1554,10 +1736,17 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             continue;
         };
         // Strip all #[ffier(...)] from emitted method attrs (consumed by this macro)
+        let is_raw_handle = parse_ffier_raw_handle(&method.attrs);
         method.attrs.retain(|attr| !attr.path().is_ident("ffier"));
         let Some(default_block) = &method.default else {
             continue;
         };
+        // raw_handle methods keep their default body as-is — they don't
+        // go through the vtable helper extraction, and the VtableWrapper
+        // uses the trait's default impl directly.
+        if is_raw_handle {
+            continue;
+        }
 
         let method_name = &method.sig.ident;
         let helper_name = format_ident!("__ffier_default_{trait_name}_{method_name}");
@@ -1624,6 +1813,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
             let name = &method.sig.ident;
             let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+            // Skip raw_handle methods — they don't take &self, so the
+            // VtableWrapper can't override them. The trait's default impl
+            // handles dispatch (it calls other trait methods via &self).
+            if vm.raw_handle {
+                return None;
+            }
             // Use the explicit index for metadata dispatch
             let method_index = Some(vm.index);
             let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
@@ -1964,7 +2159,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 return None;
             }
             // trait_impl methods are concrete overrides, not defaults
-            parse_trait_method_sig(&method.sig, &mut ctx, false)
+            let raw_handle = parse_ffier_raw_handle(&method.attrs);
+            parse_trait_method_sig(&method.sig, &mut ctx, false, raw_handle)
         })
         .collect();
 

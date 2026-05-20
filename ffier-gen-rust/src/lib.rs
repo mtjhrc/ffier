@@ -110,7 +110,7 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         let error_destroy_fn = format_ident!("{prefix}_error_destroy");
         let externs = quote! {
             unsafe extern "C" {
-                fn #error_result_fn(err: *const core::ffi::c_void) -> ffier::FfierResult;
+                fn #error_result_fn(err: *mut core::ffi::c_void) -> ffier::FfierResult;
                 fn #error_destroy_fn(err: *mut core::ffi::c_void);
             }
         };
@@ -160,11 +160,24 @@ fn generate_batch_client_impl(input: TokenStream2) -> TokenStream2 {
         all_source.push('\n');
     }
 
+    // Build error type name set — used to skip trait_impl entries for error
+    // types (they don't have client wrapper structs, so impl Trait for them
+    // would reference a non-existent type).
+    let error_type_names: HashSet<String> = errors
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaError>(item.clone()).ok())
+        .map(|m| m.name.to_string())
+        .collect();
+
     for item in &trait_impls {
         let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
             Ok(m) => m,
             Err(e) => return e.to_compile_error(),
         };
+        // Skip trait impls for error types — no client wrapper struct exists.
+        if error_type_names.contains(&meta.struct_name.to_string()) {
+            continue;
+        }
         let emit_trait_def = defined_traits.insert(meta.trait_name.to_string());
         let defaults = trait_defaults.get(&meta.trait_name.to_string());
         let code = generate_trait_impl_client(meta, emit_trait_def, defaults);
@@ -677,6 +690,7 @@ fn vtable_trait_method_sigs(
 ) -> Vec<TokenStream2> {
     methods
         .iter()
+        .filter(|m| !m.raw_handle) // raw_handle methods are dispatch-only, not in client trait
         .map(|m| {
             let method_index = m.index;
             let mname = &m.name;
@@ -685,8 +699,12 @@ fn vtable_trait_method_sigs(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { #id: #rt }
+                    if p.impl_trait.is_some() {
+                        quote! { #id: *mut core::ffi::c_void }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { #id: #rt }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -704,8 +722,12 @@ fn vtable_trait_method_sigs(
                     // Forward args to self-dispatch
                     let fwd_args: Vec<_> = m.params.iter().map(|p| {
                         let id = &p.name;
-                        let bt = &p.bridge_type;
-                        quote! { <#bt as ffier::FfiType>::into_c(#id) }
+                        if p.impl_trait.is_some() {
+                            quote! { #id }
+                        } else {
+                            let bt = &p.bridge_type;
+                            quote! { <#bt as ffier::FfiType>::into_c(#id) }
+                        }
                     }).collect();
 
                     let ret_conversion = match &m.ret {
@@ -792,6 +814,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         let mut fields = Vec::new();
         let mut next_slot = 0usize;
         for m in &sorted {
+            if m.raw_handle { continue; }
             while next_slot < m.index {
                 let pad_name = format_ident!("__reserved_{next_slot}");
                 fields.push(quote! {
@@ -804,8 +827,12 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 .params
                 .iter()
                 .map(|p| {
-                    let bt = &p.bridge_type;
-                    quote! { <#bt as ffier::FfiType>::CRepr }
+                    if p.impl_trait.is_some() {
+                        quote! { *mut core::ffi::c_void }
+                    } else {
+                        let bt = &p.bridge_type;
+                        quote! { <#bt as ffier::FfiType>::CRepr }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -850,6 +877,7 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
         let mut fields = Vec::new();
         let mut next_slot = 0usize;
         for m in &sorted {
+            if m.raw_handle { continue; }
             while next_slot < m.index {
                 let pad_name = format_ident!("__reserved_{next_slot}");
                 fields.push(quote! { #pad_name: None });
@@ -862,8 +890,12 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let bt = &p.bridge_type;
-                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
+                    if p.impl_trait.is_some() {
+                        quote! { #id: *mut core::ffi::c_void }
+                    } else {
+                        let bt = &p.bridge_type;
+                        quote! { #id: <#bt as ffier::FfiType>::CRepr }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -877,8 +909,13 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { <#rt as ffier::FfiType>::from_c(#id) }
+                    if p.impl_trait.is_some() {
+                        // impl Trait — pass raw handle pointer directly
+                        quote! { #id }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { <#rt as ffier::FfiType>::from_c(#id) }
+                    }
                 })
                 .collect();
             let ret_conversion = match &m.ret {
@@ -919,15 +956,19 @@ fn generate_implementable_client(meta: MetaImplementable) -> TokenStream2 {
     let self_dispatch_externs: Vec<_> = meta
         .vtable_methods
         .iter()
-        .filter(|m| m.has_default)
+        .filter(|m| m.has_default && !m.raw_handle)
         .map(|m| {
             let ffi_name = format_ident!("{self_dispatch_prefix}_{}", m.name);
             let params: Vec<_> = m
                 .params
                 .iter()
                 .map(|p| {
-                    let bt = &p.bridge_type;
-                    quote! { <#bt as ffier::FfiType>::CRepr }
+                    if p.impl_trait.is_some() {
+                        quote! { *mut core::ffi::c_void }
+                    } else {
+                        let bt = &p.bridge_type;
+                        quote! { <#bt as ffier::FfiType>::CRepr }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -1209,8 +1250,12 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let bt = &p.bridge_type;
-                    quote! { #id: <#bt as ffier::FfiType>::CRepr }
+                    if p.impl_trait.is_some() {
+                        quote! { #id: *mut core::ffi::c_void }
+                    } else {
+                        let bt = &p.bridge_type;
+                        quote! { #id: <#bt as ffier::FfiType>::CRepr }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -1236,8 +1281,12 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { #id: #rt }
+                    if p.impl_trait.is_some() {
+                        quote! { #id: *mut core::ffi::c_void }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { #id: #rt }
+                    }
                 })
                 .collect();
 
@@ -1252,8 +1301,13 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                    if p.impl_trait.is_some() {
+                        // impl Trait — pass raw handle pointer directly
+                        quote! { #id }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                    }
                 })
                 .collect();
 
@@ -1303,8 +1357,12 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { #id: #rt }
+                    if p.impl_trait.is_some() {
+                        quote! { #id: *mut core::ffi::c_void }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { #id: #rt }
+                    }
                 })
                 .collect();
             let ret = match &m.ret {
@@ -1318,8 +1376,12 @@ fn generate_trait_impl_client(
                 .iter()
                 .map(|p| {
                     let id = &p.name;
-                    let rt = &p.rust_type;
-                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                    if p.impl_trait.is_some() {
+                        quote! { #id }
+                    } else {
+                        let rt = &p.rust_type;
+                        quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                    }
                 })
                 .collect();
             let body = match &m.ret {

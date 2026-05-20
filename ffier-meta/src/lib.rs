@@ -366,6 +366,10 @@ pub struct MetaVtableMethod {
     /// Explicit vtable slot index from `#[ffier(index = N)]`.
     /// Determines position in the vtable struct (after `drop` at slot 0).
     pub index: usize,
+    /// If true, this method receives the raw handle pointer
+    /// (`*const FfierHandle<Self>`) instead of `&self`. The bridge casts
+    /// the dispatch pointer and passes it directly.
+    pub raw_handle: bool,
 }
 
 #[derive(Clone)]
@@ -373,6 +377,9 @@ pub struct MetaVtableParam {
     pub name: Ident,
     pub bridge_type: TokenStream,
     pub rust_type: TokenStream,
+    /// If this param is `impl Trait`, the trait name (e.g. "PushStr").
+    /// Codegen resolves the concrete wrapper type from `TraitMap`.
+    pub impl_trait: Option<String>,
 }
 
 #[derive(Clone)]
@@ -884,6 +891,17 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
     let index: syn::LitInt = inner.parse()?;
     let index = index.base10_parse::<usize>()?;
     parse_comma(&inner)?;
+
+    // Optional: `raw_handle = true,`
+    let raw_handle = if inner.peek(Ident) && inner.fork().parse::<Ident>().map_or(false, |id| id == "raw_handle") {
+        expect_key(&inner, "raw_handle")?;
+        let val: syn::LitBool = inner.parse()?;
+        parse_comma(&inner)?;
+        val.value
+    } else {
+        false
+    };
+
     Ok(MetaVtableMethod {
         name: mname,
         params,
@@ -891,6 +909,7 @@ fn parse_vtable_method(input: ParseStream) -> syn::Result<MetaVtableMethod> {
         has_default: has_default.value,
         is_mut: is_mut.value,
         index,
+        raw_handle,
     })
 }
 
@@ -906,10 +925,22 @@ fn parse_vtable_param(input: ParseStream) -> syn::Result<MetaVtableParam> {
     expect_key(&content, "rust_type")?;
     let rust_type = parse_parenthesized_tokens(&content)?;
     parse_comma(&content)?;
+
+    // Optional: `impl_trait = "TraitName",`
+    let impl_trait = if content.peek(Ident) && content.fork().parse::<Ident>().map_or(false, |id| id == "impl_trait") {
+        expect_key(&content, "impl_trait")?;
+        let name = parse_string(&content)?;
+        parse_comma(&content)?;
+        Some(name)
+    } else {
+        None
+    };
+
     Ok(MetaVtableParam {
         name,
         bridge_type,
         rust_type,
+        impl_trait,
     })
 }
 

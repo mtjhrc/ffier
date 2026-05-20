@@ -828,6 +828,9 @@ pub use ffier_builtins::PushStrVtable;
 // provides the vtable struct and metadata macro. We just register it in
 // library_definition! via `trait ffier_builtins::PushStr = 24`.
 
+pub use ffier::Error;
+pub use ffier_builtins::ErrorVtable;
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -859,4 +862,6 @@ ffier::library_definition!("ft",
     trait Weighable = 23,
     Weighable for Apple,
     trait ffier_builtins::PushStr = 24,
+    trait ffier_builtins::Error = 25,
+    Error for TestError,
 );
