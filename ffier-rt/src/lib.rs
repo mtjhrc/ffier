@@ -496,6 +496,12 @@ pub trait Error {
     /// This is a `raw_handle` method: instead of `&self`, it receives the
     /// raw handle pointer. The default impl reads `type_tag` from the
     /// handle header and delegates to `code()` through the value.
+    ///
+    /// # Safety contract
+    ///
+    /// `handle` must point to a valid, live `FfierHandle<Self>`. This is
+    /// guaranteed by the generated bridge code which verifies the type tag
+    /// before calling. User code should not call this directly.
     fn result(handle: *const FfierHandle<Self>) -> u64
     where
         Self: Sized,
