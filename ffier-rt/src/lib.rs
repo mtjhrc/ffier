@@ -476,6 +476,36 @@ impl FfierBytes {
 }
 
 // ---------------------------------------------------------------------------
+// Error --- trait for error dispatch (code + message)
+// ---------------------------------------------------------------------------
+
+/// Dispatch trait for error types exported across FFI.
+///
+/// Annotated with `#[ffier::implementable(foreign)]` in `ffier-builtins`.
+/// `#[derive(FfiError)]` auto-generates the impl. Self-dispatch generates
+/// `ft_error_code(handle)` and `ft_error_message(handle, writer)`.
+pub trait Error {
+    /// Variant code (lower 32 bits of `FfierResult`).
+    fn code(&self) -> u32;
+
+    /// Stream the error's `Display` output into a `PushStr` writer.
+    fn message(&self, writer: &mut impl PushStr);
+
+    /// Pack the error's type tag and variant code into an `FfierResult`.
+    ///
+    /// This is a `raw_handle` method: instead of `&self`, it receives the
+    /// raw handle pointer. The default impl reads `type_tag` from the
+    /// handle header and delegates to `code()` through the value.
+    fn result(handle: *const FfierHandle<Self>) -> u64
+    where
+        Self: Sized,
+    {
+        let h = unsafe { &*handle };
+        ffier_result(h.type_tag, h.value.code())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PushStr --- streaming string output for error messages
 // ---------------------------------------------------------------------------
 

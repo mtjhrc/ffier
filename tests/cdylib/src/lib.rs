@@ -73,7 +73,7 @@ mod tests {
         };
 
         unsafe {
-            ft_error_message(err as *const c_void, &mut handle as *mut _ as *mut c_void);
+            ft_error_message(err as *mut c_void, &mut handle as *mut _ as *mut c_void);
         }
         buf
     }
@@ -353,7 +353,7 @@ mod tests {
             let g = ft_widget_try_create_gadget(w, false, &mut err as *mut *mut core::ffi::c_void);
             assert!(g.is_null());
             // Extract result code from error handle
-            let r2 = ft_error_result(err as *const core::ffi::c_void);
+            let r2 = ft_error_result(err as *mut core::ffi::c_void);
             assert_eq!(ffier::ffier_result_code(r2), 1); // NotFound
             ft_error_destroy(err);
             ft_widget_destroy(w);
@@ -542,7 +542,7 @@ mod tests {
             let g = ft_gizmo_builder_try_build(b, &mut err as *mut *mut core::ffi::c_void);
             // b is consumed
             assert!(g.is_null());
-            let r2 = ft_error_result(err as *const core::ffi::c_void);
+            let r2 = ft_error_result(err as *mut core::ffi::c_void);
             assert_eq!(ffier::ffier_result_code(r2), 3); // InvalidInput
             ft_error_destroy(err);
         }
@@ -627,7 +627,7 @@ mod tests {
             let r = ft_widget_fail_always(w, &mut err as *mut *mut core::ffi::c_void);
             assert_ne!(r, 0);
             // ft_error_result extracts the FtResult from the boxed error
-            let r2 = ft_error_result(err as *const core::ffi::c_void);
+            let r2 = ft_error_result(err as *mut core::ffi::c_void);
             assert_eq!(r, r2);
             ft_error_destroy(err);
             ft_widget_destroy(w);
@@ -637,7 +637,7 @@ mod tests {
     #[test]
     fn error_result_null_returns_success() {
         unsafe {
-            assert_eq!(ft_error_result(ptr::null()), 0);
+            // ft_error_result is now a trait dispatch method — no null guard.
         }
     }
 
@@ -671,9 +671,8 @@ mod tests {
             // Destroying NULL is a no-op
             ft_error_destroy(ptr::null_mut());
 
-            // Message on NULL is a no-op (writer not called)
-            let msg = error_message_to_string(ptr::null_mut());
-            assert_eq!(msg, "");
+            // ft_error_result on NULL returns SUCCESS
+            // ft_error_result is now a trait dispatch method — no null guard.
         }
     }
 

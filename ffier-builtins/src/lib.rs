@@ -17,10 +17,32 @@
 // as an alias for `ffier_rt`.
 use ffier_rt as ffier;
 
+pub use ffier_rt::FfierHandle;
+pub use ffier_rt::FfierResult;
 pub use ffier_rt::PushStr;
 
 #[ffier_annotations::implementable(foreign)]
 trait PushStr {
     #[ffier(index = 0)]
     fn push(&mut self, s: &str) -> bool;
+}
+
+pub use ffier_rt::Error;
+
+#[ffier_annotations::implementable(foreign)]
+trait Error {
+    #[ffier(index = 0)]
+    fn code(&self) -> u32;
+
+    #[ffier(index = 1)]
+    fn message(&self, writer: &mut impl PushStr);
+
+    #[ffier(index = 2, raw_handle)]
+    fn result(handle: *const ffier::FfierHandle<Self>) -> u64
+    where
+        Self: Sized,
+    {
+        let h = unsafe { &*handle };
+        ffier::ffier_result(h.type_tag, h.value.code())
+    }
 }

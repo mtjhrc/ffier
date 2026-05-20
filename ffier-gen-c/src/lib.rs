@@ -139,7 +139,7 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_trait_impl_bridge(meta)
+            generate_trait_impl_bridge(meta, trait_map)
         }
         _ => {
             let msg = format!("unknown metadata tag `@{tag}`");
@@ -419,7 +419,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // C functions that read the type tag and dispatch to the concrete implementor.
     for (trait_name, info) in &trait_map {
         if info.implementable.is_some() {
-            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix);
+            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix, &trait_map);
             all_code.push(code);
             let trait_snake = camel_to_snake(trait_name);
             header_fn_names.push(format_ident!(
@@ -431,7 +431,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Generate strerror dispatch function — dispatches by type tag to per-error
     // static_message tables.
-    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &trait_map);
+    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors);
 
     // Generate unified header function
     quote! {
@@ -515,38 +515,20 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 
 /// Generate `{prefix}_result_name()`, `{prefix}_error_message()`, and
 /// `{prefix}_error_destroy()` functions.
-fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &TraitMap) -> TokenStream2 {
+fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
     let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
     let result_name_fn = format_ident!("{fn_pfx}result_name");
-    let error_result_name = format_ident!("{fn_pfx}error_result");
-    let error_message_name = format_ident!("{fn_pfx}error_message");
-    let error_destroy_name = format_ident!("{fn_pfx}error_destroy");
     let result_name_cstr_fn_str = result_name_cstr_fn.to_string();
     let result_name_fn_str = result_name_fn.to_string();
-    let error_result_name_str = error_result_name.to_string();
-    let error_message_name_str = error_message_name.to_string();
-    let error_destroy_name_str = error_destroy_name.to_string();
 
     let result_c_name = format!("{type_pfx}Result");
     let str_c_name = format!("{type_pfx}Str");
-    let error_c_name = format!("{type_pfx}Error");
-    let push_str_c_name = format!("{type_pfx}PushStr");
 
-    // Look up the PushStr wrapper type for ft_error_message.
-    let push_str_wrapper = trait_map
-        .get("PushStr")
-        .and_then(|info| info.implementable.as_ref())
-        .map(|imp| &imp.wrapper_path);
-
-    // Build dispatch arms for each error type
+    // Build dispatch arms for result_name (packed FfierResult → static CStr)
     let mut result_name_dispatch_arms = Vec::new();
-    let mut error_result_dispatch_arms = Vec::new();
-    let mut destroy_dispatch_arms = Vec::new();
-    // TODO: error_message dispatch will use WriteStr trait
-    let mut error_message_dispatch_arms = Vec::new();
     for item in errors {
         if let Ok(meta) = syn::parse2::<MetaError>(item.clone()) {
             let type_tag = meta.type_tag;
@@ -557,45 +539,10 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &T
                     <#path as ffier::FfiError>::static_message(code).as_ptr()
                 }
             });
-            error_result_dispatch_arms.push(quote! {
-                #type_tag => {
-                    let err_val = unsafe { ffier::ffier_handle_borrow::<#path>(err) };
-                    ffier::ffier_result(#type_tag, ffier::FfiError::code(err_val))
-                }
-            });
-            destroy_dispatch_arms.push(quote! {
-                #type_tag => {
-                    unsafe { ffier::ffier_handle_drop::<#path>(err) };
-                }
-            });
-            error_message_dispatch_arms.push(quote! {
-                #type_tag => {
-                    let err_val = unsafe { ffier::ffier_handle_borrow::<#path>(err) };
-                    use core::fmt::Write;
-                    let _ = write!(__writer as &mut dyn ffier::PushStr, "{}", err_val);
-                    return;
-                }
-            });
         }
     }
 
     let unknown_msg_bytes = proc_macro2::Literal::byte_string(b"unknown error\0");
-
-    // Build the error_message body. If PushStr is registered, dispatch by
-    // type tag and stream Display through the writer. Otherwise, no-op.
-    let error_message_body = if let Some(wrapper) = push_str_wrapper {
-        quote! {
-            let __writer = unsafe { ffier::ffier_handle_borrow_mut::<#wrapper>(writer) };
-            let __type_tag = unsafe { ffier::handle_type_tag(err) };
-            match __type_tag {
-                #(#error_message_dispatch_arms)*
-                _ => {}
-            }
-        }
-    } else {
-        // PushStr not registered — error_message is a no-op.
-        quote! {}
-    };
 
     quote! {
         /// Variant name as a null-terminated C string.
@@ -623,53 +570,6 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &T
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
 
-        /// Reconstruct the `FtResult` code from an error handle.
-        ///
-        /// Dispatches by type_tag, calls `E::code()` on the resolved error
-        /// value, and returns `(type_tag << 32) | code`.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #error_result_name(
-            err: *const core::ffi::c_void,
-        ) -> ffier::FfierResult {
-            if err.is_null() { return ffier::FFIER_RESULT_SUCCESS; }
-            let __type_tag = unsafe { ffier::handle_type_tag(err) };
-            match __type_tag {
-                #(#error_result_dispatch_arms)*
-                0 => ffier::FFIER_RESULT_SUCCESS, // uninitialized
-                _ => panic!("unknown error type tag {}", __type_tag),
-            }
-        }
-
-        /// Stream the error's Display message into a PushStr writer.
-        ///
-        /// The writer handle must point to a valid `FfierHandle<VtablePushStr>`.
-        /// C callers construct one on the stack via the vtable pattern.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #error_message_name(
-            err: *const core::ffi::c_void,
-            writer: *mut core::ffi::c_void,
-        ) {
-            if err.is_null() || writer.is_null() { return; }
-            #error_message_body
-        }
-
-        /// Drop an error handle. NULL is a no-op.
-        ///
-        /// Dispatches by type tag to drop the correct concrete error type.
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #error_destroy_name(
-            err: *mut core::ffi::c_void,
-        ) {
-            if err.is_null() { return; }
-            let __type_tag = unsafe { ffier::handle_type_tag(err) };
-            match __type_tag {
-                #(#destroy_dispatch_arms)*
-                _ => {
-                    // Unknown error type — fall back to leaking rather than UB.
-                }
-            }
-        }
-
         fn __ffier_strerror_header() -> ffier_gen_c::HeaderSection {
             let mut decls = String::new();
             decls.push_str(&format!(
@@ -677,26 +577,8 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], trait_map: &T
                 #str_c_name, #result_name_fn_str, #result_c_name,
             ));
             decls.push_str(&format!(
-                "const char* {}({} r);\n",
+                "const char* {}({} r);",
                 #result_name_cstr_fn_str, #result_c_name,
-            ));
-            decls.push_str(&format!(
-                "{} {}({} err);\n",
-                #result_c_name, #error_result_name_str, #error_c_name,
-            ));
-            // Emit FtPushStr typedef before ft_error_message if not
-            // already emitted as a handle typedef elsewhere.
-            decls.push_str(&format!(
-                "typedef void* {};\n",
-                #push_str_c_name,
-            ));
-            decls.push_str(&format!(
-                "void {}({} err, {} writer);\n",
-                #error_message_name_str, #error_c_name, #push_str_c_name,
-            ));
-            decls.push_str(&format!(
-                "void {}({} err);",
-                #error_destroy_name_str, #error_c_name,
             ));
             ffier_gen_c::HeaderSection {
                 struct_name: "error".to_string(),
@@ -1396,7 +1278,9 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
     let header_fn_name = format_ident!("{fn_pfx}{err_snake}__header");
 
     // No per-type bridge functions needed — strerror is emitted at batch level.
-    // Only emit the header section with constants.
+    // Only emit the header section with constants + handle typedef.
+    let type_pfx = meta.type_pfx();
+    let handle_c_name = format!("{type_pfx}{name_str}");
     quote! {
         pub fn #header_fn_name() -> ffier_gen_c::HeaderSection {
             let full_upper_pfx = #full_upper_pfx;
@@ -1414,7 +1298,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
 
             ffier_gen_c::HeaderSection {
                 struct_name: #name_str.to_string(),
-                handle_typedef: String::new(),
+                handle_typedef: format!("typedef void* {};", #handle_c_name),
                 declarations: decls,
             }
         }
@@ -1450,6 +1334,10 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
 
         let mut next_slot = 0usize;
         for m in &sorted_methods {
+            // raw_handle methods don't occupy vtable slots
+            if m.raw_handle {
+                continue;
+            }
             while next_slot < m.index {
                 let pad_comment = format!(
                     "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
@@ -2150,6 +2038,7 @@ fn generate_self_dispatch_bridge(
     trait_name: &str,
     info: &TraitDispatchInfo,
     prefix: &str,
+    trait_map: &TraitMap,
 ) -> TokenStream2 {
     let imp = info
         .implementable
@@ -2182,12 +2071,39 @@ fn generate_self_dispatch_bridge(
         // Build C bridge params: handle + method params
         let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
         let mut call_args = Vec::new();
+        // Pre-dispatch borrow statements for impl Trait params (resolved
+        // from TraitMap at codegen time, borrowing the handle as the
+        // concrete VtableWrapper type).
+        let mut impl_trait_borrows = Vec::new();
 
         for p in &m.params {
             let param_name = &p.name;
-            let bt = &p.bridge_type;
-            bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
-            call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+            if let Some(trait_name) = &p.impl_trait {
+                // impl Trait param — the C param is a raw handle pointer.
+                bridge_params.push(quote! { #param_name: *mut core::ffi::c_void });
+
+                // Resolve the wrapper type from TraitMap.
+                let wrapper_path = trait_map
+                    .get(trait_name.as_str())
+                    .and_then(|info| info.implementable.as_ref())
+                    .map(|imp| &imp.wrapper_path)
+                    .unwrap_or_else(|| panic!(
+                        "impl Trait param `{}` references trait `{}` which has no #[implementable] entry in the library",
+                        param_name, trait_name,
+                    ));
+
+                let borrow_name = format_ident!("__impl_trait_{param_name}");
+                impl_trait_borrows.push(quote! {
+                    let #borrow_name = unsafe {
+                        ffier::ffier_handle_borrow_mut::<#wrapper_path>(#param_name)
+                    };
+                });
+                call_args.push(quote! { #borrow_name });
+            } else {
+                let bt = &p.bridge_type;
+                bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
+                call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+            }
         }
 
         // Return type
@@ -2257,21 +2173,43 @@ fn generate_self_dispatch_bridge(
                 quote! {}
             };
 
-            let obj_binding = borrow_from_handle(ty, m.is_mut);
-            let ret_conversion = match &m.ret {
-                MetaVtableRet::Void => quote! {
-                    <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
-                },
-                MetaVtableRet::Value { bridge_type, .. } => quote! {
-                    let call_result = <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
-                    return <#bridge_type as ffier::FfiType>::into_c(call_result);
-                },
-            };
-            quote! {
-                if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
-                    #metadata_guard
-                    #obj_binding
-                    #ret_conversion
+            if m.raw_handle {
+                // raw_handle: cast handle to *const FfierHandle<T> and pass directly
+                let ret_conversion = match &m.ret {
+                    MetaVtableRet::Void => quote! {
+                        <#ty as #trait_path>::#method_name(
+                            handle as *const ffier::FfierHandle<#ty> #(, #call_args)*
+                        );
+                    },
+                    MetaVtableRet::Value { bridge_type, .. } => quote! {
+                        let call_result = <#ty as #trait_path>::#method_name(
+                            handle as *const ffier::FfierHandle<#ty> #(, #call_args)*
+                        );
+                        return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                    },
+                };
+                quote! {
+                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                        #ret_conversion
+                    }
+                }
+            } else {
+                let obj_binding = borrow_from_handle(ty, m.is_mut);
+                let ret_conversion = match &m.ret {
+                    MetaVtableRet::Void => quote! {
+                        <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
+                    },
+                    MetaVtableRet::Value { bridge_type, .. } => quote! {
+                        let call_result = <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
+                        return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                    },
+                };
+                quote! {
+                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                        #metadata_guard
+                        #obj_binding
+                        #ret_conversion
+                    }
                 }
             }
         }).collect();
@@ -2280,6 +2218,7 @@ fn generate_self_dispatch_bridge(
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+                #(#impl_trait_borrows)*
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
                 #(#dispatch_branches else)* {
                     __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
@@ -2375,10 +2314,15 @@ fn vtable_param_c_types(
     let mut types = Vec::new();
     for p in params {
         names.push(p.name.to_string());
-        let bt = &p.bridge_type;
-        types.push(quote! {
-            &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
-        });
+        if p.impl_trait.is_some() {
+            // impl Trait params are raw handle pointers in C.
+            types.push(quote! { "void*" });
+        } else {
+            let bt = &p.bridge_type;
+            types.push(quote! {
+                &ffier_gen_c::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+            });
+        }
     }
     (names, types)
 }
@@ -2393,7 +2337,7 @@ fn vtable_ret_c_expr(ret: &MetaVtableRet, type_pfx: &str) -> TokenStream2 {
     }
 }
 
-fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
+fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let trait_path = &meta.trait_path;
     let fn_pfx = meta.fn_pfx();
@@ -2417,12 +2361,32 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
         // C params for the bridge function
         let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
         let mut call_args = Vec::new();
+        let mut impl_trait_borrows = Vec::new();
 
         for p in &m.params {
             let param_name = &p.name;
-            let bt = &p.bridge_type;
-            bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
-            call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+            if let Some(impl_trait_name) = &p.impl_trait {
+                bridge_params.push(quote! { #param_name: *mut core::ffi::c_void });
+                let wrapper_path = trait_map
+                    .get(impl_trait_name.as_str())
+                    .and_then(|info| info.implementable.as_ref())
+                    .map(|imp| &imp.wrapper_path)
+                    .unwrap_or_else(|| panic!(
+                        "impl Trait param `{}` references trait `{}` which has no #[implementable] entry",
+                        param_name, impl_trait_name,
+                    ));
+                let borrow_name = format_ident!("__impl_trait_{param_name}");
+                impl_trait_borrows.push(quote! {
+                    let #borrow_name = unsafe {
+                        ffier::ffier_handle_borrow_mut::<#wrapper_path>(#param_name)
+                    };
+                });
+                call_args.push(quote! { #borrow_name });
+            } else {
+                let bt = &p.bridge_type;
+                bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
+                call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+            }
         }
 
         // Return type
@@ -2434,12 +2398,27 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl) -> TokenStream2 {
             ),
         };
 
-        bridge_fns.push(quote! {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+        let fn_body = if m.raw_handle {
+            // raw_handle: cast handle and pass directly, no &self borrow
+            quote! {
+                let call_result = <#struct_path as #trait_path>::#method_name(
+                    handle as *const ffier::FfierHandle<#struct_path> #(, #call_args)*
+                );
+                #ret_conversion
+            }
+        } else {
+            quote! {
                 let obj = unsafe { ffier::ffier_handle_borrow::<#struct_path>(handle) };
                 let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
                 #ret_conversion
+            }
+        };
+
+        bridge_fns.push(quote! {
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+                #(#impl_trait_borrows)*
+                #fn_body
             }
         });
 
