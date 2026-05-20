@@ -5,11 +5,12 @@
 //! including doc comments, lifetime relationships, C type names, and error
 //! variant codes.
 //!
-//! The schema has two layers per type/param/return:
-//! - **Rust-level**: original names, lifetimes, borrow semantics (for Rust/Swift/etc.)
-//! - **C-level**: resolved C type names ready for direct use in headers (for C/Python/Go/etc.)
+//! All types are registered in a single `type_registry` keyed by Rust type
+//! name. Params and returns reference types by name + usage modifiers
+//! (ref kind, lifetimes).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Top-level library
@@ -20,10 +21,94 @@ use serde::{Deserialize, Serialize};
 pub struct Library {
     /// FFI prefix (e.g. "ft" → functions are `ft_widget_new`, C types are `FtWidget`).
     pub prefix: String,
-    pub types: Vec<ExportedType>,
+    /// All types used in the library, keyed by Rust name.
+    /// Includes primitives (`"i32"`), builtins (`"str"`), handles (`"Widget"`),
+    /// errors (`"TestError"`), and traits (`"Fruit"`).
+    pub type_registry: BTreeMap<String, TypeEntry>,
+    pub exported_types: Vec<ExportedType>,
     pub errors: Vec<ErrorType>,
     pub traits: Vec<ImplementableTrait>,
     pub trait_impls: Vec<TraitImpl>,
+}
+
+// ---------------------------------------------------------------------------
+// Type registry
+// ---------------------------------------------------------------------------
+
+/// An entry in the type registry.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TypeEntry {
+    /// What kind of type this is.
+    pub kind: TypeKind,
+    /// C type name (e.g. `"int32_t"`, `"FtWidget"`, `"FtStr"`).
+    pub c_type: String,
+    /// Stable type tag from `library_definition!`. Only present for
+    /// handles, errors, and implementable traits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_tag: Option<u32>,
+    /// Lifetime parameters on the type definition (e.g. `["a"]` for `View<'a>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lifetime_params: Vec<String>,
+}
+
+/// The kind of a type in the registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeKind {
+    /// Primitive integer or bool: `i32`, `u64`, `bool`, `usize`, etc.
+    Primitive,
+    /// String slice: `str`. Passed as a struct (ptr+len).
+    String,
+    /// Byte slice: `[u8]`. Passed as a struct (ptr+len).
+    Bytes,
+    /// Type alias for another type (e.g. `BorrowedFd` → `i32`).
+    Alias {
+        /// The underlying type name this aliases.
+        alias_of: std::string::String,
+        /// Whether this alias transfers ownership (e.g. `OwnedFd` vs `BorrowedFd`).
+        owned: bool,
+    },
+    /// Opaque handle type (a struct exported via `#[exportable]`).
+    Handle,
+    /// Error type (an enum exported via `#[derive(FfiError)]`).
+    Error,
+    /// Trait (from `#[implementable]` or discovered via `#[trait_impl]`).
+    Trait,
+}
+
+// ---------------------------------------------------------------------------
+// Type references (used in params, returns)
+// ---------------------------------------------------------------------------
+
+/// A reference to a type in the registry, with usage-site modifiers.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TypeRef {
+    /// Key into `type_registry` (e.g. `"Widget"`, `"i32"`, `"str"`).
+    #[serde(rename = "type")]
+    pub type_name: String,
+    /// How the type is accessed at this usage site.
+    #[serde(default, skip_serializing_if = "is_ref_none")]
+    pub ref_kind: RefKind,
+    /// Lifetime on the reference itself (e.g. `"a"` in `&'a Widget`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_lifetime: Option<String>,
+    /// Lifetime arguments applied to the type's params
+    /// (e.g. `["a"]` in `View<'a>`, `["b"]` in `&'a View<'b>`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub type_args: Vec<String>,
+}
+
+/// How a type is accessed at a usage site.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefKind {
+    /// By value.
+    #[default]
+    None,
+    /// `&T` or `&'a T`.
+    Shared,
+    /// `&mut T` or `&'a mut T`.
+    Mut,
 }
 
 // ---------------------------------------------------------------------------
@@ -33,19 +118,11 @@ pub struct Library {
 /// A struct exported via `#[ffier::exportable]`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExportedType {
-    /// Rust struct name (e.g. "Widget").
+    /// Rust struct name — key into `type_registry`.
     pub name: String,
-    /// C handle type name (e.g. "FtWidget").
-    pub c_name: String,
-    /// Stable type tag assigned in `library_definition!`.
-    pub type_tag: u32,
-    /// Struct-level lifetime params with original names (e.g. `["a"]` for `View<'a>`).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lifetimes: Vec<String>,
     /// Whether this type uses by-value self (builder pattern). When true,
-    /// `&mut self` methods in C take a pointer-to-handle (`FtConfig*`) so the
-    /// bridge can update the handle in place.
-    #[serde(default, skip_serializing_if = "is_false")]
+    /// by-value self methods in C take a pointer-to-handle so the bridge
+    /// can update the handle in place.
     pub is_builder_type: bool,
     pub methods: Vec<Method>,
 }
@@ -81,9 +158,7 @@ pub enum MethodContext {
     Exportable {
         /// C FFI function name (e.g. "ft_widget_get_count").
         ffi_name: String,
-        /// Whether this is a builder method (returns Self — void at C level,
-        /// the caller already has the handle).
-        #[serde(default, skip_serializing_if = "is_false")]
+        /// Whether this is a builder method (returns Self — void at C level).
         is_builder: bool,
     },
     /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
@@ -91,11 +166,7 @@ pub enum MethodContext {
         /// Vtable slot index.
         index: usize,
         /// Whether this method has a default impl in the trait.
-        #[serde(default, skip_serializing_if = "is_false")]
         has_default: bool,
-        /// Raw handle method — receives the raw handle pointer instead of `&self`.
-        #[serde(default, skip_serializing_if = "is_false")]
-        raw_handle: bool,
     },
 }
 
@@ -103,13 +174,9 @@ pub enum MethodContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Receiver {
-    /// No receiver — static method / associated function.
     None,
-    /// `&self`
     Ref,
-    /// `&mut self`
     Mut,
-    /// `self` (consuming, by value)
     Value,
 }
 
@@ -117,32 +184,27 @@ pub enum Receiver {
 // Parameters
 // ---------------------------------------------------------------------------
 
-/// A method parameter with both Rust and C type information.
+/// A method parameter.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Param {
-    /// Parameter name as written in the source (e.g. "name", "source", "s").
+    /// Parameter name as written in the source.
     pub name: String,
-    /// Rust type as written in the original source, with `Self` replaced by
-    /// the concrete struct name, lifetimes preserved.
-    /// E.g. `"&'a Widget"`, `"&str"`, `"i32"`, `"BorrowedFd<'_>"`.
-    pub rust_type: String,
-    /// C type name (e.g. `"int32_t"`, `"FtStr"`, `"FtWidget"`, `"void*"`).
-    pub c_type: String,
-    /// How this parameter is passed across the FFI boundary.
-    pub kind: ParamKind,
+    /// The type and how it's accessed.
+    #[serde(flatten)]
+    pub param_type: ParamType,
 }
 
-/// How a parameter is passed across the FFI boundary.
+/// The type of a parameter.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ParamKind {
-    /// Normal parameter — single C value.
-    Regular,
-    /// `&[&str]` — expands to two C params: `const {Prefix}Str* {name}` + `size_t {name}_len`.
+#[serde(tag = "param_kind", rename_all = "snake_case")]
+pub enum ParamType {
+    /// Normal parameter.
+    Regular(TypeRef),
+    /// `&[&str]` — expands to two C params (ptr + len).
     StrSlice,
-    /// `impl Trait` parameter — opaque handle pointer (`void*`).
+    /// `impl Trait` parameter.
     ImplTrait {
-        /// Trait name (e.g. "Fruit", "Processor").
+        /// Trait name — key into `type_registry`.
         trait_name: String,
         /// Dispatch mode: "auto", "concrete", or "vtable".
         dispatch: String,
@@ -153,39 +215,21 @@ pub enum ParamKind {
 // Return types
 // ---------------------------------------------------------------------------
 
-/// Return type with both Rust and C information.
+/// Return type of a method.
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(tag = "return_kind", rename_all = "snake_case")]
 pub enum Return {
-    /// Returns nothing (`()`). C: `void`.
+    /// Returns nothing.
     Void,
-    /// Returns a single value. C: the value's C type.
-    Value {
-        /// Original Rust return type (e.g. `"i32"`, `"&str"`, `"Widget"`).
-        rust_type: String,
-        /// C type name (e.g. `"int32_t"`, `"FtStr"`, `"FtWidget"`).
-        c_type: String,
-    },
-    /// Returns `Result<T, E>`. C: depends on whether T is void, a primitive, or a handle.
+    /// Returns a single value.
+    Value(TypeRef),
+    /// Returns `Result<T, E>`.
     Result {
         /// The Ok type. `None` when `Result<(), E>`.
-        ok: Option<ReturnValue>,
-        /// Error type Rust name (e.g. "TestError").
+        ok: Option<TypeRef>,
+        /// Error type name — key into `type_registry`.
         err_type: String,
     },
-}
-
-/// The Ok value of a Result return.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReturnValue {
-    /// Rust type of the Ok value (e.g. `"i32"`, `"Widget"`).
-    pub rust_type: String,
-    /// C type name (e.g. `"int32_t"`, `"FtWidget"`).
-    pub c_type: String,
-    /// Whether this is a handle type. Handle results use null-on-error
-    /// convention (return the handle directly, NULL means error).
-    /// Non-handle results use out-param convention (result via pointer param).
-    pub is_handle: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -195,12 +239,8 @@ pub struct ReturnValue {
 /// An error enum exported via `#[derive(FfiError)]`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorType {
-    /// Rust enum name (e.g. "TestError").
+    /// Rust enum name — key into `type_registry`.
     pub name: String,
-    /// C handle type name (e.g. "FtTestError").
-    pub c_name: String,
-    /// Stable type tag.
-    pub type_tag: u32,
     pub variants: Vec<ErrorVariant>,
 }
 
@@ -213,7 +253,7 @@ pub struct ErrorVariant {
     pub c_name: String,
     /// Numeric error code from `#[ffier(code = N)]`.
     pub code: u32,
-    /// Human-readable message (from `#[error("...")]` or format string).
+    /// Human-readable message.
     pub message: String,
 }
 
@@ -224,16 +264,10 @@ pub struct ErrorVariant {
 /// A trait exported via `#[ffier::implementable]`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ImplementableTrait {
-    /// Trait name (e.g. "Fruit", "Processor").
+    /// Trait name — key into `type_registry`.
     pub name: String,
-    /// C handle type name for the trait (e.g. "FtFruit").
-    /// Used as the parameter type for `impl Trait` params in C declarations.
-    pub c_name: String,
-    /// Stable type tag for the vtable wrapper (e.g. "VtableFruit").
-    pub type_tag: u32,
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
-    /// The first `own_method_count` entries in `methods` are this trait's own.
     pub own_method_count: usize,
     /// Highest vtable slot index (including reserved/retired slots).
     pub max_vtable_slot: usize,
@@ -246,20 +280,19 @@ pub struct ImplementableTrait {
 /// An `impl Trait for Struct` exported via `#[ffier::trait_impl]`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TraitImpl {
-    /// Trait name (e.g. "Fruit").
+    /// Trait name — key into `type_registry`.
     pub trait_name: String,
-    /// Struct name (e.g. "Apple").
+    /// Struct name — key into `type_registry`.
     pub struct_name: String,
-    /// Lifetime params on the impl block (e.g. `["a"]`).
+    /// Lifetime params on the impl block.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lifetimes: Vec<String>,
-    /// Lifetime args on the trait (e.g. `["static"]` or `["a"]`).
+    /// Lifetime args on the trait.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub trait_lifetime_args: Vec<String>,
-    /// Lifetime args on the struct (e.g. `["a"]` or `[]`).
+    /// Lifetime args on the struct.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub struct_lifetime_args: Vec<String>,
-    /// Methods provided in this impl.
     pub methods: Vec<Method>,
 }
 
@@ -267,18 +300,39 @@ pub struct TraitImpl {
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn is_false(v: &bool) -> bool {
-    !v
+fn is_ref_none(v: &RefKind) -> bool {
+    *v == RefKind::None
 }
 
 impl Library {
-    /// Serialize to JSON.
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("failed to serialize library metadata")
     }
 
-    /// Deserialize from JSON.
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
+    }
+}
+
+impl Library {
+    /// Look up a type entry by name.
+    pub fn type_entry(&self, name: &str) -> Option<&TypeEntry> {
+        self.type_registry.get(name)
+    }
+
+    /// Get the C type name for a type reference.
+    pub fn c_type(&self, tr: &TypeRef) -> &str {
+        self.type_registry
+            .get(&tr.type_name)
+            .map(|e| e.c_type.as_str())
+            .unwrap_or("void*")
+    }
+
+    /// Get the C type for a trait name (for impl Trait params).
+    pub fn trait_c_type(&self, trait_name: &str) -> &str {
+        self.type_registry
+            .get(trait_name)
+            .map(|e| e.c_type.as_str())
+            .unwrap_or("void*")
     }
 }

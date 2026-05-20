@@ -12,8 +12,8 @@
 //! - Utility functions (result_name)
 
 use ffier_schema::{
-    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamKind,
-    Receiver, Return, TraitImpl,
+    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
+    Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
@@ -33,10 +33,12 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Handle typedefs — errors first (convention from existing generator)
     for err in &lib.errors {
-        out.push_str(&format!("typedef void* {};\n", err.c_name));
+        let c_name = &lib.type_registry[&err.name].c_type;
+        out.push_str(&format!("typedef void* {};\n", c_name));
     }
-    for ty in &lib.types {
-        out.push_str(&format!("typedef void* {};\n", ty.c_name));
+    for ty in &lib.exported_types {
+        let c_name = &lib.type_registry[&ty.name].c_type;
+        out.push_str(&format!("typedef void* {};\n", c_name));
     }
 
     // Trait typedefs with implementor lists
@@ -48,18 +50,18 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Error sections
     for err in &lib.errors {
-        emit_error_section(&mut out, err);
+        emit_error_section(&mut out, err, lib);
     }
 
     // Type sections (exportable methods + destroy)
-    for ty in &lib.types {
+    for ty in &lib.exported_types {
         emit_type_section(&mut out, ty, &type_pfx, &fn_pfx, lib);
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        emit_vtable_section(&mut out, tr, &type_pfx);
-        emit_dispatch_section(&mut out, tr, &fn_pfx, &type_pfx);
+        emit_vtable_section(&mut out, tr, &type_pfx, lib);
+        emit_dispatch_section(&mut out, tr, &fn_pfx, &type_pfx, lib);
     }
 
     // Trait impl bridge functions
@@ -142,12 +144,15 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
 // Error code constants
 // ---------------------------------------------------------------------------
 
-fn emit_error_section(out: &mut String, err: &ErrorType) {
+fn emit_error_section(out: &mut String, err: &ErrorType, lib: &Library) {
     emit_section_header(out, &err.name);
+    let type_tag = lib.type_registry[&err.name]
+        .type_tag
+        .expect("error type must have a type_tag");
     for v in &err.variants {
         out.push_str(&format!(
             "#define {} ((uint64_t){} << 32 | {})\n",
-            v.c_name, err.type_tag, v.code,
+            v.c_name, type_tag, v.code,
         ));
     }
 }
@@ -194,7 +199,7 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
 // Vtable struct definitions
 // ---------------------------------------------------------------------------
 
-fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str) {
+fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str, lib: &Library) {
     let vtable_name = format!("{type_pfx}{}Vtable", tr.name);
 
     emit_section_header(out, &format!("Vtable{}", tr.name));
@@ -220,26 +225,24 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
             // Build the function pointer signature
             let mut params = vec!["void* self_data".to_string()];
             for p in &m.params {
-                match &p.kind {
-                    ParamKind::Regular => {
-                        params.push(format!("{} {}", p.c_type, p.name));
+                match &p.param_type {
+                    ParamType::Regular(type_ref) => {
+                        let c_type = lib.c_type(type_ref);
+                        params.push(format!("{} {}", c_type, p.name));
                     }
-                    ParamKind::StrSlice => {
+                    ParamType::StrSlice => {
                         let str_c = format!("{type_pfx}Str");
                         params.push(format!("const {str_c}* {}", p.name));
                         params.push(format!("uintptr_t {}_len", p.name));
                     }
-                    ParamKind::ImplTrait { .. } => {
-                        params.push(format!("{} {}", p.c_type, p.name));
+                    ParamType::ImplTrait { trait_name, .. } => {
+                        let c_type = lib.trait_c_type(trait_name);
+                        params.push(format!("{} {}", c_type, p.name));
                     }
                 }
             }
 
-            let ret_type = match &m.ret {
-                Return::Void => "void".to_string(),
-                Return::Value { c_type, .. } => c_type.clone(),
-                Return::Result { .. } => format!("{type_pfx}Result"),
-            };
+            let ret_type = format_return_type(&m.ret, type_pfx, lib);
 
             let params_str = params.join(", ");
             out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
@@ -267,6 +270,8 @@ fn emit_type_section(
 ) {
     emit_section_header(out, &ty.name);
 
+    let c_name = &lib.type_registry[&ty.name].c_type;
+
     for m in &ty.methods {
         let MethodContext::Exportable {
             ffi_name,
@@ -278,7 +283,7 @@ fn emit_type_section(
         emit_doc_comment(out, &m.doc);
         let decl = format_c_declaration(
             ffi_name,
-            &ty.c_name,
+            c_name,
             m,
             *is_builder,
             ty.is_builder_type,
@@ -293,7 +298,7 @@ fn emit_type_section(
     let type_snake = camel_to_snake(&ty.name);
     out.push_str(&format!(
         "void {fn_pfx}{type_snake}_destroy({} handle);\n",
-        ty.c_name
+        c_name
     ));
 }
 
@@ -322,7 +327,13 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, fn_pfx: &str, lib: 
 // Self-dispatch functions for implementable traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, fn_pfx: &str, type_pfx: &str) {
+fn emit_dispatch_section(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    fn_pfx: &str,
+    type_pfx: &str,
+    lib: &Library,
+) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     // Only emit dispatch for own methods (not supertrait methods)
@@ -335,24 +346,24 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, fn_pfx: &str
 
         let mut params = vec![format!("void* handle")];
         for p in &m.params {
-            match &p.kind {
-                ParamKind::Regular => params.push(format!("{} {}", p.c_type, p.name)),
-                ParamKind::StrSlice => {
+            match &p.param_type {
+                ParamType::Regular(type_ref) => {
+                    let c_type = lib.c_type(type_ref);
+                    params.push(format!("{} {}", c_type, p.name));
+                }
+                ParamType::StrSlice => {
                     let str_c = format!("{type_pfx}Str");
                     params.push(format!("const {str_c}* {}", p.name));
                     params.push(format!("uintptr_t {}_len", p.name));
                 }
-                ParamKind::ImplTrait { .. } => {
-                    params.push(format!("{} {}", p.c_type, p.name));
+                ParamType::ImplTrait { trait_name, .. } => {
+                    let c_type = lib.trait_c_type(trait_name);
+                    params.push(format!("{} {}", c_type, p.name));
                 }
             }
         }
 
-        let ret_type = match &m.ret {
-            Return::Void => "void",
-            Return::Value { c_type, .. } => c_type,
-            Return::Result { .. } => type_pfx, // FtResult — shouldn't happen for trait methods yet
-        };
+        let ret_type = format_return_type(&m.ret, type_pfx, lib);
 
         let params_str = params.join(", ");
         out.push_str(&format!("{ret_type} {ffi_name}({params_str});\n"));
@@ -394,7 +405,7 @@ fn format_c_declaration(
     is_builder: bool,
     is_builder_type: bool,
     type_pfx: &str,
-    _lib: &Library,
+    lib: &Library,
 ) -> String {
     let mut params: Vec<String> = Vec::new();
 
@@ -413,17 +424,19 @@ fn format_c_declaration(
 
     // Regular params
     for p in &m.params {
-        match &p.kind {
-            ParamKind::Regular => {
-                params.push(format!("{} {}", p.c_type, p.name));
+        match &p.param_type {
+            ParamType::Regular(type_ref) => {
+                let c_type = lib.c_type(type_ref);
+                params.push(format!("{} {}", c_type, p.name));
             }
-            ParamKind::StrSlice => {
+            ParamType::StrSlice => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("uintptr_t {}_len", p.name));
             }
-            ParamKind::ImplTrait { .. } => {
-                params.push(format!("{} {}", p.c_type, p.name));
+            ParamType::ImplTrait { trait_name, .. } => {
+                let c_type = lib.trait_c_type(trait_name);
+                params.push(format!("{} {}", c_type, p.name));
             }
         }
     }
@@ -432,11 +445,11 @@ fn format_c_declaration(
     let error_c = format!("{type_pfx}Error");
     let (ret_type, extra_params) = match &m.ret {
         Return::Void => ("void".to_string(), vec![]),
-        Return::Value { c_type, .. } => {
+        Return::Value(type_ref) => {
             if is_builder {
                 ("void".to_string(), vec![])
             } else {
-                (c_type.clone(), vec![])
+                (lib.c_type(type_ref).to_string(), vec![])
             }
         }
         Return::Result { ok, .. } => {
@@ -446,20 +459,26 @@ fn format_c_declaration(
                     let result_c = format!("{type_pfx}Result");
                     (result_c, vec![format!("{error_c}* err_out")])
                 }
-                Some(ok_val) if ok_val.is_handle => {
-                    // Result<Handle, E> — return handle, NULL on error
-                    (ok_val.c_type.clone(), vec![format!("{error_c}* err_out")])
-                }
-                Some(ok_val) => {
-                    // Result<T, E> — out-param
-                    let result_c = format!("{type_pfx}Result");
-                    (
-                        result_c,
-                        vec![
-                            format!("{}* result", ok_val.c_type),
-                            format!("{error_c}* err_out"),
-                        ],
-                    )
+                Some(ok_ref) => {
+                    let is_handle = lib
+                        .type_entry(&ok_ref.type_name)
+                        .map(|e| e.kind == TypeKind::Handle)
+                        .unwrap_or(false);
+                    if is_handle {
+                        // Result<Handle, E> — return handle, NULL on error
+                        (
+                            lib.c_type(ok_ref).to_string(),
+                            vec![format!("{error_c}* err_out")],
+                        )
+                    } else {
+                        // Result<T, E> — out-param
+                        let result_c = format!("{type_pfx}Result");
+                        let c_type = lib.c_type(ok_ref).to_string();
+                        (
+                            result_c,
+                            vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
+                        )
+                    }
                 }
             }
         }
@@ -481,29 +500,29 @@ fn format_trait_method_declaration(
     handle_c_name: &str,
     m: &Method,
     type_pfx: &str,
-    _lib: &Library,
+    lib: &Library,
 ) -> String {
     let mut params = vec![format!("{handle_c_name} handle")];
 
     for p in &m.params {
-        match &p.kind {
-            ParamKind::Regular => params.push(format!("{} {}", p.c_type, p.name)),
-            ParamKind::StrSlice => {
+        match &p.param_type {
+            ParamType::Regular(type_ref) => {
+                let c_type = lib.c_type(type_ref);
+                params.push(format!("{} {}", c_type, p.name));
+            }
+            ParamType::StrSlice => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("uintptr_t {}_len", p.name));
             }
-            ParamKind::ImplTrait { .. } => {
-                params.push(format!("{} {}", p.c_type, p.name));
+            ParamType::ImplTrait { trait_name, .. } => {
+                let c_type = lib.trait_c_type(trait_name);
+                params.push(format!("{} {}", c_type, p.name));
             }
         }
     }
 
-    let ret_type = match &m.ret {
-        Return::Void => "void".to_string(),
-        Return::Value { c_type, .. } => c_type.clone(),
-        Return::Result { .. } => format!("{type_pfx}Result"),
-    };
+    let ret_type = format_return_type(&m.ret, type_pfx, lib);
 
     let params_str = params.join(", ");
     format!("{ret_type} {ffi_name}({params_str});")
@@ -512,6 +531,15 @@ fn format_trait_method_declaration(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Format the C return type string for a method return.
+fn format_return_type(ret: &Return, type_pfx: &str, lib: &Library) -> String {
+    match ret {
+        Return::Void => "void".to_string(),
+        Return::Value(type_ref) => lib.c_type(type_ref).to_string(),
+        Return::Result { .. } => format!("{type_pfx}Result"),
+    }
+}
 
 fn emit_section_header(out: &mut String, name: &str) {
     let dashes = "-".repeat(72usize.saturating_sub(6 + name.len()));
@@ -534,13 +562,13 @@ fn emit_doc_comment(out: &mut String, doc: &[String]) {
 }
 
 fn find_type_c_name(lib: &Library, name: &str) -> String {
-    for ty in &lib.types {
-        if ty.name == name {
-            return ty.c_name.clone();
-        }
-    }
-    let type_pfx = snake_to_pascal(&lib.prefix);
-    format!("{type_pfx}{name}")
+    lib.type_registry
+        .get(name)
+        .map(|e| e.c_type.clone())
+        .unwrap_or_else(|| {
+            let type_pfx = snake_to_pascal(&lib.prefix);
+            format!("{type_pfx}{name}")
+        })
 }
 
 fn snake_to_pascal(s: &str) -> String {
