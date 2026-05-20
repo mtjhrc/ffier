@@ -111,6 +111,78 @@ pub enum RefKind {
     Mut,
 }
 
+impl TypeRef {
+    /// Reconstruct the Rust type syntax from this reference.
+    /// E.g. `TypeRef { type: "Widget", ref_kind: Shared, ref_lifetime: Some("a") }` → `&'a Widget`
+    /// E.g. `TypeRef { type: "View", type_args: ["a"] }` → `View<'a>`
+    pub fn to_rust_type(&self) -> String {
+        let mut s = String::new();
+
+        // Reference prefix
+        match self.ref_kind {
+            RefKind::None => {}
+            RefKind::Shared => {
+                s.push('&');
+                if let Some(lt) = &self.ref_lifetime {
+                    s.push('\'');
+                    s.push_str(lt);
+                    s.push(' ');
+                }
+            }
+            RefKind::Mut => {
+                s.push('&');
+                if let Some(lt) = &self.ref_lifetime {
+                    s.push('\'');
+                    s.push_str(lt);
+                    s.push(' ');
+                }
+                s.push_str("mut ");
+            }
+        }
+
+        // Type name
+        s.push_str(&self.type_name);
+
+        // Generic lifetime args
+        if !self.type_args.is_empty() {
+            s.push('<');
+            for (i, arg) in self.type_args.iter().enumerate() {
+                if i > 0 {
+                    s.push_str(", ");
+                }
+                s.push('\'');
+                s.push_str(arg);
+            }
+            s.push('>');
+        }
+
+        s
+    }
+
+    /// Reconstruct with lifetimes erased to `'static` (for extern declarations).
+    pub fn to_rust_type_static(&self) -> String {
+        let mut s = String::new();
+
+        match self.ref_kind {
+            RefKind::None => {}
+            RefKind::Shared => {
+                s.push_str("&'static ");
+            }
+            RefKind::Mut => {
+                s.push_str("&'static mut ");
+            }
+        }
+
+        s.push_str(&self.type_name);
+
+        if !self.type_args.is_empty() {
+            s.push_str("<'static>");
+        }
+
+        s
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Exported types (structs with #[exportable] methods)
 // ---------------------------------------------------------------------------
@@ -230,6 +302,25 @@ pub enum Return {
         /// Error type name — key into `type_registry`.
         err_type: String,
     },
+}
+
+impl Return {
+    /// Reconstruct the Rust return type syntax.
+    /// E.g. `Value(TypeRef { type: "i32" })` → `"i32"`
+    /// E.g. `Result { ok: Some(TypeRef { type: "i32" }), err_type: "TestError" }` → `"Result<i32, TestError>"`
+    pub fn to_rust_type(&self) -> String {
+        match self {
+            Return::Void => "()".to_string(),
+            Return::Value(tr) => tr.to_rust_type(),
+            Return::Result { ok, err_type } => {
+                let ok_str = match ok {
+                    None => "()".to_string(),
+                    Some(tr) => tr.to_rust_type(),
+                };
+                format!("Result<{ok_str}, {err_type}>")
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
