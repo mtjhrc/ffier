@@ -8,8 +8,8 @@
 //! - Trait impl blocks for concrete types
 
 use ffier_schema::{
-    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl,
+    camel_to_snake, ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext,
+    ParamType, Receiver, Return, TraitImpl,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -51,15 +51,16 @@ pub fn generate(lib: &Library) -> String {
     }
 
     // Build handle type set (for Result<Handle, E> detection)
+    let vtable_names: Vec<String> = lib
+        .traits
+        .iter()
+        .map(|t| format!("Vtable{}", t.name))
+        .collect();
     let handle_types: HashSet<&str> = lib
         .exported_types
         .iter()
         .map(|t| t.name.as_str())
-        .chain(
-            lib.traits
-                .iter()
-                .map(|t| format!("Vtable{}", t.name).leak() as &str),
-        )
+        .chain(vtable_names.iter().map(|s| s.as_str()))
         .collect();
 
     // 2. Exported types
@@ -1464,19 +1465,4 @@ fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {
             }
         }
     }
-}
-
-fn camel_to_snake(name: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_lowercase().next().unwrap());
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }

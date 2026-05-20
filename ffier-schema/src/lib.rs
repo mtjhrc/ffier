@@ -294,8 +294,6 @@ pub enum ParamType {
     ImplTrait {
         /// Trait name — key into `type_registry`.
         trait_name: String,
-        /// Dispatch mode: "auto", "concrete", or "vtable".
-        dispatch: String,
         /// Lifetime arguments on the trait at this usage site
         /// (e.g. `["a"]` for `impl Snapshot<'a>`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -432,27 +430,39 @@ impl Library {
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(json)
     }
-}
 
-impl Library {
     /// Look up a type entry by name.
     pub fn type_entry(&self, name: &str) -> Option<&TypeEntry> {
         self.type_registry.get(name)
     }
 
-    /// Get the C type name for a type reference.
-    pub fn c_type(&self, tr: &TypeRef) -> &str {
+    /// Get the C type name for a type by its registry key.
+    /// Panics if the type is not in the registry.
+    pub fn c_type_of(&self, name: &str) -> &str {
         self.type_registry
-            .get(&tr.type_name)
-            .map(|e| e.c_type.as_str())
-            .unwrap_or("void*")
+            .get(name)
+            .unwrap_or_else(|| panic!("type `{name}` not found in type_registry"))
+            .c_type
+            .as_str()
     }
+}
 
-    /// Get the C type for a trait name (for impl Trait params).
-    pub fn trait_c_type(&self, trait_name: &str) -> &str {
-        self.type_registry
-            .get(trait_name)
-            .map(|e| e.c_type.as_str())
-            .unwrap_or("void*")
+// ---------------------------------------------------------------------------
+// Shared utility functions
+// ---------------------------------------------------------------------------
+
+/// Convert CamelCase to snake_case (e.g. `"TestError"` → `"test_error"`).
+pub fn camel_to_snake(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
     }
+    result
 }
