@@ -31,10 +31,15 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <string.h>\n\n");
 
-    // Handle typedefs — errors first (convention from existing generator)
+    // Handle typedefs — errors first (convention from existing generator).
+    // Skip error types whose c_name matches the generic error handle ({Pfx}Error)
+    // which is emitted later in emit_shared_types.
+    let generic_error_c = format!("{type_pfx}Error");
     for err in &lib.errors {
         let c_name = &lib.type_registry[&err.name].c_type;
-        out.push_str(&format!("typedef void* {};\n", c_name));
+        if *c_name != generic_error_c {
+            out.push_str(&format!("typedef void* {};\n", c_name));
+        }
     }
     for ty in &lib.exported_types {
         let c_name = &lib.type_registry[&ty.name].c_type;

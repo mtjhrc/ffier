@@ -351,7 +351,7 @@ impl Widget {
     #[doc = " Read a gadget's value."]
     pub fn read_gadget(&self, g: &Gadget) -> i32 {
         let __raw =
-            unsafe { ft_widget_read_gadget(self.0, <&Gadget as ffier::FfiType>::into_c(g)) };
+            unsafe { ft_widget_read_gadget(self.0, unsafe { ffier::FfiHandle::as_handle(g) }) };
         <i32 as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Update a gadget's value."]
@@ -359,7 +359,7 @@ impl Widget {
         unsafe {
             ft_widget_update_gadget(
                 self.0,
-                <&mut Gadget as ffier::FfiType>::into_c(g),
+                unsafe { ffier::FfiHandle::as_handle(g) },
                 <i32 as ffier::FfiType>::into_c(v),
             )
         }
@@ -812,7 +812,7 @@ impl<'a> std::fmt::Debug for View<'a> {
 impl<'a> View<'a> {
     #[doc = " Create a view that borrows a widget."]
     pub fn create(source: &'a Widget) -> View<'a> {
-        let __raw = unsafe { ft_view_create(<&'a Widget as ffier::FfiType>::into_c(source)) };
+        let __raw = unsafe { ft_view_create(unsafe { ffier::FfiHandle::as_handle(source) }) };
         <View<'a> as ffier::FfiType>::from_c(__raw)
     }
     #[doc = " Create a view with a custom label."]
@@ -822,7 +822,7 @@ impl<'a> View<'a> {
     pub fn create_labeled(source: &'a Widget, label: &str) -> View<'a> {
         let __raw = unsafe {
             ft_view_create_labeled(
-                <&'a Widget as ffier::FfiType>::into_c(source),
+                unsafe { ffier::FfiHandle::as_handle(source) },
                 <&str as ffier::FfiType>::into_c(label),
             )
         };
@@ -914,7 +914,7 @@ impl ViewFactory {
     pub fn create_view<'a>(source: &'a Widget, label: &str) -> View<'a> {
         let __raw = unsafe {
             ft_view_factory_create_view(
-                <&'a Widget as ffier::FfiType>::into_c(source),
+                unsafe { ffier::FfiHandle::as_handle(source) },
                 <&str as ffier::FfiType>::into_c(label),
             )
         };
