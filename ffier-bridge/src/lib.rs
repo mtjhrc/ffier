@@ -10,9 +10,9 @@ use quote::{format_ident, quote};
 use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
-    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaParamKind,
-    MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
+    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaMethodContext,
+    MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake,
+    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -432,6 +432,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate strerror dispatch function — dispatches by type tag to per-error
     // static_message tables.
     let strerror_fn = generate_strerror_bridge(&first_prefix, &errors);
+
+    // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
+    emit_json(&first_prefix, &errors, &exportables, &implementables, &trait_impls);
 
     // Generate unified header function
     quote! {
@@ -2475,4 +2478,203 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
             }
         }
     }
+}
+
+// ===========================================================================
+// JSON metadata emission
+// ===========================================================================
+
+/// Convert parsed metadata to `ffier_schema::Library` and write to
+/// `target/ffier-{prefix}.json` relative to the workspace root.
+fn emit_json(
+    prefix: &str,
+    errors: &[TokenStream2],
+    exportables: &[TokenStream2],
+    implementables: &[TokenStream2],
+    trait_impls: &[TokenStream2],
+) {
+    // CARGO_MANIFEST_DIR is always set by cargo when rustc runs, even without
+    // a build.rs. We walk up to find the workspace target/ directory.
+    let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let target_dir = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::PathBuf::from(d),
+        Err(_) => {
+            // Walk up from manifest dir to find target/
+            let mut dir = std::path::PathBuf::from(&manifest_dir);
+            loop {
+                let candidate = dir.join("target");
+                if candidate.is_dir() {
+                    break candidate;
+                }
+                if !dir.pop() {
+                    return; // can't find target dir
+                }
+            }
+        }
+    };
+
+    let library = build_schema(prefix, errors, exportables, implementables, trait_impls);
+    let json = library.to_json();
+    let path = target_dir.join(format!("ffier-{prefix}.json"));
+    std::fs::write(&path, json).unwrap_or_else(|e| {
+        panic!("failed to write {}: {e}", path.display());
+    });
+}
+
+fn build_schema(
+    prefix: &str,
+    errors: &[TokenStream2],
+    exportables: &[TokenStream2],
+    implementables: &[TokenStream2],
+    trait_impls: &[TokenStream2],
+) -> ffier_schema::Library {
+    let errors_parsed: Vec<_> = errors
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaError>(item.clone()).ok())
+        .collect();
+    let exportables_parsed: Vec<_> = exportables
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaExportable>(item.clone()).ok())
+        .collect();
+    let implementables_parsed: Vec<_> = implementables
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaImplementable>(item.clone()).ok())
+        .collect();
+    let trait_impls_parsed: Vec<_> = trait_impls
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).ok())
+        .collect();
+
+    ffier_schema::Library {
+        prefix: prefix.to_string(),
+        types: exportables_parsed.iter().map(convert_exportable).collect(),
+        errors: errors_parsed.iter().map(convert_error).collect(),
+        traits: implementables_parsed.iter().map(convert_implementable).collect(),
+        trait_impls: trait_impls_parsed.iter().map(convert_trait_impl).collect(),
+    }
+}
+
+fn convert_exportable(meta: &MetaExportable) -> ffier_schema::ExportedType {
+    ffier_schema::ExportedType {
+        name: meta.struct_name.to_string(),
+        type_tag: meta.type_tag,
+        lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
+        methods: meta.methods.iter().map(convert_method).collect(),
+    }
+}
+
+fn convert_error(meta: &MetaError) -> ffier_schema::ErrorType {
+    ffier_schema::ErrorType {
+        name: meta.name.to_string(),
+        type_tag: meta.type_tag,
+        variants: meta
+            .variants
+            .iter()
+            .map(|v| ffier_schema::ErrorVariant {
+                name: v.name.to_string(),
+                code: v.code,
+                message: v.message.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn convert_implementable(meta: &MetaImplementable) -> ffier_schema::ImplementableTrait {
+    ffier_schema::ImplementableTrait {
+        name: meta.trait_name.to_string(),
+        type_tag: meta.type_tag,
+        methods: meta.methods.iter().map(convert_trait_method).collect(),
+        own_method_count: meta.own_method_count,
+        max_vtable_slot: meta.max_vtable_slot,
+    }
+}
+
+fn convert_trait_impl(meta: &MetaTraitImpl) -> ffier_schema::TraitImpl {
+    ffier_schema::TraitImpl {
+        trait_name: meta.trait_name.to_string(),
+        struct_name: meta.struct_name.to_string(),
+        lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
+        trait_lifetime_args: meta.trait_lifetime_args.clone(),
+        struct_lifetime_args: meta.struct_lifetime_args.clone(),
+        methods: meta.methods.iter().map(convert_trait_method).collect(),
+    }
+}
+
+fn convert_method(meta: &MetaMethod) -> ffier_schema::Method {
+    ffier_schema::Method {
+        name: meta.name.to_string(),
+        ffi_name: meta.ffi_name().to_string(),
+        doc: meta.doc().iter().cloned().collect(),
+        receiver: convert_receiver(meta.receiver),
+        method_lifetimes: meta.method_lifetimes.iter().map(|lt| lt.to_string()).collect(),
+        params: meta.params.iter().map(convert_param).collect(),
+        rust_ret: tokens_to_string(&meta.rust_ret),
+        is_builder: meta.is_builder(),
+        c_ret_type: None,
+    }
+}
+
+fn convert_trait_method(meta: &MetaMethod) -> ffier_schema::TraitMethod {
+    let (has_default, index, raw_handle) = match &meta.context {
+        MetaMethodContext::Trait { has_default, index, raw_handle } => {
+            (*has_default, *index, *raw_handle)
+        }
+        MetaMethodContext::Exportable { .. } => (false, 0, false),
+    };
+    ffier_schema::TraitMethod {
+        name: meta.name.to_string(),
+        index,
+        has_default,
+        raw_handle,
+        receiver: convert_receiver(meta.receiver),
+        params: meta.params.iter().map(convert_param).collect(),
+        rust_ret: tokens_to_string(&meta.rust_ret),
+        doc: meta.doc().iter().cloned().collect(),
+    }
+}
+
+fn convert_receiver(r: MetaReceiver) -> ffier_schema::Receiver {
+    match r {
+        MetaReceiver::None => ffier_schema::Receiver::None,
+        MetaReceiver::Ref => ffier_schema::Receiver::Ref,
+        MetaReceiver::Mut => ffier_schema::Receiver::Mut,
+        MetaReceiver::Value => ffier_schema::Receiver::Value,
+    }
+}
+
+fn convert_param(p: &ffier_meta::MetaParam) -> ffier_schema::Param {
+    let (rust_type, kind) = match &p.kind {
+        MetaParamKind::Regular(tp) => (
+            tokens_to_string(&tp.rust_type),
+            ffier_schema::ParamKind::Regular,
+        ),
+        MetaParamKind::StrSlice => (
+            "&[&str]".to_string(),
+            ffier_schema::ParamKind::StrSlice,
+        ),
+        MetaParamKind::ImplTrait { trait_name, dispatch, types } => (
+            tokens_to_string(&types.rust_type),
+            ffier_schema::ParamKind::ImplTrait {
+                trait_name: trait_name.clone(),
+                dispatch: match dispatch {
+                    ffier_meta::DispatchMode::Auto => "auto".to_string(),
+                    ffier_meta::DispatchMode::Concrete => "concrete".to_string(),
+                    ffier_meta::DispatchMode::Vtable => "vtable".to_string(),
+                },
+            },
+        ),
+    };
+    ffier_schema::Param {
+        name: p.name.to_string(),
+        rust_type,
+        kind,
+    }
+}
+
+/// Convert a token stream to a string representation.
+fn tokens_to_string(tokens: &TokenStream2) -> String {
+    tokens.to_string()
 }

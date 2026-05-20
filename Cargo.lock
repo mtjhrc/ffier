@@ -26,8 +26,10 @@ name = "ffier-bridge"
 version = "0.1.0"
 dependencies = [
  "ffier-meta",
+ "ffier-schema",
  "proc-macro2",
  "quote",
+ "serde_json",
  "syn",
 ]
 
