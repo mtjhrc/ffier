@@ -1,0 +1,1439 @@
+//! Rust client bindings generator from ffier JSON schema.
+//!
+//! Reads a `ffier-{prefix}.json` and produces a complete Rust source file with:
+//! - Error enums with `from_ffi`, `Display`, `Error` impls
+//! - Handle wrapper structs with extern "C" declarations
+//! - Safe method wrappers with lifetime-correct signatures
+//! - Trait definitions with vtable structs for implementable traits
+//! - Trait impl blocks for concrete types
+
+use ffier_schema::{
+    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
+    Receiver, Return, TraitImpl,
+};
+use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
+
+/// Generate complete Rust client source from a library schema.
+pub fn generate(lib: &Library) -> String {
+    let mut out = String::new();
+    let fn_pfx = format!("{}_", lib.prefix);
+
+    // 1. Error enums
+    for err in &lib.errors {
+        emit_error(&mut out, err, lib);
+    }
+
+    // Shared error externs (if any errors exist)
+    if !lib.errors.is_empty() {
+        writeln!(out, "unsafe extern \"C\" {{").unwrap();
+        writeln!(
+            out,
+            "    fn {fn_pfx}error_result(err: *mut core::ffi::c_void) -> ffier::FfierResult;"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    fn {fn_pfx}error_destroy(err: *mut core::ffi::c_void);"
+        )
+        .unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    // Build handle type set (for Result<Handle, E> detection)
+    let handle_types: HashSet<&str> = lib
+        .exported_types
+        .iter()
+        .map(|t| t.name.as_str())
+        .chain(
+            lib.traits
+                .iter()
+                .map(|t| format!("Vtable{}", t.name).leak() as &str),
+        )
+        .collect();
+
+    // 2. Exported types
+    for ty in &lib.exported_types {
+        emit_exported_type(&mut out, ty, lib, &fn_pfx, &handle_types);
+    }
+
+    // 3. Implementable traits
+    // Build trait defaults map: trait_name → (trait_snake, vec of defaulted methods)
+    let mut trait_defaults: HashMap<String, (String, Vec<&Method>)> = HashMap::new();
+    for tr in &lib.traits {
+        let trait_snake = camel_to_snake(&tr.name);
+        let defaults: Vec<_> = tr
+            .methods
+            .iter()
+            .filter(|m| {
+                matches!(
+                    &m.context,
+                    MethodContext::Trait {
+                        has_default: true,
+                        ..
+                    }
+                )
+            })
+            .collect();
+        if !defaults.is_empty() {
+            trait_defaults.insert(tr.name.clone(), (trait_snake, defaults));
+        }
+    }
+
+    let mut defined_traits: HashSet<String> = HashSet::new();
+    for tr in &lib.traits {
+        emit_implementable_trait(&mut out, tr, lib, &fn_pfx);
+        defined_traits.insert(tr.name.clone());
+    }
+
+    // 4. Trait impls
+    // Track error type names to skip Error trait impls for them
+    let error_names: HashSet<&str> = lib.errors.iter().map(|e| e.name.as_str()).collect();
+
+    for ti in &lib.trait_impls {
+        if error_names.contains(ti.struct_name.as_str()) {
+            continue; // Skip Error trait impls for error types
+        }
+        emit_trait_impl(
+            &mut out,
+            ti,
+            lib,
+            &fn_pfx,
+            &mut defined_traits,
+            &trait_defaults,
+        );
+    }
+
+    out
+}
+
+/// Generate from a JSON file path.
+pub fn generate_from_file(json_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let json = std::fs::read_to_string(json_path)?;
+    let lib = Library::from_json(&json)?;
+    Ok(generate(&lib))
+}
+
+// ===========================================================================
+// Error generation
+// ===========================================================================
+
+fn emit_error(out: &mut String, err: &ErrorType, _lib: &Library) {
+    // Enum definition
+    writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
+    writeln!(out, "pub enum {} {{", err.name).unwrap();
+    for v in &err.variants {
+        writeln!(out, "    {},", v.name).unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // from_ffi
+    writeln!(out, "impl {} {{", err.name).unwrap();
+    writeln!(out, "    pub fn from_ffi(r: ffier::FfierResult) -> Self {{").unwrap();
+    writeln!(out, "        let code = ffier::ffier_result_code(r);").unwrap();
+    writeln!(out, "        match code {{").unwrap();
+    for v in &err.variants {
+        writeln!(out, "            {}u32 => Self::{},", v.code, v.name).unwrap();
+    }
+    writeln!(
+        out,
+        "            other => panic!(\"unknown {{}} error code {{}}\", \"{}\", other),",
+        err.name
+    )
+    .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Display
+    writeln!(out, "impl std::fmt::Display for {} {{", err.name).unwrap();
+    writeln!(
+        out,
+        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"
+    )
+    .unwrap();
+    writeln!(out, "        match self {{").unwrap();
+    for v in &err.variants {
+        writeln!(
+            out,
+            "            Self::{} => write!(f, \"{}\"),",
+            v.name, v.message
+        )
+        .unwrap();
+    }
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // std::error::Error
+    writeln!(out, "impl std::error::Error for {} {{}}", err.name).unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Exported type generation
+// ===========================================================================
+
+fn emit_exported_type(
+    out: &mut String,
+    ty: &ExportedType,
+    lib: &Library,
+    fn_pfx: &str,
+    handle_types: &HashSet<&str>,
+) {
+    let entry = lib.type_entry(&ty.name).unwrap();
+    let type_tag = entry.type_tag.unwrap();
+    let lifetimes = &entry.lifetime_params;
+    let has_lifetimes = !lifetimes.is_empty();
+    let struct_snake = camel_to_snake(&ty.name);
+
+    // Lifetime generic strings
+    let lt_params = if has_lifetimes {
+        format!(
+            "<{}>",
+            lifetimes
+                .iter()
+                .map(|lt| format!("'{lt}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    };
+
+    // Extern block: destroy + all methods
+    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+    writeln!(
+        out,
+        "    pub fn {fn_pfx}{struct_snake}_destroy(handle: *mut core::ffi::c_void);"
+    )
+    .unwrap();
+    for m in &ty.methods {
+        let MethodContext::Exportable {
+            ffi_name,
+            is_builder,
+        } = &m.context
+        else {
+            continue;
+        };
+        let sig = build_extern_signature(
+            ffi_name,
+            m,
+            *is_builder,
+            ty.is_builder_type,
+            lib,
+            handle_types,
+        );
+        writeln!(out, "    pub fn {sig};").unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Struct definition
+    if has_lifetimes {
+        let phantom = format!(
+            "std::marker::PhantomData<({})>",
+            lifetimes
+                .iter()
+                .map(|lt| format!("&'{lt} ()"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        writeln!(
+            out,
+            "pub struct {}{lt_params}(*mut core::ffi::c_void, {phantom});",
+            ty.name
+        )
+        .unwrap();
+    } else {
+        writeln!(out, "pub struct {}(*mut core::ffi::c_void);", ty.name).unwrap();
+    }
+    writeln!(out).unwrap();
+
+    // __from_raw, __into_raw
+    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    if has_lifetimes {
+        writeln!(out, "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
+    } else {
+        writeln!(
+            out,
+            "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
+        )
+        .unwrap();
+    }
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiHandle
+    writeln!(
+        out,
+        "impl{lt_params} ffier::FfiHandle for {}{lt_params} {{",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    const C_HANDLE_NAME: &'static str = \"{}\";",
+        ty.name
+    )
+    .unwrap();
+    writeln!(out, "    const TYPE_TAG: u32 = {type_tag}u32;").unwrap();
+    writeln!(
+        out,
+        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiType
+    writeln!(
+        out,
+        "impl{lt_params} ffier::FfiType for {}{lt_params} {{",
+        ty.name
+    )
+    .unwrap();
+    writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
+    writeln!(
+        out,
+        "    const C_TYPE_NAME: &'static str = \"{}\";",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn into_c(self) -> *mut core::ffi::c_void {{ self.__into_raw() }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Debug
+    writeln!(
+        out,
+        "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        f.debug_tuple(\"{}\").field(&self.0).finish()",
+        ty.name
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Methods
+    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
+    for m in &ty.methods {
+        let MethodContext::Exportable {
+            ffi_name,
+            is_builder,
+        } = &m.context
+        else {
+            continue;
+        };
+        emit_method_wrapper(
+            out,
+            m,
+            ffi_name,
+            *is_builder,
+            ty.is_builder_type,
+            &ty.name,
+            lib,
+            handle_types,
+        );
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Drop
+    writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
+    writeln!(out, "    fn drop(&mut self) {{").unwrap();
+    writeln!(
+        out,
+        "        unsafe {{ {fn_pfx}{struct_snake}_destroy(self.0) }}"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Extern signature building
+// ===========================================================================
+
+fn build_extern_signature(
+    ffi_name: &str,
+    m: &Method,
+    is_builder: bool,
+    is_builder_type: bool,
+    _lib: &Library,
+    handle_types: &HashSet<&str>,
+) -> String {
+    let mut params = Vec::new();
+
+    // Self param
+    match m.receiver {
+        Receiver::None => {}
+        Receiver::Value if is_builder_type => {
+            params.push("handle: *mut *mut core::ffi::c_void".to_string());
+        }
+        _ => {
+            params.push("handle: *mut core::ffi::c_void".to_string());
+        }
+    }
+
+    // Method params
+    for p in &m.params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type_static();
+                params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+            }
+            ParamType::StrSlice => {
+                params.push(format!("{}: *const ffier::FfierBytes", p.name));
+                params.push(format!("{}_len: usize", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                params.push(format!("{}: *mut core::ffi::c_void", p.name));
+            }
+        }
+    }
+
+    // Return type + extra out-params
+    let ret_str = match &m.ret {
+        Return::Void => String::new(),
+        Return::Value(tr) if is_builder => String::new(),
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type_static();
+            format!(" -> <{ty} as ffier::FfiType>::CRepr")
+        }
+        Return::Result { ok, err_type: _ } => {
+            let is_ok_handle = ok
+                .as_ref()
+                .map(|tr| handle_types.contains(tr.type_name.as_str()))
+                .unwrap_or(false);
+
+            if is_ok_handle {
+                // GLib-style: returns handle pointer, null on error
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> *mut core::ffi::c_void".to_string()
+            } else {
+                if let Some(ok_tr) = ok {
+                    let ty = ok_tr.to_rust_type_static();
+                    params.push(format!("result: *mut <{ty} as ffier::FfiType>::CRepr"));
+                }
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
+        }
+    };
+
+    let params_str = params.join(", ");
+    format!("{ffi_name}({params_str}){ret_str}")
+}
+
+// ===========================================================================
+// Safe method wrapper
+// ===========================================================================
+
+fn emit_method_wrapper(
+    out: &mut String,
+    m: &Method,
+    ffi_name: &str,
+    is_builder: bool,
+    is_builder_type: bool,
+    struct_name: &str,
+    lib: &Library,
+    handle_types: &HashSet<&str>,
+) {
+    // Doc comments
+    for doc in &m.doc {
+        writeln!(out, "    #[doc = \"{doc}\"]").unwrap();
+    }
+
+    // Method-level lifetime generics
+    let method_lt = if !m.method_lifetimes.is_empty() {
+        format!(
+            "<{}>",
+            m.method_lifetimes
+                .iter()
+                .map(|lt| format!("'{lt}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    };
+
+    // Signature: receiver + params + return type
+    let receiver_str = match m.receiver {
+        Receiver::None => "",
+        Receiver::Ref => "&self, ",
+        Receiver::Mut => "&mut self, ",
+        Receiver::Value => "self, ",
+    };
+
+    let param_sigs: Vec<String> = m
+        .params
+        .iter()
+        .map(|p| match &p.param_type {
+            ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
+            ParamType::StrSlice => format!("{}: &[&str]", p.name),
+            ParamType::ImplTrait { trait_name, .. } => format!("{}: impl {trait_name}", p.name),
+        })
+        .collect();
+    let params_str = param_sigs.join(", ");
+
+    let ret_type = build_wrapper_return_type(m, is_builder, struct_name);
+
+    writeln!(
+        out,
+        "    pub fn {}{method_lt}({receiver_str}{params_str}){ret_type} {{",
+        m.name
+    )
+    .unwrap();
+
+    // Method body
+    emit_method_body(
+        out,
+        m,
+        ffi_name,
+        is_builder,
+        is_builder_type,
+        struct_name,
+        lib,
+        handle_types,
+    );
+
+    writeln!(out, "    }}").unwrap();
+}
+
+fn build_wrapper_return_type(m: &Method, is_builder: bool, _struct_name: &str) -> String {
+    if is_builder {
+        return match m.receiver {
+            Receiver::Mut => " -> &mut Self".to_string(),
+            Receiver::Value => match &m.ret {
+                Return::Void => " -> Self".to_string(),
+                Return::Result { ok: None, err_type } => format!(" -> Result<Self, {err_type}>"),
+                _ => format!(" -> {}", m.ret.to_rust_type()),
+            },
+            _ => format!(" -> {}", m.ret.to_rust_type()),
+        };
+    }
+
+    match &m.ret {
+        Return::Void => String::new(),
+        Return::Value(_) | Return::Result { .. } => format!(" -> {}", m.ret.to_rust_type()),
+    }
+}
+
+fn emit_method_body(
+    out: &mut String,
+    m: &Method,
+    ffi_name: &str,
+    is_builder: bool,
+    is_builder_type: bool,
+    _struct_name: &str,
+    lib: &Library,
+    handle_types: &HashSet<&str>,
+) {
+    // Build FFI call arguments
+    let by_value_self = m.receiver == Receiver::Value;
+
+    // Handle extraction for by-value self
+    if by_value_self && is_builder_type {
+        writeln!(out, "        let mut __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};").unwrap();
+    } else if by_value_self {
+        writeln!(
+            out,
+            "        let __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};"
+        )
+        .unwrap();
+    }
+
+    // Pre-bindings for StrSlice params
+    for p in &m.params {
+        if matches!(&p.param_type, ParamType::StrSlice) {
+            writeln!(out, "        let __ffi_{}: Vec<ffier::FfierBytes> = {}.iter().map(|s| unsafe {{ ffier::FfierBytes::from_str(s) }}).collect();",
+                p.name, p.name).unwrap();
+        }
+    }
+
+    // Build the FFI call argument list
+    let mut ffi_args = Vec::new();
+
+    // Self arg
+    match m.receiver {
+        Receiver::None => {}
+        Receiver::Value if is_builder_type => {
+            ffi_args.push(
+                "&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void"
+                    .to_string(),
+            );
+        }
+        Receiver::Value => {
+            ffi_args.push("__handle".to_string());
+        }
+        _ => {
+            ffi_args.push("self.0".to_string());
+        }
+    }
+
+    // Param args
+    for p in &m.params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type();
+                ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+            }
+            ParamType::StrSlice => {
+                ffi_args.push(format!("__ffi_{}.as_ptr()", p.name));
+                ffi_args.push(format!("__ffi_{}.len()", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                ffi_args.push(format!("{}.__into_raw_handle()", p.name));
+            }
+        }
+    }
+
+    let args_str = ffi_args.join(", ");
+
+    // Emit body based on return kind
+    let is_ok_handle = matches!(&m.ret, Return::Result { ok: Some(tr), .. } if handle_types.contains(tr.type_name.as_str()));
+
+    match &m.ret {
+        Return::Void if is_builder && m.receiver == Receiver::Mut => {
+            writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }};").unwrap();
+            writeln!(out, "        self").unwrap();
+        }
+        Return::Void if is_builder && by_value_self => {
+            writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }};").unwrap();
+            writeln!(out, "        Self(__handle)").unwrap();
+        }
+        Return::Void => {
+            writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        }
+        Return::Value(tr) if is_builder => {
+            // Shouldn't happen (builder with non-Self value return), but handle anyway
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
+            )
+            .unwrap();
+            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+        }
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
+            )
+            .unwrap();
+            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+        }
+        Return::Result { ok: None, err_type } if is_builder && by_value_self => {
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
+        }
+        Return::Result { ok: None, err_type } => {
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(
+                out,
+                "        if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r)) }}"
+            )
+            .unwrap();
+        }
+        Return::Result {
+            ok: Some(ok_tr),
+            err_type,
+        } if is_ok_handle => {
+            // GLib-style: returns handle, null on error
+            let ty = ok_tr.to_rust_type();
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        if !__raw.is_null() {{").unwrap();
+            writeln!(
+                out,
+                "            Ok(<{ty} as ffier::FfiType>::from_c(__raw))"
+            )
+            .unwrap();
+            writeln!(out, "        }} else {{").unwrap();
+            writeln!(
+                out,
+                "            let __r = unsafe {{ {fn_pfx}error_result(__err) }};",
+                fn_pfx = format!("{}_", lib.prefix)
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "            unsafe {{ {fn_pfx}error_destroy(__err) }};",
+                fn_pfx = format!("{}_", lib.prefix)
+            )
+            .unwrap();
+            writeln!(out, "            Err({err_type}::from_ffi(__r))").unwrap();
+            writeln!(out, "        }}").unwrap();
+        }
+        Return::Result {
+            ok: Some(ok_tr),
+            err_type,
+        } => {
+            // FfierResult-style with out-param
+            let ty = ok_tr.to_rust_type();
+            writeln!(
+                out,
+                "        let mut __out = std::mem::MaybeUninit::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        if __r == 0 {{").unwrap();
+            writeln!(out, "            Ok(<{ty} as ffier::FfiType>::from_c(unsafe {{ __out.assume_init() }}))").unwrap();
+            writeln!(out, "        }} else {{").unwrap();
+            writeln!(out, "            Err({err_type}::from_ffi(__r))").unwrap();
+            writeln!(out, "        }}").unwrap();
+        }
+    }
+}
+
+// ===========================================================================
+// Implementable trait generation
+// ===========================================================================
+
+fn emit_implementable_trait(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    fn_pfx: &str,
+) {
+    let entry = lib.type_entry(&tr.name).unwrap();
+    let type_tag = entry.type_tag.unwrap();
+    let vtable_name = format!("{}Vtable", tr.name);
+    let wrapper_name = format!("Vtable{}", tr.name);
+    let trait_snake = camel_to_snake(&tr.name);
+
+    // Trait definition
+    writeln!(out, "pub trait {} {{", tr.name).unwrap();
+    for m in &tr.methods {
+        let MethodContext::Trait {
+            has_default, index, ..
+        } = &m.context
+        else {
+            continue;
+        };
+
+        let method_sig = build_trait_method_sig(m);
+
+        if *has_default {
+            // Default impl via self-dispatch
+            writeln!(out, "    {method_sig} where Self: Sized {{").unwrap();
+            emit_default_dispatch_body(out, m, tr, lib, fn_pfx, type_tag, &vtable_name, *index);
+            writeln!(out, "    }}").unwrap();
+        } else {
+            writeln!(out, "    {method_sig};").unwrap();
+        }
+    }
+
+    // __ffier_vtable
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(
+        out,
+        "    fn __ffier_vtable() -> &'static {vtable_name} where Self: Sized {{"
+    )
+    .unwrap();
+    emit_vtable_constructor(out, tr, lib);
+    writeln!(out, "    }}").unwrap();
+
+    // __into_raw_handle
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(
+        out,
+        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        let __user_data = Box::into_raw(Box::new(self));"
+    )
+    .unwrap();
+    writeln!(out, "        let vtable_size: u16 = core::mem::size_of::<{vtable_name}>().try_into().expect(\"vtable_size exceeds u16::MAX\");").unwrap();
+    writeln!(
+        out,
+        "        ffier::ffier_handle_new_with_metadata({type_tag}u32, 0, ffier::VtableHandle {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            vtable_ptr: __vtable as *const {vtable_name} as *const core::ffi::c_void,"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            user_data: __user_data as *const core::ffi::c_void,"
+    )
+    .unwrap();
+    writeln!(out, "            vtable_size,").unwrap();
+    writeln!(out, "        }})").unwrap();
+    writeln!(out, "    }}").unwrap();
+
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Vtable struct
+    emit_vtable_struct(out, tr, lib, &vtable_name);
+
+    // Self-dispatch externs for defaulted methods
+    let has_defaults = tr.methods.iter().any(|m| {
+        matches!(
+            &m.context,
+            MethodContext::Trait {
+                has_default: true,
+                ..
+            }
+        )
+    });
+    if has_defaults {
+        writeln!(out, "unsafe extern \"C\" {{").unwrap();
+        for m in &tr.methods {
+            let MethodContext::Trait { has_default, .. } = &m.context else {
+                continue;
+            };
+            if !*has_default {
+                continue;
+            }
+            let extern_name = format!("{fn_pfx}{trait_snake}_{}", m.name);
+            let sig = build_dispatch_extern_sig(&extern_name, m, lib);
+            writeln!(out, "    pub fn {sig};").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    // Wrapper struct
+    writeln!(out, "pub struct {wrapper_name}(*mut core::ffi::c_void);").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "impl {wrapper_name} {{").unwrap();
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "impl Drop for {wrapper_name} {{").unwrap();
+    writeln!(out, "    fn drop(&mut self) {{}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+fn build_trait_method_sig(m: &Method) -> String {
+    let receiver_str = match m.receiver {
+        Receiver::None => "",
+        Receiver::Ref => "&self, ",
+        Receiver::Mut => "&mut self, ",
+        Receiver::Value => "self, ",
+    };
+
+    let params: Vec<String> = m
+        .params
+        .iter()
+        .map(|p| match &p.param_type {
+            ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
+            ParamType::StrSlice => format!("{}: &[&str]", p.name),
+            ParamType::ImplTrait { trait_name, .. } => format!("{}: impl {trait_name}", p.name),
+        })
+        .collect();
+    let params_str = params.join(", ");
+
+    let ret = match &m.ret {
+        Return::Void => String::new(),
+        _ => format!(" -> {}", m.ret.to_rust_type()),
+    };
+
+    format!("fn {}({receiver_str}{params_str}){ret}", m.name)
+}
+
+fn emit_default_dispatch_body(
+    out: &mut String,
+    m: &Method,
+    tr: &ImplementableTrait,
+    _lib: &Library,
+    fn_pfx: &str,
+    type_tag: u32,
+    vtable_name: &str,
+    index: usize,
+) {
+    let trait_snake = camel_to_snake(&tr.name);
+    let dispatch_fn = format!("{fn_pfx}{trait_snake}_{}", m.name);
+
+    writeln!(
+        out,
+        "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        let __metadata: u32 = 2 | ({}u32 << 2);",
+        index
+    )
+    .unwrap();
+    writeln!(out, "        let mut __temp = ffier::FfierHandle {{").unwrap();
+    writeln!(out, "            type_tag: {type_tag}u32,").unwrap();
+    writeln!(out, "            metadata: __metadata,").unwrap();
+    writeln!(out, "            value: ffier::VtableHandle {{").unwrap();
+    writeln!(
+        out,
+        "                vtable_ptr: __vtable as *const {vtable_name} as *const core::ffi::c_void,"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                user_data: self as *const Self as *const core::ffi::c_void,"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                vtable_size: core::mem::size_of::<{vtable_name}>() as u16,"
+    )
+    .unwrap();
+    writeln!(out, "            }},").unwrap();
+    writeln!(out, "        }};").unwrap();
+
+    // Build call args
+    let handle_arg = format!(
+        "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
+    );
+
+    let mut call_args = vec![handle_arg];
+    for p in &m.params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type();
+                call_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+            }
+            ParamType::StrSlice => {
+                call_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
+                call_args.push(format!("{}.len()", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                call_args.push(format!("{}.__into_raw_handle()", p.name));
+            }
+        }
+    }
+
+    let args_str = call_args.join(", ");
+
+    match &m.ret {
+        Return::Void => {
+            writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
+        }
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "        let __raw = unsafe {{ {dispatch_fn}({args_str}) }};"
+            )
+            .unwrap();
+            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+        }
+        _ => {
+            writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
+        }
+    }
+}
+
+fn emit_vtable_struct(out: &mut String, tr: &ImplementableTrait, _lib: &Library, vtable_name: &str) {
+    writeln!(out, "#[repr(C)]").unwrap();
+    writeln!(out, "pub struct {vtable_name} {{").unwrap();
+    writeln!(
+        out,
+        "    pub drop: Option<unsafe extern \"C\" fn(*mut core::ffi::c_void)>,"
+    )
+    .unwrap();
+
+    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    for m in &tr.methods {
+        if let MethodContext::Trait { index, .. } = &m.context {
+            method_by_index.insert(*index, m);
+        }
+    }
+
+    for slot in 0..=tr.max_vtable_slot {
+        if let Some(m) = method_by_index.get(&slot) {
+            let mut params = vec!["*mut core::ffi::c_void".to_string()];
+            for p in &m.params {
+                match &p.param_type {
+                    ParamType::Regular(tr) => {
+                        let ty = tr.to_rust_type_static();
+                        params.push(format!("<{ty} as ffier::FfiType>::CRepr"));
+                    }
+                    ParamType::StrSlice => {
+                        params.push("*const ffier::FfierBytes".to_string());
+                        params.push("usize".to_string());
+                    }
+                    ParamType::ImplTrait { .. } => {
+                        params.push("*mut core::ffi::c_void".to_string());
+                    }
+                }
+            }
+            let ret = match &m.ret {
+                Return::Void => String::new(),
+                Return::Value(tr) => {
+                    let ty = tr.to_rust_type_static();
+                    format!(" -> <{ty} as ffier::FfiType>::CRepr")
+                }
+                Return::Result { .. } => " -> ffier::FfierResult".to_string(),
+            };
+            let params_str = params.join(", ");
+            writeln!(
+                out,
+                "    pub {}: Option<unsafe extern \"C\" fn({params_str}){ret}>,",
+                m.name
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
+            )
+            .unwrap();
+        }
+    }
+
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Library) {
+    let vtable_name = format!("{}Vtable", tr.name);
+
+    writeln!(out, "        &{vtable_name} {{").unwrap();
+
+    // drop trampoline
+    writeln!(out, "            drop: Some({{").unwrap();
+    writeln!(out, "                unsafe extern \"C\" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {{").unwrap();
+    writeln!(
+        out,
+        "                    unsafe {{ drop(Box::from_raw(__ud as *mut __T)) }};"
+    )
+    .unwrap();
+    writeln!(out, "                }}").unwrap();
+    writeln!(out, "                __drop_trampoline::<Self>").unwrap();
+    writeln!(out, "            }}),").unwrap();
+
+    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    for m in &tr.methods {
+        if let MethodContext::Trait { index, .. } = &m.context {
+            method_by_index.insert(*index, m);
+        }
+    }
+
+    for slot in 0..=tr.max_vtable_slot {
+        if let Some(m) = method_by_index.get(&slot) {
+            let is_mut = m.receiver == Receiver::Mut;
+            let borrow = if is_mut { "&mut *" } else { "&*" };
+
+            // Build trampoline params
+            let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
+            for p in &m.params {
+                match &p.param_type {
+                    ParamType::Regular(tr) => {
+                        let ty = tr.to_rust_type_static();
+                        tramp_params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+                    }
+                    ParamType::ImplTrait { .. } => {
+                        tramp_params.push(format!("{}: *mut core::ffi::c_void", p.name));
+                    }
+                    ParamType::StrSlice => {
+                        tramp_params.push(format!("{}: *const ffier::FfierBytes", p.name));
+                        tramp_params.push(format!("{}_len: usize", p.name));
+                    }
+                }
+            }
+            let tramp_params_str = tramp_params.join(", ");
+
+            let ret = match &m.ret {
+                Return::Void => String::new(),
+                Return::Value(tr) => {
+                    let ty = tr.to_rust_type_static();
+                    format!(" -> <{ty} as ffier::FfiType>::CRepr")
+                }
+                Return::Result { .. } => " -> ffier::FfierResult".to_string(),
+            };
+
+            writeln!(out, "            {}: Some({{", m.name).unwrap();
+            writeln!(
+                out,
+                "                unsafe extern \"C\" fn __trampoline<__T: {}>(",
+                tr.name
+            )
+            .unwrap();
+            writeln!(out, "                    {tramp_params_str},").unwrap();
+            writeln!(out, "                ){ret} {{").unwrap();
+
+            let cast = if is_mut {
+                "__ud as *mut __T"
+            } else {
+                "__ud as *const __T"
+            };
+            writeln!(
+                out,
+                "                    let __val = unsafe {{ {borrow}({cast}) }};"
+            )
+            .unwrap();
+
+            // Build call args
+            let mut call_args = Vec::new();
+            for p in &m.params {
+                match &p.param_type {
+                    ParamType::Regular(tr) => {
+                        let ty = tr.to_rust_type();
+                        call_args.push(format!("<{ty} as ffier::FfiType>::from_c({})", p.name));
+                    }
+                    ParamType::ImplTrait { .. } => {
+                        call_args.push(p.name.clone());
+                    }
+                    ParamType::StrSlice => {
+                        call_args.push(format!("{}", p.name)); // TODO: proper slice conversion
+                    }
+                }
+            }
+            let call_str = call_args.join(", ");
+
+            writeln!(
+                out,
+                "                    let __result = __val.{}({call_str});",
+                m.name
+            )
+            .unwrap();
+
+            match &m.ret {
+                Return::Void => {
+                    writeln!(out, "                    __result").unwrap();
+                }
+                Return::Value(tr) => {
+                    let ty = tr.to_rust_type();
+                    writeln!(
+                        out,
+                        "                    <{ty} as ffier::FfiType>::into_c(__result)"
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    writeln!(out, "                    __result").unwrap();
+                }
+            }
+
+            writeln!(out, "                }}").unwrap();
+            writeln!(out, "                __trampoline::<Self>").unwrap();
+            writeln!(out, "            }}),").unwrap();
+        } else {
+            writeln!(out, "            __reserved_{slot}: None,").unwrap();
+        }
+    }
+
+    writeln!(out, "        }}").unwrap();
+}
+
+fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> String {
+    let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
+    for p in &m.params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type_static();
+                params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+            }
+            ParamType::StrSlice => {
+                params.push(format!("{}: *const ffier::FfierBytes", p.name));
+                params.push(format!("{}_len: usize", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                params.push(format!("{}: *mut core::ffi::c_void", p.name));
+            }
+        }
+    }
+    let ret = match &m.ret {
+        Return::Void => String::new(),
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type_static();
+            format!(" -> <{ty} as ffier::FfiType>::CRepr")
+        }
+        Return::Result { .. } => " -> ffier::FfierResult".to_string(),
+    };
+    let params_str = params.join(", ");
+    format!("{extern_name}({params_str}){ret}")
+}
+
+// ===========================================================================
+// Trait impl generation
+// ===========================================================================
+
+fn emit_trait_impl(
+    out: &mut String,
+    ti: &TraitImpl,
+    lib: &Library,
+    fn_pfx: &str,
+    defined_traits: &mut HashSet<String>,
+    trait_defaults: &HashMap<String, (String, Vec<&Method>)>,
+) {
+    let struct_snake = camel_to_snake(&ti.struct_name);
+
+    // Emit trait definition if not yet defined (trait-impl-only traits)
+    if !defined_traits.contains(&ti.trait_name) {
+        emit_simple_trait_def(out, ti);
+        defined_traits.insert(ti.trait_name.clone());
+    }
+
+    // Extern block
+    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+    for m in &ti.methods {
+        let extern_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
+        let sig = build_dispatch_extern_sig(&extern_name, m, lib);
+        writeln!(out, "    pub fn {sig};").unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Build impl header with lifetimes
+    let impl_generics = if !ti.lifetimes.is_empty() {
+        format!(
+            "<{}>",
+            ti.lifetimes
+                .iter()
+                .map(|lt| format!("'{lt}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    } else {
+        String::new()
+    };
+
+    let trait_args = if !ti.trait_lifetime_args.is_empty() {
+        let args: Vec<String> = ti
+            .trait_lifetime_args
+            .iter()
+            .map(|lt| format!("'{lt}"))
+            .collect();
+        format!("<{}>", args.join(", "))
+    } else {
+        String::new()
+    };
+
+    let struct_args = if !ti.struct_lifetime_args.is_empty() {
+        let args: Vec<String> = ti
+            .struct_lifetime_args
+            .iter()
+            .map(|lt| format!("'{lt}"))
+            .collect();
+        format!("<{}>", args.join(", "))
+    } else {
+        String::new()
+    };
+
+    writeln!(
+        out,
+        "impl{impl_generics} {}{trait_args} for {}{struct_args} {{",
+        ti.trait_name, ti.struct_name
+    )
+    .unwrap();
+
+    // Emit methods from this impl
+    let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
+
+    for m in &ti.methods {
+        let extern_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
+        let sig = build_trait_method_sig(m);
+        writeln!(out, "    {sig} {{").unwrap();
+
+        // Simple dispatch body
+        let mut ffi_args = vec!["self.0".to_string()];
+        for p in &m.params {
+            match &p.param_type {
+                ParamType::Regular(tr) => {
+                    let ty = tr.to_rust_type();
+                    ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+                }
+                ParamType::ImplTrait { .. } => {
+                    ffi_args.push(format!("{}.__into_raw_handle()", p.name));
+                }
+                ParamType::StrSlice => {
+                    ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
+                    ffi_args.push(format!("{}.len()", p.name));
+                }
+            }
+        }
+        let args_str = ffi_args.join(", ");
+
+        match &m.ret {
+            Return::Void => {
+                writeln!(out, "        unsafe {{ {extern_name}({args_str}) }}").unwrap();
+            }
+            Return::Value(tr) => {
+                let ty = tr.to_rust_type();
+                writeln!(
+                    out,
+                    "        let __raw = unsafe {{ {extern_name}({args_str}) }};"
+                )
+                .unwrap();
+                writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+            }
+            _ => {
+                writeln!(out, "        unsafe {{ {extern_name}({args_str}) }}").unwrap();
+            }
+        }
+        writeln!(out, "    }}").unwrap();
+    }
+
+    // Emit default method forwarders (from trait defaults not in this impl)
+    if let Some((trait_snake, defaults)) = trait_defaults.get(&ti.trait_name) {
+        for dm in defaults {
+            if impl_method_names.contains(dm.name.as_str()) {
+                continue;
+            }
+
+            let dispatch_fn = format!("{fn_pfx}{trait_snake}_{}", dm.name);
+            let sig = build_trait_method_sig(dm);
+            writeln!(out, "    {sig} {{").unwrap();
+
+            let mut ffi_args = vec!["self.0".to_string()];
+            for p in &dm.params {
+                match &p.param_type {
+                    ParamType::Regular(tr) => {
+                        let ty = tr.to_rust_type();
+                        ffi_args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+                    }
+                    ParamType::ImplTrait { .. } => {
+                        ffi_args.push(format!("{}.__into_raw_handle()", p.name));
+                    }
+                    ParamType::StrSlice => {
+                        ffi_args.push(format!("{}.as_ptr() as *const ffier::FfierBytes", p.name));
+                        ffi_args.push(format!("{}.len()", p.name));
+                    }
+                }
+            }
+            let args_str = ffi_args.join(", ");
+
+            match &dm.ret {
+                Return::Void => {
+                    writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
+                }
+                Return::Value(tr) => {
+                    let ty = tr.to_rust_type();
+                    writeln!(
+                        out,
+                        "        let __raw = unsafe {{ {dispatch_fn}({args_str}) }};"
+                    )
+                    .unwrap();
+                    writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+                }
+                _ => {
+                    writeln!(out, "        unsafe {{ {dispatch_fn}({args_str}) }}").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+        }
+    }
+
+    // __into_raw_handle for known types (simple: extract raw pointer)
+    writeln!(
+        out,
+        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void {{"
+    )
+    .unwrap();
+    writeln!(out, "        let this = std::mem::ManuallyDrop::new(self);").unwrap();
+    writeln!(out, "        this.0").unwrap();
+    writeln!(out, "    }}").unwrap();
+
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl) {
+    // Build trait lifetime generics from trait_lifetime_args (excluding 'static)
+    let trait_lt_params: Vec<String> = ti
+        .trait_lifetime_args
+        .iter()
+        .filter(|lt| *lt != "static")
+        .map(|lt| format!("'{lt}"))
+        .collect();
+    let trait_generics = if trait_lt_params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", trait_lt_params.join(", "))
+    };
+
+    writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
+    for m in &ti.methods {
+        let sig = build_trait_method_sig(m);
+        writeln!(out, "    {sig};").unwrap();
+    }
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(
+        out,
+        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Helpers
+// ===========================================================================
+
+fn camel_to_snake(name: &str) -> String {
+    let mut result = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                result.push('_');
+            }
+            result.push(c.to_lowercase().next().unwrap());
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}

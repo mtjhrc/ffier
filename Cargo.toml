@@ -1,3 +1,3 @@
 [workspace]
-members = ["ffier", "ffier-rt", "ffier-meta", "ffier-annotations", "ffier-builtins", "ffier-schema", "ffier-bridge", "ffier-bridge-macros", "ffier-gen-c-header", "ffier-gen-rust", "example/mylib", "example/mylib-cdylib", "example/mylib-via-cdylib", "example/rust-consumer", "tests/lib", "tests/cdylib", "tests/lib-via-cdylib", "tests/consumer", "tests/submodule-lib", "tests/submodule-cdylib", "tests/compat", "tests/foreign-trait-crate"]
+members = ["ffier", "ffier-rt", "ffier-meta", "ffier-annotations", "ffier-builtins", "ffier-schema", "ffier-bridge", "ffier-bridge-macros", "ffier-gen-c-header", "ffier-gen-rust", "ffier-gen-rust-client", "example/mylib", "example/mylib-cdylib", "example/mylib-via-cdylib", "example/rust-consumer", "tests/lib", "tests/cdylib", "tests/lib-via-cdylib", "tests/consumer", "tests/submodule-lib", "tests/submodule-cdylib", "tests/compat", "tests/foreign-trait-crate"]
 resolver = "2"

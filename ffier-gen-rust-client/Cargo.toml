@@ -1,0 +1,8 @@
+[package]
+name = "ffier-gen-rust-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffier-schema = { path = "../ffier-schema" }
+serde_json = "1"
