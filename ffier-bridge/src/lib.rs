@@ -2539,6 +2539,8 @@ struct CTypeResolver {
     upper_pfx: String,      // e.g. "FT_"
     fn_pfx: String,         // e.g. "ft_"
     handle_names: HashSet<String>,
+    /// Maps trait names to their C handle type names (e.g. "Fruit" → "FtFruit").
+    trait_c_names: HashMap<String, String>,
 }
 
 impl CTypeResolver {
@@ -2547,41 +2549,59 @@ impl CTypeResolver {
         let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
         let fn_pfx = format!("{prefix}_");
         let mut handle_names = HashSet::new();
+        let mut trait_c_names = HashMap::new();
         for e in exportables {
             handle_names.insert(e.struct_name.to_string());
         }
         for i in implementables {
             handle_names.insert(format!("Vtable{}", i.trait_name));
+            let trait_name = i.trait_name.to_string();
+            let c_name = format!("{type_pfx}{trait_name}");
+            trait_c_names.insert(trait_name, c_name);
         }
-        CTypeResolver { type_pfx, upper_pfx, fn_pfx, handle_names }
+        CTypeResolver { type_pfx, upper_pfx, fn_pfx, handle_names, trait_c_names }
     }
 
-    /// Map a Rust type token string to a C type name.
-    /// E.g. "i32" → "int32_t", "& str" → "FtStr", "Widget" → "FtWidget"
-    fn resolve(&self, rust_type: &str) -> String {
+    /// Strip reference, lifetime, and generic args from a Rust type string,
+    /// returning the bare type name.
+    /// E.g. `"& 'a Widget"` → `"Widget"`, `"View < 'a >"` → `"View"`,
+    /// `"BorrowedFd < '_ >"` → `"BorrowedFd"`, `"i32"` → `"i32"`.
+    fn bare_type(rust_type: &str) -> &str {
         let s = rust_type.trim();
 
-        // Strip leading `&` or `& mut` (with optional lifetime like `'a` or `'static` or `'_`)
-        let inner = if let Some(rest) = s.strip_prefix('&') {
+        // Strip leading `&` (with optional `mut` and lifetime)
+        let s = if let Some(rest) = s.strip_prefix('&') {
             let rest = rest.trim();
-            // Strip optional `mut`
             let rest = rest.strip_prefix("mut ").map_or(rest, |r| r.trim());
-            // Strip optional lifetime: 'a, 'static, '_
-            let rest = if rest.starts_with('\'') {
-                // Find end of lifetime: ' followed by ident chars
+            // Strip lifetime: 'a, 'static, '_
+            if rest.starts_with('\'') {
                 let after_tick = &rest[1..];
-                let lt_len = after_tick.find(|c: char| !c.is_alphanumeric() && c != '_')
+                let lt_len = after_tick
+                    .find(|c: char| !c.is_alphanumeric() && c != '_')
                     .unwrap_or(after_tick.len());
                 rest[1 + lt_len..].trim()
             } else {
                 rest
-            };
-            rest
+            }
         } else {
             s
         };
 
-        // Direct match on the inner type
+        // Strip generic args: `View < 'a >` → `View`
+        match s.find(|c: char| c == '<' || c == ' ') {
+            Some(pos) if s.as_bytes().get(pos) == Some(&b'<')
+                || s[pos..].trim_start().starts_with('<') =>
+            {
+                s[..pos].trim()
+            }
+            _ => s,
+        }
+    }
+
+    /// Map a Rust type token string to a C type name.
+    fn resolve(&self, rust_type: &str) -> String {
+        let inner = Self::bare_type(rust_type);
+
         if self.handle_names.contains(inner) {
             return format!("{}{}", self.type_pfx, inner);
         }
@@ -2607,6 +2627,15 @@ impl CTypeResolver {
         }
     }
 
+    /// C type for an `impl Trait` parameter. Uses the trait's C handle name if
+    /// known, otherwise falls back to `void*`.
+    fn resolve_impl_trait(&self, trait_name: &str) -> String {
+        self.trait_c_names
+            .get(trait_name)
+            .cloned()
+            .unwrap_or_else(|| "void*".to_string())
+    }
+
     /// Resolve the C type for a handle (always opaque pointer typedef).
     fn handle_c_name(&self, name: &str) -> String {
         format!("{}{}", self.type_pfx, name)
@@ -2628,13 +2657,8 @@ impl CTypeResolver {
 
     /// Is this rust_type a handle type?
     fn is_handle_type(&self, rust_type: &str) -> bool {
-        // Reuse resolve — if it maps to {Prefix}{Name} where Name is a handle, it's a handle.
-        let c_type = self.resolve(rust_type);
-        if let Some(name) = c_type.strip_prefix(&self.type_pfx) {
-            self.handle_names.contains(name)
-        } else {
-            false
-        }
+        let inner = Self::bare_type(rust_type);
+        self.handle_names.contains(inner)
     }
 }
 
@@ -2674,11 +2698,18 @@ fn build_schema(
 }
 
 fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema::ExportedType {
+    // A type is a builder type if any method consumes self by value (not &mut self).
+    // By-value builders need pointer-to-handle in C (FtConfig*) so the bridge
+    // can swap the handle after consuming the old value.
+    let is_builder_type = meta.methods.iter().any(|m| {
+        m.is_builder() && m.receiver == MetaReceiver::Value
+    });
     ffier_schema::ExportedType {
         name: meta.struct_name.to_string(),
         c_name: r.handle_c_name(&meta.struct_name.to_string()),
         type_tag: meta.type_tag,
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
+        is_builder_type,
         methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
     }
 }
@@ -2702,6 +2733,7 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
 fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_schema::ImplementableTrait {
     ffier_schema::ImplementableTrait {
         name: meta.trait_name.to_string(),
+        c_name: r.handle_c_name(&meta.trait_name.to_string()),
         type_tag: meta.type_tag,
         methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
         own_method_count: meta.own_method_count,
@@ -2772,7 +2804,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
             let rt = tokens_to_string(&types.rust_type);
             (
                 rt,
-                "void*".to_string(),
+                r.resolve_impl_trait(trait_name),
                 ffier_schema::ParamKind::ImplTrait {
                     trait_name: trait_name.clone(),
                     dispatch: match dispatch {

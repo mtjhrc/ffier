@@ -42,6 +42,11 @@ pub struct ExportedType {
     /// Struct-level lifetime params with original names (e.g. `["a"]` for `View<'a>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lifetimes: Vec<String>,
+    /// Whether this type uses by-value self (builder pattern). When true,
+    /// `&mut self` methods in C take a pointer-to-handle (`FtConfig*`) so the
+    /// bridge can update the handle in place.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub is_builder_type: bool,
     pub methods: Vec<Method>,
 }
 
@@ -221,6 +226,9 @@ pub struct ErrorVariant {
 pub struct ImplementableTrait {
     /// Trait name (e.g. "Fruit", "Processor").
     pub name: String,
+    /// C handle type name for the trait (e.g. "FtFruit").
+    /// Used as the parameter type for `impl Trait` params in C declarations.
+    pub c_name: String,
     /// Stable type tag for the vtable wrapper (e.g. "VtableFruit").
     pub type_tag: u32,
     pub methods: Vec<Method>,
