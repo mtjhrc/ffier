@@ -38,6 +38,9 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     for ty in &lib.types {
         out.push_str(&format!("typedef void* {};\n", ty.c_name));
     }
+
+    // Trait typedefs with implementor lists
+    emit_trait_typedefs(&mut out, lib, &type_pfx);
     out.push('\n');
 
     // Shared types
@@ -53,23 +56,16 @@ pub fn generate(lib: &Library, guard: &str) -> String {
         emit_type_section(&mut out, ty, &type_pfx, &fn_pfx, lib);
     }
 
+    // Implementable traits: vtable struct + dispatch functions
+    for tr in &lib.traits {
+        emit_vtable_section(&mut out, tr, &type_pfx);
+        emit_dispatch_section(&mut out, tr, &fn_pfx, &type_pfx);
+    }
+
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
         emit_trait_impl_section(&mut out, ti, &fn_pfx, lib);
     }
-
-    // Self-dispatch functions for implementable traits
-    for tr in &lib.traits {
-        emit_dispatch_section(&mut out, tr, &fn_pfx, &type_pfx);
-    }
-
-    // Per-error typed functions (ft_test_error_code, ft_test_error_message)
-    for err in &lib.errors {
-        emit_error_handle_section(&mut out, err, &fn_pfx, &type_pfx);
-    }
-
-    // Generic error functions (ft_error_code, ft_error_message, ft_error_result, ft_error_destroy)
-    emit_generic_error_functions(&mut out, &fn_pfx, &type_pfx);
 
     // Utility functions
     emit_utility_functions(&mut out, &fn_pfx, &type_pfx);
@@ -154,6 +150,108 @@ fn emit_error_section(out: &mut String, err: &ErrorType) {
             v.c_name, err.type_tag, v.code,
         ));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Trait typedefs with implementor lists
+// ---------------------------------------------------------------------------
+
+fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
+    // Build a map: trait_name → vec of implementor C names
+    let mut trait_implementors: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for ti in &lib.trait_impls {
+        let implementor_c = find_type_c_name(lib, &ti.struct_name);
+        trait_implementors
+            .entry(ti.trait_name.clone())
+            .or_default()
+            .push(implementor_c);
+    }
+
+    // For implementable traits, also add the VtableXxx wrapper as an implementor
+    for tr in &lib.traits {
+        let vtable_name = format!("{type_pfx}Vtable{}", tr.name);
+        trait_implementors
+            .entry(tr.name.clone())
+            .or_default()
+            .push(vtable_name);
+    }
+
+    // Collect all trait names that need typedefs (from both implementables and trait_impls)
+    let mut trait_names: Vec<String> = trait_implementors.keys().cloned().collect();
+    trait_names.sort();
+
+    for trait_name in &trait_names {
+        let c_name = format!("{type_pfx}{trait_name}");
+        let implementors = &trait_implementors[trait_name];
+        let list = implementors.join(" | ");
+        out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vtable struct definitions
+// ---------------------------------------------------------------------------
+
+fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str) {
+    let vtable_name = format!("{type_pfx}{}Vtable", tr.name);
+
+    emit_section_header(out, &format!("Vtable{}", tr.name));
+
+    out.push_str("typedef struct {\n");
+
+    // Slot 0 is always drop
+    out.push_str("    void (*drop)(void* self_data);\n");
+
+    // Build a map of index → method for gap detection
+    let mut method_by_index: std::collections::HashMap<usize, &Method> =
+        std::collections::HashMap::new();
+    for m in &tr.methods {
+        if let MethodContext::Trait { index, .. } = &m.context {
+            method_by_index.insert(*index, m);
+        }
+    }
+
+    // Emit method slots 0..=max_vtable_slot (after drop at struct position 0).
+    // Method index N occupies struct position N+1.
+    for slot in 0..=tr.max_vtable_slot {
+        if let Some(m) = method_by_index.get(&slot) {
+            // Build the function pointer signature
+            let mut params = vec!["void* self_data".to_string()];
+            for p in &m.params {
+                match &p.kind {
+                    ParamKind::Regular => {
+                        params.push(format!("{} {}", p.c_type, p.name));
+                    }
+                    ParamKind::StrSlice => {
+                        let str_c = format!("{type_pfx}Str");
+                        params.push(format!("const {str_c}* {}", p.name));
+                        params.push(format!("uintptr_t {}_len", p.name));
+                    }
+                    ParamKind::ImplTrait { .. } => {
+                        params.push(format!("{} {}", p.c_type, p.name));
+                    }
+                }
+            }
+
+            let ret_type = match &m.ret {
+                Return::Void => "void".to_string(),
+                Return::Value { c_type, .. } => c_type.clone(),
+                Return::Result { .. } => format!("{type_pfx}Result"),
+            };
+
+            let params_str = params.join(", ");
+            out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
+        } else {
+            // Reserved/retired slot
+            out.push_str(&format!(
+                "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"
+            ));
+        }
+    }
+
+    out.push_str(&format!("}} {vtable_name};\n"));
 }
 
 // ---------------------------------------------------------------------------
@@ -270,31 +368,6 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, fn_pfx: &str
 // ---------------------------------------------------------------------------
 // Error handle functions
 // ---------------------------------------------------------------------------
-
-fn emit_error_handle_section(out: &mut String, err: &ErrorType, fn_pfx: &str, _type_pfx: &str) {
-    let err_snake = camel_to_snake(&err.name);
-    // Per-error typed functions
-    out.push_str(&format!(
-        "uint32_t {fn_pfx}{err_snake}_code({} handle);\n",
-        err.c_name
-    ));
-    out.push_str(&format!(
-        "void {fn_pfx}{err_snake}_message({} handle, void* writer);\n",
-        err.c_name
-    ));
-}
-
-fn emit_generic_error_functions(out: &mut String, fn_pfx: &str, type_pfx: &str) {
-    emit_section_header(out, "Error handling");
-    let _error_c = format!("{type_pfx}Error");
-    let _result_c = format!("{type_pfx}Result");
-    out.push_str(&format!("uint32_t {fn_pfx}error_code(void* handle);\n"));
-    out.push_str(&format!(
-        "void {fn_pfx}error_message(void* handle, void* writer);\n"
-    ));
-    out.push_str(&format!("uint64_t {fn_pfx}error_result(void* handle);\n"));
-    out.push_str(&format!("void {fn_pfx}error_destroy(void* handle);\n"));
-}
 
 // ---------------------------------------------------------------------------
 // Utility functions
