@@ -2246,11 +2246,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             }
             LibraryEntry::TaggedTrait(path, tag) => {
                 let last_ident = path_last_ident(path);
-                let tag_const_ident = format_ident!("__ffier_type_tag_{last_ident}");
-                tag_consts.push(quote! {
-                    #[doc(hidden)]
-                    pub const #tag_const_ident: u32 = #tag;
-                });
 
                 // The upstream metadata macro generates the wrapper type
                 // via @reexport. The shim passes path overrides (wrapper,
@@ -2269,6 +2264,26 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     #[doc(hidden)]
                     pub use #alias as #upstream_alias;
                 });
+
+                // Re-export the trait and vtable struct so `$crate::PushStr`
+                // and `$crate::PushStrVtable` resolve without manual `pub use`
+                // at the library crate root. Only needed for external crate
+                // paths (not `crate::` which is already local).
+                // Single-segment paths (like `Processor`) and `crate::` paths
+                // are local — they're already defined in the library crate.
+                // Multi-segment external paths (like `ffier_builtins::PushStr`)
+                // need re-exporting.
+                let is_external = path.segments.len() > 1
+                    && path.segments.first().map_or(true, |seg| seg.ident != "crate");
+                if is_external {
+                    let vtable_struct_path = replace_last_segment(path, &vtable_struct_ident);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #path;
+                        #[doc(hidden)]
+                        pub use #vtable_struct_path;
+                    });
+                }
 
                 let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{last_ident}");
                 shim_macros.push(quote! {
