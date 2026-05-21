@@ -368,17 +368,27 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         let header_fn = if tag == "implementable" {
             let trait_snake = camel_to_snake(&name);
-            format_ident!("{fn_pfx}vtable_{trait_snake}__header")
+            Some(format_ident!("{fn_pfx}vtable_{trait_snake}__header"))
         } else if tag == "trait_impl" {
             let trait_snake = camel_to_snake(&name);
             let struct_name = peek_meta_field(item, "struct_name");
             let struct_snake = camel_to_snake(&struct_name);
-            format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header")
+            // Skip header function when struct and trait have the same
+            // snake_case name (e.g. Error for Error) — bridge functions
+            // are skipped for this case to avoid name collision with
+            // trait dispatch functions.
+            if struct_snake == trait_snake {
+                None
+            } else {
+                Some(format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header"))
+            }
         } else {
             let type_snake = camel_to_snake(&name);
-            format_ident!("{fn_pfx}{type_snake}__header")
+            Some(format_ident!("{fn_pfx}{type_snake}__header"))
         };
-        header_fn_names.push(header_fn);
+        if let Some(hfn) = header_fn {
+            header_fn_names.push(hfn);
+        }
 
         all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types));
     }
