@@ -371,7 +371,7 @@ fn emit_exported_type(
             ffi_name,
             *is_builder,
             ty.is_builder_type,
-            &ty.name,
+            has_lifetimes,
             lib,
             handle_types,
         );
@@ -474,13 +474,14 @@ fn emit_method_wrapper(
     ffi_name: &str,
     is_builder: bool,
     is_builder_type: bool,
-    struct_name: &str,
+    has_lifetimes: bool,
     lib: &Library,
     handle_types: &HashSet<&str>,
 ) {
-    // Doc comments
+    // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
-        writeln!(out, "    #[doc = \"{doc}\"]").unwrap();
+        let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(out, "    #[doc = \"{escaped}\"]").unwrap();
     }
 
     // Method-level lifetime generics
@@ -508,7 +509,7 @@ fn emit_method_wrapper(
     let param_sigs: Vec<String> = m.params.iter().map(|p| format_param_sig(p, lib)).collect();
     let params_str = param_sigs.join(", ");
 
-    let ret_type = build_wrapper_return_type(m, is_builder, struct_name);
+    let ret_type = build_wrapper_return_type(m, is_builder);
 
     writeln!(
         out,
@@ -524,7 +525,7 @@ fn emit_method_wrapper(
         ffi_name,
         is_builder,
         is_builder_type,
-        struct_name,
+        has_lifetimes,
         lib,
         handle_types,
     );
@@ -532,7 +533,7 @@ fn emit_method_wrapper(
     writeln!(out, "    }}").unwrap();
 }
 
-fn build_wrapper_return_type(m: &Method, is_builder: bool, _struct_name: &str) -> String {
+fn build_wrapper_return_type(m: &Method, is_builder: bool) -> String {
     if is_builder {
         return match m.receiver {
             Receiver::Mut => " -> &mut Self".to_string(),
@@ -557,7 +558,7 @@ fn emit_method_body(
     ffi_name: &str,
     is_builder: bool,
     is_builder_type: bool,
-    _struct_name: &str,
+    has_lifetimes: bool,
     lib: &Library,
     handle_types: &HashSet<&str>,
 ) {
@@ -599,6 +600,8 @@ fn emit_method_body(
 
     ffi_args.extend(build_ffi_param_args(&m.params, lib));
     let args_str = ffi_args.join(", ");
+    // Separator for appending extra out-params after args_str
+    let sep = if args_str.is_empty() { "" } else { ", " };
 
     // Emit body based on return kind
     let is_ok_handle = matches!(&m.ret, Return::Result { ok: Some(tr), .. } if handle_types.contains(tr.type_name.as_str()));
@@ -610,7 +613,11 @@ fn emit_method_body(
         }
         Return::Void if is_builder && by_value_self => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }};").unwrap();
-            writeln!(out, "        Self(__handle)").unwrap();
+            if has_lifetimes {
+                writeln!(out, "        Self(__handle, std::marker::PhantomData)").unwrap();
+            } else {
+                writeln!(out, "        Self(__handle)").unwrap();
+            }
         }
         Return::Void => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
@@ -640,8 +647,12 @@ fn emit_method_body(
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
             )
             .unwrap();
-            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
-            writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            if has_lifetimes {
+                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle, std::marker::PhantomData)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
+            } else {
+                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
+            }
         }
         Return::Result { ok: None, err_type } if is_builder && m.receiver == Receiver::Mut => {
             writeln!(
@@ -649,7 +660,7 @@ fn emit_method_body(
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
             )
             .unwrap();
-            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(
                 out,
                 "        if __r == 0 {{ Ok(self) }} else {{ Err({err_type}::from_ffi(__r)) }}"
@@ -662,7 +673,7 @@ fn emit_method_body(
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
             )
             .unwrap();
-            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(
                 out,
                 "        if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r)) }}"
@@ -680,7 +691,7 @@ fn emit_method_body(
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
             )
             .unwrap();
-            writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}, &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
             writeln!(
                 out,
@@ -719,7 +730,7 @@ fn emit_method_body(
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
             )
             .unwrap();
-            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}__out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(out, "        if __r == 0 {{").unwrap();
             writeln!(out, "            Ok(<{ty} as ffier::FfiType>::from_c(unsafe {{ __out.assume_init() }}))").unwrap();
             writeln!(out, "        }} else {{").unwrap();
@@ -1339,10 +1350,7 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                         .type_entry(&tr.type_name)
                         .is_some_and(|e| e.kind == ffier_schema::TypeKind::Handle);
                 if is_borrowed_handle {
-                    args.push(format!(
-                        "unsafe {{ ffier::FfiHandle::as_handle({}) }}",
-                        p.name
-                    ));
+                    args.push(format!("ffier::FfiHandle::as_handle({})", p.name));
                 } else {
                     let ty = tr.to_rust_type();
                     args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));

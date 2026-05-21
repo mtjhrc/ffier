@@ -2368,6 +2368,13 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
     let trait_name_str = meta.trait_name.to_string();
     let trait_snake = camel_to_snake(&trait_name_str);
 
+    // When struct and trait have the same snake_case name (e.g. Error for Error),
+    // the per-impl bridge functions would collide with the trait dispatch functions.
+    // Skip generating bridge functions — dispatch already handles this case.
+    if struct_snake == trait_snake {
+        return quote! {};
+    }
+
     let header_fn_name = format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header");
     let section_name = format!("{trait_name_str} for {struct_name_str}");
 

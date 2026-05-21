@@ -57,17 +57,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffier-gen-rust"
-version = "0.1.0"
-dependencies = [
- "ffier-bridge",
- "ffier-meta",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "ffier-gen-rust-client"
 version = "0.1.0"
 dependencies = [
@@ -103,7 +92,6 @@ dependencies = [
  "ffier",
  "ffier-bridge",
  "ffier-bridge-macros",
- "ffier-gen-rust",
  "ffier-test-lib",
 ]
 
@@ -187,7 +175,6 @@ dependencies = [
  "ffier",
  "ffier-bridge",
  "ffier-bridge-macros",
- "ffier-gen-rust",
  "mylib",
 ]
 

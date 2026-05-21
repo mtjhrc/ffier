@@ -14,13 +14,8 @@ crate-type = ["cdylib"]
 name = "gen-header"
 path = "src/gen_header.rs"
 
-[[bin]]
-name = "gen-rust-client"
-path = "src/gen_rust_client.rs"
-
 [dependencies]
 ffier-test-lib = { path = "../lib", default-features = false }
 ffier = { path = "../../ffier" }
 ffier-bridge = { path = "../../ffier-bridge" }
 ffier-bridge-macros = { path = "../../ffier-bridge-macros" }
-ffier-gen-rust = { path = "../../ffier-gen-rust" }
