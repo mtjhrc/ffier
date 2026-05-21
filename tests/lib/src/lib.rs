@@ -817,8 +817,12 @@ impl Weighable for Apple {
     }
 }
 
-// PushStr and Error traits from ffier-builtins are auto-reexported by
-// library_definition! when referenced via `trait ffier_builtins::PushStr = 24`.
+// TODO(ffier-builtins-require-manual-reexports): these manual reexports are
+// still needed because something in the @reexport expansion references PushStr
+// and Error by bare name. The library_definition! auto-reexport uses internal
+// names (__ffier_reexport_trait_*) but doesn't cover all reference sites.
+pub use ffier::Error;
+pub use ffier::PushStr;
 
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
