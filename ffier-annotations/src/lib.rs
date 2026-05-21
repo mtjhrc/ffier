@@ -2256,36 +2256,53 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let wrapper_ident = format_ident!("Vtable{last_ident}");
                 let vtable_struct_ident = format_ident!("{last_ident}Vtable");
 
-                // Re-export the upstream metadata macro so the shim can
-                // call it via $crate:: (library crate path). This way
-                // downstream crates don't need the upstream crate as a dep.
-                let upstream_alias = format_ident!("__ffier_upstream_{last_ident}");
+                // Use `_trait_` in internal names to avoid collisions with
+                // user types that share the same last segment (e.g. crate::Error
+                // and trait ffier_builtins::Error).
+                let upstream_alias = format_ident!("__ffier_upstream_trait_{last_ident}");
                 reexport_invocations.push(quote! {
                     #[doc(hidden)]
                     pub use #alias as #upstream_alias;
                 });
 
-                // Re-export the trait and vtable struct so `$crate::PushStr`
-                // and `$crate::PushStrVtable` resolve without manual `pub use`
-                // at the library crate root. Only needed for external crate
-                // paths (not `crate::` which is already local).
-                // Single-segment paths (like `Processor`) and `crate::` paths
-                // are local — they're already defined in the library crate.
-                // Multi-segment external paths (like `ffier_builtins::PushStr`)
-                // need re-exporting.
+                // Re-export the trait and vtable struct under internal names
+                // so `$crate::__ffier_reexport_trait_Error` etc. resolve in
+                // the shim macro without conflicting with user types.
                 let is_external = path.segments.len() > 1
                     && path.segments.first().map_or(true, |seg| seg.ident != "crate");
+                let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
+                let vtable_reexport = format_ident!("__ffier_reexport_{last_ident}Vtable");
+                let wrapper_reexport = format_ident!("__ffier_reexport_Vtable{last_ident}");
                 if is_external {
                     let vtable_struct_path = replace_last_segment(path, &vtable_struct_ident);
                     reexport_invocations.push(quote! {
+                        // Internal aliases for shim macro paths (avoid name
+                        // collision with user types that share the trait name)
                         #[doc(hidden)]
-                        pub use #path;
+                        pub use #path as #trait_reexport;
+                        #[doc(hidden)]
+                        pub use #vtable_struct_path as #vtable_reexport;
+                        // Public re-exports for bridge code that references
+                        // {lib}::PushStrVtable etc. by name.
                         #[doc(hidden)]
                         pub use #vtable_struct_path;
                     });
                 }
 
-                let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{last_ident}");
+                // Shim paths: for external traits, use the internal aliases that
+                // avoid name collision. For local traits, use the actual names.
+                let shim_vtable = if is_external {
+                    quote! { $crate::#vtable_reexport }
+                } else {
+                    quote! { $crate::#vtable_struct_ident }
+                };
+                let shim_trait = if is_external {
+                    quote! { $crate::#trait_reexport }
+                } else {
+                    quote! { $crate::#last_ident }
+                };
+
+                let shim_name = format_ident!("__ffier_tagged_trait_{prefix_str}_{last_ident}");
                 shim_macros.push(quote! {
                     #[doc(hidden)]
                     #[macro_export]
@@ -2293,8 +2310,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                             $crate::#upstream_alias! { $prefix, #tag,
                                 ($crate::#wrapper_ident),
-                                ($crate::#vtable_struct_ident),
-                                ($crate::#last_ident),
+                                (#shim_vtable),
+                                (#shim_trait),
                                 $callback $(, $($rest)*)? }
                         };
                     }
