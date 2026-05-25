@@ -141,50 +141,7 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
-/// Emit `impl FfiHandle` and `impl FfiType` for a handle type.
-///
-/// `ty` is the type (e.g. `Widget` or `VtableFruit`), `c_handle_name` is the
-/// C handle typedef name string (e.g. `"Widget"`, `"VtableFruit"`).
-///
-/// `tag_const` is a token stream referencing the type tag constant, e.g.
-/// `crate::__ffier_type_tag_Widget`. The actual value is provided by
-/// `library_definition!` which emits `pub const __ffier_type_tag_Widget: u32 = N;`.
-///
-/// All handles are heap-allocated via `Box<FfierHandle<T>>`. `as_handle`
-/// recovers the handle pointer by subtracting the value field offset from
-/// `&self`. `into_c` allocates a new handle box and returns the raw pointer.
-fn emit_ffi_handle_impls(
-    ty: &proc_macro2::TokenStream,
-    c_handle_name: &str,
-    tag_const: &proc_macro2::TokenStream,
-) -> proc_macro2::TokenStream {
-    quote! {
-        impl ffier::FfiHandle for #ty {
-            const C_HANDLE_NAME: &str = #c_handle_name;
-            const TYPE_TAG: u32 = #tag_const;
-            unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-                let ptr = (self as *const Self as *const u8)
-                    .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
-                ptr as *mut core::ffi::c_void
-            }
-        }
 
-        impl ffier::FfiType for #ty {
-            type CRepr = *mut core::ffi::c_void;
-            const C_TYPE_NAME: &str = #c_handle_name;
-            const IS_HANDLE: bool = true;
-            fn into_c(self) -> *mut core::ffi::c_void {
-                ffier::ffier_handle_new(
-                    <Self as ffier::FfiHandle>::TYPE_TAG,
-                    self,
-                )
-            }
-            fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe { ffier::ffier_handle_consume::<Self>(repr) }
-            }
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Main macro
@@ -222,7 +179,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         .expect("expected struct name");
     let struct_ident = &last_seg.ident;
     let self_ty = &input.self_ty;
-    let self_ty_static = erase_lifetimes(self_ty);
     let struct_name = struct_ident.to_string();
     let struct_lower = camel_to_snake(&struct_name);
 
@@ -269,7 +225,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
 
-    let reexport_items_crate = ctx.reexport_items_crate();
+    let local_type_aliases = ctx.local_type_aliases();
 
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
@@ -286,28 +242,20 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let struct_path_tokens = quote! { $crate::#struct_ident };
 
-    let struct_name_lit = struct_name;
-    let tag_const_name = format_ident!("__ffier_type_tag_{struct_ident}");
-    let tag_const = quote! { crate::#tag_const_name };
-    let ffi_handle_impls =
-        emit_ffi_handle_impls(&quote! { #self_ty_static }, &struct_name_lit, &tag_const);
-
     let output = quote! {
         #impl_block
-
-        #ffi_handle_impls
 
         #(#warnings)*
 
         #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#local_type_aliases)*
+        }
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@reexport) => {
-                #[doc(hidden)]
-                pub mod #helper_mod_name {
-                    #(#reexport_items_crate)*
-                }
-            };
+            (@reexport) => {};
             // Tagged invocation (from library_definition! shim): includes type_tag
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
@@ -477,16 +425,15 @@ impl AliasContext {
         quote! { $crate::#helper::#alias }
     }
 
-    /// Emit `pub type _TypeN = $crate::Erased;` items for the `@reexport` arm
-    /// of the metadata macro. Uses `$crate::` so the module can be recreated
-    /// at the crate root by `library_definition!`.
-    fn reexport_items_crate(&self) -> Vec<proc_macro2::TokenStream> {
+    /// Emit `pub type _TypeN = super::Erased;` items for the helper module
+    /// emitted at the definition site.
+    fn local_type_aliases(&self) -> Vec<proc_macro2::TokenStream> {
         self.types
             .iter()
             .zip(self.aliases.iter())
             .map(|(ty, alias)| {
                 let erased = erase_lifetimes(ty);
-                quote! { pub type #alias = $crate::#erased; }
+                quote! { pub type #alias = super::#erased; }
             })
             .collect()
     }
@@ -591,17 +538,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
 
     let error_path = quote! { $crate::#name };
-
-    // Error types get the same FfiHandle + FfiType impls as exportable types.
-    // The type tag constant is emitted by library_definition!.
-    let name_str = name.to_string();
-    let tag_const_name = format_ident!("__ffier_type_tag_{name}");
-    let tag_const = quote! { crate::#tag_const_name };
-    let ffi_handle_impls =
-        emit_ffi_handle_impls(&quote! { #name }, &name_str, &tag_const);
+    let helper_mod_name = format_ident!("_ffier_{error_snake}");
 
     let output = quote! {
-        #ffi_handle_impls
+        #[doc(hidden)]
+        pub mod #helper_mod_name {}
 
         impl ffier::FfiError for #name {
             fn code(&self) -> u32 {
@@ -845,7 +786,7 @@ struct ImplementableArgs {
     /// in the vtable struct to keep the layout stable.
     reserved: Vec<usize>,
     /// If true, the trait is foreign (defined in another crate). The macro
-    /// will not emit the trait definition or `FfierBoxDyn` impl.
+    /// will not emit the trait definition or `&mut dyn Trait` dispatch impl.
     foreign: bool,
 }
 
@@ -1293,8 +1234,11 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
     }
 }
 
-/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` — delegates each method to `self.0`.
-fn emit_boxdyn_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
+/// Generate `impl Trait for &mut dyn Trait` — delegates via deref.
+/// This lets the bridge pass `&mut dyn Trait` where `impl Trait` is expected,
+/// as a dynamic dispatch fallback when enumerating concrete types would be
+/// a combinatorial explosion.
+fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
     let trait_name = &trait_item.ident;
     let method_impls: Vec<_> = trait_item
         .items
@@ -1320,18 +1264,18 @@ fn emit_boxdyn_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
-            Some(quote! { #sig { self.0.#name(#(#params),*) } })
+            Some(quote! { #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
     quote! {
-        impl #trait_name for ffier::FfierBoxDyn<dyn #trait_name> {
+        impl #trait_name for &mut dyn #trait_name {
             #(#method_impls)*
         }
     }
 }
 
-/// Generate `impl Trait for FfierBoxDyn<dyn Trait>` for dynamic dispatch fallback.
+/// Generate `impl Trait for &mut dyn Trait` for dynamic dispatch fallback.
 ///
 /// `#[ffier::implementable]` implies `#[ffier::dispatch]` — use this
 /// annotation alone when you want dynamic dispatch fallback without
@@ -1340,11 +1284,11 @@ fn emit_boxdyn_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
 pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let trait_item = parse_macro_input!(item as ItemTrait);
     let original_trait = trait_item.clone();
-    let boxdyn_impl = emit_boxdyn_impl(&trait_item);
+    let dyn_impl = emit_dyn_dispatch_impl(&trait_item);
 
     let output = quote! {
         #original_trait
-        #boxdyn_impl
+        #dyn_impl
     };
 
     output.into()
@@ -1423,13 +1367,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote! { *mut core::ffi::c_void }
                 } else {
                     let bt = p.bridge_type();
-                    quote! { <#bt as ffier::FfiType>::CRepr }
+                    quote! { <#bt as FfiType>::CRepr }
                 }
             })
             .collect();
         let ret = match m.ret_bridge_type() {
             None => quote! {},
-            Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
+            Some(bt) => quote! { -> <#bt as FfiType>::CRepr },
         };
         vtable_fields.push(quote! {
             pub #name: Option<unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret>
@@ -1518,7 +1462,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     // not bridge_type ('static lifetimes). The actual value has
                     // the caller's lifetime, not 'static.
                     let rt = p.rust_type();
-                    quote! { <#rt as ffier::FfiType>::into_c(#id) }
+                    quote! { <#rt as FfiType>::into_c(#id) }
                 }
             })
             .collect();
@@ -1532,13 +1476,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     quote! { *mut core::ffi::c_void }
                 } else {
                     let bt = p.bridge_type();
-                    quote! { <#bt as ffier::FfiType>::CRepr }
+                    quote! { <#bt as FfiType>::CRepr }
                 }
             })
             .collect();
         let fn_ret = match vm.ret_bridge_type() {
             None => quote! {},
-            Some(bt) => quote! { -> <#bt as ffier::FfiType>::CRepr },
+            Some(bt) => quote! { -> <#bt as FfiType>::CRepr },
         };
         let fn_ptr_type = quote! {
             unsafe extern "C" fn(*mut core::ffi::c_void #(, #param_bridge_types)*) #fn_ret
@@ -1562,7 +1506,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         } else {
             match vm.ret_bridge_type() {
                 None => raw_call,
-                Some(bt) => quote! { <#bt as ffier::FfiType>::from_c(#raw_call) },
+                Some(bt) => quote! { <#bt as FfiType>::from_c(#raw_call) },
             }
         };
         let none_branch = match &fallback {
@@ -1746,10 +1690,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
 
     // --- Generate VtableXxx method impls ---
-    // These are used inside the @reexport macro arm, so references to items
-    // in the defining crate use $crate:: prefix. This ensures correct resolution
-    // when the macro expands in a different crate.
-    let vtable_struct_ref = quote! { $crate::#vtable_struct_name };
+    // These are used inside the @reexport macro arm. The vtable struct is
+    // a sibling (also in @reexport), so bare names resolve correctly.
+    let vtable_struct_ref = quote! { #vtable_struct_name };
     let own_method_impls: Vec<_> = trait_item_erased
         .items
         .iter()
@@ -1835,9 +1778,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
-    let reexport_items_crate = ctx.reexport_items_crate();
+    let local_type_aliases = ctx.local_type_aliases();
 
-    // Generate FfierBoxDyn delegation (implies #[ffier::dispatch])
+    // Generate &mut dyn Trait dispatch delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
     // Skip for foreign traits (orphan rules: can't impl foreign trait for local type).
     let boxdyn_impl = if is_foreign {
@@ -1848,10 +1791,14 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .supertraits
                 .iter()
                 .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
-        if !has_supertraits {
-            emit_boxdyn_impl(&trait_item)
+        // Traits with `impl Trait` params aren't dyn-compatible
+        let has_impl_trait = vtable_methods.iter().any(|m| {
+            m.params.iter().any(|p| p.is_impl_trait())
+        });
+        if !has_supertraits && !has_impl_trait {
+            emit_dyn_dispatch_impl(&trait_item)
         } else {
-            // TODO: generate supertrait delegation for FfierBoxDyn
+            // TODO: generate supertrait delegation for &mut dyn Trait
             quote! {}
         }
     };
@@ -1871,50 +1818,48 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 
         #boxdyn_impl
 
-        #[repr(C)]
-        pub struct #vtable_struct_name {
-            /// Drop callback. Always the first field so its offset is stable
-            /// across vtable versions (forward-compatible ABI).
-            pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-            #(#vtable_fields,)*
+        #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#local_type_aliases)*
         }
 
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            // @reexport: generates the wrapper type, its trait impl, Drop,
+            // @reexport: generates the vtable struct, wrapper type, its trait impl, Drop,
             // FfiHandle, and FfiType impls. Called by library_definition! with
             // the type tag.
             //
-            // The wrapper type is emitted at the crate root of the invoking
-            // crate, so orphan rules are satisfied even when the trait is
+            // The vtable struct and wrapper type are emitted at the crate root of the
+            // invoking crate, so orphan rules are satisfied even when the trait is
             // defined in an upstream crate.
-            //
-            // The vtable struct and trait must be re-exported at the library
-            // crate root so that the shim's path overrides resolve correctly.
             (@reexport, $type_tag:expr) => {
-                #[doc(hidden)]
-                pub mod #helper_mod_name {
-                    #(#reexport_items_crate)*
+                #[repr(C)]
+                pub struct #vtable_struct_name {
+                    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+                    #(#vtable_fields,)*
                 }
 
-                /// Wrapper type for vtable-dispatched trait implementations.
                 #[repr(C)]
                 pub struct #wrapper_name {
                     pub value: ffier::VtableHandle,
                 }
 
-                impl $crate::#trait_name #trait_ty_generics for #wrapper_name {
-                    #(#own_method_impls)*
-                }
+                const _: () = {
+                    use $crate::*;
 
-                #(#super_impls)*
+                    impl #trait_name #trait_ty_generics for #wrapper_name {
+                        #(#own_method_impls)*
+                    }
+
+                    #(#super_impls)*
+                };
 
                 impl Drop for #wrapper_name {
                     fn drop(&mut self) {
                         let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
                             self.value.field_or_none(
-                                core::mem::offset_of!($crate::#vtable_struct_name, drop),
+                                core::mem::offset_of!(#vtable_struct_name, drop),
                             )
                         };
                         if let Some(drop_fn) = drop_field {
@@ -1923,7 +1868,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
 
-                impl ffier::FfiHandle for #wrapper_name {
+                impl FfiHandle for #wrapper_name {
                     const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
                     const TYPE_TAG: u32 = $type_tag;
                     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
@@ -1933,13 +1878,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                 }
 
-                impl ffier::FfiType for #wrapper_name {
+                impl FfiType for #wrapper_name {
                     type CRepr = *mut core::ffi::c_void;
                     const C_TYPE_NAME: &str = #wrapper_c_handle_suffix;
                     const IS_HANDLE: bool = true;
                     fn into_c(self) -> *mut core::ffi::c_void {
                         ffier::ffier_handle_new(
-                            <Self as ffier::FfiHandle>::TYPE_TAG,
+                            <Self as FfiHandle>::TYPE_TAG,
                             self,
                         )
                     }
@@ -2114,7 +2059,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         ms
     };
 
-    let reexport_items_crate = ctx.reexport_items_crate();
+    let local_type_aliases = ctx.local_type_aliases();
 
     let method_meta = emit_method_meta(&methods);
 
@@ -2129,27 +2074,28 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
         format_ident!("__ffier_internal_{trait_snake}_for_{struct_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
-    let trait_path_tokens = quote! { $crate::#trait_name };
 
     let output = quote! {
         #clean_impl
 
         #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#local_type_aliases)*
+        }
+
+        #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@reexport) => {
-                #[doc(hidden)]
-                pub mod #helper_mod_name {
-                    #(#reexport_items_crate)*
-                }
-            };
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+            (@reexport) => {};
+            // library_definition! passes the trait path explicitly to
+            // avoid bare-name collisions at the library crate root.
+            ($prefix:literal, ($($tpath:tt)*), $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @trait_impl,
                     trait_name = #trait_name,
                     struct_name = #struct_ident,
                     struct_path = (#struct_path_tokens),
-                    trait_path = (#trait_path_tokens),
+                    trait_path = ($($tpath)*),
                     prefix = $prefix,
                     lifetimes = (#(#lifetime_idents),*),
                     trait_lifetime_args = [#(#trait_lt_args),*],
@@ -2206,24 +2152,35 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let prefix_str = parsed.prefix.value();
 
     // For each entry, compute:
-    // 1. tag_consts: `pub const __ffier_type_tag_Foo: u32 = N;` emissions
-    // 2. shim_macros: shim macros that inject the tag into the metadata macro call
-    // 3. reexport_invocations: `alias_path!(@reexport)` calls
-    // 4. chain_paths: the macro path used inside the generated library macro
-    let mut tag_consts: Vec<proc_macro2::TokenStream> = Vec::new();
+    // 1. shim_macros: shim macros that inject the tag into the metadata macro call
+    // 2. reexport_invocations: `alias_path!(@reexport)` calls
+    // 3. chain_paths: the macro path used inside the generated library macro
     let mut shim_macros: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut reexport_invocations: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut chain_paths: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut handle_impls: Vec<proc_macro2::TokenStream> = Vec::new();
+
+    // Collect names of external traits (from TaggedTrait entries) so that
+    // TraitImpl entries can use the internal alias instead of bare names.
+    let external_trait_names: std::collections::HashSet<String> = parsed
+        .entries
+        .iter()
+        .filter_map(|e| {
+            if let LibraryEntry::TaggedTrait(path, _) = e {
+                let is_external = path.segments.len() > 1
+                    && path.segments.first().map_or(true, |seg| seg.ident != "crate");
+                if is_external {
+                    return Some(path_last_ident(path).to_string());
+                }
+            }
+            None
+        })
+        .collect();
 
     for entry in &parsed.entries {
         match entry {
             LibraryEntry::Tagged(path, tag) => {
                 let last_ident = path_last_ident(path);
-                let tag_const_ident = format_ident!("__ffier_type_tag_{last_ident}");
-                tag_consts.push(quote! {
-                    #[doc(hidden)]
-                    pub const #tag_const_ident: u32 = #tag;
-                });
 
                 // Shim macro that injects the tag into the metadata macro call
                 let alias = meta_alias_for_type(path);
@@ -2239,10 +2196,45 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                // @reexport invocation uses the alias path at the library crate root
+                // @reexport invocation (now a no-op but kept for API compat)
                 reexport_invocations.push(quote! { #alias!(@reexport); });
                 // chain_path is the shim (which injects the tag)
                 chain_paths.push(quote! { $crate::#shim_name });
+
+                // Per-type FfiHandle + FfiType impls (library-local traits)
+                let last_ident_str = last_ident.to_string();
+                handle_impls.push(quote! {
+                    impl FfiHandle for #path {
+                        const C_HANDLE_NAME: &'static str = #last_ident_str;
+                        const TYPE_TAG: u32 = #tag;
+                        unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+                            let ptr = (self as *const Self as *const u8)
+                                .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
+                            ptr as *mut core::ffi::c_void
+                        }
+                    }
+                    impl FfiType for #path {
+                        type CRepr = *mut core::ffi::c_void;
+                        const C_TYPE_NAME: &'static str = #last_ident_str;
+                        const IS_HANDLE: bool = true;
+                        fn into_c(self) -> *mut core::ffi::c_void {
+                            ffier::ffier_handle_new(#tag, self)
+                        }
+                        fn from_c(repr: *mut core::ffi::c_void) -> Self {
+                            unsafe { ffier::ffier_handle_consume::<Self>(repr) }
+                        }
+                    }
+                });
+
+                // Helper module re-export for qualified paths
+                let helper_mod_name = format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
+                if path.segments.len() > 1 {
+                    let helper_mod_path = replace_last_segment(path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #helper_mod_path;
+                    });
+                }
             }
             LibraryEntry::TaggedTrait(path, tag) => {
                 let last_ident = path_last_ident(path);
@@ -2265,42 +2257,34 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     pub use #alias as #upstream_alias;
                 });
 
-                // Re-export the trait and vtable struct under internal names
-                // so `$crate::__ffier_reexport_trait_Error` etc. resolve in
-                // the shim macro without conflicting with user types.
                 let is_external = path.segments.len() > 1
                     && path.segments.first().map_or(true, |seg| seg.ident != "crate");
                 let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
-                let vtable_reexport = format_ident!("__ffier_reexport_{last_ident}Vtable");
-                let wrapper_reexport = format_ident!("__ffier_reexport_Vtable{last_ident}");
+
                 if is_external {
-                    let vtable_struct_path = replace_last_segment(path, &vtable_struct_ident);
                     reexport_invocations.push(quote! {
-                        // Internal aliases for shim macro paths (avoid name
-                        // collision with user types that share the trait name)
                         #[doc(hidden)]
                         pub use #path as #trait_reexport;
+                    });
+
+                    // Helper module re-export for external traits
+                    let trait_snake = camel_to_snake(&last_ident.to_string());
+                    let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
+                    let helper_mod_path = replace_last_segment(path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
                         #[doc(hidden)]
-                        pub use #vtable_struct_path as #vtable_reexport;
-                        // Public re-exports for bridge code that references
-                        // {lib}::PushStrVtable etc. by name.
-                        #[doc(hidden)]
-                        pub use #vtable_struct_path;
+                        pub use #helper_mod_path;
                     });
                 }
 
-                // Shim paths: for external traits, use the internal aliases that
-                // avoid name collision. For local traits, use the actual names.
-                let shim_vtable = if is_external {
-                    quote! { $crate::#vtable_reexport }
-                } else {
-                    quote! { $crate::#vtable_struct_ident }
-                };
+                // Shim paths: vtable struct and wrapper are now at the library root (from @reexport)
+                let shim_vtable = quote! { $crate::#vtable_struct_ident };
                 let shim_trait = if is_external {
                     quote! { $crate::#trait_reexport }
                 } else {
                     quote! { $crate::#last_ident }
                 };
+                let shim_wrapper = quote! { $crate::#wrapper_ident };
 
                 let shim_name = format_ident!("__ffier_tagged_trait_{prefix_str}_{last_ident}");
                 shim_macros.push(quote! {
@@ -2309,7 +2293,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     macro_rules! #shim_name {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                             $crate::#upstream_alias! { $prefix, #tag,
-                                ($crate::#wrapper_ident),
+                                (#shim_wrapper),
                                 (#shim_vtable),
                                 (#shim_trait),
                                 $callback $(, $($rest)*)? }
@@ -2317,7 +2301,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                // @reexport with type_tag generates the wrapper type + impls.
+                // @reexport with type_tag generates the vtable struct + wrapper type + impls.
                 reexport_invocations.push(quote! { #alias!(@reexport, #tag); });
                 chain_paths.push(quote! { $crate::#shim_name });
             }
@@ -2330,9 +2314,53 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let alias_ident = format_ident!("__ffier_meta_{trait_name}_for_{struct_name}");
                 // The trait_impl alias lives next to the struct (where the impl block is)
                 let alias = replace_last_segment(struct_path, &alias_ident);
-                let chain = to_chain_path(&alias);
+                let alias_chain = to_chain_path(&alias);
                 reexport_invocations.push(quote! { #alias!(@reexport); });
-                chain_paths.push(chain);
+
+                // Determine the trait path to pass through to the metadata.
+                // For external traits, use the internal alias to avoid bare-name
+                // collisions (e.g. user's `Error` enum vs builtin `Error` trait).
+                // Check both the path itself AND the external_trait_names set
+                // (handles `Error for TestError` where the trait is bare `Error`
+                // but was registered as `trait ffier_builtins::Error = 25`).
+                let is_external = external_trait_names.contains(&trait_name.to_string())
+                    || (trait_path.segments.len() > 1
+                        && trait_path.segments.first().map_or(true, |seg| seg.ident != "crate"));
+                let resolved_trait_path = if is_external {
+                    let reexport = format_ident!("__ffier_reexport_trait_{trait_name}");
+                    quote! { $crate::#reexport }
+                } else {
+                    quote! { $crate::#trait_name }
+                };
+
+                // Shim macro that passes the resolved trait path to the
+                // trait_impl metadata macro.
+                let shim_name = format_ident!(
+                    "__ffier_trait_impl_{prefix_str}_{trait_name}_for_{struct_name}"
+                );
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            #alias_chain! { $prefix, (#resolved_trait_path),
+                                $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+                chain_paths.push(quote! { $crate::#shim_name });
+
+                // Helper module re-export for qualified paths
+                let trait_snake = camel_to_snake(&trait_name.to_string());
+                let struct_snake = camel_to_snake(&struct_name.to_string());
+                let helper_mod_name = format_ident!("_ffier_impl_{trait_snake}_for_{struct_snake}");
+                if struct_path.segments.len() > 1 {
+                    let helper_mod_path = replace_last_segment(struct_path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #helper_mod_path;
+                    });
+                }
             }
         }
     }
@@ -2347,9 +2375,121 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
 
     let output = quote! {
-        #(#tag_consts)*
+        #[doc(hidden)]
+        pub trait FfiHandle {
+            const C_HANDLE_NAME: &'static str;
+            const TYPE_TAG: u32;
+            unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
+        }
 
-        // Create _ffier_* helper modules at the crate root via @reexport.
+        #[doc(hidden)]
+        pub trait FfiType {
+            type CRepr;
+            const C_TYPE_NAME: &'static str;
+            const IS_HANDLE: bool;
+            fn into_c(self) -> Self::CRepr;
+            fn from_c(repr: Self::CRepr) -> Self;
+        }
+
+        #[doc(hidden)]
+        pub use ffier::FfiError;
+
+        macro_rules! __ffier_impl_ffi_identity {
+            ($($rust_ty:ty => $c_name:expr),* $(,)?) => {
+                $(impl FfiType for $rust_ty {
+                    type CRepr = $rust_ty;
+                    const C_TYPE_NAME: &'static str = $c_name;
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> Self { self }
+                    fn from_c(repr: Self) -> Self { repr }
+                })*
+            };
+        }
+        __ffier_impl_ffi_identity! {
+            i8 => "int8_t", i16 => "int16_t", i32 => "int32_t", i64 => "int64_t",
+            u8 => "uint8_t", u16 => "uint16_t", u32 => "uint32_t", u64 => "uint64_t",
+            isize => "intptr_t", usize => "uintptr_t", bool => "bool",
+        }
+
+        impl FfiType for &str {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierStr";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_str(self) } }
+            fn from_c(repr: ffier::FfierBytes) -> Self {
+                unsafe {
+                    let bytes = core::slice::from_raw_parts(repr.data, repr.len);
+                    core::str::from_utf8_unchecked(bytes)
+                }
+            }
+        }
+
+        impl FfiType for &[u8] {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierBytes";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_bytes(self) } }
+            fn from_c(repr: ffier::FfierBytes) -> Self {
+                unsafe {
+                    if repr.data.is_null() { &[] }
+                    else { core::slice::from_raw_parts(repr.data, repr.len) }
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        impl FfiType for &std::path::Path {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierPath";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_path(self) } }
+            fn from_c(repr: ffier::FfierBytes) -> Self {
+                use std::os::unix::ffi::OsStrExt;
+                unsafe {
+                    let bytes = core::slice::from_raw_parts(repr.data, repr.len);
+                    std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
+                }
+            }
+        }
+
+        #[cfg(unix)]
+        const _: () = {
+            use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};
+            impl FfiType for OwnedFd {
+                type CRepr = i32;
+                const C_TYPE_NAME: &'static str = "int";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> i32 { self.into_raw_fd() }
+                fn from_c(fd: i32) -> Self { unsafe { OwnedFd::from_raw_fd(fd) } }
+            }
+            impl<'a> FfiType for BorrowedFd<'a> {
+                type CRepr = i32;
+                const C_TYPE_NAME: &'static str = "int";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> i32 { self.as_raw_fd() }
+                fn from_c(fd: i32) -> Self { unsafe { BorrowedFd::borrow_raw(fd) } }
+            }
+        };
+
+        impl<T: FfiHandle + 'static> FfiType for &T {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+            const IS_HANDLE: bool = true;
+            fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow::<T>(repr) } }
+        }
+
+        impl<T: FfiHandle + 'static> FfiType for &mut T {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+            const IS_HANDLE: bool = true;
+            fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
+            fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow_mut::<T>(repr) } }
+        }
+
+        #(#handle_impls)*
+
+        // Create helper modules at the crate root and invoke @reexport arms.
         #(#reexport_invocations)*
 
         #(#shim_macros)*
@@ -2378,7 +2518,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             // Base case: call the final callback with everything
             ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
              [$($acc:tt)*], []) => {
-                $final_cb! { $($acc)* { $($meta)* } }
+                $final_cb! { @lib_crate = $crate; $($acc)* { $($meta)* } }
             };
         }
 

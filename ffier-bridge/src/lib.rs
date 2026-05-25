@@ -110,6 +110,7 @@ fn generate_one(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
     match tag.as_str() {
@@ -118,28 +119,28 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_exportable_bridge(meta, trait_map, error_map, handle_types)
+            generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate)
         }
         "error" => {
             let meta: MetaError = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_error_bridge(meta)
+            generate_error_bridge(meta, lib_crate)
         }
         "implementable" => {
             let meta: MetaImplementable = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_implementable_bridge(meta)
+            generate_implementable_bridge(meta, lib_crate)
         }
         "trait_impl" => {
             let meta: MetaTraitImpl = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_trait_impl_bridge(meta, trait_map)
+            generate_trait_impl_bridge(meta, trait_map, lib_crate)
         }
         _ => {
             let msg = format!("unknown metadata tag `@{tag}`");
@@ -154,9 +155,37 @@ fn generate_one(
 /// Sorts into errors → exportables → implementables → trait_impls, generates
 /// bridge code for each, and emits a unified `__ffier_header()` function.
 pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
-    // Split input into individual brace groups
+    // Parse @lib_crate = path; prefix from chain macro
+    let mut iter = input.into_iter().peekable();
+    let lib_crate: TokenStream2 = {
+        let mut path_tokens = Vec::new();
+        let mut found = false;
+        while let Some(tt) = iter.peek() {
+            if let proc_macro2::TokenTree::Punct(p) = tt {
+                if p.as_char() == '@' {
+                    found = true;
+                    iter.next(); // @
+                    iter.next(); // lib_crate
+                    iter.next(); // =
+                    while let Some(tt) = iter.next() {
+                        if let proc_macro2::TokenTree::Punct(p) = &tt {
+                            if p.as_char() == ';' { break; }
+                        }
+                        path_tokens.push(tt);
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        if !found {
+            return quote! { compile_error!("missing @lib_crate prefix in bridge metadata"); };
+        }
+        path_tokens.into_iter().collect()
+    };
+
     let mut items: Vec<TokenStream2> = Vec::new();
-    for tt in input {
+    for tt in iter {
         if let proc_macro2::TokenTree::Group(g) = tt
             && g.delimiter() == proc_macro2::Delimiter::Brace
         {
@@ -390,7 +419,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             header_fn_names.push(hfn);
         }
 
-        all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types));
+        all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types, &lib_crate));
     }
 
     // Extract prefix from any item for shared types (all items share the same prefix)
@@ -429,7 +458,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // C functions that read the type tag and dispatch to the concrete implementor.
     for (trait_name, info) in &trait_map {
         if info.implementable.is_some() {
-            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix, &trait_map);
+            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix, &trait_map, &lib_crate);
             all_code.push(code);
             let trait_snake = camel_to_snake(trait_name);
             header_fn_names.push(format_ident!(
@@ -441,7 +470,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Generate strerror dispatch function — dispatches by type tag to per-error
     // static_message tables.
-    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors);
+    let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &lib_crate);
 
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
     emit_json(&first_prefix, &errors, &exportables, &implementables, &trait_impls);
@@ -531,7 +560,7 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 /// These decode packed `FfierResult` values (type_tag + code) into static
 /// variant name strings. Error handle dispatch (destroy, message, code,
 /// result) is handled by the Error trait's self-dispatch infrastructure.
-fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStream2 {
+fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], lib_crate: &TokenStream2) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
@@ -552,7 +581,7 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2]) -> TokenStrea
             result_name_dispatch_arms.push(quote! {
                 #type_tag => {
                     let code = ffier::ffier_result_code(r);
-                    <#path as ffier::FfiError>::static_message(code).as_ptr()
+                    <#path as #lib_crate::FfiError>::static_message(code).as_ptr()
                 }
             });
         }
@@ -614,6 +643,7 @@ fn generate_exportable_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
@@ -673,7 +703,7 @@ fn generate_exportable_bridge(
         };
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types);
+        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
@@ -683,11 +713,11 @@ fn generate_exportable_bridge(
         let obj_binding = if has_receiver {
             let type_assert = quote! {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
-                let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
+                let __expected = <#struct_path as #lib_crate::FfiHandle>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
                         #ffi_name_str,
-                        <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
+                        <#struct_path as #lib_crate::FfiHandle>::C_HANDLE_NAME,
                         "",
                         __actual,
                     );
@@ -732,7 +762,7 @@ fn generate_exportable_bridge(
                 c_type_exprs.push(quote! { "uintptr_t" });
                 header_param_names.push(format!("{name}_len"));
             } else {
-                c_type_exprs.push(meta_param_c_type_expr(&p.kind, &type_pfx));
+                c_type_exprs.push(meta_param_c_type_expr(&p.kind, &type_pfx, lib_crate));
                 header_param_names.push(name);
             }
         }
@@ -829,12 +859,12 @@ fn generate_exportable_bridge(
                             .find(|cp| cp.name == len_name)
                             .expect("StrSlice must have _len param in c_sig")
                             .name;
-                        let binding = meta_param_conversion(id, &p.kind, Some(len_id));
+                        let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
                         let vec_id = format_ident!("__{id}_vec");
                         pre_bindings.push(quote! { let #vec_id = #binding; });
                         quote! { &#vec_id }
                     }
-                    other => meta_param_conversion(id, other, None),
+                    other => meta_param_conversion(id, other, None, lib_crate),
                 }
             })
             .collect();
@@ -880,21 +910,17 @@ fn generate_exportable_bridge(
                 .collect()
         };
 
-        // Dynamic dispatch via FfierBoxDyn: wrap each vtable-mode param into
-        // FfierBoxDyn<dyn Trait>. Linear in variants (N branches per param).
+        // Dynamic dispatch: wrap each vtable-mode param into a
+        // Box<dyn Trait> and pass &mut *box to the method. Linear in
+        // variants (N branches per param).
         let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
         for (i, p) in impl_trait_params.iter().enumerate() {
             if !effective_dispatch[i] {
                 continue;
             }
             let dyn_id = &p.name;
+            let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
             let info = trait_map.get(&p.trait_name).unwrap();
-
-            // Check that the trait has dispatch support (implementable or dispatch)
-            // The trait map has implementable info if #[ffier::implementable] was used.
-            // For #[ffier::dispatch]-only traits, we don't need implementable info —
-            // we just need FfierBoxDyn<dyn Trait> to implement Trait.
-            // Either way, the codegen is the same: unbox and wrap in FfierBoxDyn.
 
             let trait_ident = if let Some(imp) = &info.implementable {
                 imp.trait_path.clone()
@@ -907,9 +933,9 @@ fn generate_exportable_bridge(
             for v in &info.variants {
                 let ty = &v.bridge_type;
                 branches.push(quote! {
-                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                         let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
-                        ffier::FfierBoxDyn(Box::new(__val) as Box<dyn #trait_ident>)
+                        Box::new(__val) as Box<dyn #trait_ident>
                     }
                 });
             }
@@ -918,12 +944,13 @@ fn generate_exportable_bridge(
             let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
             vtable_pre_bindings.push(quote! {
-                let #dyn_id: ffier::FfierBoxDyn<dyn #trait_ident> = {
+                let mut #dyn_box_id: Box<dyn #trait_ident> = {
                     let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                     #(#branches else)* {
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     }
                 };
+                let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
             });
         }
 
@@ -945,7 +972,7 @@ fn generate_exportable_bridge(
                         .iter()
                         .map(|(_, ty_tokens)| {
                             quote! {
-                                if __type_tag == <#ty_tokens as ffier::FfiHandle>::TYPE_TAG {
+                                if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
                                     let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
                                     #inner
                                 }
@@ -1015,7 +1042,7 @@ fn generate_exportable_bridge(
                         #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
-                        let __new_ptr = <#struct_path as ffier::FfiType>::into_c(result);
+                        let __new_ptr = <#struct_path as #lib_crate::FfiType>::into_c(result);
                         unsafe { *__handle_slot = __new_ptr };
                     }
                 } else {
@@ -1041,7 +1068,7 @@ fn generate_exportable_bridge(
                 // All values (handles and primitives) returned via into_c.
                 // Handles → *mut c_void, primitives → their CRepr.
                 let ret_c_header = quote! {
-                    &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                    &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
                 };
                 let header_line = build_header_line(
                     ret_c_header,
@@ -1064,7 +1091,7 @@ fn generate_exportable_bridge(
                         #(#vtable_pre_bindings)*
                         #(#pre_bindings)*
                         let result = #method_call;
-                        <#bridge_type as ffier::FfiType>::into_c(result)
+                        <#bridge_type as #lib_crate::FfiType>::into_c(result)
                     }
                 });
             }
@@ -1083,7 +1110,7 @@ fn generate_exportable_bridge(
                     quote! {
                         if !err_out.is_null() {
                             unsafe {
-                                *err_out = <_ as ffier::FfiType>::into_c(e);
+                                *err_out = <_ as #lib_crate::FfiType>::into_c(e);
                             }
                         }
                     }
@@ -1097,7 +1124,7 @@ fn generate_exportable_bridge(
                     // GLib-style: return handle directly, NULL on error.
                     let bridge_type = &ok.as_ref().unwrap().bridge_type;
                     let ret_c_header = quote! {
-                        &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                        &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
                     };
                     let header_line = build_header_line(
                         ret_c_header,
@@ -1113,7 +1140,7 @@ fn generate_exportable_bridge(
 
                     let ok_branch = quote! {
                         Ok(ok_val) => {
-                            <_ as ffier::FfiType>::into_c(ok_val)
+                            <_ as #lib_crate::FfiType>::into_c(ok_val)
                         }
                     };
                     let err_branch = quote! {
@@ -1145,7 +1172,7 @@ fn generate_exportable_bridge(
                     let out_c_type = ok.as_ref().map(|vk| {
                         let bridge_type = &vk.bridge_type;
                         quote! {
-                            &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                            &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
                         }
                     });
 
@@ -1166,14 +1193,14 @@ fn generate_exportable_bridge(
                             let bridge_type = &vk.bridge_type;
                             quote! {
                                 Ok(ok_val) => {
-                                    unsafe { result.write(<#bridge_type as ffier::FfiType>::into_c(ok_val)) };
+                                    unsafe { result.write(<#bridge_type as #lib_crate::FfiType>::into_c(ok_val)) };
                                     ffier::FFIER_RESULT_SUCCESS
                                 }
                             }
                         }
                         None if is_builder && is_by_value => quote! {
                             Ok(new_self) => {
-                                let __new_ptr = <#struct_path as ffier::FfiType>::into_c(new_self);
+                                let __new_ptr = <#struct_path as #lib_crate::FfiType>::into_c(new_self);
                                 unsafe { *__handle_slot = __new_ptr };
                                 ffier::FFIER_RESULT_SUCCESS
                             }
@@ -1189,7 +1216,7 @@ fn generate_exportable_bridge(
                         // a dangling pointer.
                         quote! {
                             Err(e) => {
-                                let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
+                                let __r = ffier::ffier_result(#err_type_tag, #lib_crate::FfiError::code(&e));
                                 unsafe { *__handle_slot = core::ptr::null_mut() };
                                 #box_expr
                                 __r
@@ -1198,7 +1225,7 @@ fn generate_exportable_bridge(
                     } else {
                         quote! {
                             Err(e) => {
-                                let __r = ffier::ffier_result(#err_type_tag, ffier::FfiError::code(&e));
+                                let __r = ffier::ffier_result(#err_type_tag, #lib_crate::FfiError::code(&e));
                                 #box_expr
                                 __r
                             }
@@ -1235,11 +1262,11 @@ fn generate_exportable_bridge(
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
-                let __expected = <#struct_path as ffier::FfiHandle>::TYPE_TAG;
+                let __expected = <#struct_path as #lib_crate::FfiHandle>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
                         #destroy_str,
-                        <#struct_path as ffier::FfiHandle>::C_HANDLE_NAME,
+                        <#struct_path as #lib_crate::FfiHandle>::C_HANDLE_NAME,
                         "",
                         __actual,
                     );
@@ -1275,7 +1302,7 @@ fn generate_exportable_bridge(
 // Error bridge generation
 // ===========================================================================
 
-fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
+fn generate_error_bridge(meta: MetaError, lib_crate: &TokenStream2) -> TokenStream2 {
     let name = &meta.name;
     let name_str = name.to_string();
     let upper_pfx = meta.upper_pfx();
@@ -1306,7 +1333,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
 
             // Emit constants with baked-in type tags:
             // #define FT_ERROR_TEST_NOT_FOUND ((uint64_t)1 << 32 | 1)
-            for (variant_name, code) in <#path as ffier::FfiError>::codes() {
+            for (variant_name, code) in <#path as #lib_crate::FfiError>::codes() {
                 decls.push_str(&format!(
                     "#define {}_{} ((uint64_t){} << 32 | {})\n",
                     full_upper_pfx, variant_name, #type_tag, code,
@@ -1326,7 +1353,7 @@ fn generate_error_bridge(meta: MetaError) -> TokenStream2 {
 // Implementable bridge generation
 // ===========================================================================
 
-fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
+fn generate_implementable_bridge(meta: MetaImplementable, lib_crate: &TokenStream2) -> TokenStream2 {
     let vtable_c_name = meta.vtable_c_name();
     let type_pfx = meta.type_pfx();
     let fn_pfx = meta.fn_pfx();
@@ -1363,8 +1390,8 @@ fn generate_implementable_bridge(meta: MetaImplementable) -> TokenStream2 {
                 next_slot += 1;
             }
             let name_str = m.name.to_string();
-            let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
-            let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+            let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
+            let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
 
             header_lines.push(quote! {{
                 let mut s = String::from("    ");
@@ -1507,6 +1534,7 @@ pub fn c_signature_for_method(
     prefix: &str,
     ctx: SignatureContext,
     handle_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
 ) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name());
     let mut params = Vec::new();
@@ -1529,7 +1557,7 @@ pub fn c_signature_for_method(
         if matches!(p.kind, MetaParamKind::StrSlice) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, None, &ctx),
+                c_type: c_param_type(&p.kind, None, &ctx, lib_crate),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -1538,7 +1566,7 @@ pub fn c_signature_for_method(
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, Some(p.rust_type()), &ctx),
+                c_type: c_param_type(&p.kind, Some(p.rust_type()), &ctx, lib_crate),
             });
         }
     }
@@ -1549,7 +1577,7 @@ pub fn c_signature_for_method(
         MetaReturn::Value(_vk) => {
             // All values (handles and primitives) returned directly.
             // Handles return *mut c_void, primitives return their CRepr.
-            let ty = c_return_type(_vk, &method.rust_ret, &ctx);
+            let ty = c_return_type(_vk, &method.rust_ret, &ctx, lib_crate);
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
@@ -1579,7 +1607,7 @@ pub fn c_signature_for_method(
                         let ok_rust_type = extract_result_ok_type(&method.rust_ret);
                         params.push(CExternParam {
                             name: format_ident!("result"),
-                            c_type: c_out_param_type(vk, &ok_rust_type, &ctx),
+                            c_type: c_out_param_type(vk, &ok_rust_type, &ctx, lib_crate),
                         });
                     }
                 }
@@ -1611,6 +1639,7 @@ pub fn c_param_type(
     kind: &MetaParamKind,
     rust_type: Option<&TokenStream2>,
     ctx: &SignatureContext,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
@@ -1621,7 +1650,7 @@ pub fn c_param_type(
                 }
                 SignatureContext::Bridge => bridge_type.clone(),
             };
-            quote! { <#ty as ffier::FfiType>::CRepr }
+            quote! { <#ty as #lib_crate::FfiType>::CRepr }
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
@@ -1633,13 +1662,14 @@ pub fn c_return_type(
     kind: &MetaTypePair,
     rust_ret: &TokenStream2,
     ctx: &SignatureContext,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let bridge_type = &kind.bridge_type;
     let ty = match ctx {
         SignatureContext::Client => erase_lifetimes_tokens(rust_ret),
         SignatureContext::Bridge => bridge_type.clone(),
     };
-    quote! { <#ty as ffier::FfiType>::CRepr }
+    quote! { <#ty as #lib_crate::FfiType>::CRepr }
 }
 
 /// Produce the C type for a Result ok-value out-parameter.
@@ -1647,8 +1677,9 @@ pub fn c_out_param_type(
     kind: &MetaTypePair,
     rust_ret: &TokenStream2,
     ctx: &SignatureContext,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
-    let inner = c_return_type(kind, rust_ret, ctx);
+    let inner = c_return_type(kind, rust_ret, ctx, lib_crate);
     quote! { *mut #inner }
 }
 
@@ -1656,10 +1687,11 @@ fn meta_param_conversion(
     id: &syn::Ident,
     kind: &MetaParamKind,
     len_ident: Option<&syn::Ident>,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { <#bridge_type as ffier::FfiType>::from_c(#id) }
+            quote! { <#bridge_type as #lib_crate::FfiType>::from_c(#id) }
         }
         MetaParamKind::StrSlice => {
             let len_id = len_ident.expect("StrSlice conversion needs len_ident");
@@ -1678,10 +1710,10 @@ fn meta_param_conversion(
     }
 }
 
-fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str) -> TokenStream2 {
+fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str, lib_crate: &TokenStream2) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx) }
+            quote! { &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx) }
         }
         MetaParamKind::StrSlice => {
             quote! { compile_error!("StrSlice should not use param_c_type_expr") }
@@ -2065,6 +2097,7 @@ fn generate_self_dispatch_bridge(
     info: &TraitDispatchInfo,
     prefix: &str,
     trait_map: &TraitMap,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let imp = info
         .implementable
@@ -2127,8 +2160,8 @@ fn generate_self_dispatch_bridge(
                 call_args.push(quote! { #borrow_name });
             } else {
                 let bt = p.bridge_type();
-                bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
-                call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+                bridge_params.push(quote! { #param_name: <#bt as #lib_crate::FfiType>::CRepr });
+                call_args.push(quote! { <#bt as #lib_crate::FfiType>::from_c(#param_name) });
             }
         }
 
@@ -2136,7 +2169,7 @@ fn generate_self_dispatch_bridge(
         let ret_type = match &m.ret {
             MetaReturn::Void => quote! {},
             MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
-                quote! { -> <#bridge_type as ffier::FfiType>::CRepr }
+                quote! { -> <#bridge_type as #lib_crate::FfiType>::CRepr }
             }
             MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
         };
@@ -2183,7 +2216,7 @@ fn generate_self_dispatch_bridge(
                         },
                         MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
                             let call_result = #helper(obj #(, #call_args)*);
-                            return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                            return <#bridge_type as #lib_crate::FfiType>::into_c(call_result);
                         },
                         MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                     };
@@ -2213,12 +2246,12 @@ fn generate_self_dispatch_bridge(
                         let call_result = <#ty as #trait_path>::#method_name(
                             handle as *const ffier::FfierHandle<#ty> #(, #call_args)*
                         );
-                        return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                        return <#bridge_type as #lib_crate::FfiType>::into_c(call_result);
                     },
                     MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                 };
                 quote! {
-                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                         #ret_conversion
                     }
                 }
@@ -2230,12 +2263,12 @@ fn generate_self_dispatch_bridge(
                     },
                     MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
                         let call_result = <#ty as #trait_path>::#method_name(obj #(, #call_args)*);
-                        return <#bridge_type as ffier::FfiType>::into_c(call_result);
+                        return <#bridge_type as #lib_crate::FfiType>::into_c(call_result);
                     },
                     MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
                 };
                 quote! {
-                    if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                         #metadata_guard
                         #obj_binding
                         #ret_conversion
@@ -2257,8 +2290,8 @@ fn generate_self_dispatch_bridge(
         });
 
         // Header line for this method
-        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
-        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
+        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
 
         header_lines.push(quote! {{
             let mut s = String::new();
@@ -2289,7 +2322,7 @@ fn generate_self_dispatch_bridge(
         .map(|v| {
             let ty = &v.bridge_type;
             quote! {
-                if __type_tag == <#ty as ffier::FfiHandle>::TYPE_TAG {
+                if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                     unsafe { ffier::ffier_handle_drop::<#ty>(handle) };
                 }
             }
@@ -2339,6 +2372,7 @@ fn generate_self_dispatch_bridge(
 fn vtable_param_c_types(
     params: &[ffier_meta::MetaParam],
     type_pfx: &str,
+    lib_crate: &TokenStream2,
 ) -> (Vec<String>, Vec<TokenStream2>) {
     let mut names = Vec::new();
     let mut types = Vec::new();
@@ -2350,7 +2384,7 @@ fn vtable_param_c_types(
         } else {
             let bt = p.bridge_type();
             types.push(quote! {
-                &ffier_bridge::format_c_type_name(<#bt as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+                &ffier_bridge::format_c_type_name(<#bt as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
             });
         }
     }
@@ -2358,17 +2392,17 @@ fn vtable_param_c_types(
 }
 
 /// C return type expression for a vtable return.
-fn vtable_ret_c_expr(ret: &MetaReturn, type_pfx: &str) -> TokenStream2 {
+fn vtable_ret_c_expr(ret: &MetaReturn, type_pfx: &str, lib_crate: &TokenStream2) -> TokenStream2 {
     match ret {
         MetaReturn::Void => quote! { "void" },
         MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
-            &ffier_bridge::format_c_type_name(<#bridge_type as ffier::FfiType>::C_TYPE_NAME, #type_pfx)
+            &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
         },
         MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
     }
 }
 
-fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> TokenStream2 {
+fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_crate: &TokenStream2) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let trait_path = &meta.trait_path;
     let fn_pfx = meta.fn_pfx();
@@ -2422,8 +2456,8 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
                 call_args.push(quote! { #borrow_name });
             } else {
                 let bt = p.bridge_type();
-                bridge_params.push(quote! { #param_name: <#bt as ffier::FfiType>::CRepr });
-                call_args.push(quote! { <#bt as ffier::FfiType>::from_c(#param_name) });
+                bridge_params.push(quote! { #param_name: <#bt as #lib_crate::FfiType>::CRepr });
+                call_args.push(quote! { <#bt as #lib_crate::FfiType>::from_c(#param_name) });
             }
         }
 
@@ -2431,8 +2465,8 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
         let (ret_type, ret_conversion) = match &m.ret {
             MetaReturn::Void => (quote! {}, quote! { call_result }),
             MetaReturn::Value(MetaTypePair { bridge_type, .. }) => (
-                quote! { -> <#bridge_type as ffier::FfiType>::CRepr },
-                quote! { <#bridge_type as ffier::FfiType>::into_c(call_result) },
+                quote! { -> <#bridge_type as #lib_crate::FfiType>::CRepr },
+                quote! { <#bridge_type as #lib_crate::FfiType>::into_c(call_result) },
             ),
             MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
         };
@@ -2463,8 +2497,9 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap) -> Toke
         });
 
         // Header line
-        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx);
-        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx);
+        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
+        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
+
         let handle_c_name = format!("{type_pfx}{struct_name_str}");
 
         header_lines.push(quote! {{
