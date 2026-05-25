@@ -80,7 +80,7 @@ pub fn generate(lib: &Library) -> String {
     .unwrap();
     writeln!(
         out,
-        "    isize => \"intptr_t\", usize => \"uintptr_t\", bool => \"bool\","
+        "    isize => \"ssize_t\", usize => \"size_t\", bool => \"bool\","
     )
     .unwrap();
     writeln!(out, "}}").unwrap();

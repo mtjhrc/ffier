@@ -437,7 +437,7 @@ fn format_c_declaration(
             ParamType::Slice { c_params, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
-                params.push(format!("uintptr_t {}_len", p.name));
+                params.push(format!("size_t {}_len", p.name));
             }
             ParamType::ImplTrait { trait_name, .. } => {
                 let c_type = lib.c_type_of(trait_name);
@@ -518,7 +518,7 @@ fn format_trait_method_declaration(
             ParamType::Slice { c_params, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
-                params.push(format!("uintptr_t {}_len", p.name));
+                params.push(format!("size_t {}_len", p.name));
             }
             ParamType::ImplTrait { trait_name, .. } => {
                 let c_type = lib.c_type_of(trait_name);

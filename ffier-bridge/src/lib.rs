@@ -759,7 +759,7 @@ fn generate_exportable_bridge(
                 let ptr_type = format!("const {str_c_name}*");
                 c_type_exprs.push(quote! { #ptr_type });
                 header_param_names.push(name.clone());
-                c_type_exprs.push(quote! { "uintptr_t" });
+                c_type_exprs.push(quote! { "size_t" });
                 header_param_names.push(format!("{name}_len"));
             } else {
                 c_type_exprs.push(meta_param_c_type_expr(&p.kind, &type_pfx, lib_crate));
@@ -2720,7 +2720,7 @@ fn build_schema(
         ("i8", "int8_t"), ("i16", "int16_t"), ("i32", "int32_t"), ("i64", "int64_t"),
         ("u8", "uint8_t"), ("u16", "uint16_t"), ("u32", "uint32_t"), ("u64", "uint64_t"),
         ("f32", "float"), ("f64", "double"),
-        ("isize", "intptr_t"), ("usize", "uintptr_t"), ("bool", "bool"),
+        ("isize", "ssize_t"), ("usize", "size_t"), ("bool", "bool"),
     ] {
         type_registry.insert(name.to_string(), ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive,
@@ -2924,7 +2924,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                     },
                     ffier_schema::CParam {
                         name: format!("{}_len", p.name),
-                        c_type: "uintptr_t".to_string(),
+                        c_type: "size_t".to_string(),
                     },
                 ],
             }
