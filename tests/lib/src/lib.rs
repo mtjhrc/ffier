@@ -817,13 +817,6 @@ impl Weighable for Apple {
     }
 }
 
-// TODO(ffier-builtins-require-manual-reexports): these manual reexports are
-// still needed because something in the @reexport expansion references PushStr
-// and Error by bare name. The library_definition! auto-reexport uses internal
-// names (__ffier_reexport_trait_*) but doesn't cover all reference sites.
-pub use ffier::Error;
-pub use ffier::PushStr;
-
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -832,7 +825,7 @@ ffier::library_definition!("ft",
     TestError = 1,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
-    View = 7, ViewFactory = 8,
+    View<'_> = 7, ViewFactory = 8,
     Pipeline = 9,
     trait Processor = 10,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,

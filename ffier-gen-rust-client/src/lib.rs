@@ -28,6 +28,126 @@ pub fn generate(lib: &Library) -> String {
     .unwrap();
     writeln!(out).unwrap();
 
+    // Emit local FfiHandle and FfiType traits (standalone, no ffier dependency for traits)
+    writeln!(
+        out,
+        "/// Marker trait for types exported as opaque C handles."
+    )
+    .unwrap();
+    writeln!(out, "pub trait FfiHandle {{").unwrap();
+    writeln!(out, "    const C_HANDLE_NAME: &'static str;").unwrap();
+    writeln!(out, "    const TYPE_TAG: u32;").unwrap();
+    writeln!(
+        out,
+        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void;"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "/// Maps Rust types to C-compatible representations.").unwrap();
+    writeln!(out, "pub trait FfiType {{").unwrap();
+    writeln!(out, "    type CRepr;").unwrap();
+    writeln!(out, "    const C_TYPE_NAME: &'static str;").unwrap();
+    writeln!(out, "    const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> Self::CRepr;").unwrap();
+    writeln!(out, "    fn from_c(repr: Self::CRepr) -> Self;").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Primitive FfiType impls
+    writeln!(out, "macro_rules! impl_ffi_identity {{").unwrap();
+    writeln!(out, "    ($($t:ty => $n:expr),* $(,)?) => {{ $(").unwrap();
+    writeln!(out, "        impl FfiType for $t {{").unwrap();
+    writeln!(out, "            type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(
+        out,
+        "            fn into_c(self) -> Self {{ self }} fn from_c(r: Self) -> Self {{ r }}"
+    )
+    .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    )* }};").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "impl_ffi_identity! {{").unwrap();
+    writeln!(
+        out,
+        "    i8 => \"int8_t\", i16 => \"int16_t\", i32 => \"int32_t\", i64 => \"int64_t\","
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    u8 => \"uint8_t\", u16 => \"uint16_t\", u32 => \"uint32_t\", u64 => \"uint64_t\","
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    isize => \"intptr_t\", usize => \"uintptr_t\", bool => \"bool\","
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // &str FfiType impl
+    writeln!(out, "impl FfiType for &str {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
+    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // &[u8] FfiType impl
+    writeln!(out, "impl FfiType for &[u8] {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
+    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ if repr.data.is_null() {{ &[] }} else {{ core::slice::from_raw_parts(repr.data, repr.len) }} }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // OwnedFd / BorrowedFd FfiType impls
+    writeln!(out, "impl FfiType for OwnedFd {{").unwrap();
+    writeln!(out, "    type CRepr = i32; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(
+        out,
+        "    fn into_c(self) -> i32 {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn from_c(fd: i32) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd) }} }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "impl<'a> FfiType for BorrowedFd<'a> {{").unwrap();
+    writeln!(out, "    type CRepr = i32; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> i32 {{ self.as_raw_fd() }}").unwrap();
+    writeln!(
+        out,
+        "    fn from_c(fd: i32) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd) }} }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Handle reference FfiType impls
+    writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &T {{").unwrap();
+    writeln!(out, "    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;").unwrap();
+    writeln!(
+        out,
+        "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
+    )
+    .unwrap();
+    writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &T from_c\") }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &mut T {{").unwrap();
+    writeln!(out, "    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;").unwrap();
+    writeln!(
+        out,
+        "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
+    )
+    .unwrap();
+    writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &mut T from_c\") }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     // 1. Error enums
     for err in &lib.errors {
         emit_error(&mut out, err, lib);
@@ -287,7 +407,7 @@ fn emit_exported_type(
     // FfiHandle
     writeln!(
         out,
-        "impl{lt_params} ffier::FfiHandle for {}{lt_params} {{",
+        "impl{lt_params} FfiHandle for {}{lt_params} {{",
         ty.name
     )
     .unwrap();
@@ -307,12 +427,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiType
-    writeln!(
-        out,
-        "impl{lt_params} ffier::FfiType for {}{lt_params} {{",
-        ty.name
-    )
-    .unwrap();
+    writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
     writeln!(
         out,
@@ -419,7 +534,7 @@ fn build_extern_signature(
         match &p.param_type {
             ParamType::Regular(tr) => {
                 let ty = tr.to_rust_type_static();
-                params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
             }
             ParamType::Slice { .. } => {
                 params.push(format!("{}: *const ffier::FfierBytes", p.name));
@@ -437,7 +552,7 @@ fn build_extern_signature(
         Return::Value(tr) if is_builder => String::new(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as ffier::FfiType>::CRepr")
+            format!(" -> <{ty} as FfiType>::CRepr")
         }
         Return::Result { ok, err_type: _ } => {
             let is_ok_handle = ok
@@ -452,7 +567,7 @@ fn build_extern_signature(
             } else {
                 if let Some(ok_tr) = ok {
                     let ty = ok_tr.to_rust_type_static();
-                    params.push(format!("result: *mut <{ty} as ffier::FfiType>::CRepr"));
+                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
                 }
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> ffier::FfierResult".to_string()
@@ -630,7 +745,7 @@ fn emit_method_body(
                 "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "        <{ty} as FfiType>::from_c(__raw)").unwrap();
         }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
@@ -639,7 +754,7 @@ fn emit_method_body(
                 "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            writeln!(out, "        <{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "        <{ty} as FfiType>::from_c(__raw)").unwrap();
         }
         Return::Result { ok: None, err_type } if is_builder && by_value_self => {
             writeln!(
@@ -693,11 +808,7 @@ fn emit_method_body(
             .unwrap();
             writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
-            writeln!(
-                out,
-                "            Ok(<{ty} as ffier::FfiType>::from_c(__raw))"
-            )
-            .unwrap();
+            writeln!(out, "            Ok(<{ty} as FfiType>::from_c(__raw))").unwrap();
             writeln!(out, "        }} else {{").unwrap();
             writeln!(
                 out,
@@ -732,7 +843,11 @@ fn emit_method_body(
             .unwrap();
             writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}__out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(out, "        if __r == 0 {{").unwrap();
-            writeln!(out, "            Ok(<{ty} as ffier::FfiType>::from_c(unsafe {{ __out.assume_init() }}))").unwrap();
+            writeln!(
+                out,
+                "            Ok(<{ty} as FfiType>::from_c(unsafe {{ __out.assume_init() }}))"
+            )
+            .unwrap();
             writeln!(out, "        }} else {{").unwrap();
             writeln!(out, "            Err({err_type}::from_ffi(__r))").unwrap();
             writeln!(out, "        }}").unwrap();
@@ -977,7 +1092,7 @@ fn emit_vtable_struct(
                 match &p.param_type {
                     ParamType::Regular(tr) => {
                         let ty = tr.to_rust_type_static();
-                        params.push(format!("<{ty} as ffier::FfiType>::CRepr"));
+                        params.push(format!("<{ty} as FfiType>::CRepr"));
                     }
                     ParamType::Slice { .. } => {
                         params.push("*const ffier::FfierBytes".to_string());
@@ -992,7 +1107,7 @@ fn emit_vtable_struct(
                 Return::Void => String::new(),
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type_static();
-                    format!(" -> <{ty} as ffier::FfiType>::CRepr")
+                    format!(" -> <{ty} as FfiType>::CRepr")
                 }
                 Return::Result { .. } => " -> ffier::FfierResult".to_string(),
             };
@@ -1051,7 +1166,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                 match &p.param_type {
                     ParamType::Regular(tr) => {
                         let ty = tr.to_rust_type_static();
-                        tramp_params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+                        tramp_params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
                     }
                     ParamType::ImplTrait { .. } => {
                         tramp_params.push(format!("{}: *mut core::ffi::c_void", p.name));
@@ -1068,7 +1183,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                 Return::Void => String::new(),
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type_static();
-                    format!(" -> <{ty} as ffier::FfiType>::CRepr")
+                    format!(" -> <{ty} as FfiType>::CRepr")
                 }
                 Return::Result { .. } => " -> ffier::FfierResult".to_string(),
             };
@@ -1100,7 +1215,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                 match &p.param_type {
                     ParamType::Regular(tr) => {
                         let ty = tr.to_rust_type();
-                        call_args.push(format!("<{ty} as ffier::FfiType>::from_c({})", p.name));
+                        call_args.push(format!("<{ty} as FfiType>::from_c({})", p.name));
                     }
                     ParamType::ImplTrait { .. } => {
                         call_args.push(p.name.clone());
@@ -1127,7 +1242,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                     let ty = tr.to_rust_type();
                     writeln!(
                         out,
-                        "                    <{ty} as ffier::FfiType>::into_c(__result)"
+                        "                    <{ty} as FfiType>::into_c(__result)"
                     )
                     .unwrap();
                 }
@@ -1153,7 +1268,7 @@ fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> S
         match &p.param_type {
             ParamType::Regular(tr) => {
                 let ty = tr.to_rust_type_static();
-                params.push(format!("{}: <{ty} as ffier::FfiType>::CRepr", p.name));
+                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
             }
             ParamType::Slice { .. } => {
                 params.push(format!("{}: *const ffier::FfierBytes", p.name));
@@ -1168,7 +1283,7 @@ fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> S
         Return::Void => String::new(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as ffier::FfiType>::CRepr")
+            format!(" -> <{ty} as FfiType>::CRepr")
         }
         Return::Result { .. } => " -> ffier::FfierResult".to_string(),
     };
@@ -1350,10 +1465,10 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                         .type_entry(&tr.type_name)
                         .is_some_and(|e| e.kind == ffier_schema::TypeKind::Handle);
                 if is_borrowed_handle {
-                    args.push(format!("ffier::FfiHandle::as_handle({})", p.name));
+                    args.push(format!("FfiHandle::as_handle({})", p.name));
                 } else {
                     let ty = tr.to_rust_type();
-                    args.push(format!("<{ty} as ffier::FfiType>::into_c({})", p.name));
+                    args.push(format!("<{ty} as FfiType>::into_c({})", p.name));
                 }
             }
             ParamType::Slice { .. } => {
@@ -1398,7 +1513,7 @@ fn emit_ffi_call_return(
                 "{indent}let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            writeln!(out, "{indent}<{ty} as ffier::FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "{indent}<{ty} as FfiType>::from_c(__raw)").unwrap();
         }
         Return::Result { .. } => {
             // Result returns have complex dispatch (void/handle/out-param) —

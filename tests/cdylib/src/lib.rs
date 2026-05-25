@@ -16,7 +16,7 @@ ffier_test_lib::__ffier_ft_library!(ffier_bridge_macros::generate);
 pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     handle: *mut core::ffi::c_void,
 ) -> ffier::FfierBytes {
-    use ffier::{FfiHandle, FfiType};
+    use ffier_test_lib::{FfiHandle, FfiType};
     let tag = unsafe { ffier::handle_type_tag(handle) };
     let name = if tag == ffier_test_lib::VtableFruit::TYPE_TAG {
         drop(<ffier_test_lib::VtableFruit as FfiType>::from_c(handle));
@@ -37,7 +37,7 @@ pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ffier::FfiHandle;
+    use ffier_test_lib::FfiHandle;
     use std::ffi::CStr;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};

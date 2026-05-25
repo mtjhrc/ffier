@@ -1,9 +1,8 @@
-//! Pre-annotated ffier traits for built-in runtime types.
+//! Pre-annotated ffier traits for built-in types.
 //!
-//! This crate applies `#[ffier_annotations::implementable(foreign)]` to traits
-//! defined in `ffier-rt`, generating the vtable struct and metadata macro so
-//! downstream crates can register them in their `library_definition!` without
-//! redeclaring the trait signature:
+//! This crate defines `PushStr` and `Error` traits with
+//! `#[ffier::implementable]`, generating vtable structs and metadata macros
+//! so downstream crates can register them in `library_definition!`:
 //!
 //! ```ignore
 //! ffier::library_definition!("mylib",
@@ -11,26 +10,43 @@
 //! );
 //! ```
 
-// Re-export ffier-rt so generated code that references `ffier::` paths
-// (from the #[implementable] proc macro) can resolve them. The proc macro
-// emits `ffier::VtableHandle`, `ffier::FfiType`, etc. — we provide `ffier`
-// as an alias for `ffier_rt`.
-use ffier_rt as ffier;
-
+pub use ffier_rt::ffier_result;
 pub use ffier_rt::FfierHandle;
 pub use ffier_rt::FfierResult;
-pub use ffier_rt::PushStr;
 
-#[ffier_annotations::implementable(foreign)]
-trait PushStr {
+/// Streaming string writer for error messages (and other display output).
+///
+/// C callers construct a stack-local handle wrapping a callback function.
+/// Rust bridge code uses the `fmt::Write` impl to stream `Display` output
+/// into the callback without allocating.
+///
+/// Returns `true` on success, `false` to abort formatting (e.g. buffer
+/// full). On `false`, `fmt::Write::write_str` returns `Err(fmt::Error)`
+/// which short-circuits `write!()`.
+#[ffier_annotations::implementable]
+pub trait PushStr {
     #[ffier(index = 0)]
     fn push(&mut self, s: &str) -> bool;
 }
 
-pub use ffier_rt::Error;
+/// `fmt::Write` adapter — lets bridge code do `write!(writer, "{}", err)`
+/// where `writer` is a `&mut dyn PushStr`.
+impl core::fmt::Write for dyn PushStr + '_ {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if self.push(s) {
+            Ok(())
+        } else {
+            Err(core::fmt::Error)
+        }
+    }
+}
 
-#[ffier_annotations::implementable(foreign)]
-trait Error {
+/// Dispatch trait for error types exported across FFI.
+///
+/// `#[derive(FfiError)]` auto-generates the impl. Self-dispatch generates
+/// `ft_error_code(handle)` and `ft_error_message(handle, writer)`.
+#[ffier_annotations::implementable]
+pub trait Error {
     #[ffier(index = 0)]
     fn code(&self) -> u32;
 
@@ -38,11 +54,11 @@ trait Error {
     fn message(&self, writer: &mut impl PushStr);
 
     #[ffier(index = 2, raw_handle)]
-    fn result(handle: *const ffier::FfierHandle<Self>) -> u64
+    fn result(handle: *const FfierHandle<Self>) -> u64
     where
         Self: Sized,
     {
         let h = unsafe { &*handle };
-        ffier::ffier_result(h.type_tag, h.value.code())
+        ffier_result(h.type_tag, h.value.code())
     }
 }
