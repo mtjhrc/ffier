@@ -74,6 +74,11 @@ pub enum TypeKind {
     Error,
     /// Trait (from `#[implementable]` or discovered via `#[trait_impl]`).
     Trait,
+    /// Sentinel type for builder methods that return `Self`.
+    /// At the C ABI level this is `void` (the new handle is written back
+    /// through a double pointer), but Rust/Swift generators can recover
+    /// `-> Self` from this.
+    ReplacesSelf,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,8 +242,6 @@ pub enum MethodContext {
     Exportable {
         /// C FFI function name (e.g. "ft_widget_get_count").
         ffi_name: String,
-        /// Whether this is a builder method (returns Self — void at C level).
-        is_builder: bool,
     },
     /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
     Trait {
@@ -331,18 +334,40 @@ pub enum Return {
     },
 }
 
+/// Well-known type name for builder methods that return `Self`.
+pub const BUILDER_SELF_TYPE: &str = "BuilderSelf";
+
+/// Check whether a type name refers to a `ReplacesSelf` sentinel in the registry.
+fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> bool {
+    registry
+        .get(type_name)
+        .is_some_and(|e| e.kind == TypeKind::ReplacesSelf)
+}
+
 impl Return {
+    /// True if this return type represents a builder pattern (`-> Self` or
+    /// `-> Result<Self, E>`), detected via `TypeKind::ReplacesSelf` in the
+    /// type registry.
+    pub fn is_builder_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
+        match self {
+            Return::Value(tr) => is_replaces_self(&tr.type_name, registry),
+            Return::Result { ok: Some(tr), .. } => is_replaces_self(&tr.type_name, registry),
+            _ => false,
+        }
+    }
+
     /// Reconstruct the Rust return type syntax.
-    /// E.g. `Value(TypeRef { type: "i32" })` → `"i32"`
-    /// E.g. `Result { ok: Some(TypeRef { type: "i32" }), err_type: "TestError" }` → `"Result<i32, TestError>"`
-    pub fn to_rust_type(&self) -> String {
+    /// Types with `TypeKind::ReplacesSelf` in the registry render as `Self`.
+    pub fn to_rust_type(&self, registry: &BTreeMap<String, TypeEntry>) -> String {
         match self {
             Return::Void => "()".to_string(),
+            Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
             Return::Value(tr) => tr.to_rust_type(),
             Return::Result { ok, err_type } => {
                 let ok_str = match ok {
-                    None => "()".to_string(),
+                    Some(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
                     Some(tr) => tr.to_rust_type(),
+                    None => "()".to_string(),
                 };
                 format!("Result<{ok_str}, {err_type}>")
             }

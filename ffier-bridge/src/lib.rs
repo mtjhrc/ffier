@@ -2808,6 +2808,14 @@ fn build_schema(
         });
     }
 
+    // BuilderSelf sentinel — used in return types for builder methods.
+    type_registry.insert(ffier_schema::BUILDER_SELF_TYPE.to_string(), ffier_schema::TypeEntry {
+        kind: ffier_schema::TypeKind::ReplacesSelf,
+        c_type: "void".to_string(),
+        type_tag: None,
+        lifetime_params: vec![],
+    });
+
     ffier_schema::Library {
         prefix: prefix.to_string(),
         type_registry,
@@ -2865,10 +2873,9 @@ fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::
 
 fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method {
     let context = match &meta.context {
-        MetaMethodContext::Exportable { ffi_name, is_builder, .. } => {
+        MetaMethodContext::Exportable { ffi_name, .. } => {
             ffier_schema::MethodContext::Exportable {
                 ffi_name: r.ffi_fn_name(ffi_name),
-                is_builder: *is_builder,
             }
         }
         MetaMethodContext::Trait { has_default, index, .. } => {
@@ -2879,13 +2886,15 @@ fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method 
         }
     };
 
+    let ret = convert_return(&meta.ret, r, meta.is_builder());
+
     ffier_schema::Method {
         name: meta.name.to_string(),
         doc: meta.doc().iter().cloned().collect(),
         receiver: convert_receiver(meta.receiver),
         method_lifetimes: meta.method_lifetimes.iter().map(|lt| lt.to_string()).collect(),
         params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
-        ret: convert_return(&meta.ret, r),
+        ret,
         context,
     }
 }
@@ -2939,12 +2948,40 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
     ffier_schema::Param { name: p.name.to_string(), param_type }
 }
 
-fn convert_return(ret: &MetaReturn, r: &CTypeResolver) -> ffier_schema::Return {
+fn builder_self_type_ref() -> ffier_schema::TypeRef {
+    ffier_schema::TypeRef {
+        type_name: ffier_schema::BUILDER_SELF_TYPE.to_string(),
+        ref_kind: ffier_schema::RefKind::None,
+        ref_lifetime: None,
+        type_args: vec![],
+    }
+}
+
+fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffier_schema::Return {
     match ret {
+        MetaReturn::Void if is_builder => {
+            // Builder `-> Self`: encode as Value(BuilderSelf).
+            ffier_schema::Return::Value(builder_self_type_ref())
+        }
         MetaReturn::Void => ffier_schema::Return::Void,
         MetaReturn::Value(tp) => {
             let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
+        }
+        MetaReturn::Result { ok, err_ident } if is_builder => {
+            // Builder `-> Result<Self, E>`: ok was suppressed to None by
+            // annotations; restore it as BuilderSelf.
+            let ok_ref = match ok {
+                None => Some(builder_self_type_ref()),
+                Some(tp) => {
+                    let rt = tp.rust_type.to_string();
+                    Some(r.to_type_ref(&rt))
+                }
+            };
+            ffier_schema::Return::Result {
+                ok: ok_ref,
+                err_type: err_ident.clone(),
+            }
         }
         MetaReturn::Result { ok, err_ident } => {
             let ok_ref = ok.as_ref().map(|tp| {

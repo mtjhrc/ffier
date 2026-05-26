@@ -349,14 +349,10 @@ fn emit_exported_type(
     )
     .unwrap();
     for m in &ty.methods {
-        let MethodContext::Exportable {
-            ffi_name,
-            is_builder,
-        } = &m.context
-        else {
+        let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
-        let sig = build_extern_signature(ffi_name, m, *is_builder, handle_types);
+        let sig = build_extern_signature(ffi_name, m, lib, handle_types);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -473,18 +469,13 @@ fn emit_exported_type(
     // Methods
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        let MethodContext::Exportable {
-            ffi_name,
-            is_builder,
-        } = &m.context
-        else {
+        let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
         emit_method_wrapper(
             out,
             m,
             ffi_name,
-            *is_builder,
             ty.is_builder_type,
             has_lifetimes,
             lib,
@@ -514,9 +505,10 @@ fn emit_exported_type(
 fn build_extern_signature(
     ffi_name: &str,
     m: &Method,
-    is_builder: bool,
+    lib: &Library,
     handle_types: &HashSet<&str>,
 ) -> String {
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let mut params = Vec::new();
 
     // Self param — always *mut c_void in extern declarations.
@@ -549,7 +541,7 @@ fn build_extern_signature(
     // Return type + extra out-params
     let ret_str = match &m.ret {
         Return::Void => String::new(),
-        Return::Value(tr) if is_builder => String::new(),
+        Return::Value(_) if is_builder => String::new(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -565,7 +557,8 @@ fn build_extern_signature(
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> *mut core::ffi::c_void".to_string()
             } else {
-                if let Some(ok_tr) = ok {
+                // Builder Result<Self, E>: ok is BuilderSelf, no out-param needed
+                if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
                     let ty = ok_tr.to_rust_type_static();
                     params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
                 }
@@ -587,7 +580,6 @@ fn emit_method_wrapper(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    is_builder: bool,
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
@@ -624,7 +616,7 @@ fn emit_method_wrapper(
     let param_sigs: Vec<String> = m.params.iter().map(|p| format_param_sig(p, lib)).collect();
     let params_str = param_sigs.join(", ");
 
-    let ret_type = build_wrapper_return_type(m, is_builder);
+    let ret_type = build_wrapper_return_type(m, lib);
 
     writeln!(
         out,
@@ -638,7 +630,6 @@ fn emit_method_wrapper(
         out,
         m,
         ffi_name,
-        is_builder,
         is_builder_type,
         has_lifetimes,
         lib,
@@ -648,22 +639,21 @@ fn emit_method_wrapper(
     writeln!(out, "    }}").unwrap();
 }
 
-fn build_wrapper_return_type(m: &Method, is_builder: bool) -> String {
+fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     if is_builder {
         return match m.receiver {
             Receiver::Mut => " -> &mut Self".to_string(),
-            Receiver::Value => match &m.ret {
-                Return::Void => " -> Self".to_string(),
-                Return::Result { ok: None, err_type } => format!(" -> Result<Self, {err_type}>"),
-                _ => format!(" -> {}", m.ret.to_rust_type()),
-            },
-            _ => format!(" -> {}", m.ret.to_rust_type()),
+            Receiver::Value => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
+            _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
         };
     }
 
     match &m.ret {
         Return::Void => String::new(),
-        Return::Value(_) | Return::Result { .. } => format!(" -> {}", m.ret.to_rust_type()),
+        Return::Value(_) | Return::Result { .. } => {
+            format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
+        }
     }
 }
 
@@ -671,12 +661,12 @@ fn emit_method_body(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    is_builder: bool,
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
     handle_types: &HashSet<&str>,
 ) {
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     // Build FFI call arguments
     let by_value_self = m.receiver == Receiver::Value;
 
@@ -722,11 +712,13 @@ fn emit_method_body(
     let is_ok_handle = matches!(&m.ret, Return::Result { ok: Some(tr), .. } if handle_types.contains(tr.type_name.as_str()));
 
     match &m.ret {
-        Return::Void if is_builder && m.receiver == Receiver::Mut => {
+        Return::Value(_) if is_builder && m.receiver == Receiver::Mut => {
+            // Builder &mut self → call, return self
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }};").unwrap();
             writeln!(out, "        self").unwrap();
         }
-        Return::Void if is_builder && by_value_self => {
+        Return::Value(_) if is_builder && by_value_self => {
+            // Builder by-value self → call, reconstruct Self from __handle
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }};").unwrap();
             if has_lifetimes {
                 writeln!(out, "        Self(__handle, std::marker::PhantomData)").unwrap();
@@ -737,16 +729,6 @@ fn emit_method_body(
         Return::Void => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
-        Return::Value(tr) if is_builder => {
-            // Shouldn't happen (builder with non-Self value return), but handle anyway
-            let ty = tr.to_rust_type();
-            writeln!(
-                out,
-                "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
-            )
-            .unwrap();
-            writeln!(out, "        <{ty} as FfiType>::from_c(__raw)").unwrap();
-        }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
             writeln!(
@@ -756,7 +738,11 @@ fn emit_method_body(
             .unwrap();
             writeln!(out, "        <{ty} as FfiType>::from_c(__raw)").unwrap();
         }
-        Return::Result { ok: None, err_type } if is_builder && by_value_self => {
+        Return::Result {
+            ok: Some(_),
+            err_type,
+        } if is_builder && by_value_self => {
+            // Builder Result<Self, E> by-value: __handle was updated by bridge
             writeln!(
                 out,
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -769,7 +755,11 @@ fn emit_method_body(
                 writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r)) }}").unwrap();
             }
         }
-        Return::Result { ok: None, err_type } if is_builder && m.receiver == Receiver::Mut => {
+        Return::Result {
+            ok: Some(_),
+            err_type,
+        } if is_builder && m.receiver == Receiver::Mut => {
+            // Builder Result<Self, E> &mut self
             writeln!(
                 out,
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -1000,7 +990,7 @@ fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
 
     let ret = match &m.ret {
         Return::Void => String::new(),
-        _ => format!(" -> {}", m.ret.to_rust_type()),
+        _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
     };
 
     format!("fn {}({receiver_str}{params_str}){ret}", m.name)
