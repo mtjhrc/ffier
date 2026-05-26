@@ -31,15 +31,10 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <string.h>\n\n");
 
-    // Handle typedefs — errors first (convention from existing generator).
-    // Skip error types whose c_name matches the generic error handle ({Pfx}Error)
-    // which is emitted later in emit_shared_types.
-    let generic_error_c = format!("{type_pfx}Error");
+    // Handle typedefs — error types first.
     for err in &lib.errors {
         let c_name = &lib.type_registry[&err.name].c_type;
-        if *c_name != generic_error_c {
-            out.push_str(&format!("typedef void* {};\n", c_name));
-        }
+        out.push_str(&format!("typedef void* {};\n", c_name));
     }
     for ty in &lib.exported_types {
         let c_name = &lib.type_registry[&ty.name].c_type;
@@ -98,7 +93,6 @@ pub fn generate_from_file(
 
 fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
     let result_c = format!("{type_pfx}Result");
-    let error_c = format!("{type_pfx}Error");
     let str_c = format!("{type_pfx}Str");
     let bytes_c = format!("{type_pfx}Bytes");
     let path_c = format!("{type_pfx}Path");
@@ -108,10 +102,6 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
 
     out.push_str(&format!("typedef uint64_t {result_c};\n"));
     out.push_str(&format!("#define {result_success} 0\n\n"));
-    out.push_str(
-        "/* Opaque error handle — pass to *_error_message() for details, free with *_error_destroy() */\n",
-    );
-    out.push_str(&format!("typedef void* {error_c};\n\n"));
     out.push_str("/* Caller must ensure data is valid UTF-8 */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    const char* data;\n");
