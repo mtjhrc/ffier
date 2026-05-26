@@ -100,6 +100,11 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
     let str_macro = format!("{upper_pfx}STR");
     let bytes_macro = format!("{upper_pfx}BYTES");
 
+    // FIXME: These type definitions are hardcoded. The type registry knows
+    // about str (kind: string), [u8] (kind: bytes), etc. but doesn't carry
+    // their C struct layouts. These should be driven by the registry — e.g.
+    // TypeKind::Struct { fields: [...] } or similar — so generators don't
+    // need to hardcode ABI details.
     out.push_str(&format!("typedef uint64_t {result_c};\n"));
     out.push_str(&format!("#define {result_success} 0\n\n"));
     out.push_str("/* Caller must ensure data is valid UTF-8 */\n");
