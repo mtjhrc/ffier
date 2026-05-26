@@ -12,8 +12,8 @@
 //! - Utility functions (result_name)
 
 use ffier_schema::{
-    camel_to_snake, ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext,
-    ParamType, Receiver, Return, TraitImpl, TypeKind,
+    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
+    Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
@@ -60,18 +60,18 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Type sections (exportable methods + destroy)
     for ty in &lib.exported_types {
-        emit_type_section(&mut out, ty, &type_pfx, &fn_pfx, lib);
+        emit_type_section(&mut out, ty, &type_pfx, lib);
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
         emit_vtable_section(&mut out, tr, &type_pfx, lib);
-        emit_dispatch_section(&mut out, tr, &fn_pfx, &type_pfx, lib);
+        emit_dispatch_section(&mut out, tr, &type_pfx, lib);
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        emit_trait_impl_section(&mut out, ti, &fn_pfx, lib);
+        emit_trait_impl_section(&mut out, ti, lib);
     }
 
     // Utility functions
@@ -266,13 +266,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_type_section(
-    out: &mut String,
-    ty: &ExportedType,
-    type_pfx: &str,
-    fn_pfx: &str,
-    lib: &Library,
-) {
+fn emit_type_section(out: &mut String, ty: &ExportedType, type_pfx: &str, lib: &Library) {
     emit_section_header(out, &ty.name);
 
     let c_name = &lib.type_registry[&ty.name].c_type;
@@ -288,10 +282,9 @@ fn emit_type_section(
     }
 
     // Destroy function
-    let type_snake = camel_to_snake(&ty.name);
     out.push_str(&format!(
-        "void {fn_pfx}{type_snake}_destroy({} handle);\n",
-        c_name
+        "void {}({} handle);\n",
+        ty.destroy_ffi_name, c_name
     ));
 }
 
@@ -299,18 +292,15 @@ fn emit_type_section(
 // Trait impl bridge functions
 // ---------------------------------------------------------------------------
 
-fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, fn_pfx: &str, lib: &Library) {
-    let _trait_snake = camel_to_snake(&ti.trait_name);
-    let struct_snake = camel_to_snake(&ti.struct_name);
+fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        let MethodContext::Trait { .. } = &m.context else {
+        let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let ffi_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
         let type_pfx = snake_to_pascal(&lib.prefix);
-        let decl = format_trait_method_declaration(&ffi_name, &struct_c_name, m, &type_pfx, lib);
+        let decl = format_trait_method_declaration(ffi_name, &struct_c_name, m, &type_pfx, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -320,22 +310,14 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, fn_pfx: &str, lib: 
 // Self-dispatch functions for implementable traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(
-    out: &mut String,
-    tr: &ImplementableTrait,
-    fn_pfx: &str,
-    type_pfx: &str,
-    lib: &Library,
-) {
+fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str, lib: &Library) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        let MethodContext::Trait { .. } = &m.context else {
+        let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let trait_snake = camel_to_snake(&tr.name);
-        let ffi_name = format!("{fn_pfx}{trait_snake}_{}", m.name);
 
         let mut params = vec![format!("void* handle")];
         for p in &m.params {
@@ -363,10 +345,7 @@ fn emit_dispatch_section(
     }
 
     // Destroy dispatch
-    let trait_snake = camel_to_snake(&tr.name);
-    out.push_str(&format!(
-        "void {fn_pfx}{trait_snake}_destroy(void* handle);\n"
-    ));
+    out.push_str(&format!("void {}(void* handle);\n", tr.destroy_ffi_name));
 }
 
 // ---------------------------------------------------------------------------
