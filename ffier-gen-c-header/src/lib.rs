@@ -278,23 +278,11 @@ fn emit_type_section(
     let c_name = &lib.type_registry[&ty.name].c_type;
 
     for m in &ty.methods {
-        let MethodContext::Exportable {
-            ffi_name,
-            is_builder,
-        } = &m.context
-        else {
+        let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
         emit_doc_comment(out, &m.doc);
-        let decl = format_c_declaration(
-            ffi_name,
-            c_name,
-            m,
-            *is_builder,
-            ty.is_builder_type,
-            type_pfx,
-            lib,
-        );
+        let decl = format_c_declaration(ffi_name, c_name, m, ty.is_builder_type, type_pfx, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -407,11 +395,11 @@ fn format_c_declaration(
     ffi_name: &str,
     handle_c_name: &str,
     m: &Method,
-    is_builder: bool,
     is_builder_type: bool,
     type_pfx: &str,
     lib: &Library,
 ) -> String {
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let mut params: Vec<String> = Vec::new();
 
     // Handle param (self)
@@ -450,17 +438,20 @@ fn format_c_declaration(
     let error_c = format!("{type_pfx}Error");
     let (ret_type, extra_params) = match &m.ret {
         Return::Void => ("void".to_string(), vec![]),
-        Return::Value(type_ref) => {
-            if is_builder {
-                ("void".to_string(), vec![])
-            } else {
-                (lib.c_type_of(&type_ref.type_name).to_string(), vec![])
-            }
+        Return::Value(type_ref) if is_builder => {
+            // Builder returning Self — void at C level
+            ("void".to_string(), vec![])
         }
+        Return::Value(type_ref) => (lib.c_type_of(&type_ref.type_name).to_string(), vec![]),
         Return::Result { ok, .. } => {
             match ok {
                 None => {
                     // Result<(), E>
+                    let result_c = format!("{type_pfx}Result");
+                    (result_c, vec![format!("{error_c}* err_out")])
+                }
+                Some(ok_ref) if is_builder => {
+                    // Builder Result<Self, E> — FfierResult style, no ok out-param
                     let result_c = format!("{type_pfx}Result");
                     (result_c, vec![format!("{error_c}* err_out")])
                 }
