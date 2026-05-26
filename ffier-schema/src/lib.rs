@@ -552,4 +552,11 @@ impl Library {
         }
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
     }
+
+    /// Find an implementable trait by its pragma tag.
+    pub fn trait_by_pragma(&self, pragma: &str) -> Option<&ImplementableTrait> {
+        self.traits
+            .iter()
+            .find(|t| t.pragma.as_deref() == Some(pragma))
+    }
 }

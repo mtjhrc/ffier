@@ -851,9 +851,7 @@ fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, lib: &Lib
 /// from the schema. The error trait is identified by `pragma: "error_trait"`.
 fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
     let error_trait = lib
-        .traits
-        .iter()
-        .find(|t| t.pragma.as_deref() == Some("error_trait"))
+        .trait_by_pragma("error_trait")
         .expect("no trait with pragma \"error_trait\" found in schema");
     let result_fn = error_trait
         .methods
