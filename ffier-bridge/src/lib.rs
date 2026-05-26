@@ -1033,22 +1033,25 @@ fn generate_implementable_bridge(_meta: MetaImplementable, _lib_crate: &TokenStr
 // ===========================================================================
 
 /// Extract the last path segment name from a token stream like `$crate::Gadget`.
-pub fn last_path_segment(ts: &TokenStream2) -> Option<String> {
-    let mut last_ident = None;
-    for tt in ts.clone() {
-        if let proc_macro2::TokenTree::Ident(id) = tt {
-            last_ident = Some(id.to_string());
-        }
+/// Extract the type name (last path segment) from a syn::Type, ignoring
+/// lifetime/type arguments. E.g. `FsDevice<'a>` → `"FsDevice"`,
+/// `crate::Widget` → `"Widget"`, `Self` → `"Self"`.
+fn type_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => tp.path.segments.last().map(|seg| seg.ident.to_string()),
+        _ => None,
     }
-    last_ident
 }
 
 /// Check if a Result<T, E> Ok type is a handle, using the original Rust
 /// return type tokens (e.g. `Result<Gadget, TestError>`) rather than the
 /// bridge_type alias (which may be an opaque `_TypeN`).
 pub fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
-    let ok_type = extract_result_ok_type(rust_ret);
-    last_path_segment(&ok_type)
+    let ok_tokens = extract_result_ok_type(rust_ret);
+    let Ok(ok_ty) = syn::parse2::<syn::Type>(ok_tokens) else {
+        return false;
+    };
+    type_name(&ok_ty)
         .map(|name| name == "Self" || handle_types.contains(&name))
         .unwrap_or(false)
 }
