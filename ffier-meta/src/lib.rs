@@ -430,6 +430,8 @@ pub struct MetaImplementable {
     /// The first `own_method_count` entries in `methods` are this trait's
     /// own methods; the rest are from supertrait `supers(...)` blocks.
     pub own_method_count: usize,
+    /// Optional pragma tag for well-known builtin traits (e.g. `"error_trait"`).
+    pub pragma: Option<String>,
     /// Highest vtable slot index (including reserved/retired slots).
     /// Used by code generators to pad the vtable struct up to this slot.
     pub max_vtable_slot: usize,
@@ -923,6 +925,19 @@ impl syn::parse::Parse for MetaImplementable {
         let max_vtable_slot = max_vtable_slot.base10_parse::<usize>()?;
         parse_comma(input)?;
 
+        expect_key(input, "pragma")?;
+        let pragma = if input.peek(syn::LitStr) {
+            let lit: syn::LitStr = input.parse()?;
+            Some(lit.value())
+        } else {
+            let ident: syn::Ident = input.parse()?;
+            if ident != "none" {
+                return Err(syn::Error::new(ident.span(), "expected string literal or `none`"));
+            }
+            None
+        };
+        parse_comma(input)?;
+
         Ok(MetaImplementable {
             trait_name,
             trait_path,
@@ -934,6 +949,7 @@ impl syn::parse::Parse for MetaImplementable {
             methods,
             own_method_count,
             max_vtable_slot,
+            pragma,
         })
     }
 }

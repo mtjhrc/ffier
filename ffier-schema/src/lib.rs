@@ -416,6 +416,11 @@ pub struct ImplementableTrait {
     pub name: String,
     /// FFI destroy/dispatch function name (e.g. `"ft_fruit_destroy"`).
     pub destroy_ffi_name: String,
+    /// Optional pragma tag for well-known builtin traits.
+    /// E.g. `"error_trait"` for the `Error` trait, allowing generators to
+    /// locate it without hardcoding the trait name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pragma: Option<String>,
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,
