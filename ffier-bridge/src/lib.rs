@@ -526,6 +526,13 @@ fn generate_exportable_bridge(
 
     let struct_lower = camel_to_snake(struct_name);
 
+    // Whether this type has any builder methods with by-value self.
+    // When true, ALL by-value self methods receive a pointer-to-handle
+    // (void**) in the C ABI, not just the builder methods themselves.
+    let is_builder_type = meta.methods.iter().any(|m| {
+        m.is_builder() && m.receiver == MetaReceiver::Value
+    });
+
     let mut ffi_fns = Vec::new();
 
     // Method FFI functions
@@ -560,9 +567,10 @@ fn generate_exportable_bridge(
                     );
                 }
             };
-            let deref_slot = if is_builder && is_by_value {
+            let deref_slot = if is_builder_type && is_by_value {
                 // `handle` param is *mut c_void but actually void**.
-                // Save the slot, read the real handle pointer.
+                // All by-value self methods on builder types use pointer-to-handle
+                // in the C ABI (so the caller can pass &builder consistently).
                 quote! {
                     let __handle_slot = handle as *mut *mut core::ffi::c_void;
                     let handle = unsafe { *__handle_slot };
