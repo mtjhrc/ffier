@@ -1049,7 +1049,7 @@ pub fn last_path_segment(ts: &TokenStream2) -> Option<String> {
 pub fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
     let ok_type = extract_result_ok_type(rust_ret);
     last_path_segment(&ok_type)
-        .map(|name| handle_types.contains(&name))
+        .map(|name| name == "Self" || handle_types.contains(&name))
         .unwrap_or(false)
 }
 
