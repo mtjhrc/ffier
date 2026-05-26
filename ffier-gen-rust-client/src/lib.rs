@@ -802,14 +802,14 @@ fn emit_method_body(
     }
 }
 
-/// Look up the `Error` trait's `result` dispatch ffi_name and `destroy` ffi_name
-/// from the schema. Used by GLib-style `Result<Handle, E>` wrappers.
+/// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
+/// from the schema. The error trait is identified by `pragma: "error_trait"`.
 fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
     let error_trait = lib
         .traits
         .iter()
-        .find(|t| t.name == "Error")
-        .expect("Error trait not found in schema");
+        .find(|t| t.pragma.as_deref() == Some("error_trait"))
+        .expect("no trait with pragma \"error_trait\" found in schema");
     let result_fn = error_trait
         .methods
         .iter()
@@ -818,7 +818,7 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
             MethodContext::Trait { ffi_name, .. } => Some(ffi_name.as_str()),
             _ => None,
         })
-        .expect("Error::result method not found in schema");
+        .expect("error trait has no 'result' method");
     (result_fn, &error_trait.destroy_ffi_name)
 }
 

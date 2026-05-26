@@ -1992,6 +1992,7 @@ fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_s
     ffier_schema::ImplementableTrait {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
+        pragma: meta.pragma.clone(),
         methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
