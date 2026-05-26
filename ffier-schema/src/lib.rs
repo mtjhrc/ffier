@@ -391,7 +391,7 @@ pub enum Return {
 }
 
 /// Well-known type name for builder methods that return `Self`.
-pub const BUILDER_SELF_TYPE: &str = "BuilderSelf";
+pub const SELF_TYPE: &str = "Self";
 
 /// Check whether a type name refers to a `ReplacesSelf` sentinel in the registry.
 fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> bool {
