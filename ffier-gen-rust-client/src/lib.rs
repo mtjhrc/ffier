@@ -516,7 +516,7 @@ fn build_extern_signature(
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> *mut core::ffi::c_void".to_string()
             } else {
-                // Builder Result<Self, E>: ok is BuilderSelf, no out-param needed
+                // Result<Self, E>: ok is Self, no out-param needed
                 if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
                     let ty = ok_tr.to_rust_type_static();
                     params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));

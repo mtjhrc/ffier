@@ -2308,9 +2308,9 @@ fn build_schema(
             });
     }
 
-    // BuilderSelf sentinel — used in return types for builder methods.
+    // Self sentinel — methods returning Self are void at C ABI level.
     type_registry.insert(
-        ffier_schema::BUILDER_SELF_TYPE.to_string(),
+        ffier_schema::SELF_TYPE.to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: "void".to_string(),
@@ -2563,7 +2563,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
 
 fn builder_self_type_ref() -> ffier_schema::TypeRef {
     ffier_schema::TypeRef {
-        type_name: ffier_schema::BUILDER_SELF_TYPE.to_string(),
+        type_name: ffier_schema::SELF_TYPE.to_string(),
         ref_kind: ffier_schema::RefKind::None,
         ref_lifetime: None,
         type_args: vec![],
@@ -2573,7 +2573,7 @@ fn builder_self_type_ref() -> ffier_schema::TypeRef {
 fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffier_schema::Return {
     match ret {
         MetaReturn::Void if is_builder => {
-            // Builder `-> Self`: encode as Value(BuilderSelf).
+            // `-> Self`: encode as Value(Self).
             ffier_schema::Return::Value(builder_self_type_ref())
         }
         MetaReturn::Void => ffier_schema::Return::Void,
@@ -2583,7 +2583,7 @@ fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffie
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
             // Builder `-> Result<Self, E>`: ok was suppressed to None by
-            // annotations; restore it as BuilderSelf.
+            // annotations; restore it as Self.
             let ok_ref = match ok {
                 None => Some(builder_self_type_ref()),
                 Some(tp) => {
