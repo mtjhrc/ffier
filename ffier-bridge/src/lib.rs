@@ -2114,8 +2114,9 @@ fn build_schema(
         type_registry.insert(
             name.to_string(),
             ffier_schema::TypeEntry {
-                kind: ffier_schema::TypeKind::Primitive,
-                c_type: c_type.to_string(),
+                kind: ffier_schema::TypeKind::Primitive {
+                    c_type: c_type.to_string(),
+                },
                 type_tag: None,
                 bless: None,
                 lifetime_params: vec![],
@@ -2127,8 +2128,9 @@ fn build_schema(
     type_registry.insert(
         "str".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::String,
-            c_type: format!("{}Str", resolver.type_pfx),
+            kind: ffier_schema::TypeKind::String {
+                c_name: format!("{}Str", resolver.type_pfx),
+            },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Str),
             lifetime_params: vec![],
@@ -2137,8 +2139,9 @@ fn build_schema(
     type_registry.insert(
         "[u8]".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Bytes,
-            c_type: format!("{}Bytes", resolver.type_pfx),
+            kind: ffier_schema::TypeKind::Bytes {
+                c_name: format!("{}Bytes", resolver.type_pfx),
+            },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Bytes),
             lifetime_params: vec![],
@@ -2149,8 +2152,9 @@ fn build_schema(
     type_registry.insert(
         "FfierResult".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Primitive,
-            c_type: format!("{}Result", resolver.type_pfx),
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: format!("{}Result", resolver.type_pfx),
+            },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Result),
             lifetime_params: vec![],
@@ -2159,8 +2163,9 @@ fn build_schema(
     type_registry.insert(
         "FfierPath".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Bytes,
-            c_type: format!("{}Path", resolver.type_pfx),
+            kind: ffier_schema::TypeKind::Bytes {
+                c_name: format!("{}Path", resolver.type_pfx),
+            },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Path),
             lifetime_params: vec![],
@@ -2169,8 +2174,9 @@ fn build_schema(
     type_registry.insert(
         "FfierVtableHandle".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Primitive,
-            c_type: format!("{}VtableHandle", resolver.type_pfx),
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: format!("{}VtableHandle", resolver.type_pfx),
+            },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::VtableHandle),
             lifetime_params: vec![],
@@ -2181,8 +2187,9 @@ fn build_schema(
     type_registry.insert(
         "RawFd".to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Primitive,
-            c_type: "int".to_string(),
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: "int".to_string(),
+            },
             type_tag: None,
             bless: None,
             lifetime_params: vec![],
@@ -2194,7 +2201,6 @@ fn build_schema(
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawFd".to_string(),
             },
-            c_type: "int".to_string(),
             type_tag: None,
             bless: Some(ffier_schema::Blessing::BorrowedFd),
             lifetime_params: vec![],
@@ -2206,7 +2212,6 @@ fn build_schema(
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawFd".to_string(),
             },
-            c_type: "int".to_string(),
             type_tag: None,
             bless: Some(ffier_schema::Blessing::OwnedFd),
             lifetime_params: vec![],
@@ -2222,7 +2227,6 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Enum {
                     alias_of: e.repr.clone(),
                 },
-                c_type: e.repr.clone(),
                 type_tag: None,
                 bless: None,
                 lifetime_params: vec![],
@@ -2236,8 +2240,9 @@ fn build_schema(
         type_registry.insert(
             name.clone(),
             ffier_schema::TypeEntry {
-                kind: ffier_schema::TypeKind::Handle,
-                c_type: resolver.handle_c_name(&name),
+                kind: ffier_schema::TypeKind::Handle {
+                    c_name: resolver.handle_c_name(&name),
+                },
                 type_tag: Some(e.type_tag),
                 bless: None,
                 lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
@@ -2251,8 +2256,9 @@ fn build_schema(
         type_registry.insert(
             name.clone(),
             ffier_schema::TypeEntry {
-                kind: ffier_schema::TypeKind::Error,
-                c_type: resolver.handle_c_name(&name),
+                kind: ffier_schema::TypeKind::Error {
+                    c_name: resolver.handle_c_name(&name),
+                },
                 type_tag: Some(e.type_tag),
                 bless: None,
                 lifetime_params: vec![],
@@ -2266,8 +2272,9 @@ fn build_schema(
         type_registry.insert(
             name.clone(),
             ffier_schema::TypeEntry {
-                kind: ffier_schema::TypeKind::Trait,
-                c_type: resolver.handle_c_name(&name),
+                kind: ffier_schema::TypeKind::Trait {
+                    c_name: resolver.handle_c_name(&name),
+                },
                 type_tag: Some(i.type_tag),
                 bless: i.bless.as_deref().map(|b| match b {
                     "error_trait" => ffier_schema::Blessing::ErrorTrait,
@@ -2292,8 +2299,9 @@ fn build_schema(
         type_registry
             .entry(name.clone())
             .or_insert_with(|| ffier_schema::TypeEntry {
-                kind: ffier_schema::TypeKind::Trait,
-                c_type: resolver.handle_c_name(&name),
+                kind: ffier_schema::TypeKind::Trait {
+                    c_name: resolver.handle_c_name(&name),
+                },
                 type_tag: None,
                 bless: None,
                 lifetime_params,
@@ -2304,10 +2312,11 @@ fn build_schema(
     type_registry.insert(
         ffier_schema::BUILDER_SELF_TYPE.to_string(),
         ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::ReplacesSelf,
-            c_type: "void".to_string(),
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: "void".to_string(),
+            },
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::ReplacesSelf),
             lifetime_params: vec![],
         },
     );

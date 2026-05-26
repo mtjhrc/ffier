@@ -1465,7 +1465,7 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                 let is_borrowed_handle = tr.ref_kind != ffier_schema::RefKind::None
                     && lib
                         .type_entry(&tr.type_name)
-                        .is_some_and(|e| e.kind == ffier_schema::TypeKind::Handle);
+                        .is_some_and(|e| matches!(e.kind, ffier_schema::TypeKind::Handle { .. }));
                 if is_borrowed_handle {
                     args.push(format!("FfiHandle::as_handle({})", p.name));
                 } else {
@@ -1541,7 +1541,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
                     .type_entry(alias_of)
                     .unwrap_or_else(|| panic!("alias target `{alias_of}` not in registry"));
                 match &leaf.kind {
-                    ffier_schema::TypeKind::Primitive => alias_of.as_str(),
+                    ffier_schema::TypeKind::Primitive { .. } => alias_of.as_str(),
                     _ => panic!("fd alias target `{alias_of}` must be a Primitive"),
                 }
             }
