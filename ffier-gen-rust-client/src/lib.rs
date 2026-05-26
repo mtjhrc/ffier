@@ -1532,12 +1532,26 @@ fn emit_ffi_call_return(
 fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
     use ffier_schema::Blessing;
 
+    // Resolve the Rust repr type for fd aliases (e.g. "RawFd" → leaf "i32")
+    fn fd_repr<'a>(entry: &'a ffier_schema::TypeEntry, lib: &'a Library) -> &'a str {
+        match &entry.kind {
+            ffier_schema::TypeKind::Alias { alias_of } => {
+                // Walk one more level to get the Rust primitive name
+                let leaf = lib
+                    .type_entry(alias_of)
+                    .unwrap_or_else(|| panic!("alias target `{alias_of}` not in registry"));
+                match &leaf.kind {
+                    ffier_schema::TypeKind::Primitive => alias_of.as_str(),
+                    _ => panic!("fd alias target `{alias_of}` must be a Primitive"),
+                }
+            }
+            _ => panic!("blessed fd type must be an Alias"),
+        }
+    }
+
     if let Some((name, entry)) = lib.blessed(Blessing::OwnedFd) {
         let c_type = lib.c_type_of(name);
-        let repr = match &entry.kind {
-            ffier_schema::TypeKind::Alias { alias_of } => alias_of.as_str(),
-            _ => panic!("OwnedFd blessed type must be an Alias"),
-        };
+        let repr = fd_repr(entry, lib);
         writeln!(out, "impl FfiType for {name} {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() as {repr} }}").unwrap();
@@ -1552,10 +1566,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
 
     if let Some((name, entry)) = lib.blessed(Blessing::BorrowedFd) {
         let c_type = lib.c_type_of(name);
-        let repr = match &entry.kind {
-            ffier_schema::TypeKind::Alias { alias_of } => alias_of.as_str(),
-            _ => panic!("BorrowedFd blessed type must be an Alias"),
-        };
+        let repr = fd_repr(entry, lib);
         writeln!(out, "impl<'a> FfiType for {name}<'a> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(

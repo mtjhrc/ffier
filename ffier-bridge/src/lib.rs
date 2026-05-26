@@ -2179,10 +2179,20 @@ fn build_schema(
 
     // Std type aliases
     type_registry.insert(
+        "RawFd".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive,
+            c_type: "int".to_string(),
+            type_tag: None,
+            bless: None,
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
         "BorrowedFd".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
-                alias_of: "i32".to_string(),
+                alias_of: "RawFd".to_string(),
             },
             c_type: "int".to_string(),
             type_tag: None,
@@ -2194,7 +2204,7 @@ fn build_schema(
         "OwnedFd".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
-                alias_of: "i32".to_string(),
+                alias_of: "RawFd".to_string(),
             },
             c_type: "int".to_string(),
             type_tag: None,
