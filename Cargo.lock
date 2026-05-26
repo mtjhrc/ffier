@@ -92,6 +92,9 @@ dependencies = [
  "ffier",
  "ffier-bridge",
  "ffier-bridge-macros",
+ "ffier-gen-c-header",
+ "ffier-gen-rust-client",
+ "ffier-schema",
  "ffier-test-lib",
 ]
 

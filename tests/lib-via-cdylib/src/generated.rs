@@ -1,5 +1,4 @@
-#[allow(unused_imports)]
-use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 /// Marker trait for types exported as opaque C handles.
 pub trait FfiHandle {
@@ -65,26 +64,27 @@ impl FfiType for &[u8] {
 }
 
 impl FfiType for OwnedFd {
-    type CRepr = i32;
+    type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
     const IS_HANDLE: bool = false;
-    fn into_c(self) -> i32 {
+    fn into_c(self) -> RawFd {
         use std::os::unix::io::IntoRawFd;
-        self.into_raw_fd()
+        self.into_raw_fd() as RawFd
     }
-    fn from_c(fd: i32) -> Self {
-        unsafe { OwnedFd::from_raw_fd(fd) }
+    fn from_c(fd: RawFd) -> Self {
+        unsafe { OwnedFd::from_raw_fd(fd as _) }
     }
 }
-impl<'a> FfiType for BorrowedFd<'a> {
-    type CRepr = i32;
+
+impl<'fd> FfiType for BorrowedFd<'fd> {
+    type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
     const IS_HANDLE: bool = false;
-    fn into_c(self) -> i32 {
-        self.as_raw_fd()
+    fn into_c(self) -> RawFd {
+        self.as_raw_fd() as RawFd
     }
-    fn from_c(fd: i32) -> Self {
-        unsafe { BorrowedFd::borrow_raw(fd) }
+    fn from_c(fd: RawFd) -> Self {
+        unsafe { BorrowedFd::borrow_raw(fd as _) }
     }
 }
 
@@ -108,6 +108,28 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     }
     fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("client-side &mut T from_c")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum LogLevel {
+    Off = 0,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
+}
+
+impl FfiType for LogLevel {
+    type CRepr = u32;
+    const C_TYPE_NAME: &'static str = "LogLevel";
+    fn into_c(self) -> u32 {
+        self as u32
+    }
+    fn from_c(repr: u32) -> Self {
+        unsafe { core::mem::transmute(repr) }
     }
 }
 
@@ -141,11 +163,6 @@ impl std::fmt::Display for TestError {
 }
 
 impl std::error::Error for TestError {}
-
-unsafe extern "C" {
-    fn ft_error_result(err: *mut core::ffi::c_void) -> ffier::FfierResult;
-    fn ft_error_destroy(err: *mut core::ffi::c_void);
-}
 
 unsafe extern "C" {
     pub fn ft_widget_destroy(handle: *mut core::ffi::c_void);
@@ -2095,6 +2112,13 @@ impl Drop for VtablePushStr {
 }
 
 unsafe extern "C" {
+    pub fn ft_error_code(handle: *mut core::ffi::c_void) -> <u32 as FfiType>::CRepr;
+    pub fn ft_error_message(handle: *mut core::ffi::c_void, writer: *mut core::ffi::c_void);
+    pub fn ft_error_result(handle: *mut core::ffi::c_void) -> <u64 as FfiType>::CRepr;
+    pub fn ft_error_destroy(handle: *mut core::ffi::c_void);
+}
+
+unsafe extern "C" {
     pub fn ft_apple_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
@@ -2356,5 +2380,54 @@ impl Weighable for Apple {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_log_level_name(
+        level: <LogLevel as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+}
+
+#[doc = " Describe a log level as a string."]
+pub fn log_level_name(level: LogLevel) -> &'static str {
+    let __raw = unsafe { ft_log_level_name(<LogLevel as FfiType>::into_c(level)) };
+    <&'static str as FfiType>::from_c(__raw)
+}
+
+unsafe extern "C" {
+    pub fn ft_log_level_is_enabled(level: <LogLevel as FfiType>::CRepr)
+        -> <bool as FfiType>::CRepr;
+}
+
+#[doc = " Check if a log level is enabled (everything above Off)."]
+pub fn log_level_is_enabled(level: LogLevel) -> bool {
+    let __raw = unsafe { ft_log_level_is_enabled(<LogLevel as FfiType>::into_c(level)) };
+    <bool as FfiType>::from_c(__raw)
+}
+
+unsafe extern "C" {
+    pub fn ft_clone_fd(
+        fd: <BorrowedFd<'static> as FfiType>::CRepr,
+        result: *mut <OwnedFd as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+}
+
+#[doc = " Duplicate a file descriptor."]
+pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
+    let mut __out = std::mem::MaybeUninit::uninit();
+    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+    let __r = unsafe {
+        ft_clone_fd(
+            <BorrowedFd<'_> as FfiType>::into_c(fd),
+            __out.as_mut_ptr(),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
+    if __r == 0 {
+        Ok(<OwnedFd as FfiType>::from_c(unsafe { __out.assume_init() }))
+    } else {
+        Err(TestError::from_ffi(__r))
     }
 }
