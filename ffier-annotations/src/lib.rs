@@ -1022,8 +1022,8 @@ struct ImplementableArgs {
     /// If true, the trait is foreign (defined in another crate). The macro
     /// will not emit the trait definition or `&mut dyn Trait` dispatch impl.
     foreign: bool,
-    /// Optional pragma tag for well-known builtin traits (e.g. `"error_trait"`).
-    pragma: Option<String>,
+    /// Optional blessing tag for well-known types (e.g. `"error_trait"`).
+    bless: Option<String>,
 }
 
 struct SupertraitBlock {
@@ -1036,7 +1036,7 @@ impl Parse for ImplementableArgs {
         let mut supers = Vec::new();
         let mut reserved = Vec::new();
         let mut foreign = false;
-        let mut pragma = None;
+        let mut bless = None;
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -1072,14 +1072,14 @@ impl Parse for ImplementableArgs {
                 }
             } else if ident == "foreign" {
                 foreign = true;
-            } else if ident == "pragma" {
+            } else if ident == "bless" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
-                pragma = Some(lit.value());
+                bless = Some(lit.value());
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
-                    "expected `prefix`, `supers`, `reserved`, `foreign`, or `pragma`",
+                    "expected `prefix`, `supers`, `reserved`, `foreign`, or `bless`",
                 ));
             }
             let _ = input.parse::<Token![,]>();
@@ -1089,7 +1089,7 @@ impl Parse for ImplementableArgs {
             supers,
             reserved,
             foreign,
-            pragma,
+            bless,
         })
     }
 }
@@ -1607,7 +1607,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // by extract_vtable_methods after the trait's own methods).
     let super_method_count: usize = args.supers.iter().map(|s| s.methods.len()).sum();
     let own_method_count = vtable_methods.len() - super_method_count;
-    let pragma_tokens = match &args.pragma {
+    let bless_tokens = match &args.bless {
         Some(s) => quote::quote! { #s },
         None => quote::quote! { none },
     };
@@ -2206,7 +2206,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
-                    pragma = #pragma_tokens,
+                    bless = #bless_tokens,
                 } $(, $($rest)*)? }
             };
             // Tagged invocation (legacy, same-crate): wrapper_name defaults to
@@ -2225,7 +2225,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
-                    pragma = #pragma_tokens,
+                    bless = #bless_tokens,
                 } $(, $($rest)*)? }
             };
             // Untagged invocation (legacy / direct): type_tag defaults to 0
@@ -2242,7 +2242,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
                     max_vtable_slot = #max_vtable_slot_val,
-                    pragma = #pragma_tokens,
+                    bless = #bless_tokens,
                 } $(, $($rest)*)? }
             };
         }

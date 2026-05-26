@@ -10,9 +10,9 @@
 //! );
 //! ```
 
+pub use ffier_rt::ffier_result;
 pub use ffier_rt::FfierHandle;
 pub use ffier_rt::FfierResult;
-pub use ffier_rt::ffier_result;
 
 /// Streaming string writer for error messages (and other display output).
 ///
@@ -45,7 +45,7 @@ impl core::fmt::Write for dyn PushStr + '_ {
 ///
 /// `#[derive(FfiError)]` auto-generates the impl. Self-dispatch generates
 /// `ft_error_code(handle)` and `ft_error_message(handle, writer)`.
-#[ffier_annotations::implementable(pragma = "error_trait")]
+#[ffier_annotations::implementable(bless = "error_trait")]
 pub trait Error {
     #[ffier(index = 0)]
     fn code(&self) -> u32;

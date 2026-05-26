@@ -41,6 +41,14 @@ pub struct Library {
 // Type registry
 // ---------------------------------------------------------------------------
 
+/// Semantic tags that inform generators how to handle a type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Blessing {
+    /// The error dispatch trait (provides `code`, `message`, `result`).
+    ErrorTrait,
+}
+
 /// An entry in the type registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TypeEntry {
@@ -52,6 +60,10 @@ pub struct TypeEntry {
     /// handles, errors, and implementable traits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_tag: Option<u32>,
+    /// Optional blessing for well-known types.
+    /// Generators use this to locate special types without hardcoding names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bless: Option<Blessing>,
     /// Lifetime parameters on the type definition (e.g. `["a"]` for `View<'a>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lifetime_params: Vec<String>,
@@ -474,11 +486,7 @@ pub struct ImplementableTrait {
     /// C constant name for the vtable handle type tag
     /// (e.g. `"FT_PUSH_STR_TYPE_TAG"`).
     pub type_tag_constant: String,
-    /// Optional pragma tag for well-known builtin traits.
-    /// E.g. `"error_trait"` for the `Error` trait, allowing generators to
-    /// locate it without hardcoding the trait name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pragma: Option<String>,
+
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,
@@ -553,10 +561,17 @@ impl Library {
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
     }
 
-    /// Find an implementable trait by its pragma tag.
-    pub fn trait_by_pragma(&self, pragma: &str) -> Option<&ImplementableTrait> {
-        self.traits
+    /// Find the unique type with the given blessing.
+    /// Panics if more than one type carries the same blessing.
+    pub fn blessed(&self, tag: Blessing) -> Option<(&str, &TypeEntry)> {
+        let mut iter = self
+            .type_registry
             .iter()
-            .find(|t| t.pragma.as_deref() == Some(pragma))
+            .filter(|(_, entry)| entry.bless == Some(tag));
+        let result = iter.next();
+        if let Some((dup, _)) = iter.next() {
+            panic!("multiple types blessed as {tag:?} (duplicate: `{dup}`)");
+        }
+        result.map(|(name, entry)| (name.as_str(), entry))
     }
 }
