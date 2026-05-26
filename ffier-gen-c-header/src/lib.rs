@@ -46,7 +46,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     out.push('\n');
 
     // Shared types
-    emit_shared_types(&mut out, &type_pfx, &upper_pfx);
+    emit_shared_types(&mut out, &upper_pfx, lib);
 
     // Enum constant sections
     for en in &lib.enum_constants {
@@ -80,7 +80,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     }
 
     // Utility functions
-    emit_utility_functions(&mut out, &fn_pfx, &type_pfx);
+    emit_utility_functions(&mut out, &fn_pfx, lib);
 
     out.push('\n');
     out.push_str(&format!("#endif /* {guard} */\n"));
@@ -101,20 +101,21 @@ pub fn generate_from_file(
 // Shared types
 // ---------------------------------------------------------------------------
 
-fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
-    let result_c = format!("{type_pfx}Result");
-    let str_c = format!("{type_pfx}Str");
-    let bytes_c = format!("{type_pfx}Bytes");
-    let path_c = format!("{type_pfx}Path");
+fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
+    use ffier_schema::Blessing;
+    let result_c = blessed_c_type(lib, Blessing::Result);
+    let str_c = blessed_c_type(lib, Blessing::Str);
+    let bytes_c = blessed_c_type(lib, Blessing::Bytes);
+    let path_c = blessed_c_type(lib, Blessing::Path);
+    let vtable_handle_c = blessed_c_type(lib, Blessing::VtableHandle);
     let result_success = format!("{upper_pfx}RESULT_SUCCESS");
     let str_macro = format!("{upper_pfx}STR");
     let bytes_macro = format!("{upper_pfx}BYTES");
 
-    // FIXME: These type definitions are hardcoded. The type registry knows
-    // about str (kind: string), [u8] (kind: bytes), etc. but doesn't carry
-    // their C struct layouts. These should be driven by the registry — e.g.
-    // TypeKind::Struct { fields: [...] } or similar — so generators don't
-    // need to hardcode ABI details.
+    // FIXME: The struct layouts are still hardcoded. The type registry
+    // carries the C type names but not field layouts. These should be
+    // driven by the schema — e.g. TypeKind::Struct { fields: [...] }
+    // — so generators don't need to hardcode ABI details.
     out.push_str(&format!("typedef uint64_t {result_c};\n"));
     out.push_str(&format!("#define {result_success} 0\n\n"));
     out.push_str("/* Caller must ensure data is valid UTF-8 */\n");
@@ -150,7 +151,6 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
     out.push_str("#endif\n\n");
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
-    let vtable_handle_c = format!("{type_pfx}VtableHandle");
     let vtable_handle_macro = format!("{upper_pfx}VTABLE_HANDLE");
     out.push_str("/**\n");
     out.push_str(&format!(
@@ -297,7 +297,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
                 }
             }
 
-            let ret_type = format_return_type_simple(&m.ret, type_pfx, lib);
+            let ret_type = format_return_type_simple(&m.ret, lib);
 
             let params_str = params.join(", ");
             out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
@@ -410,7 +410,7 @@ fn emit_free_functions(
                     params.push(format!("{} {}", c_type, p.name));
                 }
                 ParamType::Slice { c_params: _, .. } => {
-                    let str_c = format!("{type_pfx}Str");
+                    let str_c = lib.c_type_of("str");
                     params.push(format!("const {str_c}* {}", p.name));
                     params.push(format!("size_t {}_len", p.name));
                 }
@@ -421,7 +421,7 @@ fn emit_free_functions(
             }
         }
 
-        let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, type_pfx, lib);
+        let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
         params.extend(extra_params);
 
         let params_str = if params.is_empty() {
@@ -437,11 +437,10 @@ fn emit_free_functions(
 // Utility functions
 // ---------------------------------------------------------------------------
 
-fn emit_utility_functions(out: &mut String, fn_pfx: &str, type_pfx: &str) {
-    let result_c = format!("{type_pfx}Result");
-    out.push_str(&format!(
-        "{type_pfx}Str {fn_pfx}result_name({result_c} r);\n"
-    ));
+fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library) {
+    let result_c = blessed_c_type(lib, ffier_schema::Blessing::Result);
+    let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
+    out.push_str(&format!("{str_c} {fn_pfx}result_name({result_c} r);\n"));
     out.push_str(&format!(
         "const char* {fn_pfx}result_name_cstr({result_c} r);\n"
     ));
@@ -482,7 +481,7 @@ fn format_c_declaration(
                 params.push(format!("{} {}", c_type, p.name));
             }
             ParamType::Slice { c_params: _, .. } => {
-                let str_c = format!("{type_pfx}Str");
+                let str_c = lib.c_type_of("str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("size_t {}_len", p.name));
             }
@@ -494,7 +493,7 @@ fn format_c_declaration(
     }
 
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, type_pfx, lib);
+    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
     params.extend(extra_params);
 
     let params_str = params.join(", ");
@@ -517,7 +516,7 @@ fn format_trait_method_declaration(
                 params.push(format!("{} {}", c_type, p.name));
             }
             ParamType::Slice { c_params: _, .. } => {
-                let str_c = format!("{type_pfx}Str");
+                let str_c = lib.c_type_of("str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("size_t {}_len", p.name));
             }
@@ -529,7 +528,7 @@ fn format_trait_method_declaration(
     }
 
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, type_pfx, lib);
+    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
     params.extend(extra_params);
 
     let params_str = params.join(", ");
@@ -541,11 +540,11 @@ fn format_trait_method_declaration(
 // ---------------------------------------------------------------------------
 
 /// Simple C return type — used for vtable function pointer fields.
-fn format_return_type_simple(ret: &Return, type_pfx: &str, lib: &Library) -> String {
+fn format_return_type_simple(ret: &Return, lib: &Library) -> String {
     match ret {
         Return::Void => "void".to_string(),
         Return::Value(type_ref) => lib.c_type_of(&type_ref.type_name).to_string(),
-        Return::Result { .. } => format!("{type_pfx}Result"),
+        Return::Result { .. } => blessed_c_type(lib, ffier_schema::Blessing::Result),
     }
 }
 
@@ -554,10 +553,10 @@ fn format_return_type_simple(ret: &Return, type_pfx: &str, lib: &Library) -> Str
 fn format_return_and_out_params(
     ret: &Return,
     is_builder: bool,
-    type_pfx: &str,
     lib: &Library,
 ) -> (String, Vec<String>) {
-    let error_c = find_error_c_type(lib);
+    let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
+    let result_c = || blessed_c_type(lib, ffier_schema::Blessing::Result);
     match ret {
         Return::Void => ("void".to_string(), vec![]),
         Return::Value(_) if is_builder => ("void".to_string(), vec![]),
@@ -565,13 +564,11 @@ fn format_return_and_out_params(
         Return::Result { ok, .. } => match ok {
             None => {
                 // Result<(), E>
-                let result_c = format!("{type_pfx}Result");
-                (result_c, vec![format!("{error_c}* err_out")])
+                (result_c(), vec![format!("{error_c}* err_out")])
             }
-            Some(ok_ref) if is_builder => {
+            Some(_) if is_builder => {
                 // Builder Result<Self, E> — no ok out-param
-                let result_c = format!("{type_pfx}Result");
-                (result_c, vec![format!("{error_c}* err_out")])
+                (result_c(), vec![format!("{error_c}* err_out")])
             }
             Some(ok_ref) => {
                 let is_handle = lib
@@ -586,10 +583,9 @@ fn format_return_and_out_params(
                     )
                 } else {
                     // Result<T, E> — out-param
-                    let result_c = format!("{type_pfx}Result");
                     let c_type = lib.c_type_of(&ok_ref.type_name).to_string();
                     (
-                        result_c,
+                        result_c(),
                         vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
                     )
                 }
@@ -622,10 +618,10 @@ fn find_type_c_name(lib: &Library, name: &str) -> String {
     lib.c_type_of(name).to_string()
 }
 
-fn find_error_c_type(lib: &Library) -> String {
+fn blessed_c_type(lib: &Library, tag: ffier_schema::Blessing) -> String {
     let (name, _) = lib
-        .blessed(ffier_schema::Blessing::ErrorTrait)
-        .expect("no type blessed as ErrorTrait found in schema");
+        .blessed(tag)
+        .unwrap_or_else(|| panic!("no type blessed as {tag:?} found in schema"));
     lib.c_type_of(name).to_string()
 }
 
