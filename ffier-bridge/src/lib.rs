@@ -2117,6 +2117,7 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Primitive,
                 c_type: c_type.to_string(),
                 type_tag: None,
+                bless: None,
                 lifetime_params: vec![],
             },
         );
@@ -2129,6 +2130,7 @@ fn build_schema(
             kind: ffier_schema::TypeKind::String,
             c_type: format!("{}Str", resolver.type_pfx),
             type_tag: None,
+            bless: None,
             lifetime_params: vec![],
         },
     );
@@ -2138,6 +2140,7 @@ fn build_schema(
             kind: ffier_schema::TypeKind::Bytes,
             c_type: format!("{}Bytes", resolver.type_pfx),
             type_tag: None,
+            bless: None,
             lifetime_params: vec![],
         },
     );
@@ -2152,6 +2155,7 @@ fn build_schema(
             },
             c_type: "int".to_string(),
             type_tag: None,
+            bless: None,
             lifetime_params: vec![],
         },
     );
@@ -2164,6 +2168,7 @@ fn build_schema(
             },
             c_type: "int".to_string(),
             type_tag: None,
+            bless: None,
             lifetime_params: vec![],
         },
     );
@@ -2179,6 +2184,7 @@ fn build_schema(
                 },
                 c_type: e.repr.clone(),
                 type_tag: None,
+                bless: None,
                 lifetime_params: vec![],
             },
         );
@@ -2193,6 +2199,7 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Handle,
                 c_type: resolver.handle_c_name(&name),
                 type_tag: Some(e.type_tag),
+                bless: None,
                 lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
             },
         );
@@ -2207,6 +2214,7 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Error,
                 c_type: resolver.handle_c_name(&name),
                 type_tag: Some(e.type_tag),
+                bless: None,
                 lifetime_params: vec![],
             },
         );
@@ -2221,6 +2229,10 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Trait,
                 c_type: resolver.handle_c_name(&name),
                 type_tag: Some(i.type_tag),
+                bless: i.bless.as_deref().map(|b| match b {
+                    "error_trait" => ffier_schema::Blessing::ErrorTrait,
+                    _ => panic!("unknown bless value `{b}` — add a Blessing variant for it"),
+                }),
                 lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
             },
         );
@@ -2243,6 +2255,7 @@ fn build_schema(
                 kind: ffier_schema::TypeKind::Trait,
                 c_type: resolver.handle_c_name(&name),
                 type_tag: None,
+                bless: None,
                 lifetime_params,
             });
     }
@@ -2254,6 +2267,7 @@ fn build_schema(
             kind: ffier_schema::TypeKind::ReplacesSelf,
             c_type: "void".to_string(),
             type_tag: None,
+            bless: None,
             lifetime_params: vec![],
         },
     );
@@ -2368,7 +2382,6 @@ fn convert_implementable(
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         type_tag_constant: format!("{}{name_upper_snake}_TYPE_TAG", r.upper_pfx),
-        pragma: meta.pragma.clone(),
         methods: meta
             .methods
             .iter()

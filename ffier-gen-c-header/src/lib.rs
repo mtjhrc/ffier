@@ -623,10 +623,10 @@ fn find_type_c_name(lib: &Library, name: &str) -> String {
 }
 
 fn find_error_c_type(lib: &Library) -> String {
-    let error_trait = lib
-        .trait_by_pragma("error_trait")
-        .expect("no trait with pragma \"error_trait\" found in schema");
-    lib.c_type_of(&error_trait.name).to_string()
+    let (name, _) = lib
+        .blessed(ffier_schema::Blessing::ErrorTrait)
+        .expect("no type blessed as ErrorTrait found in schema");
+    lib.c_type_of(name).to_string()
 }
 
 fn snake_to_pascal(s: &str) -> String {

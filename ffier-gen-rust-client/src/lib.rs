@@ -199,7 +199,9 @@ pub fn generate(lib: &Library) -> String {
 
     let mut defined_traits: HashSet<String> = HashSet::new();
     for tr in &lib.traits {
-        if tr.pragma.as_deref() == Some("error_trait") {
+        if lib.type_entry(&tr.name).and_then(|e| e.bless)
+            == Some(ffier_schema::Blessing::ErrorTrait)
+        {
             // The error trait is an internal dispatch mechanism — don't emit
             // a trait definition (it would collide with the error enum).
             // Only emit extern declarations so the GLib-style Result wrapper
@@ -848,11 +850,16 @@ fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, lib: &Lib
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
-/// from the schema. The error trait is identified by `pragma: "error_trait"`.
+/// from the schema. The error trait is identified by `bless: ErrorTrait`.
 fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
+    let (name, _) = lib
+        .blessed(ffier_schema::Blessing::ErrorTrait)
+        .expect("no type blessed as ErrorTrait found in schema");
     let error_trait = lib
-        .trait_by_pragma("error_trait")
-        .expect("no trait with pragma \"error_trait\" found in schema");
+        .traits
+        .iter()
+        .find(|t| t.name == name)
+        .expect("blessed ErrorTrait type not found in traits list");
     let result_fn = error_trait
         .methods
         .iter()
