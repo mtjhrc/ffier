@@ -2000,9 +2000,11 @@ fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_s
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
     let ffi_prefix = format!("{name_snake}_");
+    let name_upper_snake = camel_to_snake(&name).to_ascii_uppercase();
     ffier_schema::ImplementableTrait {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
+        type_tag_constant: format!("{}{name_upper_snake}_TYPE_TAG", r.upper_pfx),
         pragma: meta.pragma.clone(),
         methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
         own_method_count: meta.own_method_count,
