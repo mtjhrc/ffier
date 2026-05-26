@@ -18,14 +18,18 @@ use std::fmt::Write;
 pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
 
-    // Emit imports for std types that might be referenced in extern declarations
-    writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(
-        out,
-        "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd}};"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
+    // Emit imports for blessed types that need special std imports
+    let has_fd = lib.blessed(ffier_schema::Blessing::BorrowedFd).is_some()
+        || lib.blessed(ffier_schema::Blessing::OwnedFd).is_some();
+    if has_fd {
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(
+            out,
+            "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd}};"
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+    }
 
     // Emit local FfiHandle and FfiType traits (standalone, no ffier dependency for traits)
     writeln!(
@@ -101,30 +105,8 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // OwnedFd / BorrowedFd FfiType impls
-    writeln!(out, "impl FfiType for OwnedFd {{").unwrap();
-    writeln!(out, "    type CRepr = i32; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(
-        out,
-        "    fn into_c(self) -> i32 {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() }}"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    fn from_c(fd: i32) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd) }} }}"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out, "impl<'a> FfiType for BorrowedFd<'a> {{").unwrap();
-    writeln!(out, "    type CRepr = i32; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> i32 {{ self.as_raw_fd() }}").unwrap();
-    writeln!(
-        out,
-        "    fn from_c(fd: i32) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd) }} }}"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    // Blessed fd type FfiType impls
+    emit_blessed_fd_impls(&mut out, lib);
 
     // Handle reference FfiType impls
     writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &T {{").unwrap();
@@ -1540,6 +1522,54 @@ fn emit_ffi_call_return(
             // handled inline by caller, not here.
             unreachable!("Result returns must be handled by caller");
         }
+    }
+}
+
+// ===========================================================================
+// Blessed fd type generation
+// ===========================================================================
+
+fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
+    use ffier_schema::Blessing;
+
+    if let Some((name, entry)) = lib.blessed(Blessing::OwnedFd) {
+        let c_type = lib.c_type_of(name);
+        let repr = match &entry.kind {
+            ffier_schema::TypeKind::Alias { alias_of } => alias_of.as_str(),
+            _ => panic!("OwnedFd blessed type must be an Alias"),
+        };
+        writeln!(out, "impl FfiType for {name} {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() as {repr} }}").unwrap();
+        writeln!(
+            out,
+            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ {name}::from_raw_fd(fd as _) }} }}"
+        )
+        .unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    if let Some((name, entry)) = lib.blessed(Blessing::BorrowedFd) {
+        let c_type = lib.c_type_of(name);
+        let repr = match &entry.kind {
+            ffier_schema::TypeKind::Alias { alias_of } => alias_of.as_str(),
+            _ => panic!("BorrowedFd blessed type must be an Alias"),
+        };
+        writeln!(out, "impl<'a> FfiType for {name}<'a> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(
+            out,
+            "    fn into_c(self) -> {repr} {{ self.as_raw_fd() as {repr} }}"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ {name}::borrow_raw(fd as _) }} }}"
+        )
+        .unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
 }
 
