@@ -572,7 +572,7 @@ fn format_return_and_out_params(
             Some(ok_ref) => {
                 let is_handle = lib
                     .type_entry(&ok_ref.type_name)
-                    .map(|e| e.kind == TypeKind::Handle)
+                    .map(|e| matches!(e.kind, TypeKind::Handle { .. }))
                     .unwrap_or(false);
                 if is_handle {
                     // Result<Handle, E> — return handle, NULL on error

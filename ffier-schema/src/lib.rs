@@ -61,6 +61,8 @@ pub enum Blessing {
     BorrowedFd,
     /// Owned file descriptor (transfers ownership).
     OwnedFd,
+    /// Builder method return — `void` at C level, `-> Self` in Rust.
+    ReplacesSelf,
 }
 
 /// An entry in the type registry.
@@ -68,8 +70,6 @@ pub enum Blessing {
 pub struct TypeEntry {
     /// What kind of type this is.
     pub kind: TypeKind,
-    /// C type name (e.g. `"int32_t"`, `"FtWidget"`, `"FtStr"`).
-    pub c_type: String,
     /// Stable type tag from `library_definition!`. Only present for
     /// handles, errors, and implementable traits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,35 +88,48 @@ pub struct TypeEntry {
 #[serde(rename_all = "snake_case")]
 pub enum TypeKind {
     /// Primitive integer or bool: `i32`, `u64`, `bool`, `usize`, etc.
-    Primitive,
+    Primitive {
+        /// C type name (e.g. `"int32_t"`, `"uint64_t"`, `"bool"`).
+        c_type: std::string::String,
+    },
     /// String slice: `str`. Passed as a struct (ptr+len).
-    String,
+    String {
+        /// Library-prefixed C struct name (e.g. `"FtStr"`).
+        c_name: std::string::String,
+    },
     /// Byte slice: `[u8]`. Passed as a struct (ptr+len).
-    Bytes,
-    /// Type alias for another type (e.g. `BorrowedFd` → `i32`).
+    Bytes {
+        /// Library-prefixed C struct name (e.g. `"FtBytes"`).
+        c_name: std::string::String,
+    },
+    /// Type alias for another type (e.g. `BorrowedFd` → `RawFd`).
     Alias {
         /// The underlying type name this aliases.
         alias_of: std::string::String,
     },
     /// Opaque handle type (a struct exported via `#[exportable]`).
-    Handle,
+    Handle {
+        /// Library-prefixed C typedef name (e.g. `"FtWidget"`).
+        c_name: std::string::String,
+    },
     /// Error type (an enum exported via `#[derive(FfiError)]`).
-    Error,
+    Error {
+        /// Library-prefixed C typedef name (e.g. `"FtTestError"`).
+        c_name: std::string::String,
+    },
     /// Trait (from `#[implementable]` or discovered via `#[trait_impl]`).
-    Trait,
+    Trait {
+        /// Library-prefixed C typedef name (e.g. `"FtFruit"`).
+        c_name: std::string::String,
+    },
     /// Plain enum with explicit discriminant values and a `#[repr(uN)]`.
     /// At the C ABI level the parameter is the underlying integer type
-    /// (recorded in `alias_of`), but the schema carries the variant names
+    /// (resolved via `alias_of`), but the schema carries the variant names
     /// and values so generators can emit `#define` constants / typed enums.
     Enum {
         /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
         alias_of: std::string::String,
     },
-    /// Sentinel type for builder methods that return `Self`.
-    /// At the C ABI level this is `void` (the new handle is written back
-    /// through a double pointer), but Rust/Swift generators can recover
-    /// `-> Self` from this.
-    ReplacesSelf,
 }
 
 // ---------------------------------------------------------------------------
@@ -384,12 +397,12 @@ pub const BUILDER_SELF_TYPE: &str = "BuilderSelf";
 fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> bool {
     registry
         .get(type_name)
-        .is_some_and(|e| e.kind == TypeKind::ReplacesSelf)
+        .is_some_and(|e| e.bless == Some(Blessing::ReplacesSelf))
 }
 
 impl Return {
     /// True if this return type represents a builder pattern (`-> Self` or
-    /// `-> Result<Self, E>`), detected via `TypeKind::ReplacesSelf` in the
+    /// `-> Result<Self, E>`), detected via `Blessing::ReplacesSelf` in the
     /// type registry.
     pub fn is_builder_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
         match self {
@@ -400,7 +413,7 @@ impl Return {
     }
 
     /// Reconstruct the Rust return type syntax.
-    /// Types with `TypeKind::ReplacesSelf` in the registry render as `Self`.
+    /// Types with `Blessing::ReplacesSelf` in the registry render as `Self`.
     pub fn to_rust_type(&self, registry: &BTreeMap<String, TypeEntry>) -> String {
         match self {
             Return::Void => "()".to_string(),
@@ -572,10 +585,15 @@ impl Library {
                 .get(current)
                 .unwrap_or_else(|| panic!("type `{current}` not found in type_registry"));
             match &entry.kind {
-                TypeKind::Alias { alias_of, .. } | TypeKind::Enum { alias_of } => {
+                TypeKind::Alias { alias_of } | TypeKind::Enum { alias_of } => {
                     current = alias_of;
                 }
-                _ => return &entry.c_type,
+                TypeKind::Primitive { c_type } => return c_type,
+                TypeKind::String { c_name }
+                | TypeKind::Bytes { c_name }
+                | TypeKind::Handle { c_name }
+                | TypeKind::Error { c_name }
+                | TypeKind::Trait { c_name } => return c_name,
             }
         }
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
