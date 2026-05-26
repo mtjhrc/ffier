@@ -636,9 +636,7 @@ mod tests {
 
     #[test]
     fn error_result_null_returns_success() {
-        unsafe {
-            // ft_error_result is now a trait dispatch method — no null guard.
-        }
+        // ft_error_result is now a trait dispatch method — no null guard.
     }
 
     #[test]

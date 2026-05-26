@@ -13,7 +13,7 @@
 
 use ffier_schema::{
     ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl, TypeKind,
+    Receiver, Return, TraitImpl,
 };
 
 /// Generate a C header string from a library schema.
@@ -363,7 +363,6 @@ fn format_c_declaration(
     type_pfx: &str,
     lib: &Library,
 ) -> String {
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let mut params: Vec<String> = Vec::new();
 
     // Handle param (self)
@@ -386,7 +385,7 @@ fn format_c_declaration(
                 let c_type = lib.c_type_of(&type_ref.type_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
-            ParamType::Slice { c_params, .. } => {
+            ParamType::Slice { c_params: _, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("size_t {}_len", p.name));
@@ -398,60 +397,9 @@ fn format_c_declaration(
         }
     }
 
-    // Return type handling
-    let error_c = format!("{type_pfx}Error");
-    let (ret_type, extra_params) = match &m.ret {
-        Return::Void => ("void".to_string(), vec![]),
-        Return::Value(type_ref) if is_builder => {
-            // Builder returning Self — void at C level
-            ("void".to_string(), vec![])
-        }
-        Return::Value(type_ref) => (lib.c_type_of(&type_ref.type_name).to_string(), vec![]),
-        Return::Result { ok, .. } => {
-            match ok {
-                None => {
-                    // Result<(), E>
-                    let result_c = format!("{type_pfx}Result");
-                    (result_c, vec![format!("{error_c}* err_out")])
-                }
-                Some(ok_ref) if is_builder => {
-                    // Builder Result<Self, E> — FfierResult style, no ok out-param
-                    let result_c = format!("{type_pfx}Result");
-                    (result_c, vec![format!("{error_c}* err_out")])
-                }
-                Some(ok_ref) => {
-                    let is_handle = lib
-                        .type_entry(&ok_ref.type_name)
-                        .map(|e| e.kind == TypeKind::Handle)
-                        .unwrap_or(false);
-                    if is_handle {
-                        // Result<Handle, E> — return handle, NULL on error
-                        (
-                            lib.c_type_of(&ok_ref.type_name).to_string(),
-                            vec![format!("{error_c}* err_out")],
-                        )
-                    } else {
-                        // Result<T, E> — out-param
-                        let result_c = format!("{type_pfx}Result");
-                        let c_type = lib.c_type_of(&ok_ref.type_name).to_string();
-                        (
-                            result_c,
-                            vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
-                        )
-                    }
-                }
-            }
-        }
-    };
+    let ret_type = format_return_type(&m.ret, type_pfx, lib);
 
-    params.extend(extra_params);
-
-    let params_str = if params.is_empty() {
-        "void".to_string()
-    } else {
-        params.join(", ")
-    };
-
+    let params_str = params.join(", ");
     format!("{ret_type} {ffi_name}({params_str});")
 }
 
@@ -470,7 +418,7 @@ fn format_trait_method_declaration(
                 let c_type = lib.c_type_of(&type_ref.type_name);
                 params.push(format!("{} {}", c_type, p.name));
             }
-            ParamType::Slice { c_params, .. } => {
+            ParamType::Slice { c_params: _, .. } => {
                 let str_c = format!("{type_pfx}Str");
                 params.push(format!("const {str_c}* {}", p.name));
                 params.push(format!("size_t {}_len", p.name));
