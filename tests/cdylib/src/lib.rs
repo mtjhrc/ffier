@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 ffier_test_lib::__ffier_ft_library!(ffier_bridge_macros::generate);
 
 // ---------------------------------------------------------------------------
@@ -499,7 +500,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
         }
     }
 
@@ -556,21 +557,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -1216,6 +1211,30 @@ mod tests {
             assert!(ft_log_level_is_enabled(1));
             // LogLevel::Trace = 5 → enabled
             assert!(ft_log_level_is_enabled(5));
+        }
+    }
+
+    // ================================================================
+    // Free function with BorrowedFd / OwnedFd
+    // ================================================================
+
+    #[test]
+    fn free_fn_clone_fd() {
+        use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
+        unsafe {
+            // Use stdout as a known-valid fd to clone
+            let stdout_fd = std::io::stdout().as_raw_fd();
+            let mut result: i32 = -1;
+            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
+            let r = ft_clone_fd(
+                stdout_fd,
+                &mut result as *mut i32,
+                &mut err_out as *mut *mut core::ffi::c_void,
+            );
+            assert_eq!(r, 0, "ft_clone_fd should succeed");
+            assert!(result >= 0, "cloned fd should be valid");
+            // Clean up the cloned fd
+            drop(OwnedFd::from_raw_fd(result));
         }
     }
 
