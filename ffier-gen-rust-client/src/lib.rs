@@ -8,8 +8,8 @@
 //! - Trait impl blocks for concrete types
 
 use ffier_schema::{
-    camel_to_snake, ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext,
-    ParamType, Receiver, Return, TraitImpl,
+    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
+    Receiver, Return, TraitImpl,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -185,14 +185,13 @@ pub fn generate(lib: &Library) -> String {
 
     // 2. Exported types
     for ty in &lib.exported_types {
-        emit_exported_type(&mut out, ty, lib, &fn_pfx, &handle_types);
+        emit_exported_type(&mut out, ty, lib, &handle_types);
     }
 
     // 3. Implementable traits
-    // Build trait defaults map: trait_name → (trait_snake, vec of defaulted methods)
-    let mut trait_defaults: HashMap<String, (String, Vec<&Method>)> = HashMap::new();
+    // Build trait defaults map: trait_name → vec of defaulted methods
+    let mut trait_defaults: HashMap<String, Vec<&Method>> = HashMap::new();
     for tr in &lib.traits {
-        let trait_snake = camel_to_snake(&tr.name);
         let defaults: Vec<_> = tr
             .methods
             .iter()
@@ -207,7 +206,7 @@ pub fn generate(lib: &Library) -> String {
             })
             .collect();
         if !defaults.is_empty() {
-            trait_defaults.insert(tr.name.clone(), (trait_snake, defaults));
+            trait_defaults.insert(tr.name.clone(), defaults);
         }
     }
 
@@ -219,7 +218,7 @@ pub fn generate(lib: &Library) -> String {
             defined_traits.insert(tr.name.clone());
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib, &fn_pfx);
+        emit_implementable_trait(&mut out, tr, lib);
         defined_traits.insert(tr.name.clone());
     }
 
@@ -231,14 +230,7 @@ pub fn generate(lib: &Library) -> String {
         if error_names.contains(ti.struct_name.as_str()) {
             continue; // Skip Error trait impls for error types
         }
-        emit_trait_impl(
-            &mut out,
-            ti,
-            lib,
-            &fn_pfx,
-            &mut defined_traits,
-            &trait_defaults,
-        );
+        emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
     }
 
     out
@@ -318,15 +310,12 @@ fn emit_exported_type(
     out: &mut String,
     ty: &ExportedType,
     lib: &Library,
-    fn_pfx: &str,
     handle_types: &HashSet<&str>,
 ) {
     let entry = lib.type_entry(&ty.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let lifetimes = &entry.lifetime_params;
     let has_lifetimes = !lifetimes.is_empty();
-    let struct_snake = camel_to_snake(&ty.name);
-
     // Lifetime generic strings
     let lt_params = if has_lifetimes {
         format!(
@@ -345,7 +334,8 @@ fn emit_exported_type(
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
     writeln!(
         out,
-        "    pub fn {fn_pfx}{struct_snake}_destroy(handle: *mut core::ffi::c_void);"
+        "    pub fn {}(handle: *mut core::ffi::c_void);",
+        ty.destroy_ffi_name
     )
     .unwrap();
     for m in &ty.methods {
@@ -488,11 +478,7 @@ fn emit_exported_type(
     // Drop
     writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    fn drop(&mut self) {{").unwrap();
-    writeln!(
-        out,
-        "        unsafe {{ {fn_pfx}{struct_snake}_destroy(self.0) }}"
-    )
-    .unwrap();
+    writeln!(out, "        unsafe {{ {}(self.0) }}", ty.destroy_ffi_name).unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -849,18 +835,11 @@ fn emit_method_body(
 // Implementable trait generation
 // ===========================================================================
 
-fn emit_implementable_trait(
-    out: &mut String,
-    tr: &ImplementableTrait,
-    lib: &Library,
-    fn_pfx: &str,
-) {
+fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = format!("{}Vtable", tr.name);
     let wrapper_name = format!("Vtable{}", tr.name);
-    let trait_snake = camel_to_snake(&tr.name);
-
     // Trait definition
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
@@ -876,7 +855,7 @@ fn emit_implementable_trait(
         if *has_default {
             // Default impl via self-dispatch
             writeln!(out, "    {method_sig} where Self: Sized {{").unwrap();
-            emit_default_dispatch_body(out, m, tr, lib, fn_pfx, type_tag, &vtable_name, *index);
+            emit_default_dispatch_body(out, m, lib, type_tag, &vtable_name, *index);
             writeln!(out, "    }}").unwrap();
         } else {
             writeln!(out, "    {method_sig};").unwrap();
@@ -949,14 +928,18 @@ fn emit_implementable_trait(
     if has_defaults {
         writeln!(out, "unsafe extern \"C\" {{").unwrap();
         for m in &tr.methods {
-            let MethodContext::Trait { has_default, .. } = &m.context else {
+            let MethodContext::Trait {
+                ffi_name,
+                has_default,
+                ..
+            } = &m.context
+            else {
                 continue;
             };
             if !*has_default {
                 continue;
             }
-            let extern_name = format!("{fn_pfx}{trait_snake}_{}", m.name);
-            let sig = build_dispatch_extern_sig(&extern_name, m, lib);
+            let sig = build_dispatch_extern_sig(ffi_name, m, lib);
             writeln!(out, "    pub fn {sig};").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -999,15 +982,18 @@ fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
 fn emit_default_dispatch_body(
     out: &mut String,
     m: &Method,
-    tr: &ImplementableTrait,
     lib: &Library,
-    fn_pfx: &str,
     type_tag: u32,
     vtable_name: &str,
     index: usize,
 ) {
-    let trait_snake = camel_to_snake(&tr.name);
-    let dispatch_fn = format!("{fn_pfx}{trait_snake}_{}", m.name);
+    let MethodContext::Trait {
+        ffi_name: dispatch_fn,
+        ..
+    } = &m.context
+    else {
+        panic!("emit_default_dispatch_body called on non-trait method");
+    };
 
     writeln!(
         out,
@@ -1289,12 +1275,9 @@ fn emit_trait_impl(
     out: &mut String,
     ti: &TraitImpl,
     lib: &Library,
-    fn_pfx: &str,
     defined_traits: &mut HashSet<String>,
-    trait_defaults: &HashMap<String, (String, Vec<&Method>)>,
+    trait_defaults: &HashMap<String, Vec<&Method>>,
 ) {
-    let struct_snake = camel_to_snake(&ti.struct_name);
-
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
         emit_simple_trait_def(out, ti, lib);
@@ -1304,8 +1287,10 @@ fn emit_trait_impl(
     // Extern block
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
     for m in &ti.methods {
-        let extern_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
-        let sig = build_dispatch_extern_sig(&extern_name, m, lib);
+        let MethodContext::Trait { ffi_name, .. } = &m.context else {
+            continue;
+        };
+        let sig = build_dispatch_extern_sig(ffi_name, m, lib);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -1358,7 +1343,9 @@ fn emit_trait_impl(
     let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
 
     for m in &ti.methods {
-        let extern_name = format!("{fn_pfx}{struct_snake}_{}", m.name);
+        let MethodContext::Trait { ffi_name, .. } = &m.context else {
+            continue;
+        };
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
@@ -1367,18 +1354,24 @@ fn emit_trait_impl(
         ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
 
-        emit_ffi_call_return(out, &extern_name, &args_str, &m.ret, "        ");
+        emit_ffi_call_return(out, ffi_name, &args_str, &m.ret, "        ");
         writeln!(out, "    }}").unwrap();
     }
 
     // Emit default method forwarders (from trait defaults not in this impl)
-    if let Some((trait_snake, defaults)) = trait_defaults.get(&ti.trait_name) {
+    if let Some(defaults) = trait_defaults.get(&ti.trait_name) {
         for dm in defaults {
             if impl_method_names.contains(dm.name.as_str()) {
                 continue;
             }
 
-            let dispatch_fn = format!("{fn_pfx}{trait_snake}_{}", dm.name);
+            let MethodContext::Trait {
+                ffi_name: dispatch_fn,
+                ..
+            } = &dm.context
+            else {
+                continue;
+            };
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 

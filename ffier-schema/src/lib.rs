@@ -204,6 +204,8 @@ impl TypeRef {
 pub struct ExportedType {
     /// Rust struct name — key into `type_registry`.
     pub name: String,
+    /// FFI destroy function name (e.g. `"ft_widget_destroy"`).
+    pub destroy_ffi_name: String,
     /// Whether this type uses by-value self (builder pattern). When true,
     /// by-value self methods in C take a pointer-to-handle so the bridge
     /// can update the handle in place.
@@ -245,6 +247,9 @@ pub enum MethodContext {
     },
     /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
     Trait {
+        /// C FFI function name (e.g. `"ft_fruit_eat"` for dispatch,
+        /// `"ft_apple_eat"` for a trait impl).
+        ffi_name: String,
         /// Vtable slot index.
         index: usize,
         /// Whether this method has a default impl in the trait.
@@ -409,6 +414,8 @@ pub struct ErrorVariant {
 pub struct ImplementableTrait {
     /// Trait name — key into `type_registry`.
     pub name: String,
+    /// FFI destroy/dispatch function name (e.g. `"ft_fruit_destroy"`).
+    pub destroy_ffi_name: String,
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,
@@ -470,24 +477,4 @@ impl Library {
             .c_type
             .as_str()
     }
-}
-
-// ---------------------------------------------------------------------------
-// Shared utility functions
-// ---------------------------------------------------------------------------
-
-/// Convert CamelCase to snake_case (e.g. `"TestError"` → `"test_error"`).
-pub fn camel_to_snake(name: &str) -> String {
-    let mut result = String::new();
-    for (i, c) in name.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                result.push('_');
-            }
-            result.push(c.to_ascii_lowercase());
-        } else {
-            result.push(c);
-        }
-    }
-    result
 }

@@ -2827,13 +2827,16 @@ fn build_schema(
 }
 
 fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema::ExportedType {
+    let name = meta.struct_name.to_string();
+    let name_snake = camel_to_snake(&name);
     let is_builder_type = meta.methods.iter().any(|m| {
         m.is_builder() && m.receiver == MetaReceiver::Value
     });
     ffier_schema::ExportedType {
-        name: meta.struct_name.to_string(),
+        name,
+        destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         is_builder_type,
-        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
+        methods: meta.methods.iter().map(|m| convert_method(m, r, None)).collect(),
     }
 }
 
@@ -2852,26 +2855,36 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
 }
 
 fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_schema::ImplementableTrait {
+    let name = meta.trait_name.to_string();
+    let name_snake = camel_to_snake(&name);
+    let ffi_prefix = format!("{name_snake}_");
     ffier_schema::ImplementableTrait {
-        name: meta.trait_name.to_string(),
-        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
+        name,
+        destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
+        methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
     }
 }
 
 fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::TraitImpl {
+    let struct_snake = camel_to_snake(&meta.struct_name.to_string());
+    let ffi_prefix = format!("{struct_snake}_");
     ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
         struct_name: meta.struct_name.to_string(),
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
         trait_lifetime_args: meta.trait_lifetime_args.clone(),
         struct_lifetime_args: meta.struct_lifetime_args.clone(),
-        methods: meta.methods.iter().map(|m| convert_method(m, r)).collect(),
+        methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
     }
 }
 
-fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method {
+/// Convert a method to its schema representation.
+/// `parent_ffi_prefix` is the `"{type_snake}_"` prefix for the parent type/trait
+/// (e.g. `"fruit_"` for an implementable trait, `"apple_"` for a trait impl).
+/// Only needed for trait methods; exportable methods already carry their own ffi_name.
+fn convert_method(meta: &MetaMethod, r: &CTypeResolver, parent_ffi_prefix: Option<&str>) -> ffier_schema::Method {
     let context = match &meta.context {
         MetaMethodContext::Exportable { ffi_name, .. } => {
             ffier_schema::MethodContext::Exportable {
@@ -2879,7 +2892,9 @@ fn convert_method(meta: &MetaMethod, r: &CTypeResolver) -> ffier_schema::Method 
             }
         }
         MetaMethodContext::Trait { has_default, index, .. } => {
+            let prefix = parent_ffi_prefix.expect("trait method requires parent_ffi_prefix");
             ffier_schema::MethodContext::Trait {
+                ffi_name: r.ffi_fn_name(&format!("{prefix}{}", meta.name)),
                 index: *index,
                 has_default: *has_default,
             }
