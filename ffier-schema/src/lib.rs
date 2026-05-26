@@ -97,8 +97,6 @@ pub enum TypeKind {
     Alias {
         /// The underlying type name this aliases.
         alias_of: std::string::String,
-        /// Whether this alias transfers ownership (e.g. `OwnedFd` vs `BorrowedFd`).
-        owned: bool,
     },
     /// Opaque handle type (a struct exported via `#[exportable]`).
     Handle,
