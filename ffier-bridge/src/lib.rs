@@ -2191,7 +2191,7 @@ fn build_schema(
                 c_type: "int".to_string(),
             },
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::RawFd),
             lifetime_params: vec![],
         },
     );
