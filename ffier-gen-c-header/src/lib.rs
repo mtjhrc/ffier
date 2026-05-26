@@ -65,7 +65,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        emit_vtable_section(&mut out, tr, &type_pfx, lib);
+        emit_vtable_section(&mut out, tr, lib);
         emit_dispatch_section(&mut out, tr, &type_pfx, lib);
     }
 
@@ -224,11 +224,10 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
 
     // For implementable traits, also add the VtableXxx wrapper as an implementor
     for tr in &lib.traits {
-        let vtable_name = format!("{type_pfx}Vtable{}", tr.name);
         trait_implementors
             .entry(tr.name.clone())
             .or_default()
-            .push(vtable_name);
+            .push(tr.wrapper_c_name.clone());
     }
 
     // Collect all trait names that need typedefs (from both implementables and trait_impls)
@@ -247,10 +246,10 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
 // Vtable struct definitions
 // ---------------------------------------------------------------------------
 
-fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str, lib: &Library) {
-    let vtable_name = format!("{type_pfx}{}Vtable", tr.name);
+fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+    let vtable_name = &tr.vtable_struct_c_name;
 
-    emit_section_header(out, &format!("Vtable{}", tr.name));
+    emit_section_header(out, vtable_name);
 
     // Type tag constant for constructing vtable handles from C.
     if let Some(entry) = lib.type_entry(&tr.name) {

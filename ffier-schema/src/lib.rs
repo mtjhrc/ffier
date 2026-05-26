@@ -57,6 +57,10 @@ pub enum Blessing {
     Path,
     /// Stack-allocated vtable handle for passing trait objects.
     VtableHandle,
+    /// Borrowed file descriptor (non-owning).
+    BorrowedFd,
+    /// Owned file descriptor (transfers ownership).
+    OwnedFd,
 }
 
 /// An entry in the type registry.
@@ -496,6 +500,14 @@ pub struct ImplementableTrait {
     /// C constant name for the vtable handle type tag
     /// (e.g. `"FT_PUSH_STR_TYPE_TAG"`).
     pub type_tag_constant: String,
+    /// C vtable struct name (e.g. `"FtFruitVtable"`).
+    pub vtable_struct_c_name: String,
+    /// C wrapper type name (e.g. `"FtVtableFruit"`).
+    pub wrapper_c_name: String,
+    /// Rust vtable struct name (e.g. `"FruitVtable"`).
+    pub vtable_struct_name: String,
+    /// Rust wrapper type name (e.g. `"VtableFruit"`).
+    pub wrapper_name: String,
 
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
