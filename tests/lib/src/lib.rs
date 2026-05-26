@@ -856,6 +856,12 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
     level as u32 > 0
 }
 
+#[ffier::exportable]
+/// Duplicate a file descriptor.
+pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
+    fd.try_clone_to_owned().map_err(|_| TestError::InvalidInput)
+}
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -892,4 +898,5 @@ ffier::library_definition!("ft",
     enum LogLevel,
     fn log_level_name,
     fn log_level_is_enabled,
+    fn clone_fd,
 );
