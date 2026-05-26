@@ -557,7 +557,7 @@ fn format_return_and_out_params(
     type_pfx: &str,
     lib: &Library,
 ) -> (String, Vec<String>) {
-    let error_c = format!("{type_pfx}Error");
+    let error_c = find_error_c_type(lib);
     match ret {
         Return::Void => ("void".to_string(), vec![]),
         Return::Value(_) if is_builder => ("void".to_string(), vec![]),
@@ -620,6 +620,13 @@ fn emit_doc_comment(out: &mut String, doc: &[String]) {
 
 fn find_type_c_name(lib: &Library, name: &str) -> String {
     lib.c_type_of(name).to_string()
+}
+
+fn find_error_c_type(lib: &Library) -> String {
+    let error_trait = lib
+        .trait_by_pragma("error_trait")
+        .expect("no trait with pragma \"error_trait\" found in schema");
+    lib.c_type_of(&error_trait.name).to_string()
 }
 
 fn snake_to_pascal(s: &str) -> String {
