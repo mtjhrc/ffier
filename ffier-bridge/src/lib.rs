@@ -2203,7 +2203,7 @@ fn build_schema(
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::BorrowedFd),
-            lifetime_params: vec![],
+            lifetime_params: vec!["fd".to_string()],
         },
     );
     type_registry.insert(

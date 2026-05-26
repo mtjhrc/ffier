@@ -1587,7 +1587,8 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
     if let Some((name, entry)) = lib.blessed(Blessing::BorrowedFd) {
         let c_type = lib.c_type_of(name);
         let repr = fd_repr(entry, lib);
-        writeln!(out, "impl<'a> FfiType for {name}<'a> {{").unwrap();
+        let lt = &entry.lifetime_params[0];
+        writeln!(out, "impl<'{lt}> FfiType for {name}<'{lt}> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(
             out,
