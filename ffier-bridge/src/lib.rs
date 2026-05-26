@@ -1,8 +1,7 @@
 //! Bridge code generation from parsed metadata.
 //!
 //! `generate_batch_impl` takes batched metadata token streams and produces
-//! the corresponding `extern "C"` FFI functions plus a unified `__ffier_header()`
-//! function.
+//! the corresponding `extern "C"` FFI functions.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -12,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use ffier_meta::{
     HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaMethodContext,
     MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake,
-    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_name, peek_meta_tag,
+    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -153,7 +152,7 @@ fn generate_one(
 ///
 /// Input: `{ @tag, ... } { @tag, ... } ...` — multiple brace-delimited items.
 /// Sorts into errors → exportables → implementables → trait_impls, generates
-/// bridge code for each, and emits a unified `__ffier_header()` function.
+/// bridge code for each.
 pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Parse @lib_crate = path; prefix from chain macro
     let mut iter = input.into_iter().peekable();
@@ -381,7 +380,6 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Pass 2: Generate bridge code for each item in sorted order
     let mut all_code = Vec::new();
-    let mut header_fn_names = Vec::new();
 
     for item in errors
         .iter()
@@ -389,36 +387,6 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(implementables.iter())
         .chain(trait_impls.iter())
     {
-        // Collect header function name before generating
-        let name = peek_meta_name(item);
-        let tag = peek_meta_tag(item);
-        let prefix = peek_meta_field(item, "prefix");
-        let fn_pfx = format!("{prefix}_");
-
-        let header_fn = if tag == "implementable" {
-            let trait_snake = camel_to_snake(&name);
-            Some(format_ident!("{fn_pfx}vtable_{trait_snake}__header"))
-        } else if tag == "trait_impl" {
-            let trait_snake = camel_to_snake(&name);
-            let struct_name = peek_meta_field(item, "struct_name");
-            let struct_snake = camel_to_snake(&struct_name);
-            // Skip header function when struct and trait have the same
-            // snake_case name (e.g. Error for Error) — bridge functions
-            // are skipped for this case to avoid name collision with
-            // trait dispatch functions.
-            if struct_snake == trait_snake {
-                None
-            } else {
-                Some(format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header"))
-            }
-        } else {
-            let type_snake = camel_to_snake(&name);
-            Some(format_ident!("{fn_pfx}{type_snake}__header"))
-        };
-        if let Some(hfn) = header_fn {
-            header_fn_names.push(hfn);
-        }
-
         all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types, &lib_crate));
     }
 
@@ -460,13 +428,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         if info.implementable.is_some() {
             let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix, &trait_map, &lib_crate);
             all_code.push(code);
-            let trait_snake = camel_to_snake(trait_name);
-            header_fn_names.push(format_ident!(
-                "{first_prefix}_{trait_snake}__dispatch_header"
-            ));
         }
     }
-    let shared_types_fn = emit_shared_types_fn(&first_prefix);
 
     // Generate strerror dispatch function — dispatches by type tag to per-error
     // static_message tables.
@@ -475,7 +438,6 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
     emit_json(&first_prefix, &errors, &exportables, &implementables, &trait_impls);
 
-    // Generate unified header function
     quote! {
         #dispatch_helpers
 
@@ -483,71 +445,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         #(#all_code)*
 
-        #shared_types_fn
-
         #strerror_fn
-
-        pub fn __ffier_header(guard: &str) -> ffier_bridge::HeaderBuilder {
-            ffier_bridge::HeaderBuilder::new(guard, __ffier_shared_types())
-                #(.push(#header_fn_names()))*
-                .push(__ffier_strerror_header())
-        }
-    }
-}
-
-/// Emit a function `__ffier_shared_types()` that returns the Str/Bytes/Path
-/// typedefs, Result typedef, and macros for the C header. Called once per
-/// library, not per type.
-fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
-    let type_pfx = ffier_meta::snake_to_pascal(prefix);
-    let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
-
-    let str_c = format!("{type_pfx}Str");
-    let bytes_c = format!("{type_pfx}Bytes");
-    let path_c = format!("{type_pfx}Path");
-    let result_c = format!("{type_pfx}Result");
-    let error_c = format!("{type_pfx}Error");
-    let result_success = format!("{upper_pfx}RESULT_SUCCESS");
-    let str_macro = format!("{upper_pfx}STR");
-    let bytes_macro = format!("{upper_pfx}BYTES");
-
-    quote! {
-        fn __ffier_shared_types() -> String {
-            [
-                concat!("typedef uint64_t ", #result_c, ";"),
-                concat!("#define ", #result_success, " 0"),
-                "",
-                concat!("/* Opaque error handle — pass to *_error_message() for details, free with *_error_destroy() */"),
-                concat!("typedef void* ", #error_c, ";"),
-                "",
-                concat!("/* Caller must ensure data is valid UTF-8 */"),
-                "typedef struct {",
-                "    const char* data;",
-                "    size_t len;",
-                concat!("} ", #str_c, ";"),
-                "",
-                concat!("/* Caller must ensure data is a valid UTF-8 path */"),
-                concat!("typedef ", #str_c, " ", #path_c, ";"),
-                "",
-                "typedef struct {",
-                "    const uint8_t* data;",
-                "    size_t len;",
-                concat!("} ", #bytes_c, ";"),
-                "",
-                concat!("#define ", #str_macro, "(s) ((", #str_c, "){ .data = (s), .len = strlen(s) })"),
-                concat!("#if defined(__GNUC__)"),
-                concat!("#define ", #bytes_macro, "(arr) ({ \\"),
-                concat!("    _Static_assert( \\"),
-                concat!("        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\"),
-                concat!("        \"", #bytes_macro, "() requires an array, not a pointer\"); \\"),
-                concat!("    ((", #bytes_c, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) }); \\"),
-                "})",
-                "#else",
-                concat!("#define ", #bytes_macro, "(arr) \\"),
-                concat!("    ((", #bytes_c, "){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })"),
-                "#endif",
-            ].join("\n")
-        }
     }
 }
 
@@ -562,15 +460,9 @@ fn emit_shared_types_fn(prefix: &str) -> TokenStream2 {
 /// result) is handled by the Error trait's self-dispatch infrastructure.
 fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], lib_crate: &TokenStream2) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
-    let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
     let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
     let result_name_fn = format_ident!("{fn_pfx}result_name");
-    let result_name_cstr_fn_str = result_name_cstr_fn.to_string();
-    let result_name_fn_str = result_name_fn.to_string();
-
-    let result_c_name = format!("{type_pfx}Result");
-    let str_c_name = format!("{type_pfx}Str");
 
     // Build dispatch arms for result_name (packed FfierResult → static CStr)
     let mut result_name_dispatch_arms = Vec::new();
@@ -614,23 +506,6 @@ fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], lib_crate: &T
             let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
-
-        fn __ffier_strerror_header() -> ffier_bridge::HeaderSection {
-            let mut decls = String::new();
-            decls.push_str(&format!(
-                "{} {}({} r);\n",
-                #str_c_name, #result_name_fn_str, #result_c_name,
-            ));
-            decls.push_str(&format!(
-                "const char* {}({} r);",
-                #result_name_cstr_fn_str, #result_c_name,
-            ));
-            ffier_bridge::HeaderSection {
-                struct_name: "error".to_string(),
-                handle_typedef: String::new(),
-                declarations: decls,
-            }
-        }
     }
 }
 
@@ -648,41 +523,10 @@ fn generate_exportable_bridge(
     let struct_path = &meta.struct_path;
     let struct_name = &meta.struct_name.to_string();
     let fn_pfx = meta.fn_pfx();
-    let type_pfx = meta.type_pfx();
-    let handle_c_name = meta.handle_c_name();
-    let str_c_name = format!("{type_pfx}Str");
 
     let struct_lower = camel_to_snake(struct_name);
 
     let mut ffi_fns = Vec::new();
-    let handle_typedef_expr = quote! { concat!("typedef void* ", #handle_c_name, ";") };
-    let mut decl_exprs: Vec<TokenStream2> = Vec::new();
-
-    // Generate typedefs for impl Trait dispatch types (resolved from trait map)
-    let mut generated_dyn_types: Vec<String> = Vec::new();
-    for m in &meta.methods {
-        for p in &m.params {
-            if let MetaParamKind::ImplTrait { trait_name, .. } = &p.kind {
-                let c_name = format!("{type_pfx}{trait_name}");
-                if generated_dyn_types.contains(&c_name) {
-                    continue;
-                }
-                generated_dyn_types.push(c_name.clone());
-
-                if let Some(info) = trait_map.get(trait_name) {
-                    let variant_names: Vec<String> = info
-                        .variants
-                        .iter()
-                        .map(|v| format!("{type_pfx}{}", v.name))
-                        .collect();
-                    let variants_comment = variant_names.join(" | ");
-                    decl_exprs.push(quote! {
-                        format!("typedef void* {}; /* {} */", #c_name, #variants_comment)
-                    });
-                }
-            }
-        }
-    }
 
     // Method FFI functions
     for m in &meta.methods {
@@ -694,13 +538,6 @@ fn generate_exportable_bridge(
         let is_mut = m.receiver == MetaReceiver::Mut;
         let is_by_value = m.receiver == MetaReceiver::Value;
         let is_builder = m.is_builder();
-
-        let handle_type = if is_builder && is_by_value {
-            // Builder by-value: C caller passes &handle (pointer-to-pointer).
-            format!("{handle_c_name}* handle")
-        } else {
-            format!("{handle_c_name} handle")
-        };
 
         // Single source of truth: the extern "C" fn signature.
         let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types, lib_crate);
@@ -750,23 +587,6 @@ fn generate_exportable_bridge(
         } else {
             None
         };
-
-        let mut c_type_exprs = Vec::new();
-        let mut header_param_names: Vec<String> = Vec::new();
-        for p in &m.params {
-            let name = p.name.to_string();
-            if matches!(p.kind, MetaParamKind::StrSlice) {
-                let ptr_type = format!("const {str_c_name}*");
-                c_type_exprs.push(quote! { #ptr_type });
-                header_param_names.push(name.clone());
-                c_type_exprs.push(quote! { "size_t" });
-                header_param_names.push(format!("{name}_len"));
-            } else {
-                c_type_exprs.push(meta_param_c_type_expr(&p.kind, &type_pfx, lib_crate));
-                header_param_names.push(name);
-            }
-        }
-        let param_name_str_refs: Vec<_> = header_param_names.iter().collect();
 
         // Collect all impl Trait params with their dispatch info
         struct ImplTraitParam {
@@ -991,29 +811,6 @@ fn generate_exportable_bridge(
                     }}
                 });
 
-        // Doxygen comment
-        let (has_out_param, err_c_name_for_doc) = match &m.ret {
-            MetaReturn::Result { ok, .. } => {
-                (ok.is_some(), Some(format!("{type_pfx}Result")))
-            }
-            _ => (false, None),
-        };
-        let param_name_strs: Vec<String> = m.params.iter().map(|p| p.name.to_string()).collect();
-        if let Some(doc) = build_doxygen_comment(
-            &m.doc(),
-            &param_name_strs,
-            has_out_param,
-            err_c_name_for_doc.as_deref(),
-        ) {
-            decl_exprs.push(quote! { #doc });
-        }
-
-        let header_handle = if has_receiver {
-            Some(&handle_type)
-        } else {
-            None
-        };
-
         // Extern fn signature from c_sig (shared across all return variants)
         let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
         let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
@@ -1021,18 +818,6 @@ fn generate_exportable_bridge(
 
         match &m.ret {
             MetaReturn::Void => {
-                let header_line = build_header_line(
-                    quote! { "void" },
-                    &ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    None,
-                    false,
-                    None,
-                );
-                decl_exprs.push(header_line);
-
                 let body = if is_builder && is_by_value {
                     // Builder by-value: obj_binding dereferences the double
                     // pointer (saving __handle_slot), consumes the old handle,
@@ -1065,22 +850,6 @@ fn generate_exportable_bridge(
             }
             MetaReturn::Value(vk) => {
                 let bridge_type = &vk.bridge_type;
-                // All values (handles and primitives) returned via into_c.
-                // Handles → *mut c_void, primitives → their CRepr.
-                let ret_c_header = quote! {
-                    &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
-                };
-                let header_line = build_header_line(
-                    ret_c_header,
-                    &ffi_name_str,
-                    header_handle,
-                    &c_type_exprs,
-                    &param_name_str_refs,
-                    None,
-                    false,
-                    None,
-                );
-                decl_exprs.push(header_line);
 
                 ffi_fns.push(quote! {
                     #[unsafe(no_mangle)]
@@ -1118,25 +887,8 @@ fn generate_exportable_bridge(
                     quote! {}
                 };
 
-                let err_handle_c_name = format!("{type_pfx}Error");
-
                 if ok_is_handle {
                     // GLib-style: return handle directly, NULL on error.
-                    let bridge_type = &ok.as_ref().unwrap().bridge_type;
-                    let ret_c_header = quote! {
-                        &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
-                    };
-                    let header_line = build_header_line(
-                        ret_c_header,
-                        &ffi_name_str,
-                        header_handle,
-                        &c_type_exprs,
-                        &param_name_str_refs,
-                        None,
-                        true,
-                        Some(&err_handle_c_name),
-                    );
-                    decl_exprs.push(header_line);
 
                     let ok_branch = quote! {
                         Ok(ok_val) => {
@@ -1166,28 +918,6 @@ fn generate_exportable_bridge(
                     });
                 } else {
                     // FtResult style: return packed error code, out-params for ok value.
-                    let result_c_name = format!("{type_pfx}Result");
-                    let ret_c_name = quote! { #result_c_name };
-
-                    let out_c_type = ok.as_ref().map(|vk| {
-                        let bridge_type = &vk.bridge_type;
-                        quote! {
-                            &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
-                        }
-                    });
-
-                    let header_line = build_header_line(
-                        ret_c_name,
-                        &ffi_name_str,
-                        header_handle,
-                        &c_type_exprs,
-                        &param_name_str_refs,
-                        out_c_type.as_ref(),
-                        true,
-                        Some(&err_handle_c_name),
-                    );
-                    decl_exprs.push(header_line);
-
                     let ok_branch = match ok {
                         Some(vk) => {
                             let bridge_type = &vk.bridge_type;
@@ -1255,8 +985,6 @@ fn generate_exportable_bridge(
     let destroy_name = format_ident!("{fn_pfx}{struct_lower}_destroy");
     let destroy_str = destroy_name.to_string();
 
-    decl_exprs.push(quote! { concat!("void ", #destroy_str, "(", #handle_c_name, " handle);") });
-
     ffi_fns.push(quote! {
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
@@ -1276,25 +1004,8 @@ fn generate_exportable_bridge(
         }
     });
 
-    // Header function
-    let header_fn_name = format_ident!("{fn_pfx}{struct_lower}__header");
-    let num_decls = decl_exprs.len();
-
     quote! {
         #(#ffi_fns)*
-
-        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
-            let handle_typedef = #handle_typedef_expr .to_string();
-            let decl_lines: [String; #num_decls] = [
-                #(#decl_exprs .to_string()),*
-            ];
-            let declarations = decl_lines.join("\n");
-            ffier_bridge::HeaderSection {
-                struct_name: #struct_name.to_string(),
-                handle_typedef,
-                declarations,
-            }
-        }
     }
 }
 
@@ -1302,144 +1013,19 @@ fn generate_exportable_bridge(
 // Error bridge generation
 // ===========================================================================
 
-fn generate_error_bridge(meta: MetaError, lib_crate: &TokenStream2) -> TokenStream2 {
-    let name = &meta.name;
-    let name_str = name.to_string();
-    let upper_pfx = meta.upper_pfx();
-    let type_tag = meta.type_tag;
-    let path = &meta.path;
-
-    // Strip "Error" suffix from type name for constant prefix:
-    // TestError → TEST, CalcError → CALC, BufferError → BUFFER
-    let stripped_name = name_str
-        .strip_suffix("Error")
-        .unwrap_or(&name_str);
-    let err_upper = camel_to_upper_snake(stripped_name);
-    let full_upper_pfx = format!("{upper_pfx}ERROR_{err_upper}");
-
-    let err_snake = camel_to_snake(&name_str);
-    let fn_pfx = meta.fn_pfx();
-    let header_fn_name = format_ident!("{fn_pfx}{err_snake}__header");
-
+fn generate_error_bridge(_meta: MetaError, _lib_crate: &TokenStream2) -> TokenStream2 {
     // No per-type bridge functions needed — strerror is emitted at batch level.
-    // Only emit the header section with constants + handle typedef.
-    let type_pfx = meta.type_pfx();
-    let handle_c_name = format!("{type_pfx}{name_str}");
-    quote! {
-        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
-            let full_upper_pfx = #full_upper_pfx;
-
-            let mut decls = String::new();
-
-            // Emit constants with baked-in type tags:
-            // #define FT_ERROR_TEST_NOT_FOUND ((uint64_t)1 << 32 | 1)
-            for (variant_name, code) in <#path as #lib_crate::FfiError>::codes() {
-                decls.push_str(&format!(
-                    "#define {}_{} ((uint64_t){} << 32 | {})\n",
-                    full_upper_pfx, variant_name, #type_tag, code,
-                ));
-            }
-
-            ffier_bridge::HeaderSection {
-                struct_name: #name_str.to_string(),
-                handle_typedef: format!("typedef void* {};", #handle_c_name),
-                declarations: decls,
-            }
-        }
-    }
+    quote! {}
 }
 
 // ===========================================================================
 // Implementable bridge generation
 // ===========================================================================
 
-fn generate_implementable_bridge(meta: MetaImplementable, lib_crate: &TokenStream2) -> TokenStream2 {
-    let vtable_c_name = meta.vtable_c_name();
-    let type_pfx = meta.type_pfx();
-    let fn_pfx = meta.fn_pfx();
-
-    let trait_name_str = meta.trait_name.to_string();
-    let trait_snake = camel_to_snake(&trait_name_str);
-    let header_fn_name = format_ident!("{fn_pfx}vtable_{trait_snake}__header");
-    let vtable_section_name = format!("Vtable{trait_name_str}");
-
-    // Build header lines for vtable struct
-    let mut header_lines: Vec<TokenStream2> = Vec::new();
-
-    header_lines.push(quote! { concat!("typedef struct {") });
-
-    // drop function pointer — always first for stable ABI offset
-    header_lines.push(quote! { "    void (*drop)(void* self_data);" });
-
-    // Method function pointers, sorted by explicit index with padding for gaps.
-    {
-        let mut sorted_methods: Vec<_> = meta.methods.iter().collect();
-        sorted_methods.sort_by_key(|m| m.index());
-
-        let mut next_slot = 0usize;
-        for m in &sorted_methods {
-            // raw_handle methods don't occupy vtable slots
-            if m.raw_handle() {
-                continue;
-            }
-            while next_slot < m.index() {
-                let pad_comment = format!(
-                    "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
-                );
-                header_lines.push(quote! { #pad_comment });
-                next_slot += 1;
-            }
-            let name_str = m.name.to_string();
-            let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
-            let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
-
-            header_lines.push(quote! {{
-                let mut s = String::from("    ");
-                s.push_str(#ret_c_expr);
-                s.push_str(" (*");
-                s.push_str(#name_str);
-                s.push_str(")(void* self_data");
-                let param_types: &[&str] = &[#(#param_type_exprs),*];
-                let param_names: &[&str] = &[#(#param_id_strs),*];
-                for (t, n) in param_types.iter().zip(param_names.iter()) {
-                    s.push_str(", ");
-                    s.push_str(t);
-                    s.push(' ');
-                    s.push_str(n);
-                }
-                s.push_str(");");
-                s
-            }});
-            next_slot = m.index() + 1;
-        }
-        // Pad trailing reserved slots
-        while next_slot <= meta.max_vtable_slot {
-            let pad_comment = format!(
-                "    void (*__reserved_{next_slot})(void); /* reserved slot {next_slot} */"
-            );
-            header_lines.push(quote! { #pad_comment });
-            next_slot += 1;
-        }
-    }
-    header_lines.push(quote! { concat!("} ", #vtable_c_name, ";") });
-    header_lines.push(quote! { "" });
-    // No from_vtable extern function — C callers use FT_PTR_OBJECT macro.
-
-    let num_header_lines = header_lines.len();
-
-    quote! {
-        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
-            let decl_lines: [String; #num_header_lines] = [
-                #(#header_lines .to_string()),*
-            ];
-            let declarations = decl_lines.join("\n");
-            ffier_bridge::HeaderSection {
-                struct_name: #vtable_section_name.to_string(),
-                handle_typedef: String::new(),
-                declarations,
-            }
-        }
-    }
+fn generate_implementable_bridge(_meta: MetaImplementable, _lib_crate: &TokenStream2) -> TokenStream2 {
+    // No per-type bridge functions needed for implementable traits.
+    // The vtable ABI is defined by the vtable struct layout, not by generated bridge code.
+    quote! {}
 }
 
 // ===========================================================================
@@ -1710,21 +1296,6 @@ fn meta_param_conversion(
     }
 }
 
-fn meta_param_c_type_expr(kind: &MetaParamKind, type_pfx: &str, lib_crate: &TokenStream2) -> TokenStream2 {
-    match kind {
-        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx) }
-        }
-        MetaParamKind::StrSlice => {
-            quote! { compile_error!("StrSlice should not use param_c_type_expr") }
-        }
-        MetaParamKind::ImplTrait { trait_name, .. } => {
-            let full_name = format!("{type_pfx}{trait_name}");
-            quote! { #full_name }
-        }
-    }
-}
-
 /// Format a C type name with the library prefix.
 ///
 /// - Names starting with "Ffier" (e.g. "FfierStr") → replace prefix: "ExStr"
@@ -1737,325 +1308,6 @@ pub fn format_c_type_name(c_type_name: &str, type_pfx: &str) -> String {
         format!("{type_pfx}{c_type_name}")
     } else {
         c_type_name.to_string()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Header line + doxygen helpers (ported from lib.rs for standalone use)
-// ---------------------------------------------------------------------------
-
-fn build_header_line(
-    c_ret_expr: TokenStream2,
-    ffi_name_str: &str,
-    handle_type: Option<&String>,
-    param_c_type_exprs: &[TokenStream2],
-    param_name_strs: &[&String],
-    out_param_c_type: Option<&TokenStream2>,
-    // If true, append `FtError* err_out` as the last parameter.
-    has_err_out: bool,
-    // C type name for error handle (e.g. "FtError"), used only when has_err_out.
-    err_handle_c_name: Option<&str>,
-) -> TokenStream2 {
-    let out_snippet = out_param_c_type.map(|ct| {
-        quote! {
-            if need_comma { s.push_str(", "); }
-            s.push_str(#ct);
-            s.push_str("* result");
-            need_comma = true;
-        }
-    });
-    let err_out_snippet = if has_err_out {
-        let err_c = err_handle_c_name.unwrap_or("void*");
-        Some(quote! {
-            if need_comma { s.push_str(", "); }
-            s.push_str(#err_c);
-            s.push_str("* err_out");
-            need_comma = true;
-        })
-    } else {
-        None
-    };
-    let handle_snippet = handle_type.map(|ht| {
-        quote! {
-            s.push_str(#ht);
-            need_comma = true;
-        }
-    });
-    quote! {{
-        let c_type_names: &[&str] = &[#(#param_c_type_exprs),*];
-        let param_names: &[&str] = &[#(#param_name_strs),*];
-        let mut s = String::new();
-        s.push_str(#c_ret_expr);
-        s.push(' ');
-        s.push_str(#ffi_name_str);
-        s.push('(');
-        let mut need_comma = false;
-        #handle_snippet
-        for (cty, name) in c_type_names.iter().zip(param_names.iter()) {
-            if need_comma { s.push_str(", "); }
-            s.push_str(cty);
-            s.push(' ');
-            s.push_str(name);
-            need_comma = true;
-        }
-        #out_snippet
-        #err_out_snippet
-        if !need_comma { s.push_str("void"); }
-        s.push_str(");");
-        s
-    }}
-}
-
-/// Parsed doc comment sections.
-struct DocSections {
-    body: Vec<String>,
-    param_docs: Vec<(String, String)>,
-    returns_doc: Option<String>,
-}
-
-fn parse_doc_sections(doc_lines: &[String]) -> DocSections {
-    let mut body = Vec::new();
-    let mut param_docs = Vec::new();
-    let mut returns_doc = None;
-
-    enum Section {
-        Body,
-        Arguments,
-        Returns,
-    }
-    let mut section = Section::Body;
-    let mut returns_lines: Vec<String> = Vec::new();
-
-    for raw in doc_lines {
-        let line = raw.strip_prefix(' ').unwrap_or(raw);
-
-        let lower = line.trim().to_lowercase();
-        if lower == "# arguments" || lower == "# parameters" {
-            section = Section::Arguments;
-            continue;
-        }
-        if lower.starts_with("# return") {
-            section = Section::Returns;
-            continue;
-        }
-        if line.trim().starts_with("# ") {
-            if !returns_lines.is_empty() {
-                returns_doc = Some(returns_lines.join(" ").trim().to_string());
-                returns_lines.clear();
-            }
-            section = Section::Body;
-        }
-
-        match section {
-            Section::Body => body.push(raw.clone()),
-            Section::Arguments => {
-                let trimmed = line.trim();
-                let after_bullet = trimmed
-                    .strip_prefix("* ")
-                    .or_else(|| trimmed.strip_prefix("- "));
-                if let Some(rest) = after_bullet
-                    && let Some((name, desc)) = parse_param_entry(rest)
-                {
-                    param_docs.push((name, desc));
-                }
-            }
-            Section::Returns => {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    returns_lines.push(trimmed.to_string());
-                }
-            }
-        }
-    }
-
-    if !returns_lines.is_empty() {
-        returns_doc = Some(returns_lines.join(" ").trim().to_string());
-    }
-
-    while body.last().is_some_and(|l| l.trim().is_empty()) {
-        body.pop();
-    }
-
-    DocSections {
-        body,
-        param_docs,
-        returns_doc,
-    }
-}
-
-fn parse_param_entry(s: &str) -> Option<(String, String)> {
-    let s = s.trim();
-    let rest = s.strip_prefix('`')?;
-    let end = rest.find('`')?;
-    let name = rest[..end].to_string();
-    let after = rest[end + 1..].trim();
-    // Strip separator between name and description: `-`, `:`, or `—`
-    let desc = after
-        .strip_prefix('-')
-        .or_else(|| after.strip_prefix(':'))
-        .or_else(|| after.strip_prefix('\u{2014}'))
-        .unwrap_or(after)
-        .trim()
-        .to_string();
-    Some((name, desc))
-}
-
-fn build_doxygen_comment(
-    doc_lines: &[String],
-    param_names: &[String],
-    has_out_param: bool,
-    err_c_name: Option<&str>,
-) -> Option<String> {
-    if doc_lines.is_empty() {
-        return None;
-    }
-
-    let sections = parse_doc_sections(doc_lines);
-
-    if sections.body.is_empty() && sections.param_docs.is_empty() && sections.returns_doc.is_none()
-    {
-        return None;
-    }
-
-    let mut out = String::from("/**\n");
-
-    for line in &sections.body {
-        let trimmed = line.strip_prefix(' ').unwrap_or(line);
-        if trimmed.is_empty() {
-            out.push_str(" *\n");
-        } else {
-            out.push_str(&format!(" * {trimmed}\n"));
-        }
-    }
-
-    let has_params = !param_names.is_empty() || has_out_param;
-    let has_return = err_c_name.is_some() || sections.returns_doc.is_some();
-    if has_params || has_return {
-        out.push_str(" *\n");
-    }
-
-    for name in param_names {
-        let desc = sections
-            .param_docs
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, d)| d.as_str())
-            .unwrap_or("");
-        if desc.is_empty() {
-            out.push_str(&format!(" * @param {name}\n"));
-        } else {
-            out.push_str(&format!(" * @param {name} {desc}\n"));
-        }
-    }
-
-    if has_out_param {
-        if let Some(ref doc) = sections.returns_doc {
-            out.push_str(&format!(" * @param[out] result {doc}\n"));
-        } else {
-            out.push_str(" * @param[out] result\n");
-        }
-    }
-
-    if let Some(err_name) = err_c_name {
-        out.push_str(&format!(
-            " * @return {err_name} with code 0 on success, error code on failure.\n"
-        ));
-    } else if let Some(ref doc) = sections.returns_doc {
-        out.push_str(&format!(" * @return {doc}\n"));
-    }
-
-    out.push_str(" */");
-    Some(out)
-}
-
-// ===========================================================================
-// HeaderSection / HeaderBuilder --- structured C header generation
-// ===========================================================================
-
-pub struct HeaderSection {
-    pub struct_name: String,
-    pub handle_typedef: String,
-    pub declarations: String,
-}
-
-pub struct HeaderBuilder {
-    guard: String,
-    shared_types: String,
-    sections: Vec<HeaderSection>,
-}
-
-// TODO: HeaderBuilder should accept the prefix (e.g. "krun") instead of a raw guard string,
-// and derive the header guard, handle typedefs, shared type names, and macro names from it.
-// The prefix should only be specified here, not duplicated in each #[ffier::exportable(prefix = "krun")].
-
-impl HeaderBuilder {
-    pub fn new(guard: &str, shared_types: String) -> Self {
-        Self {
-            guard: guard.to_string(),
-            shared_types,
-            sections: Vec::new(),
-        }
-    }
-
-    pub fn push(mut self, section: HeaderSection) -> Self {
-        self.sections.push(section);
-        self
-    }
-
-    pub fn build(&self) -> String {
-        let mut out = String::new();
-
-        out.push_str(&format!("#ifndef {}\n", self.guard));
-        out.push_str(&format!("#define {}\n", self.guard));
-        out.push('\n');
-        out.push_str("#include <stddef.h>\n");
-        out.push_str("#include <stdint.h>\n");
-        out.push_str("#include <stdbool.h>\n");
-        out.push_str("#include <string.h>\n");
-        out.push('\n');
-
-        // Collect all handle typedefs
-        let mut has_handle = false;
-        for section in &self.sections {
-            if !section.handle_typedef.is_empty() {
-                out.push_str(&section.handle_typedef);
-                out.push('\n');
-                has_handle = true;
-            }
-        }
-        if has_handle {
-            out.push('\n');
-        }
-
-        // Emit shared types (Str/Bytes/Path structs + macros)
-        if !self.shared_types.is_empty() {
-            out.push_str(&self.shared_types);
-            out.push('\n');
-        }
-
-        out.push_str("/* Header auto-generated by ffier */\n");
-
-        // Per-section declarations
-        for section in &self.sections {
-            if !section.declarations.is_empty() {
-                // Ensure blank line before section comment
-                if !out.ends_with("\n\n") {
-                    if out.ends_with('\n') {
-                        out.push('\n');
-                    } else {
-                        out.push_str("\n\n");
-                    }
-                }
-                let name = &section.struct_name;
-                let dashes = "-".repeat(72 - 6 - name.len()); // 72 cols total
-                out.push_str(&format!("/* {name} {dashes} */\n\n"));
-                out.push_str(&section.declarations);
-            }
-        }
-
-        out.push('\n');
-        out.push_str(&format!("#endif /* {} */\n", self.guard));
-        out
     }
 }
 
@@ -2106,14 +1358,10 @@ fn generate_self_dispatch_bridge(
     let trait_path = &imp.trait_path;
     let trait_snake = camel_to_snake(trait_name);
     let fn_pfx = format!("{prefix}_");
-    let type_pfx = ffier_meta::snake_to_pascal(prefix);
 
-    let section_name = format!("{trait_name} (dispatch)");
-    let header_fn_name = format_ident!("{fn_pfx}{trait_snake}__dispatch_header");
     let accepted_const = format_ident!("__FFIER_ACCEPTED_{trait_name}");
 
     let mut bridge_fns = Vec::new();
-    let mut header_lines: Vec<TokenStream2> = Vec::new();
 
     // Generate dispatching functions for each trait method (own methods only,
     // not supertrait methods — those need their own dispatch via their own trait).
@@ -2288,28 +1536,6 @@ fn generate_self_dispatch_bridge(
                 }
             }
         });
-
-        // Header line for this method
-        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
-        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
-
-        header_lines.push(quote! {{
-            let mut s = String::new();
-            s.push_str(#ret_c_expr);
-            s.push(' ');
-            s.push_str(#ffi_name_str);
-            s.push_str("(void* handle");
-            let param_types: &[&str] = &[#(#param_type_exprs),*];
-            let param_names: &[&str] = &[#(#param_id_strs),*];
-            for (t, n) in param_types.iter().zip(param_names.iter()) {
-                s.push_str(", ");
-                s.push_str(t);
-                s.push(' ');
-                s.push_str(n);
-            }
-            s.push_str(");");
-            s
-        }});
     }
 
     // Generate dispatching destroy function
@@ -2342,25 +1568,8 @@ fn generate_self_dispatch_bridge(
         }
     });
 
-    header_lines.push(quote! {
-        concat!("void ", #destroy_name_str, "(void* handle);")
-    });
-
-    let num_header_lines = header_lines.len();
-
     quote! {
         #(#bridge_fns)*
-
-        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
-            let decl_lines: [String; #num_header_lines] = [
-                #(#header_lines .to_string()),*
-            ];
-            ffier_bridge::HeaderSection {
-                struct_name: #section_name.to_string(),
-                handle_typedef: String::new(),
-                declarations: decl_lines.join("\n"),
-            }
-        }
     }
 }
 
@@ -2368,45 +1577,10 @@ fn generate_self_dispatch_bridge(
 // Trait impl bridge generation
 // ===========================================================================
 
-/// Extract C type expressions and param names from vtable method params.
-fn vtable_param_c_types(
-    params: &[ffier_meta::MetaParam],
-    type_pfx: &str,
-    lib_crate: &TokenStream2,
-) -> (Vec<String>, Vec<TokenStream2>) {
-    let mut names = Vec::new();
-    let mut types = Vec::new();
-    for p in params {
-        names.push(p.name.to_string());
-        if p.is_impl_trait() {
-            // impl Trait params are raw handle pointers in C.
-            types.push(quote! { "void*" });
-        } else {
-            let bt = p.bridge_type();
-            types.push(quote! {
-                &ffier_bridge::format_c_type_name(<#bt as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
-            });
-        }
-    }
-    (names, types)
-}
-
-/// C return type expression for a vtable return.
-fn vtable_ret_c_expr(ret: &MetaReturn, type_pfx: &str, lib_crate: &TokenStream2) -> TokenStream2 {
-    match ret {
-        MetaReturn::Void => quote! { "void" },
-        MetaReturn::Value(MetaTypePair { bridge_type, .. }) => quote! {
-            &ffier_bridge::format_c_type_name(<#bridge_type as #lib_crate::FfiType>::C_TYPE_NAME, #type_pfx)
-        },
-        MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
-    }
-}
-
 fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_crate: &TokenStream2) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let trait_path = &meta.trait_path;
     let fn_pfx = meta.fn_pfx();
-    let type_pfx = meta.type_pfx();
     let struct_name_str = meta.struct_name.to_string();
     let struct_snake = camel_to_snake(&struct_name_str);
     let trait_name_str = meta.trait_name.to_string();
@@ -2419,11 +1593,7 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_cra
         return quote! {};
     }
 
-    let header_fn_name = format_ident!("{fn_pfx}{trait_snake}_for_{struct_snake}__header");
-    let section_name = format!("{trait_name_str} for {struct_name_str}");
-
     let mut bridge_fns = Vec::new();
-    let mut header_lines: Vec<TokenStream2> = Vec::new();
 
     for m in &meta.methods {
         let method_name = &m.name;
@@ -2495,49 +1665,10 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_cra
                 #fn_body
             }
         });
-
-        // Header line
-        let (param_id_strs, param_type_exprs) = vtable_param_c_types(&m.params, &type_pfx, lib_crate);
-        let ret_c_expr = vtable_ret_c_expr(&m.ret, &type_pfx, lib_crate);
-
-        let handle_c_name = format!("{type_pfx}{struct_name_str}");
-
-        header_lines.push(quote! {{
-            let mut s = String::new();
-            s.push_str(#ret_c_expr);
-            s.push(' ');
-            s.push_str(#ffi_name_str);
-            s.push('(');
-            s.push_str(#handle_c_name);
-            s.push_str(" handle");
-            let param_types: &[&str] = &[#(#param_type_exprs),*];
-            let param_names: &[&str] = &[#(#param_id_strs),*];
-            for (t, n) in param_types.iter().zip(param_names.iter()) {
-                s.push_str(", ");
-                s.push_str(t);
-                s.push(' ');
-                s.push_str(n);
-            }
-            s.push_str(");");
-            s
-        }});
     }
-
-    let num_header_lines = header_lines.len();
 
     quote! {
         #(#bridge_fns)*
-
-        pub fn #header_fn_name() -> ffier_bridge::HeaderSection {
-            let decl_lines: [String; #num_header_lines] = [
-                #(#header_lines .to_string()),*
-            ];
-            ffier_bridge::HeaderSection {
-                struct_name: #section_name.to_string(),
-                handle_typedef: String::new(),
-                declarations: decl_lines.join("\n"),
-            }
-        }
     }
 }
 
