@@ -416,6 +416,9 @@ pub struct ImplementableTrait {
     pub name: String,
     /// FFI destroy/dispatch function name (e.g. `"ft_fruit_destroy"`).
     pub destroy_ffi_name: String,
+    /// C constant name for the vtable handle type tag
+    /// (e.g. `"FT_PUSH_STR_TYPE_TAG"`).
+    pub type_tag_constant: String,
     /// Optional pragma tag for well-known builtin traits.
     /// E.g. `"error_trait"` for the `Error` trait, allowing generators to
     /// locate it without hardcoding the trait name.

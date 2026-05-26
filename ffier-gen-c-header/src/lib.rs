@@ -138,6 +138,33 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
         "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }})\n"
     ));
     out.push_str("#endif\n\n");
+
+    // FIXME: This struct layout is hardcoded — should come from the schema.
+    let vtable_handle_c = format!("{type_pfx}VtableHandle");
+    let vtable_handle_macro = format!("{upper_pfx}VTABLE_HANDLE");
+    out.push_str("/**\n");
+    out.push_str(&format!(
+        " * Stack-allocated temporary handle for passing vtable-based objects.\n"
+    ));
+    out.push_str(&format!(
+        " * Only valid for the duration of the call — the callee borrows, not owns.\n"
+    ));
+    out.push_str(" */\n");
+    out.push_str("typedef struct {\n");
+    out.push_str("    uint32_t type_tag;\n");
+    out.push_str("    uint32_t metadata;\n");
+    out.push_str("    const void *vtable_ptr;\n");
+    out.push_str("    const void *user_data;\n");
+    out.push_str("    uint16_t vtable_size;\n");
+    out.push_str(&format!("}} {vtable_handle_c};\n\n"));
+    out.push_str(&format!(
+        "#define {vtable_handle_macro}(tag, vtable, self_data) \\\n"
+    ));
+    out.push_str(&format!(
+        "    (({vtable_handle_c}){{ .type_tag = (tag), .metadata = 0, \\\n"
+    ));
+    out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
+    out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -203,6 +230,13 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
     let vtable_name = format!("{type_pfx}{}Vtable", tr.name);
 
     emit_section_header(out, &format!("Vtable{}", tr.name));
+
+    // Type tag constant for constructing vtable handles from C.
+    if let Some(entry) = lib.type_entry(&tr.name) {
+        if let Some(tag) = entry.type_tag {
+            out.push_str(&format!("#define {} {}\n\n", tr.type_tag_constant, tag));
+        }
+    }
 
     out.push_str("typedef struct {\n");
 
