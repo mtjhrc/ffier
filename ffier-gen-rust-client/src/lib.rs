@@ -19,34 +19,29 @@ pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
 
     // Emit imports for blessed types that need special std imports.
-    // Each blessing can contribute import lines; duplicates are deduplicated.
+    // Each blessing contributes individual import symbols; collected and
+    // emitted as a single `use` statement to avoid duplicates.
     {
         use ffier_schema::Blessing;
-        let blessing_imports: &[(Blessing, &[&str])] = &[
-            (Blessing::RawFd, &["use std::os::unix::io::RawFd;"]),
-            (
-                Blessing::BorrowedFd,
-                &["use std::os::unix::io::{AsRawFd, BorrowedFd, RawFd};"],
-            ),
-            (
-                Blessing::OwnedFd,
-                &["use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};"],
-            ),
+        let blessing_symbols: &[(Blessing, &[&str])] = &[
+            (Blessing::RawFd, &["RawFd"]),
+            (Blessing::BorrowedFd, &["AsRawFd", "BorrowedFd", "RawFd"]),
+            (Blessing::OwnedFd, &["FromRawFd", "OwnedFd", "RawFd"]),
         ];
-        let mut imports: Vec<&str> = Vec::new();
-        for (blessing, lines) in blessing_imports {
+        let mut symbols: Vec<&str> = Vec::new();
+        for (blessing, syms) in blessing_symbols {
             if lib.blessed(*blessing).is_some() {
-                for line in *lines {
-                    if !imports.contains(line) {
-                        imports.push(line);
+                for sym in *syms {
+                    if !symbols.contains(sym) {
+                        symbols.push(sym);
                     }
                 }
             }
         }
-        if !imports.is_empty() {
-            for imp in &imports {
-                writeln!(out, "{imp}").unwrap();
-            }
+        if !symbols.is_empty() {
+            symbols.sort();
+            let list = symbols.join(", ");
+            writeln!(out, "use std::os::unix::io::{{{list}}};").unwrap();
             writeln!(out).unwrap();
         }
     }
@@ -1569,27 +1564,24 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         }
     }
 
-    if let Some((name, entry)) = lib.blessed(Blessing::OwnedFd) {
-        let c_type = lib.c_type_of(name);
+    if let Some((_, entry)) = lib.blessed(Blessing::OwnedFd) {
         let repr = fd_repr(entry, lib);
-        writeln!(out, "impl FfiType for {name} {{").unwrap();
-        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "impl FfiType for OwnedFd {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() as {repr} }}").unwrap();
         writeln!(
             out,
-            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ {name}::from_raw_fd(fd as _) }} }}"
+            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd as _) }} }}"
         )
         .unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
 
-    if let Some((name, entry)) = lib.blessed(Blessing::BorrowedFd) {
-        let c_type = lib.c_type_of(name);
+    if let Some((_, entry)) = lib.blessed(Blessing::BorrowedFd) {
         let repr = fd_repr(entry, lib);
-        let lt = &entry.lifetime_params[0];
-        writeln!(out, "impl<'{lt}> FfiType for {name}<'{lt}> {{").unwrap();
-        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"{c_type}\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "impl<'fd> FfiType for BorrowedFd<'fd> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(
             out,
             "    fn into_c(self) -> {repr} {{ self.as_raw_fd() as {repr} }}"
@@ -1597,7 +1589,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         .unwrap();
         writeln!(
             out,
-            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ {name}::borrow_raw(fd as _) }} }}"
+            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd as _) }} }}"
         )
         .unwrap();
         writeln!(out, "}}").unwrap();

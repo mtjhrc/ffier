@@ -361,6 +361,19 @@ mod tests {
     // }
 
     // ================================================================
+    // Free functions with fd types
+    // ================================================================
+
+    #[test]
+    fn free_fn_clone_fd_via_rust_bindings() {
+        use std::os::unix::io::{AsFd, AsRawFd};
+        let stdout = std::io::stdout();
+        let cloned = clone_fd(stdout.as_fd()).unwrap();
+        assert!(cloned.as_raw_fd() >= 0);
+        assert_ne!(cloned.as_raw_fd(), stdout.as_raw_fd());
+    }
+
+    // ================================================================
     // Destroy (implicit via Drop)
     // ================================================================
 

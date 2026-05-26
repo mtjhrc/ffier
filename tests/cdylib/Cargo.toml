@@ -15,3 +15,14 @@ ffier-test-lib = { path = "../lib", default-features = false }
 ffier = { path = "../../ffier" }
 ffier-bridge = { path = "../../ffier-bridge" }
 ffier-bridge-macros = { path = "../../ffier-bridge-macros" }
+ffier-schema = { path = "../../ffier-schema" }
+ffier-gen-c-header = { path = "../../ffier-gen-c-header" }
+ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
+
+[[bin]]
+name = "gen-header"
+path = "src/bin/gen-header.rs"
+
+[[bin]]
+name = "gen-rust-client"
+path = "src/bin/gen-rust-client.rs"
