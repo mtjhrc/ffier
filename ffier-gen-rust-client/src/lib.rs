@@ -198,13 +198,11 @@ pub fn generate(lib: &Library) -> String {
         defined_traits.insert(tr.name.clone());
     }
 
-    // 4. Trait impls
-    // Track error type names to skip Error trait impls for them
-    let error_names: HashSet<&str> = lib.errors.iter().map(|e| e.name.as_str()).collect();
-
+    // 4. Trait impls — only emit for structs that exist as handle types
+    // in the client (exported types + vtable wrappers).
     for ti in &lib.trait_impls {
-        if error_names.contains(ti.struct_name.as_str()) {
-            continue; // Skip Error trait impls for error types
+        if !handle_types.contains(ti.struct_name.as_str()) {
+            continue;
         }
         emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
     }
