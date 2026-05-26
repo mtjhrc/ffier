@@ -2130,7 +2130,7 @@ fn build_schema(
             kind: ffier_schema::TypeKind::String,
             c_type: format!("{}Str", resolver.type_pfx),
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::Str),
             lifetime_params: vec![],
         },
     );
@@ -2140,7 +2140,39 @@ fn build_schema(
             kind: ffier_schema::TypeKind::Bytes,
             c_type: format!("{}Bytes", resolver.type_pfx),
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::Bytes),
+            lifetime_params: vec![],
+        },
+    );
+
+    // Framework types — ABI scaffolding used by generators.
+    type_registry.insert(
+        "FfierResult".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive,
+            c_type: format!("{}Result", resolver.type_pfx),
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::Result),
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
+        "FfierPath".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Bytes,
+            c_type: format!("{}Path", resolver.type_pfx),
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::Path),
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
+        "FfierVtableHandle".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive,
+            c_type: format!("{}VtableHandle", resolver.type_pfx),
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::VtableHandle),
             lifetime_params: vec![],
         },
     );

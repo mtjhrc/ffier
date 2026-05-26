@@ -47,6 +47,16 @@ pub struct Library {
 pub enum Blessing {
     /// The error dispatch trait (provides `code`, `message`, `result`).
     ErrorTrait,
+    /// FFI result type (e.g. `uint64_t` typedef).
+    Result,
+    /// UTF-8 string (ptr + len struct).
+    Str,
+    /// Byte slice (ptr + len struct).
+    Bytes,
+    /// Filesystem path (ptr + len, not necessarily UTF-8).
+    Path,
+    /// Stack-allocated vtable handle for passing trait objects.
+    VtableHandle,
 }
 
 /// An entry in the type registry.
