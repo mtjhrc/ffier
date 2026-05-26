@@ -13,7 +13,7 @@
 
 use ffier_schema::{
     ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl,
+    Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
@@ -247,7 +247,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
                 }
             }
 
-            let ret_type = format_return_type(&m.ret, type_pfx, lib);
+            let ret_type = format_return_type_simple(&m.ret, type_pfx, lib);
 
             let params_str = params.join(", ");
             out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
@@ -397,7 +397,9 @@ fn format_c_declaration(
         }
     }
 
-    let ret_type = format_return_type(&m.ret, type_pfx, lib);
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
+    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, type_pfx, lib);
+    params.extend(extra_params);
 
     let params_str = params.join(", ");
     format!("{ret_type} {ffi_name}({params_str});")
@@ -430,7 +432,9 @@ fn format_trait_method_declaration(
         }
     }
 
-    let ret_type = format_return_type(&m.ret, type_pfx, lib);
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
+    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, type_pfx, lib);
+    params.extend(extra_params);
 
     let params_str = params.join(", ");
     format!("{ret_type} {ffi_name}({params_str});")
@@ -440,12 +444,61 @@ fn format_trait_method_declaration(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Format the C return type string for a method return.
-fn format_return_type(ret: &Return, type_pfx: &str, lib: &Library) -> String {
+/// Simple C return type — used for vtable function pointer fields.
+fn format_return_type_simple(ret: &Return, type_pfx: &str, lib: &Library) -> String {
     match ret {
         Return::Void => "void".to_string(),
         Return::Value(type_ref) => lib.c_type_of(&type_ref.type_name).to_string(),
         Return::Result { .. } => format!("{type_pfx}Result"),
+    }
+}
+
+/// Compute the C return type and any extra out-parameters for a method.
+/// Returns `(c_return_type, extra_params_to_append)`.
+fn format_return_and_out_params(
+    ret: &Return,
+    is_builder: bool,
+    type_pfx: &str,
+    lib: &Library,
+) -> (String, Vec<String>) {
+    let error_c = format!("{type_pfx}Error");
+    match ret {
+        Return::Void => ("void".to_string(), vec![]),
+        Return::Value(_) if is_builder => ("void".to_string(), vec![]),
+        Return::Value(type_ref) => (lib.c_type_of(&type_ref.type_name).to_string(), vec![]),
+        Return::Result { ok, .. } => match ok {
+            None => {
+                // Result<(), E>
+                let result_c = format!("{type_pfx}Result");
+                (result_c, vec![format!("{error_c}* err_out")])
+            }
+            Some(ok_ref) if is_builder => {
+                // Builder Result<Self, E> — no ok out-param
+                let result_c = format!("{type_pfx}Result");
+                (result_c, vec![format!("{error_c}* err_out")])
+            }
+            Some(ok_ref) => {
+                let is_handle = lib
+                    .type_entry(&ok_ref.type_name)
+                    .map(|e| e.kind == TypeKind::Handle)
+                    .unwrap_or(false);
+                if is_handle {
+                    // Result<Handle, E> — return handle, NULL on error
+                    (
+                        lib.c_type_of(&ok_ref.type_name).to_string(),
+                        vec![format!("{error_c}* err_out")],
+                    )
+                } else {
+                    // Result<T, E> — out-param
+                    let result_c = format!("{type_pfx}Result");
+                    let c_type = lib.c_type_of(&ok_ref.type_name).to_string();
+                    (
+                        result_c,
+                        vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
+                    )
+                }
+            }
+        },
     }
 }
 

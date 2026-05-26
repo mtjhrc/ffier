@@ -194,6 +194,15 @@ pub fn generate(lib: &Library) -> String {
 
     let mut defined_traits: HashSet<String> = HashSet::new();
     for tr in &lib.traits {
+        if tr.pragma.as_deref() == Some("error_trait") {
+            // The error trait is an internal dispatch mechanism — don't emit
+            // a trait definition (it would collide with the error enum).
+            // Only emit extern declarations so the GLib-style Result wrapper
+            // can call error_result / error_destroy.
+            emit_error_trait_externs(&mut out, tr, lib);
+            defined_traits.insert(tr.name.clone());
+            continue;
+        }
         emit_implementable_trait(&mut out, tr, lib);
         defined_traits.insert(tr.name.clone());
     }
@@ -798,6 +807,30 @@ fn emit_method_body(
             writeln!(out, "        }}").unwrap();
         }
     }
+}
+
+/// Emit only the extern declarations for the error trait's dispatch functions.
+/// This avoids emitting a `pub trait Error { ... }` that would collide with
+/// the user's error enum, while still making the symbols available for
+/// GLib-style Result wrappers.
+fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+    for m in &tr.methods {
+        let MethodContext::Trait { ffi_name, .. } = &m.context else {
+            continue;
+        };
+        let sig = build_dispatch_extern_sig(ffi_name, m, lib);
+        writeln!(out, "    pub fn {sig};").unwrap();
+    }
+    // Destroy
+    writeln!(
+        out,
+        "    pub fn {}(handle: *mut core::ffi::c_void);",
+        tr.destroy_ffi_name
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
