@@ -499,7 +499,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-                                                        // After error with by-value self, handle is consumed
+            // After error with by-value self, handle is consumed
         }
     }
 
@@ -556,15 +556,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]
@@ -1176,6 +1182,40 @@ mod tests {
             assert_eq!(ft_fruit_value(handle), 42);
 
             ft_fruit_destroy(handle);
+        }
+    }
+
+    // ================================================================
+    // Enum constants + free functions
+    // ================================================================
+
+    #[test]
+    fn free_fn_with_enum_param() {
+        unsafe {
+            // LogLevel::Info = 3
+            let name = ft_log_level_name(3);
+            assert_eq!(name.as_str_unchecked(), "info");
+        }
+    }
+
+    #[test]
+    fn free_fn_with_enum_param_off() {
+        unsafe {
+            // LogLevel::Off = 0
+            let name = ft_log_level_name(0);
+            assert_eq!(name.as_str_unchecked(), "off");
+        }
+    }
+
+    #[test]
+    fn free_fn_returning_bool_with_enum_param() {
+        unsafe {
+            // LogLevel::Off = 0 → not enabled
+            assert!(!ft_log_level_is_enabled(0));
+            // LogLevel::Error = 1 → enabled
+            assert!(ft_log_level_is_enabled(1));
+            // LogLevel::Trace = 5 → enabled
+            assert!(ft_log_level_is_enabled(5));
         }
     }
 

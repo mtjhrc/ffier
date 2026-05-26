@@ -9,9 +9,10 @@ use quote::{format_ident, quote};
 use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
-    HasPrefix, MetaError, MetaExportable, MetaImplementable, MetaMethod, MetaMethodContext,
-    MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake,
-    camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field, peek_meta_tag,
+    HasPrefix, MetaEnum, MetaError, MetaExportable, MetaFreeFunction, MetaImplementable,
+    MetaMethod, MetaMethodContext, MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl,
+    MetaTypePair, camel_to_snake, camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field,
+    peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -141,6 +142,17 @@ fn generate_one(
             };
             generate_trait_impl_bridge(meta, trait_map, lib_crate)
         }
+        "enum_constants" => {
+            // No bridge code needed — enums are value types passed by value.
+            quote! {}
+        }
+        "free_fn" => {
+            let meta: MetaFreeFunction = match syn::parse2(item) {
+                Ok(m) => m,
+                Err(e) => return e.to_compile_error(),
+            };
+            generate_free_fn_bridge(meta, error_map, handle_types, lib_crate)
+        }
         _ => {
             let msg = format!("unknown metadata tag `@{tag}`");
             quote! { compile_error!(#msg); }
@@ -159,23 +171,21 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let lib_crate: TokenStream2 = {
         let mut path_tokens = Vec::new();
         let mut found = false;
-        while let Some(tt) = iter.peek() {
-            if let proc_macro2::TokenTree::Punct(p) = tt {
-                if p.as_char() == '@' {
-                    found = true;
-                    iter.next(); // @
-                    iter.next(); // lib_crate
-                    iter.next(); // =
-                    while let Some(tt) = iter.next() {
-                        if let proc_macro2::TokenTree::Punct(p) = &tt {
-                            if p.as_char() == ';' { break; }
-                        }
-                        path_tokens.push(tt);
-                    }
+        if let Some(proc_macro2::TokenTree::Punct(p)) = iter.peek()
+            && p.as_char() == '@'
+        {
+            found = true;
+            iter.next(); // @
+            iter.next(); // lib_crate
+            iter.next(); // =
+            for tt in iter.by_ref() {
+                if let proc_macro2::TokenTree::Punct(p) = &tt
+                    && p.as_char() == ';'
+                {
                     break;
                 }
+                path_tokens.push(tt);
             }
-            break;
         }
         if !found {
             return quote! { compile_error!("missing @lib_crate prefix in bridge metadata"); };
@@ -197,6 +207,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let mut exportables = Vec::new();
     let mut implementables = Vec::new();
     let mut trait_impls = Vec::new();
+    let mut enum_constants = Vec::new();
+    let mut free_fns = Vec::new();
 
     for item in &items {
         match peek_meta_tag(item).as_str() {
@@ -204,6 +216,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             "exportable" => exportables.push(item.clone()),
             "implementable" => implementables.push(item.clone()),
             "trait_impl" => trait_impls.push(item.clone()),
+            "enum_constants" => enum_constants.push(item.clone()),
+            "free_fn" => free_fns.push(item.clone()),
             tag => {
                 let msg = format!("unknown metadata tag `@{tag}` in batch");
                 return quote! { compile_error!(#msg); };
@@ -386,8 +400,16 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(exportables.iter())
         .chain(implementables.iter())
         .chain(trait_impls.iter())
+        .chain(enum_constants.iter())
+        .chain(free_fns.iter())
     {
-        all_code.push(generate_one(item.clone(), &trait_map, &error_map, &handle_types, &lib_crate));
+        all_code.push(generate_one(
+            item.clone(),
+            &trait_map,
+            &error_map,
+            &handle_types,
+            &lib_crate,
+        ));
     }
 
     // Extract prefix from any item for shared types (all items share the same prefix)
@@ -396,6 +418,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(exportables.iter())
         .chain(implementables.iter())
         .chain(trait_impls.iter())
+        .chain(enum_constants.iter())
+        .chain(free_fns.iter())
         .next()
         .map(|item| peek_meta_field(item, "prefix"))
         .unwrap_or_default();
@@ -426,7 +450,13 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // C functions that read the type tag and dispatch to the concrete implementor.
     for (trait_name, info) in &trait_map {
         if info.implementable.is_some() {
-            let code = generate_self_dispatch_bridge(trait_name, info, &first_prefix, &trait_map, &lib_crate);
+            let code = generate_self_dispatch_bridge(
+                trait_name,
+                info,
+                &first_prefix,
+                &trait_map,
+                &lib_crate,
+            );
             all_code.push(code);
         }
     }
@@ -436,7 +466,15 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &lib_crate);
 
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
-    emit_json(&first_prefix, &errors, &exportables, &implementables, &trait_impls);
+    emit_json(
+        &first_prefix,
+        &errors,
+        &exportables,
+        &implementables,
+        &trait_impls,
+        &enum_constants,
+        &free_fns,
+    );
 
     quote! {
         #dispatch_helpers
@@ -458,7 +496,11 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 /// These decode packed `FfierResult` values (type_tag + code) into static
 /// variant name strings. Error handle dispatch (destroy, message, code,
 /// result) is handled by the Error trait's self-dispatch infrastructure.
-fn generate_strerror_bridge(prefix: &str, errors: &[TokenStream2], lib_crate: &TokenStream2) -> TokenStream2 {
+fn generate_strerror_bridge(
+    prefix: &str,
+    errors: &[TokenStream2],
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
 
     let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
@@ -529,9 +571,10 @@ fn generate_exportable_bridge(
     // Whether this type has any builder methods with by-value self.
     // When true, ALL by-value self methods receive a pointer-to-handle
     // (void**) in the C ABI, not just the builder methods themselves.
-    let is_builder_type = meta.methods.iter().any(|m| {
-        m.is_builder() && m.receiver == MetaReceiver::Value
-    });
+    let is_builder_type = meta
+        .methods
+        .iter()
+        .any(|m| m.is_builder() && m.receiver == MetaReceiver::Value);
 
     let mut ffi_fns = Vec::new();
 
@@ -547,7 +590,13 @@ fn generate_exportable_bridge(
         let is_builder = m.is_builder();
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(m, &meta.prefix, SignatureContext::Bridge, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(
+            m,
+            &meta.prefix,
+            SignatureContext::Bridge,
+            handle_types,
+            lib_crate,
+        );
 
         // Self access via borrow/consume (instance methods only).
         //
@@ -607,7 +656,7 @@ fn generate_exportable_bridge(
             .params
             .iter()
             .filter_map(|p| {
-                  if let MetaParamKind::ImplTrait {
+                if let MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
                     ..
@@ -873,8 +922,7 @@ fn generate_exportable_bridge(
                 });
             }
             MetaReturn::Result { ok, err_ident } => {
-                let ok_is_handle = ok.is_some()
-                    && is_result_ok_handle(&m.rust_ret, handle_types);
+                let ok_is_handle = ok.is_some() && is_result_ok_handle(&m.rust_ret, handle_types);
 
                 // Look up the error type's type_tag from the error map
                 let err_info = error_map.get(err_ident);
@@ -1027,10 +1075,149 @@ fn generate_error_bridge(_meta: MetaError, _lib_crate: &TokenStream2) -> TokenSt
 }
 
 // ===========================================================================
+// Free function bridge generation
+// ===========================================================================
+
+fn generate_free_fn_bridge(
+    meta: MetaFreeFunction,
+    error_map: &ErrorMap,
+    _handle_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    let fn_path = &meta.fn_path;
+    let fn_pfx = meta.fn_pfx();
+
+    // A free function has exactly one "method" in its methods list.
+    let m = &meta.methods[0];
+    let ffi_name_str = format!("{}{}", fn_pfx, meta.ffi_name);
+    let ffi_name = format_ident!("{}", ffi_name_str);
+
+    // Build params
+    let mut sig_names = Vec::new();
+    let mut sig_types = Vec::new();
+    let mut converted_args = Vec::new();
+
+    for p in &m.params {
+        let id = &p.name;
+        match &p.kind {
+            MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
+                sig_names.push(id.clone());
+                sig_types.push(quote! { <#bridge_type as #lib_crate::FfiType>::CRepr });
+                converted_args.push(quote! { <#bridge_type as #lib_crate::FfiType>::from_c(#id) });
+            }
+            MetaParamKind::StrSlice => {
+                sig_names.push(id.clone());
+                sig_types.push(quote! { *const ffier::FfierBytes });
+                let len_id = format_ident!("{}_len", id);
+                sig_names.push(len_id.clone());
+                sig_types.push(quote! { usize });
+                // TODO: proper str slice conversion for free functions
+                converted_args.push(
+                    quote! { compile_error!("str slice in free functions not yet supported") },
+                );
+            }
+            MetaParamKind::ImplTrait { .. } => {
+                sig_names.push(id.clone());
+                sig_types.push(quote! { *mut core::ffi::c_void });
+                converted_args.push(
+                    quote! { compile_error!("impl Trait in free functions not yet supported") },
+                );
+            }
+        }
+    }
+
+    let method_call = quote! { #fn_path(#(#converted_args),*) };
+
+    match &m.ret {
+        MetaReturn::Void => {
+            quote! {
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) {
+                    #method_call;
+                }
+            }
+        }
+        MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
+            quote! {
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #ffi_name(
+                    #(#sig_names: #sig_types),*
+                ) -> <#bridge_type as #lib_crate::FfiType>::CRepr {
+                    let result = #method_call;
+                    <#bridge_type as #lib_crate::FfiType>::into_c(result)
+                }
+            }
+        }
+        MetaReturn::Result { ok, err_ident } => {
+            let err_info = error_map.get(err_ident);
+            let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
+            let err_path = err_info.map(|i| &i.path);
+
+            let box_expr = if err_path.is_some() {
+                quote! {
+                    if !err_out.is_null() {
+                        unsafe { *err_out = <_ as #lib_crate::FfiType>::into_c(e); }
+                    }
+                }
+            } else {
+                quote! {}
+            };
+
+            let ok_branch = match ok {
+                Some(MetaTypePair { bridge_type, .. }) => quote! {
+                    Ok(ok_val) => {
+                        unsafe { result.write(<#bridge_type as #lib_crate::FfiType>::into_c(ok_val)) };
+                        ffier::FFIER_RESULT_SUCCESS
+                    }
+                },
+                None => quote! {
+                    Ok(_) => ffier::FFIER_RESULT_SUCCESS,
+                },
+            };
+
+            let err_branch = quote! {
+                Err(e) => {
+                    let __r = ffier::ffier_result(#err_type_tag, #lib_crate::FfiError::code(&e));
+                    #box_expr
+                    __r
+                }
+            };
+
+            // Add out-params
+            let mut all_names = sig_names.clone();
+            let mut all_types = sig_types.clone();
+
+            if ok.is_some() {
+                let ok_bt = &ok.as_ref().unwrap().bridge_type;
+                all_names.push(format_ident!("result"));
+                all_types.push(quote! { *mut <#ok_bt as #lib_crate::FfiType>::CRepr });
+            }
+            all_names.push(format_ident!("err_out"));
+            all_types.push(quote! { *mut *mut core::ffi::c_void });
+
+            quote! {
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #ffi_name(
+                    #(#all_names: #all_types),*
+                ) -> ffier::FfierResult {
+                    match #method_call {
+                        #ok_branch
+                        #err_branch
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ===========================================================================
 // Implementable bridge generation
 // ===========================================================================
 
-fn generate_implementable_bridge(_meta: MetaImplementable, _lib_crate: &TokenStream2) -> TokenStream2 {
+fn generate_implementable_bridge(
+    _meta: MetaImplementable,
+    _lib_crate: &TokenStream2,
+) -> TokenStream2 {
     // No per-type bridge functions needed for implementable traits.
     // The vtable ABI is defined by the vtable struct layout, not by generated bridge code.
     quote! {}
@@ -1178,14 +1365,13 @@ pub fn c_signature_for_method(
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
-            let ok_is_handle = ok.is_some()
-                && is_result_ok_handle(&method.rust_ret, handle_types);
+            let ok_is_handle = ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types);
 
             // Builder by-value Result<Self, E>: the ok value is written back
             // through the double-pointer handle param, not returned. Use
             // FtResult style, not GLib-style.
-            let is_builder_self_result = method.is_builder()
-                && method.receiver == MetaReceiver::Value;
+            let is_builder_self_result =
+                method.is_builder() && method.receiver == MetaReceiver::Value;
 
             if ok_is_handle && !is_builder_self_result {
                 // GLib-style: return handle directly (NULL on error).
@@ -1430,7 +1616,9 @@ fn generate_self_dispatch_bridge(
             MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
                 quote! { -> <#bridge_type as #lib_crate::FfiType>::CRepr }
             }
-            MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
+            MetaReturn::Result { .. } => {
+                unreachable!("Result returns not yet supported in trait methods")
+            }
         };
 
         // Build dispatch branches — one per variant.
@@ -1588,7 +1776,11 @@ fn generate_self_dispatch_bridge(
 // Trait impl bridge generation
 // ===========================================================================
 
-fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_crate: &TokenStream2) -> TokenStream2 {
+fn generate_trait_impl_bridge(
+    meta: MetaTraitImpl,
+    trait_map: &TraitMap,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
     let struct_path = &meta.struct_path;
     let trait_path = &meta.trait_path;
     let fn_pfx = meta.fn_pfx();
@@ -1649,7 +1841,9 @@ fn generate_trait_impl_bridge(meta: MetaTraitImpl, trait_map: &TraitMap, lib_cra
                 quote! { -> <#bridge_type as #lib_crate::FfiType>::CRepr },
                 quote! { <#bridge_type as #lib_crate::FfiType>::into_c(call_result) },
             ),
-            MetaReturn::Result { .. } => unreachable!("Result returns not yet supported in trait methods"),
+            MetaReturn::Result { .. } => {
+                unreachable!("Result returns not yet supported in trait methods")
+            }
         };
 
         let fn_body = if m.raw_handle() {
@@ -1695,6 +1889,8 @@ fn emit_json(
     exportables: &[TokenStream2],
     implementables: &[TokenStream2],
     trait_impls: &[TokenStream2],
+    enum_constants: &[TokenStream2],
+    free_fns: &[TokenStream2],
 ) {
     // CARGO_MANIFEST_DIR is always set by cargo when rustc runs, even without
     // a build.rs. We walk up to find the workspace target/ directory.
@@ -1719,7 +1915,15 @@ fn emit_json(
         }
     };
 
-    let library = build_schema(prefix, errors, exportables, implementables, trait_impls);
+    let library = build_schema(
+        prefix,
+        errors,
+        exportables,
+        implementables,
+        trait_impls,
+        enum_constants,
+        free_fns,
+    );
     let json = library.to_json();
     let path = target_dir.join(format!("ffier-{prefix}.json"));
     std::fs::write(&path, json).unwrap_or_else(|e| {
@@ -1729,9 +1933,9 @@ fn emit_json(
 
 /// Context for C type resolution during schema conversion.
 struct CTypeResolver {
-    type_pfx: String,       // e.g. "Ft"
-    upper_pfx: String,      // e.g. "FT_"
-    fn_pfx: String,         // e.g. "ft_"
+    type_pfx: String,  // e.g. "Ft"
+    upper_pfx: String, // e.g. "FT_"
+    fn_pfx: String,    // e.g. "ft_"
 }
 
 impl CTypeResolver {
@@ -1739,7 +1943,11 @@ impl CTypeResolver {
         let type_pfx = ffier_meta::snake_to_pascal(prefix);
         let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
         let fn_pfx = format!("{prefix}_");
-        CTypeResolver { type_pfx, upper_pfx, fn_pfx }
+        CTypeResolver {
+            type_pfx,
+            upper_pfx,
+            fn_pfx,
+        }
     }
 
     /// Resolve the C type for a handle (always opaque pointer typedef).
@@ -1798,7 +2006,11 @@ impl CTypeResolver {
             } else {
                 rest
             };
-            let rk = if is_mut { ffier_schema::RefKind::Mut } else { ffier_schema::RefKind::Shared };
+            let rk = if is_mut {
+                ffier_schema::RefKind::Mut
+            } else {
+                ffier_schema::RefKind::Shared
+            };
             (rk, lifetime, rest)
         } else {
             (ffier_schema::RefKind::None, None, s)
@@ -1834,22 +2046,48 @@ fn build_schema(
     exportables: &[TokenStream2],
     implementables: &[TokenStream2],
     trait_impls: &[TokenStream2],
+    enum_constants: &[TokenStream2],
+    free_fns: &[TokenStream2],
 ) -> ffier_schema::Library {
     let errors_parsed: Vec<_> = errors
         .iter()
-        .map(|item| syn::parse2::<MetaError>(item.clone()).expect("failed to parse @error metadata"))
+        .map(|item| {
+            syn::parse2::<MetaError>(item.clone()).expect("failed to parse @error metadata")
+        })
         .collect();
     let exportables_parsed: Vec<_> = exportables
         .iter()
-        .map(|item| syn::parse2::<MetaExportable>(item.clone()).expect("failed to parse @exportable metadata"))
+        .map(|item| {
+            syn::parse2::<MetaExportable>(item.clone())
+                .expect("failed to parse @exportable metadata")
+        })
         .collect();
     let implementables_parsed: Vec<_> = implementables
         .iter()
-        .map(|item| syn::parse2::<MetaImplementable>(item.clone()).expect("failed to parse @implementable metadata"))
+        .map(|item| {
+            syn::parse2::<MetaImplementable>(item.clone())
+                .expect("failed to parse @implementable metadata")
+        })
         .collect();
     let trait_impls_parsed: Vec<_> = trait_impls
         .iter()
-        .map(|item| syn::parse2::<MetaTraitImpl>(item.clone()).expect("failed to parse @trait_impl metadata"))
+        .map(|item| {
+            syn::parse2::<MetaTraitImpl>(item.clone())
+                .expect("failed to parse @trait_impl metadata")
+        })
+        .collect();
+    let enums_parsed: Vec<_> = enum_constants
+        .iter()
+        .map(|item| {
+            syn::parse2::<MetaEnum>(item.clone()).expect("failed to parse @enum_constants metadata")
+        })
+        .collect();
+    let free_fns_parsed: Vec<_> = free_fns
+        .iter()
+        .map(|item| {
+            syn::parse2::<MetaFreeFunction>(item.clone())
+                .expect("failed to parse @free_fn metadata")
+        })
         .collect();
 
     let resolver = CTypeResolver::new(prefix);
@@ -1859,78 +2097,133 @@ fn build_schema(
 
     // Primitives
     for (name, c_type) in &[
-        ("i8", "int8_t"), ("i16", "int16_t"), ("i32", "int32_t"), ("i64", "int64_t"),
-        ("u8", "uint8_t"), ("u16", "uint16_t"), ("u32", "uint32_t"), ("u64", "uint64_t"),
-        ("f32", "float"), ("f64", "double"),
-        ("isize", "ssize_t"), ("usize", "size_t"), ("bool", "bool"),
+        ("i8", "int8_t"),
+        ("i16", "int16_t"),
+        ("i32", "int32_t"),
+        ("i64", "int64_t"),
+        ("u8", "uint8_t"),
+        ("u16", "uint16_t"),
+        ("u32", "uint32_t"),
+        ("u64", "uint64_t"),
+        ("f32", "float"),
+        ("f64", "double"),
+        ("isize", "ssize_t"),
+        ("usize", "size_t"),
+        ("bool", "bool"),
     ] {
-        type_registry.insert(name.to_string(), ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Primitive,
-            c_type: c_type.to_string(),
-            type_tag: None,
-            lifetime_params: vec![],
-        });
+        type_registry.insert(
+            name.to_string(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Primitive,
+                c_type: c_type.to_string(),
+                type_tag: None,
+                lifetime_params: vec![],
+            },
+        );
     }
 
     // Builtins
-    type_registry.insert("str".to_string(), ffier_schema::TypeEntry {
-        kind: ffier_schema::TypeKind::String,
-        c_type: format!("{}Str", resolver.type_pfx),
-        type_tag: None,
-        lifetime_params: vec![],
-    });
-    type_registry.insert("[u8]".to_string(), ffier_schema::TypeEntry {
-        kind: ffier_schema::TypeKind::Bytes,
-        c_type: format!("{}Bytes", resolver.type_pfx),
-        type_tag: None,
-        lifetime_params: vec![],
-    });
+    type_registry.insert(
+        "str".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::String,
+            c_type: format!("{}Str", resolver.type_pfx),
+            type_tag: None,
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
+        "[u8]".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Bytes,
+            c_type: format!("{}Bytes", resolver.type_pfx),
+            type_tag: None,
+            lifetime_params: vec![],
+        },
+    );
 
     // Std type aliases
-    type_registry.insert("BorrowedFd".to_string(), ffier_schema::TypeEntry {
-        kind: ffier_schema::TypeKind::Alias { alias_of: "i32".to_string(), owned: false },
-        c_type: "int".to_string(),
-        type_tag: None,
-        lifetime_params: vec![],
-    });
-    type_registry.insert("OwnedFd".to_string(), ffier_schema::TypeEntry {
-        kind: ffier_schema::TypeKind::Alias { alias_of: "i32".to_string(), owned: true },
-        c_type: "int".to_string(),
-        type_tag: None,
-        lifetime_params: vec![],
-    });
+    type_registry.insert(
+        "BorrowedFd".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Alias {
+                alias_of: "i32".to_string(),
+                owned: false,
+            },
+            c_type: "int".to_string(),
+            type_tag: None,
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
+        "OwnedFd".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Alias {
+                alias_of: "i32".to_string(),
+                owned: true,
+            },
+            c_type: "int".to_string(),
+            type_tag: None,
+            lifetime_params: vec![],
+        },
+    );
+
+    // Enum constants
+    for e in &enums_parsed {
+        let name = e.name.to_string();
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Enum {
+                    alias_of: e.repr.clone(),
+                },
+                c_type: e.repr.clone(),
+                type_tag: None,
+                lifetime_params: vec![],
+            },
+        );
+    }
 
     // Handles (exported types)
     for e in &exportables_parsed {
         let name = e.struct_name.to_string();
-        type_registry.insert(name.clone(), ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Handle,
-            c_type: resolver.handle_c_name(&name),
-            type_tag: Some(e.type_tag),
-            lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
-        });
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Handle,
+                c_type: resolver.handle_c_name(&name),
+                type_tag: Some(e.type_tag),
+                lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
+            },
+        );
     }
 
     // Errors
     for e in &errors_parsed {
         let name = e.name.to_string();
-        type_registry.insert(name.clone(), ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Error,
-            c_type: resolver.handle_c_name(&name),
-            type_tag: Some(e.type_tag),
-            lifetime_params: vec![],
-        });
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Error,
+                c_type: resolver.handle_c_name(&name),
+                type_tag: Some(e.type_tag),
+                lifetime_params: vec![],
+            },
+        );
     }
 
     // Implementable traits
     for i in &implementables_parsed {
         let name = i.trait_name.to_string();
-        type_registry.insert(name.clone(), ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Trait,
-            c_type: resolver.handle_c_name(&name),
-            type_tag: Some(i.type_tag),
-            lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
-        });
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Trait,
+                c_type: resolver.handle_c_name(&name),
+                type_tag: Some(i.type_tag),
+                lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
+            },
+        );
     }
 
     // Traits discovered via trait_impls (no implementable annotation).
@@ -1938,65 +2231,135 @@ fn build_schema(
     // (filtering out 'static which is a concrete binding, not a param).
     for ti in &trait_impls_parsed {
         let name = ti.trait_name.to_string();
-        let lifetime_params: Vec<String> = ti.trait_lifetime_args.iter()
+        let lifetime_params: Vec<String> = ti
+            .trait_lifetime_args
+            .iter()
             .filter(|lt| *lt != "static")
             .cloned()
             .collect();
-        type_registry.entry(name.clone()).or_insert_with(|| ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Trait,
-            c_type: resolver.handle_c_name(&name),
-            type_tag: None,
-            lifetime_params,
-        });
+        type_registry
+            .entry(name.clone())
+            .or_insert_with(|| ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Trait,
+                c_type: resolver.handle_c_name(&name),
+                type_tag: None,
+                lifetime_params,
+            });
     }
 
     // BuilderSelf sentinel — used in return types for builder methods.
-    type_registry.insert(ffier_schema::BUILDER_SELF_TYPE.to_string(), ffier_schema::TypeEntry {
-        kind: ffier_schema::TypeKind::ReplacesSelf,
-        c_type: "void".to_string(),
-        type_tag: None,
-        lifetime_params: vec![],
-    });
+    type_registry.insert(
+        ffier_schema::BUILDER_SELF_TYPE.to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::ReplacesSelf,
+            c_type: "void".to_string(),
+            type_tag: None,
+            lifetime_params: vec![],
+        },
+    );
 
     ffier_schema::Library {
         prefix: prefix.to_string(),
         type_registry,
-        exported_types: exportables_parsed.iter().map(|e| convert_exportable(e, &resolver)).collect(),
-        errors: errors_parsed.iter().map(|e| convert_error(e, &resolver)).collect(),
-        traits: implementables_parsed.iter().map(|i| convert_implementable(i, &resolver)).collect(),
-        trait_impls: trait_impls_parsed.iter().map(|t| convert_trait_impl(t, &resolver)).collect(),
+        exported_types: exportables_parsed
+            .iter()
+            .map(|e| convert_exportable(e, &resolver))
+            .collect(),
+        errors: errors_parsed
+            .iter()
+            .map(|e| convert_error(e, &resolver))
+            .collect(),
+        enum_constants: enums_parsed
+            .iter()
+            .map(|e| convert_enum(e, &resolver))
+            .collect(),
+        free_functions: free_fns_parsed
+            .iter()
+            .map(|f| convert_free_fn(f, &resolver))
+            .collect(),
+        traits: implementables_parsed
+            .iter()
+            .map(|i| convert_implementable(i, &resolver))
+            .collect(),
+        trait_impls: trait_impls_parsed
+            .iter()
+            .map(|t| convert_trait_impl(t, &resolver))
+            .collect(),
+    }
+}
+
+fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
+    let name = meta.name.to_string();
+    let stripped = name.as_str();
+    let name_upper = camel_to_upper_snake(stripped);
+    ffier_schema::EnumType {
+        name: name.clone(),
+        variants: meta
+            .variants
+            .iter()
+            .map(|v| {
+                let variant_upper = camel_to_upper_snake(&v.name.to_string());
+                ffier_schema::EnumVariant {
+                    name: v.name.to_string(),
+                    c_name: format!("{}{}_{}", r.upper_pfx, name_upper, variant_upper),
+                    value: v.value,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn convert_free_fn(meta: &MetaFreeFunction, r: &CTypeResolver) -> ffier_schema::FreeFunction {
+    // A free function has exactly one "method" in its methods list.
+    let m = &meta.methods[0];
+    ffier_schema::FreeFunction {
+        name: meta.name.to_string(),
+        ffi_name: r.ffi_fn_name(&meta.ffi_name),
+        doc: meta.doc.clone(),
+        params: m.params.iter().map(|p| convert_param(p, r)).collect(),
+        ret: convert_return(&m.ret, r, false),
     }
 }
 
 fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema::ExportedType {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
-    let is_builder_type = meta.methods.iter().any(|m| {
-        m.is_builder() && m.receiver == MetaReceiver::Value
-    });
+    let is_builder_type = meta
+        .methods
+        .iter()
+        .any(|m| m.is_builder() && m.receiver == MetaReceiver::Value);
     ffier_schema::ExportedType {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         is_builder_type,
-        methods: meta.methods.iter().map(|m| convert_method(m, r, None)).collect(),
+        methods: meta
+            .methods
+            .iter()
+            .map(|m| convert_method(m, r, None))
+            .collect(),
     }
 }
 
 fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType {
     ffier_schema::ErrorType {
         name: meta.name.to_string(),
-        variants: meta.variants.iter().map(|v| {
-            ffier_schema::ErrorVariant {
+        variants: meta
+            .variants
+            .iter()
+            .map(|v| ffier_schema::ErrorVariant {
                 name: v.name.to_string(),
                 c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
                 code: v.code,
                 message: v.message.clone(),
-            }
-        }).collect(),
+            })
+            .collect(),
     }
 }
 
-fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_schema::ImplementableTrait {
+fn convert_implementable(
+    meta: &MetaImplementable,
+    r: &CTypeResolver,
+) -> ffier_schema::ImplementableTrait {
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
     let ffi_prefix = format!("{name_snake}_");
@@ -2006,7 +2369,11 @@ fn convert_implementable(meta: &MetaImplementable, r: &CTypeResolver) -> ffier_s
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         type_tag_constant: format!("{}{name_upper_snake}_TYPE_TAG", r.upper_pfx),
         pragma: meta.pragma.clone(),
-        methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
+        methods: meta
+            .methods
+            .iter()
+            .map(|m| convert_method(m, r, Some(&ffi_prefix)))
+            .collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
     }
@@ -2021,7 +2388,11 @@ fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
         trait_lifetime_args: meta.trait_lifetime_args.clone(),
         struct_lifetime_args: meta.struct_lifetime_args.clone(),
-        methods: meta.methods.iter().map(|m| convert_method(m, r, Some(&ffi_prefix))).collect(),
+        methods: meta
+            .methods
+            .iter()
+            .map(|m| convert_method(m, r, Some(&ffi_prefix)))
+            .collect(),
     }
 }
 
@@ -2029,14 +2400,18 @@ fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::
 /// `parent_ffi_prefix` is the `"{type_snake}_"` prefix for the parent type/trait
 /// (e.g. `"fruit_"` for an implementable trait, `"apple_"` for a trait impl).
 /// Only needed for trait methods; exportable methods already carry their own ffi_name.
-fn convert_method(meta: &MetaMethod, r: &CTypeResolver, parent_ffi_prefix: Option<&str>) -> ffier_schema::Method {
+fn convert_method(
+    meta: &MetaMethod,
+    r: &CTypeResolver,
+    parent_ffi_prefix: Option<&str>,
+) -> ffier_schema::Method {
     let context = match &meta.context {
-        MetaMethodContext::Exportable { ffi_name, .. } => {
-            ffier_schema::MethodContext::Exportable {
-                ffi_name: r.ffi_fn_name(ffi_name),
-            }
-        }
-        MetaMethodContext::Trait { has_default, index, .. } => {
+        MetaMethodContext::Exportable { ffi_name, .. } => ffier_schema::MethodContext::Exportable {
+            ffi_name: r.ffi_fn_name(ffi_name),
+        },
+        MetaMethodContext::Trait {
+            has_default, index, ..
+        } => {
             let prefix = parent_ffi_prefix.expect("trait method requires parent_ffi_prefix");
             ffier_schema::MethodContext::Trait {
                 ffi_name: r.ffi_fn_name(&format!("{prefix}{}", meta.name)),
@@ -2052,7 +2427,11 @@ fn convert_method(meta: &MetaMethod, r: &CTypeResolver, parent_ffi_prefix: Optio
         name: meta.name.to_string(),
         doc: meta.doc().iter().cloned().collect(),
         receiver: convert_receiver(meta.receiver),
-        method_lifetimes: meta.method_lifetimes.iter().map(|lt| lt.to_string()).collect(),
+        method_lifetimes: meta
+            .method_lifetimes
+            .iter()
+            .map(|lt| lt.to_string())
+            .collect(),
         params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
         ret,
         context,
@@ -2098,14 +2477,22 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                 ],
             }
         }
-        MetaParamKind::ImplTrait { trait_name, trait_lifetime_args, .. } => {
-            ffier_schema::ParamType::ImplTrait {
-                trait_name: trait_name.clone(),
-                type_args: trait_lifetime_args.iter().map(|lt| lt.to_string()).collect(),
-            }
-        }
+        MetaParamKind::ImplTrait {
+            trait_name,
+            trait_lifetime_args,
+            ..
+        } => ffier_schema::ParamType::ImplTrait {
+            trait_name: trait_name.clone(),
+            type_args: trait_lifetime_args
+                .iter()
+                .map(|lt| lt.to_string())
+                .collect(),
+        },
     };
-    ffier_schema::Param { name: p.name.to_string(), param_type }
+    ffier_schema::Param {
+        name: p.name.to_string(),
+        param_type,
+    }
 }
 
 fn builder_self_type_ref() -> ffier_schema::TypeRef {
@@ -2155,4 +2542,3 @@ fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffie
         }
     }
 }
-

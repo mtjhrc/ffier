@@ -12,8 +12,8 @@
 //! - Utility functions (result_name)
 
 use ffier_schema::{
-    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl, TypeKind,
+    EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
+    MethodContext, ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
@@ -33,11 +33,11 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Handle typedefs — error types first.
     for err in &lib.errors {
-        let c_name = &lib.type_registry[&err.name].c_type;
+        let c_name = lib.c_type_of(&err.name);
         out.push_str(&format!("typedef void* {};\n", c_name));
     }
     for ty in &lib.exported_types {
-        let c_name = &lib.type_registry[&ty.name].c_type;
+        let c_name = lib.c_type_of(&ty.name);
         out.push_str(&format!("typedef void* {};\n", c_name));
     }
 
@@ -47,6 +47,11 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Shared types
     emit_shared_types(&mut out, &type_pfx, &upper_pfx);
+
+    // Enum constant sections
+    for en in &lib.enum_constants {
+        emit_enum_section(&mut out, en);
+    }
 
     // Error sections
     for err in &lib.errors {
@@ -67,6 +72,11 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
         emit_trait_impl_section(&mut out, ti, lib);
+    }
+
+    // Free functions
+    if !lib.free_functions.is_empty() {
+        emit_free_functions(&mut out, &lib.free_functions, &type_pfx, lib);
     }
 
     // Utility functions
@@ -165,6 +175,17 @@ fn emit_shared_types(out: &mut String, type_pfx: &str, upper_pfx: &str) {
     ));
     out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
     out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Enum constants
+// ---------------------------------------------------------------------------
+
+fn emit_enum_section(out: &mut String, en: &EnumType) {
+    emit_section_header(out, &en.name);
+    for v in &en.variants {
+        out.push_str(&format!("#define {} {}\n", v.c_name, v.value));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +319,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str
 fn emit_type_section(out: &mut String, ty: &ExportedType, type_pfx: &str, lib: &Library) {
     emit_section_header(out, &ty.name);
 
-    let c_name = &lib.type_registry[&ty.name].c_type;
+    let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
         let MethodContext::Exportable { ffi_name } = &m.context else {
@@ -365,6 +386,52 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &s
 // ---------------------------------------------------------------------------
 // Error handle functions
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Free functions
+// ---------------------------------------------------------------------------
+
+fn emit_free_functions(
+    out: &mut String,
+    functions: &[FreeFunction],
+    type_pfx: &str,
+    lib: &Library,
+) {
+    emit_section_header(out, "Free functions");
+
+    for f in functions {
+        emit_doc_comment(out, &f.doc);
+
+        let mut params: Vec<String> = Vec::new();
+        for p in &f.params {
+            match &p.param_type {
+                ParamType::Regular(type_ref) => {
+                    let c_type = lib.c_type_of(&type_ref.type_name);
+                    params.push(format!("{} {}", c_type, p.name));
+                }
+                ParamType::Slice { c_params: _, .. } => {
+                    let str_c = format!("{type_pfx}Str");
+                    params.push(format!("const {str_c}* {}", p.name));
+                    params.push(format!("size_t {}_len", p.name));
+                }
+                ParamType::ImplTrait { trait_name, .. } => {
+                    let c_type = lib.c_type_of(trait_name);
+                    params.push(format!("{} {}", c_type, p.name));
+                }
+            }
+        }
+
+        let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, type_pfx, lib);
+        params.extend(extra_params);
+
+        let params_str = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.join(", ")
+        };
+        out.push_str(&format!("{ret_type} {}({params_str});\n", f.ffi_name));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Utility functions
@@ -552,13 +619,7 @@ fn emit_doc_comment(out: &mut String, doc: &[String]) {
 }
 
 fn find_type_c_name(lib: &Library, name: &str) -> String {
-    lib.type_registry
-        .get(name)
-        .map(|e| e.c_type.clone())
-        .unwrap_or_else(|| {
-            let type_pfx = snake_to_pascal(&lib.prefix);
-            format!("{type_pfx}{name}")
-        })
+    lib.c_type_of(name).to_string()
 }
 
 fn snake_to_pascal(s: &str) -> String {

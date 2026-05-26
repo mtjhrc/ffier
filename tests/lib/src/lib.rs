@@ -818,6 +818,45 @@ impl Weighable for Apple {
 }
 
 // ---------------------------------------------------------------------------
+// Enum constants — plain enums exported as C #define constants
+// ---------------------------------------------------------------------------
+
+#[ffier::exportable]
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Off = 0,
+    Error = 1,
+    Warn = 2,
+    Info = 3,
+    Debug = 4,
+    Trace = 5,
+}
+
+// ---------------------------------------------------------------------------
+// Free functions — not methods on any type
+// ---------------------------------------------------------------------------
+
+#[ffier::exportable]
+/// Describe a log level as a string.
+pub fn log_level_name(level: LogLevel) -> &'static str {
+    match level {
+        LogLevel::Off => "off",
+        LogLevel::Error => "error",
+        LogLevel::Warn => "warn",
+        LogLevel::Info => "info",
+        LogLevel::Debug => "debug",
+        LogLevel::Trace => "trace",
+    }
+}
+
+#[ffier::exportable]
+/// Check if a log level is enabled (everything above Off).
+pub fn log_level_is_enabled(level: LogLevel) -> bool {
+    level as u32 > 0
+}
+
+// ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
@@ -850,4 +889,7 @@ ffier::library_definition!("ft",
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
+    enum LogLevel,
+    fn log_level_name,
+    fn log_level_is_enabled,
 );
