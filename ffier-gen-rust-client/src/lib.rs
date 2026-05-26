@@ -8,8 +8,8 @@
 //! - Trait impl blocks for concrete types
 
 use ffier_schema::{
-    ErrorType, ExportedType, ImplementableTrait, Library, Method, MethodContext, ParamType,
-    Receiver, Return, TraitImpl,
+    EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
+    MethodContext, ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -147,6 +147,11 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // 0. Enum constants (FfiType impls + constant values)
+    for en in &lib.enum_constants {
+        emit_enum_type(&mut out, en, lib);
+    }
+
     // 1. Error enums
     for err in &lib.errors {
         emit_error(&mut out, err, lib);
@@ -214,6 +219,11 @@ pub fn generate(lib: &Library) -> String {
             continue;
         }
         emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
+    }
+
+    // 5. Free functions
+    for f in &lib.free_functions {
+        emit_free_function(&mut out, f, lib, &handle_types);
     }
 
     out
@@ -641,7 +651,11 @@ fn emit_method_body(
 
     // Handle extraction for by-value self
     if by_value_self && is_builder_type {
-        writeln!(out, "        let mut __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};").unwrap();
+        writeln!(
+            out,
+            "        let mut __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};"
+        )
+        .unwrap();
     } else if by_value_self {
         writeln!(
             out,
@@ -1526,6 +1540,236 @@ fn emit_ffi_call_return(
             unreachable!("Result returns must be handled by caller");
         }
     }
+}
+
+// ===========================================================================
+// Enum type generation
+// ===========================================================================
+
+fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
+    let entry = lib.type_entry(&en.name).unwrap();
+    let repr = match &entry.kind {
+        TypeKind::Enum { alias_of } => alias_of.as_str(),
+        _ => panic!("enum type must have TypeKind::Enum"),
+    };
+
+    // Enum definition
+    writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
+    writeln!(out, "#[repr({repr})]").unwrap();
+    writeln!(out, "pub enum {} {{", en.name).unwrap();
+    for v in &en.variants {
+        writeln!(out, "    {} = {},", v.name, v.value).unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiType impl
+    writeln!(out, "impl FfiType for {} {{", en.name).unwrap();
+    writeln!(out, "    type CRepr = {repr};").unwrap();
+    writeln!(
+        out,
+        "    const C_TYPE_NAME: &'static str = \"{}\";",
+        en.name
+    )
+    .unwrap();
+    writeln!(out, "    fn into_c(self) -> {repr} {{ self as {repr} }}").unwrap();
+    writeln!(
+        out,
+        "    fn from_c(repr: {repr}) -> Self {{ unsafe {{ core::mem::transmute(repr) }} }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Free function generation
+// ===========================================================================
+
+fn emit_free_function(
+    out: &mut String,
+    f: &FreeFunction,
+    lib: &Library,
+    handle_types: &HashSet<&str>,
+) {
+    // Extern declaration
+    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+    let sig = build_free_fn_extern_sig(&f.ffi_name, f, handle_types);
+    writeln!(out, "    pub fn {sig};").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Safe wrapper
+    for doc in &f.doc {
+        let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(out, "#[doc = \"{escaped}\"]").unwrap();
+    }
+
+    let param_sigs: Vec<String> = f.params.iter().map(|p| format_param_sig(p, lib)).collect();
+    let params_str = param_sigs.join(", ");
+
+    let ret_type = match &f.ret {
+        Return::Void => String::new(),
+        Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
+        Return::Result { ok, err_type } => {
+            let ok_str = match ok {
+                Some(tr) => tr.to_rust_type(),
+                None => "()".to_string(),
+            };
+            format!(" -> Result<{ok_str}, {err_type}>")
+        }
+    };
+
+    writeln!(out, "pub fn {}({params_str}){ret_type} {{", f.name).unwrap();
+
+    emit_slice_pre_bindings(out, &f.params, "    ");
+    let ffi_args = build_ffi_param_args(&f.params, lib);
+    let args_str = ffi_args.join(", ");
+    let sep = if args_str.is_empty() { "" } else { ", " };
+
+    match &f.ret {
+        Return::Void => {
+            writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
+        }
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "    let __raw = unsafe {{ {}({args_str}) }};",
+                f.ffi_name
+            )
+            .unwrap();
+            writeln!(out, "    <{ty} as FfiType>::from_c(__raw)").unwrap();
+        }
+        Return::Result { ok: None, err_type } => {
+            writeln!(
+                out,
+                "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    let __r = unsafe {{ {}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};",
+                f.ffi_name
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r)) }}"
+            )
+            .unwrap();
+        }
+        Return::Result {
+            ok: Some(ok_tr),
+            err_type,
+        } => {
+            let ty = ok_tr.to_rust_type();
+            let is_ok_handle = handle_types.contains(ok_tr.type_name.as_str());
+            if is_ok_handle {
+                writeln!(
+                    out,
+                    "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let __raw = unsafe {{ {}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};",
+                    f.ffi_name
+                )
+                .unwrap();
+                let (error_result_fn, error_destroy_fn) = find_error_dispatch_fns(lib);
+                writeln!(out, "    if !__raw.is_null() {{").unwrap();
+                writeln!(out, "        Ok(<{ty} as FfiType>::from_c(__raw))").unwrap();
+                writeln!(out, "    }} else {{").unwrap();
+                writeln!(
+                    out,
+                    "        let __r = unsafe {{ {error_result_fn}(__err) }};"
+                )
+                .unwrap();
+                writeln!(out, "        unsafe {{ {error_destroy_fn}(__err) }};").unwrap();
+                writeln!(out, "        Err({err_type}::from_ffi(__r))").unwrap();
+                writeln!(out, "    }}").unwrap();
+            } else {
+                writeln!(out, "    let mut __out = std::mem::MaybeUninit::uninit();").unwrap();
+                writeln!(
+                    out,
+                    "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let __r = unsafe {{ {}({args_str}{sep}__out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};",
+                    f.ffi_name
+                )
+                .unwrap();
+                writeln!(out, "    if __r == 0 {{").unwrap();
+                writeln!(
+                    out,
+                    "        Ok(<{ty} as FfiType>::from_c(unsafe {{ __out.assume_init() }}))"
+                )
+                .unwrap();
+                writeln!(out, "    }} else {{").unwrap();
+                writeln!(out, "        Err({err_type}::from_ffi(__r))").unwrap();
+                writeln!(out, "    }}").unwrap();
+            }
+        }
+    }
+
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+fn build_free_fn_extern_sig(
+    ffi_name: &str,
+    f: &FreeFunction,
+    handle_types: &HashSet<&str>,
+) -> String {
+    let mut params = Vec::new();
+
+    for p in &f.params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type_static();
+                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
+            }
+            ParamType::Slice { .. } => {
+                params.push(format!("{}: *const ffier::FfierBytes", p.name));
+                params.push(format!("{}_len: usize", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                params.push(format!("{}: *mut core::ffi::c_void", p.name));
+            }
+        }
+    }
+
+    let ret_str = match &f.ret {
+        Return::Void => String::new(),
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type_static();
+            format!(" -> <{ty} as FfiType>::CRepr")
+        }
+        Return::Result { ok, .. } => {
+            let is_ok_handle = ok
+                .as_ref()
+                .map(|tr| handle_types.contains(tr.type_name.as_str()))
+                .unwrap_or(false);
+
+            if is_ok_handle {
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> *mut core::ffi::c_void".to_string()
+            } else {
+                if let Some(ok_tr) = ok {
+                    let ty = ok_tr.to_rust_type_static();
+                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
+                }
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
+        }
+    };
+
+    let params_str = params.join(", ");
+    format!("{ffi_name}({params_str}){ret_str}")
 }
 
 fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {

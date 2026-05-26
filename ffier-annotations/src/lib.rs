@@ -106,7 +106,11 @@ impl ParamInfo {
 
     /// Bridge type tokens. Panics for `StrSlice` (which has no single bridge type).
     fn bridge_type(&self) -> &proc_macro2::TokenStream {
-        &self.types.as_ref().expect("StrSlice has no bridge_type").bridge
+        &self
+            .types
+            .as_ref()
+            .expect("StrSlice has no bridge_type")
+            .bridge
     }
 
     /// Rust type tokens. Panics for `StrSlice`.
@@ -124,7 +128,6 @@ impl MethodInfo {
             ReturnKind::Result { ok, .. } => ok.as_ref().map(|tp| &tp.bridge),
         }
     }
-
 }
 
 /// Detect `&[&str]` — a slice of string references.
@@ -141,14 +144,22 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Main macro
 // ---------------------------------------------------------------------------
 
 #[proc_macro_attribute]
 pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Dispatch based on the item kind: impl block, enum, or free function.
+    let item2: proc_macro2::TokenStream = item.clone().into();
+    if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
+        && matches!(enum_item.data, Data::Enum(_))
+    {
+        return exportable_enum(enum_item);
+    }
+    if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
+        return exportable_free_fn(fn_item);
+    }
     let input = parse_macro_input!(item as ItemImpl);
 
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
@@ -277,6 +288,231 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     prefix = $prefix,
                     type_tag = 0,
                     lifetimes = (#(#lifetime_idents),*),
+                    methods = [#(#method_meta_tokens),*],
+                } $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
+    };
+
+    output.into()
+}
+
+// ---------------------------------------------------------------------------
+// #[ffier::exportable] on enums
+// ---------------------------------------------------------------------------
+
+/// Handle `#[ffier::exportable]` on a `#[repr(uN)]` enum.
+///
+/// Extracts the repr type and variant discriminants, emits a metadata macro
+/// that bridges to the schema generator. Also generates a `FfiType` impl
+/// so the enum can be used as a parameter/return type in exported methods.
+fn exportable_enum(input: DeriveInput) -> TokenStream {
+    let name = &input.ident;
+    let Data::Enum(data_enum) = &input.data else {
+        unreachable!();
+    };
+
+    // Extract #[repr(uN)] — required for enum constants.
+    let repr_ident = match extract_repr(&input.attrs) {
+        Some(r) => r,
+        None => {
+            return syn::Error::new_spanned(
+                &input,
+                "#[ffier::exportable] on enums requires #[repr(u8/u16/u32/u64/i8/i16/i32/i64)]",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+    let repr_str = repr_ident.to_string();
+
+    // Collect variant names and discriminant values.
+    let mut variants_meta = Vec::new();
+    let mut next_value: u64 = 0;
+    for variant in &data_enum.variants {
+        if !variant.fields.is_empty() {
+            return syn::Error::new_spanned(
+                variant,
+                "#[ffier::exportable] enums must have unit variants only (no fields)",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let value = if let Some((_, expr)) = &variant.discriminant {
+            // Parse the discriminant expression as a literal integer.
+            if let syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(lit),
+                ..
+            }) = expr
+            {
+                match lit.base10_parse::<u64>() {
+                    Ok(v) => v,
+                    Err(e) => return e.to_compile_error().into(),
+                }
+            } else {
+                return syn::Error::new_spanned(
+                    expr,
+                    "ffier: enum discriminant must be a literal integer",
+                )
+                .to_compile_error()
+                .into();
+            }
+        } else {
+            next_value
+        };
+        next_value = value + 1;
+        let var_ident = &variant.ident;
+        variants_meta.push(quote! {
+            { name = #var_ident, value = #value, }
+        });
+    }
+
+    let enum_snake = camel_to_snake(&name.to_string());
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_{enum_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{name}");
+    let helper_mod_name = format_ident!("_ffier_{enum_snake}");
+    let enum_path = quote! { $crate::#name };
+
+    let output = quote! {
+        #input
+
+        #[doc(hidden)]
+        pub mod #helper_mod_name {}
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #internal_macro_name {
+            (@reexport) => {
+                impl FfiType for #name {
+                    type CRepr = #repr_ident;
+                    const C_TYPE_NAME: &'static str = stringify!(#name);
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> #repr_ident { self as #repr_ident }
+                    fn from_c(repr: #repr_ident) -> Self { unsafe { core::mem::transmute(repr) } }
+                }
+            };
+            // Tagged invocation (from library_definition! shim): includes prefix
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @enum_constants,
+                    name = #name,
+                    path = (#enum_path),
+                    prefix = $prefix,
+                    repr = #repr_str,
+                    variants = [#(#variants_meta),*],
+                } $(, $($rest)*)? }
+            };
+            // Untagged invocation
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @enum_constants,
+                    name = #name,
+                    path = (#enum_path),
+                    prefix = $prefix,
+                    repr = #repr_str,
+                    variants = [#(#variants_meta),*],
+                } $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
+    };
+
+    output.into()
+}
+
+/// Extract the `#[repr(X)]` attribute from an item, returning the ident X
+/// if it's a supported integer repr.
+fn extract_repr(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
+    for attr in attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+        if let Ok(ident) = attr.parse_args::<syn::Ident>() {
+            let s = ident.to_string();
+            if matches!(
+                s.as_str(),
+                "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
+            ) {
+                return Some(ident);
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// #[ffier::exportable] on free functions
+// ---------------------------------------------------------------------------
+
+/// Handle `#[ffier::exportable]` on a free (non-method) function.
+fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
+    let fn_name = &input.sig.ident;
+    let fn_name_str = fn_name.to_string();
+
+    let helper_mod_name = format_ident!("_ffier_fn_{fn_name_str}");
+    let mut ctx = AliasContext::new(helper_mod_name.clone());
+
+    // Parse the function signature as a static method (no self)
+    let mut method = match parse_method_sig(&input.sig, &input.attrs, &mut ctx, None, false, false)
+    {
+        Some(m) => m,
+        None => {
+            return syn::Error::new_spanned(
+                &input.sig,
+                "ffier: could not parse free function signature",
+            )
+            .to_compile_error()
+            .into();
+        }
+    };
+    method.ffi_name = fn_name_str.clone();
+
+    let local_type_aliases = ctx.local_type_aliases();
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_fn_{fn_name_str}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{fn_name}");
+
+    let method_meta_tokens = emit_method_meta(&[method]);
+    let fn_path = quote! { $crate::#fn_name };
+    let doc_lines = extract_doc_comments(&input.attrs);
+
+    let output = quote! {
+        #input
+
+        #[doc(hidden)]
+        pub mod #helper_mod_name {
+            #(#local_type_aliases)*
+        }
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #internal_macro_name {
+            (@reexport) => {};
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @free_fn,
+                    name = #fn_name,
+                    fn_path = (#fn_path),
+                    prefix = $prefix,
+                    ffi_name = #fn_name_str,
+                    doc = [#(#doc_lines),*],
+                    methods = [#(#method_meta_tokens),*],
+                } $(, $($rest)*)? }
+            };
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @free_fn,
+                    name = #fn_name,
+                    fn_path = (#fn_path),
+                    prefix = $prefix,
+                    ffi_name = #fn_name_str,
+                    doc = [#(#doc_lines),*],
                     methods = [#(#method_meta_tokens),*],
                 } $(, $($rest)*)? }
             };
@@ -444,8 +680,6 @@ fn is_primitive(ty: &Type) -> bool {
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
 }
-
-
 
 // ---------------------------------------------------------------------------
 // #[derive(FfiError)]
@@ -851,7 +1085,12 @@ impl Parse for ImplementableArgs {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { supers, reserved, foreign, pragma })
+        Ok(Self {
+            supers,
+            reserved,
+            foreign,
+            pragma,
+        })
     }
 }
 
@@ -873,7 +1112,14 @@ fn extract_vtable_methods(
         };
         let has_default = method.default.is_some();
         let mattrs = parse_ffier_method_attrs(&method.attrs)?;
-        if let Some(mut m) = parse_method_sig(&method.sig, &method.attrs, ctx, None, has_default, mattrs.raw_handle) {
+        if let Some(mut m) = parse_method_sig(
+            &method.sig,
+            &method.attrs,
+            ctx,
+            None,
+            has_default,
+            mattrs.raw_handle,
+        ) {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
                     &method.sig.ident,
@@ -893,7 +1139,14 @@ fn extract_vtable_methods(
     for sup in supers {
         for method in &sup.methods {
             let mattrs = parse_ffier_method_attrs(&method.attrs)?;
-            if let Some(mut m) = parse_method_sig(&method.sig, &method.attrs, ctx, None, false, mattrs.raw_handle) {
+            if let Some(mut m) = parse_method_sig(
+                &method.sig,
+                &method.attrs,
+                ctx,
+                None,
+                false,
+                mattrs.raw_handle,
+            ) {
                 let index = mattrs.index.ok_or_else(|| {
                     syn::Error::new_spanned(
                         &method.sig.ident,
@@ -970,12 +1223,17 @@ fn parse_method_sig(
                 }
             }
             _ if self_ty.is_some() => Receiver::None, // static method in exportable
-            _ => return None, // trait method without receiver — skip
+            _ if self_ty.is_none() && !has_default => Receiver::None, // free function
+            _ => return None,                         // trait method without receiver — skip
         }
     };
 
     // Skip receiver or raw_handle's first param (the handle pointer)
-    let skip_n = if receiver != Receiver::None || raw_handle { 1 } else { 0 };
+    let skip_n = if receiver != Receiver::None || raw_handle {
+        1
+    } else {
+        0
+    };
 
     // --- Parse params ---
     let params: Vec<_> = sig
@@ -996,11 +1254,15 @@ fn parse_method_sig(
             };
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
-                let dispatch = parse_ffier_param_dispatch(&pt.attrs)
-                    .unwrap_or_else(|| "auto".to_string());
+                let dispatch =
+                    parse_ffier_param_dispatch(&pt.attrs).unwrap_or_else(|| "auto".to_string());
                 return Some(ParamInfo {
                     name: pi.ident.clone(),
-                    kind: ParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args },
+                    kind: ParamKind::ImplTrait {
+                        trait_name,
+                        dispatch,
+                        trait_lifetime_args,
+                    },
                     types: Some(TypePair {
                         bridge: quote! { *mut core::ffi::c_void },
                         rust: quote! { *mut core::ffi::c_void },
@@ -1082,7 +1344,10 @@ fn parse_method_sig(
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
                 let ok_pair = if is_unit_type(&ok_bridge)
-                    || (is_builder && self_ty_static.as_ref().is_some_and(|sty| is_self_return(&ok_bridge, sty)))
+                    || (is_builder
+                        && self_ty_static
+                            .as_ref()
+                            .is_some_and(|sty| is_self_return(&ok_bridge, sty)))
                 {
                     None
                 } else if raw_handle {
@@ -1100,7 +1365,10 @@ fn parse_method_sig(
                         rust: quote! { #rust },
                     })
                 };
-                ReturnKind::Result { ok: ok_pair, err_ident }
+                ReturnKind::Result {
+                    ok: ok_pair,
+                    err_ident,
+                }
             } else if raw_handle {
                 let erased = erase_lifetimes(&ty_bridge);
                 ReturnKind::Value(TypePair {
@@ -1171,7 +1439,8 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
     let index = m.index;
     let raw_handle = m.raw_handle;
 
-    let method_lt_idents: Vec<_> = m.method_lifetimes
+    let method_lt_idents: Vec<_> = m
+        .method_lifetimes
         .iter()
         .map(|lt| format_ident!("{}", lt))
         .collect();
@@ -1739,7 +2008,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 // when @reexport expands in a different crate.
                 quote! { $crate::#helper(self #(, #params_pass)*) }
             });
-            Some(vtable_call_body(vm, &method.sig, fallback, method_index, &vtable_struct_ref))
+            Some(vtable_call_body(
+                vm,
+                &method.sig,
+                fallback,
+                method_index,
+                &vtable_struct_ref,
+            ))
         })
         .collect();
 
@@ -1755,7 +2030,13 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .filter_map(|method| {
                     let name = &method.sig.ident;
                     let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(vm, &method.sig, None, None, &vtable_struct_ref))
+                    Some(vtable_call_body(
+                        vm,
+                        &method.sig,
+                        None,
+                        None,
+                        &vtable_struct_ref,
+                    ))
                 })
                 .collect();
 
@@ -1784,7 +2065,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{trait_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}");
 
-
     let vtable_method_meta = emit_method_meta(&vtable_methods);
 
     let trait_path_tokens = quote! { $crate::#trait_name };
@@ -1803,9 +2083,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .iter()
                 .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
         // Traits with `impl Trait` params aren't dyn-compatible
-        let has_impl_trait = vtable_methods.iter().any(|m| {
-            m.params.iter().any(|p| p.is_impl_trait())
-        });
+        let has_impl_trait = vtable_methods
+            .iter()
+            .any(|m| m.params.iter().any(|p| p.is_impl_trait()));
         if !has_supertraits && !has_impl_trait {
             emit_dyn_dispatch_impl(&trait_item)
         } else {
@@ -2064,9 +2344,18 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 Ok(a) => a,
                 Err(e) => return e.to_compile_error().into(),
             };
-            if mattrs.skip { continue; }
+            if mattrs.skip {
+                continue;
+            }
             // trait_impl methods are concrete overrides, not defaults
-            if let Some(m) = parse_method_sig(&method.sig, &method.attrs, &mut ctx, None, false, mattrs.raw_handle) {
+            if let Some(m) = parse_method_sig(
+                &method.sig,
+                &method.attrs,
+                &mut ctx,
+                None,
+                false,
+                mattrs.raw_handle,
+            ) {
                 ms.push(m);
             }
         }
@@ -2182,7 +2471,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         .filter_map(|e| {
             if let LibraryEntry::TaggedTrait(path, _) = e {
                 let is_external = path.segments.len() > 1
-                    && path.segments.first().map_or(true, |seg| seg.ident != "crate");
+                    && path
+                        .segments
+                        .first()
+                        .map_or(true, |seg| seg.ident != "crate");
                 if is_external {
                     return Some(path_last_ident(path).to_string());
                 }
@@ -2241,7 +2533,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 // Helper module re-export for qualified paths
-                let helper_mod_name = format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
+                let helper_mod_name =
+                    format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
                 if path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
                     reexport_invocations.push(quote! {
@@ -2272,7 +2565,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 let is_external = path.segments.len() > 1
-                    && path.segments.first().map_or(true, |seg| seg.ident != "crate");
+                    && path
+                        .segments
+                        .first()
+                        .map_or(true, |seg| seg.ident != "crate");
                 let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
 
                 if is_external {
@@ -2319,6 +2615,68 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 reexport_invocations.push(quote! { #alias!(@reexport, #tag); });
                 chain_paths.push(quote! { $crate::#shim_name });
             }
+            LibraryEntry::Enum(path) => {
+                let last_ident = path_last_ident(path);
+                let alias = meta_alias_for_type(path);
+                let alias_chain = to_chain_path(&alias);
+
+                // Shim macro — no type tag needed for enums
+                let shim_name = format_ident!("__ffier_enum_{prefix_str}_{last_ident}");
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+
+                // @reexport generates the FfiType impl for the enum
+                reexport_invocations.push(quote! { #alias!(@reexport); });
+                chain_paths.push(quote! { $crate::#shim_name });
+
+                // Helper module re-export for qualified paths
+                let helper_mod_name =
+                    format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
+                if path.segments.len() > 1 {
+                    let helper_mod_path = replace_last_segment(path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #helper_mod_path;
+                    });
+                }
+            }
+            LibraryEntry::FreeFn(path) => {
+                let last_ident = path_last_ident(path);
+                let alias = meta_alias_for_type(path);
+                let alias_chain = to_chain_path(&alias);
+
+                // Shim macro — no type tag needed for free functions
+                let shim_name = format_ident!("__ffier_fn_{prefix_str}_{last_ident}");
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+
+                reexport_invocations.push(quote! { #alias!(@reexport); });
+                chain_paths.push(quote! { $crate::#shim_name });
+
+                // Helper module re-export for qualified paths
+                let helper_mod_name = format_ident!("_ffier_fn_{}", last_ident);
+                if path.segments.len() > 1 {
+                    let helper_mod_path = replace_last_segment(path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #helper_mod_path;
+                    });
+                }
+            }
             LibraryEntry::TraitImpl {
                 trait_path,
                 struct_path,
@@ -2339,7 +2697,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // but was registered as `trait ffier_builtins::Error = 25`).
                 let is_external = external_trait_names.contains(&trait_name.to_string())
                     || (trait_path.segments.len() > 1
-                        && trait_path.segments.first().map_or(true, |seg| seg.ident != "crate"));
+                        && trait_path
+                            .segments
+                            .first()
+                            .map_or(true, |seg| seg.ident != "crate"));
                 let resolved_trait_path = if is_external {
                     let reexport = format_ident!("__ffier_reexport_trait_{trait_name}");
                     quote! { $crate::#reexport }
@@ -2349,9 +2710,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 // Shim macro that passes the resolved trait path to the
                 // trait_impl metadata macro.
-                let shim_name = format_ident!(
-                    "__ffier_trait_impl_{prefix_str}_{trait_name}_for_{struct_name}"
-                );
+                let shim_name =
+                    format_ident!("__ffier_trait_impl_{prefix_str}_{trait_name}_for_{struct_name}");
                 shim_macros.push(quote! {
                     #[doc(hidden)]
                     #[macro_export]
@@ -2618,6 +2978,10 @@ enum LibraryEntry {
         trait_path: syn::Path,
         struct_path: syn::Path,
     },
+    /// An enum constant type (no type tag, value type): `enum Path`
+    Enum(syn::Path),
+    /// A free function: `fn Path`
+    FreeFn(syn::Path),
 }
 
 /// Parse a `= N` type tag after an identifier. Returns the tag value.
@@ -2648,6 +3012,16 @@ impl Parse for LibraryInput {
                 let path: syn::Path = input.parse()?;
                 let tag = parse_type_tag(input)?;
                 entries.push(LibraryEntry::TaggedTrait(path, tag));
+            } else if input.peek(Token![enum]) {
+                // `enum Path`
+                input.parse::<Token![enum]>()?;
+                let path: syn::Path = input.parse()?;
+                entries.push(LibraryEntry::Enum(path));
+            } else if input.peek(Token![fn]) {
+                // `fn Path`
+                input.parse::<Token![fn]>()?;
+                let path: syn::Path = input.parse()?;
+                entries.push(LibraryEntry::FreeFn(path));
             } else {
                 let first: syn::Path = input.parse()?;
                 if input.peek(Token![for]) {

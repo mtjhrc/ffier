@@ -27,6 +27,12 @@ pub struct Library {
     pub type_registry: BTreeMap<String, TypeEntry>,
     pub exported_types: Vec<ExportedType>,
     pub errors: Vec<ErrorType>,
+    /// Plain enums exported as C `#define` constants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub enum_constants: Vec<EnumType>,
+    /// Free (non-method) functions exported via `#[ffier::exportable]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub free_functions: Vec<FreeFunction>,
     pub traits: Vec<ImplementableTrait>,
     pub trait_impls: Vec<TraitImpl>,
 }
@@ -74,6 +80,14 @@ pub enum TypeKind {
     Error,
     /// Trait (from `#[implementable]` or discovered via `#[trait_impl]`).
     Trait,
+    /// Plain enum with explicit discriminant values and a `#[repr(uN)]`.
+    /// At the C ABI level the parameter is the underlying integer type
+    /// (recorded in `alias_of`), but the schema carries the variant names
+    /// and values so generators can emit `#define` constants / typed enums.
+    Enum {
+        /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
+        alias_of: std::string::String,
+    },
     /// Sentinel type for builder methods that return `Self`.
     /// At the C ABI level this is `void` (the new handle is written back
     /// through a double pointer), but Rust/Swift generators can recover
@@ -406,6 +420,47 @@ pub struct ErrorVariant {
 }
 
 // ---------------------------------------------------------------------------
+// Enum constants
+// ---------------------------------------------------------------------------
+
+/// A plain enum exported as C `#define` constants.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnumType {
+    /// Rust enum name — key into `type_registry`.
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+}
+
+/// A variant of an enum constant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnumVariant {
+    /// Variant name (e.g. "Off").
+    pub name: String,
+    /// C constant name (e.g. "FT_LOG_LEVEL_OFF").
+    pub c_name: String,
+    /// Numeric discriminant value.
+    pub value: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Free functions
+// ---------------------------------------------------------------------------
+
+/// A free function exported via `#[ffier::exportable]`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FreeFunction {
+    /// Rust function name (e.g. "init_log").
+    pub name: String,
+    /// C FFI function name (e.g. "ft_init_log").
+    pub ffi_name: String,
+    /// Doc comment lines.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub doc: Vec<String>,
+    pub params: Vec<Param>,
+    pub ret: Return,
+}
+
+// ---------------------------------------------------------------------------
 // Implementable traits
 // ---------------------------------------------------------------------------
 
@@ -476,13 +531,25 @@ impl Library {
         self.type_registry.get(name)
     }
 
-    /// Get the C type name for a type by its registry key.
-    /// Panics if the type is not in the registry.
+    /// Get the C type name for a type by its registry key, resolving
+    /// through alias/enum chains to the concrete C type.
+    /// Panics if the type is not in the registry or if the alias chain
+    /// exceeds 16 hops (indicates a cycle).
     pub fn c_type_of(&self, name: &str) -> &str {
-        self.type_registry
-            .get(name)
-            .unwrap_or_else(|| panic!("type `{name}` not found in type_registry"))
-            .c_type
-            .as_str()
+        const MAX_DEPTH: usize = 16;
+        let mut current = name;
+        for _ in 0..MAX_DEPTH {
+            let entry = self
+                .type_registry
+                .get(current)
+                .unwrap_or_else(|| panic!("type `{current}` not found in type_registry"));
+            match &entry.kind {
+                TypeKind::Alias { alias_of, .. } | TypeKind::Enum { alias_of } => {
+                    current = alias_of;
+                }
+                _ => return &entry.c_type,
+            }
+        }
+        panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
     }
 }

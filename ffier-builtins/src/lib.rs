@@ -10,9 +10,9 @@
 //! );
 //! ```
 
-pub use ffier_rt::ffier_result;
 pub use ffier_rt::FfierHandle;
 pub use ffier_rt::FfierResult;
+pub use ffier_rt::ffier_result;
 
 /// Streaming string writer for error messages (and other display output).
 ///
@@ -54,6 +54,7 @@ pub trait Error {
     fn message(&self, writer: &mut impl PushStr);
 
     #[ffier(index = 2, raw_handle)]
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn result(handle: *const FfierHandle<Self>) -> u64
     where
         Self: Sized,

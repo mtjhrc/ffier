@@ -285,7 +285,13 @@ impl MetaMethod {
     }
 
     pub fn is_builder(&self) -> bool {
-        matches!(&self.context, MetaMethodContext::Exportable { is_builder: true, .. })
+        matches!(
+            &self.context,
+            MetaMethodContext::Exportable {
+                is_builder: true,
+                ..
+            }
+        )
     }
 
     pub fn doc(&self) -> &[String] {
@@ -298,7 +304,13 @@ impl MetaMethod {
     // --- Trait context accessors ---
 
     pub fn has_default(&self) -> bool {
-        matches!(&self.context, MetaMethodContext::Trait { has_default: true, .. })
+        matches!(
+            &self.context,
+            MetaMethodContext::Trait {
+                has_default: true,
+                ..
+            }
+        )
     }
 
     pub fn index(&self) -> usize {
@@ -309,7 +321,13 @@ impl MetaMethod {
     }
 
     pub fn raw_handle(&self) -> bool {
-        matches!(&self.context, MetaMethodContext::Trait { raw_handle: true, .. })
+        matches!(
+            &self.context,
+            MetaMethodContext::Trait {
+                raw_handle: true,
+                ..
+            }
+        )
     }
 
     // --- Return type accessors ---
@@ -409,6 +427,49 @@ pub struct MetaErrorVariant {
     pub name: Ident,
     pub code: u32,
     pub message: String,
+}
+
+// ---------------------------------------------------------------------------
+// Enum metadata
+// ---------------------------------------------------------------------------
+
+pub struct MetaEnum {
+    pub name: Ident,
+    pub path: TokenStream,
+    pub prefix: String,
+    /// The `#[repr(...)]` integer type (e.g. "u32", "u64").
+    pub repr: String,
+    pub variants: Vec<MetaEnumVariant>,
+}
+
+impl HasPrefix for MetaEnum {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
+pub struct MetaEnumVariant {
+    pub name: Ident,
+    pub value: u64,
+}
+
+// ---------------------------------------------------------------------------
+// Free function metadata
+// ---------------------------------------------------------------------------
+
+pub struct MetaFreeFunction {
+    pub name: Ident,
+    pub fn_path: TokenStream,
+    pub prefix: String,
+    pub ffi_name: String,
+    pub doc: Vec<String>,
+    pub methods: Vec<MetaMethod>,
+}
+
+impl HasPrefix for MetaFreeFunction {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -678,9 +739,17 @@ impl syn::parse::Parse for MetaMethod {
         // Determine context from the fields: if ffi_name is non-empty, it's
         // from an exportable; otherwise it's from a trait.
         let context = if !ffi_name.is_empty() {
-            MetaMethodContext::Exportable { ffi_name, is_builder, doc }
+            MetaMethodContext::Exportable {
+                ffi_name,
+                is_builder,
+                doc,
+            }
         } else {
-            MetaMethodContext::Trait { has_default, index, raw_handle }
+            MetaMethodContext::Trait {
+                has_default,
+                index,
+                raw_handle,
+            }
         };
 
         Ok(MetaMethod {
@@ -703,7 +772,10 @@ fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
     expect_key(input, "rust_type")?;
     let rust_type = parse_parenthesized_tokens(input)?;
     parse_comma(input)?;
-    Ok(MetaTypePair { bridge_type, rust_type })
+    Ok(MetaTypePair {
+        bridge_type,
+        rust_type,
+    })
 }
 
 impl syn::parse::Parse for MetaParam {
@@ -748,10 +820,16 @@ impl syn::parse::Parse for MetaParam {
                 };
                 parse_comma(input)?;
                 expect_key(input, "trait_lifetime_args")?;
-                let trait_lifetime_args = parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
+                let trait_lifetime_args =
+                    parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
                 parse_comma(input)?;
                 let types = parse_type_pair(input)?;
-                MetaParamKind::ImplTrait { trait_name, dispatch, types, trait_lifetime_args }
+                MetaParamKind::ImplTrait {
+                    trait_name,
+                    dispatch,
+                    types,
+                    trait_lifetime_args,
+                }
             }
             other => {
                 return Err(syn::Error::new(
@@ -870,6 +948,108 @@ impl syn::parse::Parse for MetaError {
 }
 
 // ---------------------------------------------------------------------------
+// Enum metadata parsing
+// ---------------------------------------------------------------------------
+
+impl syn::parse::Parse for MetaEnum {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let tag: Ident = input.parse()?;
+        if tag != "enum_constants" {
+            return Err(syn::Error::new(tag.span(), "expected `enum_constants`"));
+        }
+        parse_comma(input)?;
+
+        expect_key(input, "name")?;
+        let name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "path")?;
+        let path = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "repr")?;
+        let repr = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "variants")?;
+        let variants = parse_bracketed_list(input, |content| {
+            let inner;
+            syn::braced!(inner in content);
+            expect_key(&inner, "name")?;
+            let name: Ident = inner.parse()?;
+            parse_comma(&inner)?;
+            expect_key(&inner, "value")?;
+            let value: syn::LitInt = inner.parse()?;
+            let value = value.base10_parse::<u64>()?;
+            parse_comma(&inner)?;
+            Ok(MetaEnumVariant { name, value })
+        })?;
+        parse_comma(input)?;
+
+        Ok(MetaEnum {
+            name,
+            path,
+            prefix,
+            repr,
+            variants,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Free function metadata parsing
+// ---------------------------------------------------------------------------
+
+impl syn::parse::Parse for MetaFreeFunction {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let tag: Ident = input.parse()?;
+        if tag != "free_fn" {
+            return Err(syn::Error::new(tag.span(), "expected `free_fn`"));
+        }
+        parse_comma(input)?;
+
+        expect_key(input, "name")?;
+        let name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "fn_path")?;
+        let fn_path = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "ffi_name")?;
+        let ffi_name = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "doc")?;
+        let doc = parse_bracketed_list(input, parse_string)?;
+        parse_comma(input)?;
+
+        expect_key(input, "methods")?;
+        let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
+        parse_comma(input)?;
+
+        Ok(MetaFreeFunction {
+            name,
+            fn_path,
+            prefix,
+            ffi_name,
+            doc,
+            methods,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Implementable metadata parsing
 // ---------------------------------------------------------------------------
 
@@ -932,7 +1112,10 @@ impl syn::parse::Parse for MetaImplementable {
         } else {
             let ident: syn::Ident = input.parse()?;
             if ident != "none" {
-                return Err(syn::Error::new(ident.span(), "expected string literal or `none`"));
+                return Err(syn::Error::new(
+                    ident.span(),
+                    "expected string literal or `none`",
+                ));
             }
             None
         };
