@@ -6,10 +6,6 @@ edition = "2024"
 [lib]
 crate-type = ["cdylib"]
 
-[[bin]]
-name = "gen-header"
-path = "src/gen_header.rs"
-
 [dependencies]
 mylib = { path = "../mylib" }
 ffier = { path = "../../ffier" }

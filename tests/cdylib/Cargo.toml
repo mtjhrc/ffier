@@ -10,10 +10,6 @@ fruit-label = ["ffier-test-lib/fruit-label"]
 [lib]
 crate-type = ["cdylib"]
 
-[[bin]]
-name = "gen-header"
-path = "src/gen_header.rs"
-
 [dependencies]
 ffier-test-lib = { path = "../lib", default-features = false }
 ffier = { path = "../../ffier" }
