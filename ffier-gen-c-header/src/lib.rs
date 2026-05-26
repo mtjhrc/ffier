@@ -236,7 +236,7 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
     trait_names.sort();
 
     for trait_name in &trait_names {
-        let c_name = format!("{type_pfx}{trait_name}");
+        let c_name = lib.c_type_of(trait_name);
         let implementors = &trait_implementors[trait_name];
         let list = implementors.join(" | ");
         out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
