@@ -25,7 +25,7 @@ pub fn generate(lib: &Library) -> String {
         writeln!(out, "#[allow(unused_imports)]").unwrap();
         writeln!(
             out,
-            "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd}};"
+            "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}};"
         )
         .unwrap();
         writeln!(out).unwrap();
