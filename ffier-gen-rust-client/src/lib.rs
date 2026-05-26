@@ -158,11 +158,7 @@ pub fn generate(lib: &Library) -> String {
     }
 
     // Build handle type set (for Result<Handle, E> detection)
-    let vtable_names: Vec<String> = lib
-        .traits
-        .iter()
-        .map(|t| format!("Vtable{}", t.name))
-        .collect();
+    let vtable_names: Vec<String> = lib.traits.iter().map(|t| t.wrapper_name.clone()).collect();
     let handle_types: HashSet<&str> = lib
         .exported_types
         .iter()
@@ -879,8 +875,8 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
 fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
-    let vtable_name = format!("{}Vtable", tr.name);
-    let wrapper_name = format!("Vtable{}", tr.name);
+    let vtable_name = &tr.vtable_struct_name;
+    let wrapper_name = &tr.wrapper_name;
     // Trait definition
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
@@ -1149,7 +1145,7 @@ fn emit_vtable_struct(
 }
 
 fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Library) {
-    let vtable_name = format!("{}Vtable", tr.name);
+    let vtable_name = &tr.vtable_struct_name;
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
 

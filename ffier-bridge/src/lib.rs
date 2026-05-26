@@ -2187,7 +2187,7 @@ fn build_schema(
             },
             c_type: "int".to_string(),
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::BorrowedFd),
             lifetime_params: vec![],
         },
     );
@@ -2200,7 +2200,7 @@ fn build_schema(
             },
             c_type: "int".to_string(),
             type_tag: None,
-            bless: None,
+            bless: Some(ffier_schema::Blessing::OwnedFd),
             lifetime_params: vec![],
         },
     );
@@ -2411,9 +2411,13 @@ fn convert_implementable(
     let ffi_prefix = format!("{name_snake}_");
     let name_upper_snake = camel_to_snake(&name).to_ascii_uppercase();
     ffier_schema::ImplementableTrait {
-        name,
+        name: name.clone(),
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         type_tag_constant: format!("{}{name_upper_snake}_TYPE_TAG", r.upper_pfx),
+        vtable_struct_c_name: format!("{}{}Vtable", r.type_pfx, name),
+        wrapper_c_name: format!("{}Vtable{}", r.type_pfx, name),
+        vtable_struct_name: format!("{name}Vtable"),
+        wrapper_name: format!("Vtable{name}"),
         methods: meta
             .methods
             .iter()
