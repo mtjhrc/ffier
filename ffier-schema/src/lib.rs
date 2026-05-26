@@ -57,6 +57,8 @@ pub enum Blessing {
     Path,
     /// Stack-allocated vtable handle for passing trait objects.
     VtableHandle,
+    /// Raw file descriptor (platform-level integer).
+    RawFd,
     /// Borrowed file descriptor (non-owning).
     BorrowedFd,
     /// Owned file descriptor (transfers ownership).

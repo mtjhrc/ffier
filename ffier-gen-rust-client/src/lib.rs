@@ -18,17 +18,38 @@ use std::fmt::Write;
 pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
 
-    // Emit imports for blessed types that need special std imports
-    let has_fd = lib.blessed(ffier_schema::Blessing::BorrowedFd).is_some()
-        || lib.blessed(ffier_schema::Blessing::OwnedFd).is_some();
-    if has_fd {
-        writeln!(out, "#[allow(unused_imports)]").unwrap();
-        writeln!(
-            out,
-            "use std::os::unix::io::{{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd}};"
-        )
-        .unwrap();
-        writeln!(out).unwrap();
+    // Emit imports for blessed types that need special std imports.
+    // Each blessing can contribute import lines; duplicates are deduplicated.
+    {
+        use ffier_schema::Blessing;
+        let blessing_imports: &[(Blessing, &[&str])] = &[
+            (Blessing::RawFd, &["use std::os::unix::io::RawFd;"]),
+            (
+                Blessing::BorrowedFd,
+                &["use std::os::unix::io::{AsRawFd, BorrowedFd, RawFd};"],
+            ),
+            (
+                Blessing::OwnedFd,
+                &["use std::os::unix::io::{FromRawFd, OwnedFd, RawFd};"],
+            ),
+        ];
+        let mut imports: Vec<&str> = Vec::new();
+        for (blessing, lines) in blessing_imports {
+            if lib.blessed(*blessing).is_some() {
+                for line in *lines {
+                    if !imports.contains(line) {
+                        imports.push(line);
+                    }
+                }
+            }
+        }
+        if !imports.is_empty() {
+            writeln!(out, "#[allow(unused_imports)]").unwrap();
+            for imp in &imports {
+                writeln!(out, "{imp}").unwrap();
+            }
+            writeln!(out).unwrap();
+        }
     }
 
     // Emit local FfiHandle and FfiType traits (standalone, no ffier dependency for traits)
