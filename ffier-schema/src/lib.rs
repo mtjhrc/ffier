@@ -601,6 +601,157 @@ impl Library {
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
     }
 
+    /// Collect all type names referenced by methods, params, returns, errors,
+    /// enums, and aliases in this library. Used to prune unreferenced types.
+    pub fn referenced_types(&self) -> std::collections::HashSet<&str> {
+        let mut refs = std::collections::HashSet::new();
+
+        fn collect_from_params<'a>(
+            params: &'a [Param],
+            refs: &mut std::collections::HashSet<&'a str>,
+        ) {
+            for p in params {
+                match &p.param_type {
+                    ParamType::Regular(tr) => {
+                        refs.insert(&tr.type_name);
+                    }
+                    ParamType::Slice { .. } => {
+                        refs.insert("str");
+                    }
+                    ParamType::ImplTrait { trait_name, .. } => {
+                        refs.insert(trait_name);
+                    }
+                }
+            }
+        }
+
+        fn collect_from_return<'a>(ret: &'a Return, refs: &mut std::collections::HashSet<&'a str>) {
+            match ret {
+                Return::Void => {}
+                Return::Value(tr) => {
+                    refs.insert(&tr.type_name);
+                }
+                Return::Result { ok, err_type } => {
+                    if let Some(tr) = ok {
+                        refs.insert(&tr.type_name);
+                    }
+                    refs.insert(err_type);
+                }
+            }
+        }
+
+        fn collect_from_methods<'a>(
+            methods: &'a [Method],
+            refs: &mut std::collections::HashSet<&'a str>,
+        ) {
+            for m in methods {
+                collect_from_params(&m.params, refs);
+                collect_from_return(&m.ret, refs);
+            }
+        }
+
+        for ty in &self.exported_types {
+            refs.insert(ty.name.as_str());
+            collect_from_methods(&ty.methods, &mut refs);
+        }
+        for err in &self.errors {
+            refs.insert(err.name.as_str());
+        }
+        for en in &self.enum_constants {
+            refs.insert(en.name.as_str());
+        }
+        for f in &self.free_functions {
+            collect_from_params(&f.params, &mut refs);
+            collect_from_return(&f.ret, &mut refs);
+        }
+        for tr in &self.traits {
+            refs.insert(tr.name.as_str());
+            collect_from_methods(&tr.methods, &mut refs);
+        }
+        for ti in &self.trait_impls {
+            refs.insert(ti.trait_name.as_str());
+            refs.insert(ti.struct_name.as_str());
+            collect_from_methods(&ti.methods, &mut refs);
+        }
+
+        // Collect all methods for implicit framework type detection.
+        let all_methods = || {
+            self.exported_types
+                .iter()
+                .flat_map(|t| t.methods.iter())
+                .chain(self.traits.iter().flat_map(|t| t.methods.iter()))
+                .chain(self.trait_impls.iter().flat_map(|t| t.methods.iter()))
+        };
+
+        let has_result = all_methods().any(|m| matches!(m.ret, Return::Result { .. }))
+            || self
+                .free_functions
+                .iter()
+                .any(|f| matches!(f.ret, Return::Result { .. }));
+
+        let has_impl_trait = all_methods().any(|m| {
+            m.params
+                .iter()
+                .any(|p| matches!(p.param_type, ParamType::ImplTrait { .. }))
+        }) || self.free_functions.iter().any(|f| {
+            f.params
+                .iter()
+                .any(|p| matches!(p.param_type, ParamType::ImplTrait { .. }))
+        });
+
+        // If any Result-returning method exists, the error trait and result
+        // framework type are implicitly referenced.
+        if has_result {
+            for (name, entry) in &self.type_registry {
+                if matches!(
+                    entry.bless,
+                    Some(Blessing::Result) | Some(Blessing::ErrorTrait)
+                ) {
+                    refs.insert(name.as_str());
+                }
+            }
+        }
+
+        // If any impl Trait param exists, the vtable handle is implicitly referenced.
+        if has_impl_trait {
+            for (name, entry) in &self.type_registry {
+                if entry.bless == Some(Blessing::VtableHandle) {
+                    refs.insert(name.as_str());
+                }
+            }
+        }
+
+        // Walk alias chains — if X is referenced and X aliases Y, Y is also referenced.
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let snapshot: Vec<&str> = refs.iter().copied().collect();
+            for name in snapshot {
+                if let Some(entry) = self.type_registry.get(name) {
+                    if let TypeKind::Alias { alias_of } | TypeKind::Enum { alias_of } = &entry.kind
+                    {
+                        if refs.insert(alias_of) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        refs
+    }
+
+    /// Remove unreferenced types from the registry.
+    pub fn prune_unreferenced_types(&mut self) {
+        let refs: std::collections::HashSet<String> = self
+            .referenced_types()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect();
+        self.type_registry
+            .retain(|name, _| refs.contains(name.as_str()));
+    }
+
     /// Find the unique type with the given blessing.
     /// Panics if more than one type carries the same blessing.
     pub fn blessed(&self, tag: Blessing) -> Option<(&str, &TypeEntry)> {

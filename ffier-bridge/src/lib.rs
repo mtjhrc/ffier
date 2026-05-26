@@ -2321,7 +2321,7 @@ fn build_schema(
         },
     );
 
-    ffier_schema::Library {
+    let mut library = ffier_schema::Library {
         prefix: prefix.to_string(),
         type_registry,
         exported_types: exportables_parsed
@@ -2348,7 +2348,9 @@ fn build_schema(
             .iter()
             .map(|t| convert_trait_impl(t, &resolver))
             .collect(),
-    }
+    };
+    library.prune_unreferenced_types();
+    library
 }
 
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {

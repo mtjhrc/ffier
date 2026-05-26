@@ -44,7 +44,6 @@ pub fn generate(lib: &Library) -> String {
             }
         }
         if !imports.is_empty() {
-            writeln!(out, "#[allow(unused_imports)]").unwrap();
             for imp in &imports {
                 writeln!(out, "{imp}").unwrap();
             }
