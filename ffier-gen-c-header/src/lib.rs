@@ -313,39 +313,24 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
 fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str, lib: &Library) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
+    let handle_c_name = lib.c_type_of(&tr.name);
+
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-
-        let mut params = vec![format!("void* handle")];
-        for p in &m.params {
-            match &p.param_type {
-                ParamType::Regular(type_ref) => {
-                    let c_type = lib.c_type_of(&type_ref.type_name);
-                    params.push(format!("{} {}", c_type, p.name));
-                }
-                ParamType::Slice { c_params, .. } => {
-                    for cp in c_params {
-                        params.push(format!("{} {}", cp.c_type, cp.name));
-                    }
-                }
-                ParamType::ImplTrait { trait_name, .. } => {
-                    let c_type = lib.c_type_of(trait_name);
-                    params.push(format!("{} {}", c_type, p.name));
-                }
-            }
-        }
-
-        let ret_type = format_return_type(&m.ret, type_pfx, lib);
-
-        let params_str = params.join(", ");
-        out.push_str(&format!("{ret_type} {ffi_name}({params_str});\n"));
+        emit_doc_comment(out, &m.doc);
+        let decl = format_trait_method_declaration(ffi_name, handle_c_name, m, type_pfx, lib);
+        out.push_str(&decl);
+        out.push('\n');
     }
 
     // Destroy dispatch
-    out.push_str(&format!("void {}(void* handle);\n", tr.destroy_ffi_name));
+    out.push_str(&format!(
+        "void {}({} handle);\n",
+        tr.destroy_ffi_name, handle_c_name
+    ));
 }
 
 // ---------------------------------------------------------------------------

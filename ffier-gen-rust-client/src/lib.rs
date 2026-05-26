@@ -17,7 +17,6 @@ use std::fmt::Write;
 /// Generate complete Rust client source from a library schema.
 pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
-    let fn_pfx = format!("{}_", lib.prefix);
 
     // Emit imports for std types that might be referenced in extern declarations
     writeln!(out, "#[allow(unused_imports)]").unwrap();
@@ -153,23 +152,6 @@ pub fn generate(lib: &Library) -> String {
         emit_error(&mut out, err, lib);
     }
 
-    // Shared error externs (if any errors exist)
-    if !lib.errors.is_empty() {
-        writeln!(out, "unsafe extern \"C\" {{").unwrap();
-        writeln!(
-            out,
-            "    fn {fn_pfx}error_result(err: *mut core::ffi::c_void) -> ffier::FfierResult;"
-        )
-        .unwrap();
-        writeln!(
-            out,
-            "    fn {fn_pfx}error_destroy(err: *mut core::ffi::c_void);"
-        )
-        .unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
-    }
-
     // Build handle type set (for Result<Handle, E> detection)
     let vtable_names: Vec<String> = lib
         .traits
@@ -212,12 +194,6 @@ pub fn generate(lib: &Library) -> String {
 
     let mut defined_traits: HashSet<String> = HashSet::new();
     for tr in &lib.traits {
-        // Skip the Error trait — its dispatch functions (ft_error_result, etc.)
-        // are handled as shared error externs above.
-        if tr.name == "Error" {
-            defined_traits.insert(tr.name.clone());
-            continue;
-        }
         emit_implementable_trait(&mut out, tr, lib);
         defined_traits.insert(tr.name.clone());
     }
@@ -783,21 +759,16 @@ fn emit_method_body(
             )
             .unwrap();
             writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            let (error_result_fn, error_destroy_fn) = find_error_dispatch_fns(lib);
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
             writeln!(out, "            Ok(<{ty} as FfiType>::from_c(__raw))").unwrap();
             writeln!(out, "        }} else {{").unwrap();
             writeln!(
                 out,
-                "            let __r = unsafe {{ {fn_pfx}error_result(__err) }};",
-                fn_pfx = format!("{}_", lib.prefix)
+                "            let __r = unsafe {{ {error_result_fn}(__err) }};"
             )
             .unwrap();
-            writeln!(
-                out,
-                "            unsafe {{ {fn_pfx}error_destroy(__err) }};",
-                fn_pfx = format!("{}_", lib.prefix)
-            )
-            .unwrap();
+            writeln!(out, "            unsafe {{ {error_destroy_fn}(__err) }};").unwrap();
             writeln!(out, "            Err({err_type}::from_ffi(__r))").unwrap();
             writeln!(out, "        }}").unwrap();
         }
@@ -829,6 +800,26 @@ fn emit_method_body(
             writeln!(out, "        }}").unwrap();
         }
     }
+}
+
+/// Look up the `Error` trait's `result` dispatch ffi_name and `destroy` ffi_name
+/// from the schema. Used by GLib-style `Result<Handle, E>` wrappers.
+fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
+    let error_trait = lib
+        .traits
+        .iter()
+        .find(|t| t.name == "Error")
+        .expect("Error trait not found in schema");
+    let result_fn = error_trait
+        .methods
+        .iter()
+        .find(|m| m.name == "result")
+        .and_then(|m| match &m.context {
+            MethodContext::Trait { ffi_name, .. } => Some(ffi_name.as_str()),
+            _ => None,
+        })
+        .expect("Error::result method not found in schema");
+    (result_fn, &error_trait.destroy_ffi_name)
 }
 
 // ===========================================================================
