@@ -2183,7 +2183,6 @@ fn build_schema(
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "i32".to_string(),
-                owned: false,
             },
             c_type: "int".to_string(),
             type_tag: None,
@@ -2196,7 +2195,6 @@ fn build_schema(
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "i32".to_string(),
-                owned: true,
             },
             c_type: "int".to_string(),
             type_tag: None,
