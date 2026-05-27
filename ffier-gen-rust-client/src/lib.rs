@@ -1633,11 +1633,19 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     )
     .unwrap();
     writeln!(out, "    fn into_c(self) -> {repr} {{ self as {repr} }}").unwrap();
+    writeln!(out, "    fn from_c(repr: {repr}) -> Self {{").unwrap();
+    writeln!(out, "        match repr {{").unwrap();
+    for v in &en.variants {
+        writeln!(out, "            {} => Self::{},", v.value, v.name).unwrap();
+    }
     writeln!(
         out,
-        "    fn from_c(repr: {repr}) -> Self {{ unsafe {{ core::mem::transmute(repr) }} }}"
+        "            unknown => panic!(\"invalid {} discriminant: {{}}\", unknown),",
+        en.name
     )
     .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
