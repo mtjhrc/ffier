@@ -31,56 +31,145 @@ impl_ffi_identity! {
 }
 
 impl FfiType for &str {
-    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = "FfierStr"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_str(self) } }
-    fn from_c(repr: ffier::FfierBytes) -> Self { unsafe { let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) } }
+    type CRepr = ffier::FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierStr";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierBytes {
+        unsafe { ffier::FfierBytes::from_str(self) }
+    }
+    fn from_c(repr: ffier::FfierBytes) -> Self {
+        unsafe {
+            let b = core::slice::from_raw_parts(repr.data, repr.len);
+            core::str::from_utf8_unchecked(b)
+        }
+    }
 }
 
 impl<'a> FfiType for Option<&'a str> {
-    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = "FfierStr"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> ffier::FfierBytes { match self { Some(s) => unsafe { ffier::FfierBytes::from_str(s) }, None => ffier::FfierBytes::EMPTY } }
-    fn from_c(repr: ffier::FfierBytes) -> Self { if repr.data.is_null() { None } else { unsafe { Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) } } }
+    type CRepr = ffier::FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierStr";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierBytes {
+        match self {
+            Some(s) => unsafe { ffier::FfierBytes::from_str(s) },
+            None => ffier::FfierBytes::EMPTY,
+        }
+    }
+    fn from_c(repr: ffier::FfierBytes) -> Self {
+        if repr.data.is_null() {
+            None
+        } else {
+            unsafe {
+                Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                    repr.data, repr.len,
+                )))
+            }
+        }
+    }
 }
 
 impl FfiType for Box<str> {
-    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = "FfierStr"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> ffier::FfierBytes { let leaked: &mut str = Box::leak(self); ffier::FfierBytes { data: leaked.as_ptr(), len: leaked.len() } }
-    fn from_c(repr: ffier::FfierBytes) -> Self { unsafe { let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) } }
+    type CRepr = ffier::FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierStr";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierBytes {
+        let leaked: &mut str = Box::leak(self);
+        ffier::FfierBytes {
+            data: leaked.as_ptr(),
+            len: leaked.len(),
+        }
+    }
+    fn from_c(repr: ffier::FfierBytes) -> Self {
+        unsafe {
+            let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len);
+            Box::from_raw(core::str::from_utf8_unchecked_mut(slice))
+        }
+    }
 }
 
 impl FfiType for &[u8] {
-    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = "FfierBytes"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_bytes(self) } }
-    fn from_c(repr: ffier::FfierBytes) -> Self { unsafe { if repr.data.is_null() { &[] } else { core::slice::from_raw_parts(repr.data, repr.len) } } }
+    type CRepr = ffier::FfierBytes;
+    const C_TYPE_NAME: &'static str = "FfierBytes";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierBytes {
+        unsafe { ffier::FfierBytes::from_bytes(self) }
+    }
+    fn from_c(repr: ffier::FfierBytes) -> Self {
+        unsafe {
+            if repr.data.is_null() {
+                &[]
+            } else {
+                core::slice::from_raw_parts(repr.data, repr.len)
+            }
+        }
+    }
 }
 
 impl FfiType for OwnedFd {
-    type CRepr = RawFd; const C_TYPE_NAME: &'static str = "int"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> RawFd { use std::os::unix::io::IntoRawFd; self.into_raw_fd() as RawFd }
-    fn from_c(fd: RawFd) -> Self { unsafe { OwnedFd::from_raw_fd(fd as _) } }
+    type CRepr = RawFd;
+    const C_TYPE_NAME: &'static str = "int";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> RawFd {
+        use std::os::unix::io::IntoRawFd;
+        self.into_raw_fd() as RawFd
+    }
+    fn from_c(fd: RawFd) -> Self {
+        unsafe { OwnedFd::from_raw_fd(fd as _) }
+    }
 }
 
 impl<'fd> FfiType for BorrowedFd<'fd> {
-    type CRepr = RawFd; const C_TYPE_NAME: &'static str = "int"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> RawFd { self.as_raw_fd() as RawFd }
-    fn from_c(fd: RawFd) -> Self { unsafe { BorrowedFd::borrow_raw(fd as _) } }
+    type CRepr = RawFd;
+    const C_TYPE_NAME: &'static str = "int";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> RawFd {
+        self.as_raw_fd() as RawFd
+    }
+    fn from_c(fd: RawFd) -> Self {
+        unsafe { BorrowedFd::borrow_raw(fd as _) }
+    }
 }
 
 impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
-    type CRepr = RawFd; const C_TYPE_NAME: &'static str = "int"; const IS_HANDLE: bool = false;
-    fn into_c(self) -> RawFd { match self { Some(fd) => fd.as_raw_fd() as RawFd, None => -1 } }
-    fn from_c(fd: RawFd) -> Self { if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd as _) }) } }
+    type CRepr = RawFd;
+    const C_TYPE_NAME: &'static str = "int";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> RawFd {
+        match self {
+            Some(fd) => fd.as_raw_fd() as RawFd,
+            None => -1,
+        }
+    }
+    fn from_c(fd: RawFd) -> Self {
+        if fd < 0 {
+            None
+        } else {
+            Some(unsafe { BorrowedFd::borrow_raw(fd as _) })
+        }
+    }
 }
 
 impl<T: FfiHandle + 'static> FfiType for &T {
-    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;
-    fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
-    fn from_c(_: *mut core::ffi::c_void) -> Self { unimplemented!("client-side &T from_c") }
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
+    fn into_c(self) -> *mut core::ffi::c_void {
+        unsafe { self.as_handle() }
+    }
+    fn from_c(_: *mut core::ffi::c_void) -> Self {
+        unimplemented!("client-side &T from_c")
+    }
 }
 impl<T: FfiHandle + 'static> FfiType for &mut T {
-    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;
-    fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
-    fn from_c(_: *mut core::ffi::c_void) -> Self { unimplemented!("client-side &mut T from_c") }
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
+    const IS_HANDLE: bool = true;
+    fn into_c(self) -> *mut core::ffi::c_void {
+        unsafe { self.as_handle() }
+    }
+    fn from_c(_: *mut core::ffi::c_void) -> Self {
+        unimplemented!("client-side &mut T from_c")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +186,9 @@ pub enum LogLevel {
 impl FfiType for LogLevel {
     type CRepr = u32;
     const C_TYPE_NAME: &'static str = "LogLevel";
-    fn into_c(self) -> u32 { self as u32 }
+    fn into_c(self) -> u32 {
+        self as u32
+    }
     fn from_c(repr: u32) -> Self {
         match repr {
             0 => Self::Off,
@@ -124,8 +215,12 @@ bitflags::bitflags! {
 impl FfiType for Permissions {
     type CRepr = u32;
     const C_TYPE_NAME: &'static str = "Permissions";
-    fn into_c(self) -> u32 { self.bits() }
-    fn from_c(repr: u32) -> Self { Self::from_bits_retain(repr) }
+    fn into_c(self) -> u32 {
+        self.bits()
+    }
+    fn from_c(repr: u32) -> Self {
+        Self::from_bits_retain(repr)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,57 +257,137 @@ impl std::error::Error for TestError {}
 unsafe extern "C" {
     pub fn ft_widget_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_widget_new() -> <Widget as FfiType>::CRepr;
-    pub fn ft_widget_with_name(name: <&'static str as FfiType>::CRepr) -> <Widget as FfiType>::CRepr;
+    pub fn ft_widget_with_name(
+        name: <&'static str as FfiType>::CRepr,
+    ) -> <Widget as FfiType>::CRepr;
     pub fn ft_widget_get_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
     pub fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: <i32 as FfiType>::CRepr);
     pub fn ft_widget_with_count(handle: *mut core::ffi::c_void, n: <i32 as FfiType>::CRepr);
     pub fn ft_widget_name(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
     pub fn ft_widget_data(handle: *mut core::ffi::c_void) -> <&'static [u8] as FfiType>::CRepr;
-    pub fn ft_widget_sum_bytes(handle: *mut core::ffi::c_void, data: <&'static [u8] as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
-    pub fn ft_widget_echo(handle: *mut core::ffi::c_void, s: <&'static str as FfiType>::CRepr) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_widget_sum_bytes(
+        handle: *mut core::ffi::c_void,
+        data: <&'static [u8] as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_echo(
+        handle: *mut core::ffi::c_void,
+        s: <&'static str as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_widget_is_active(handle: *mut core::ffi::c_void) -> <bool as FfiType>::CRepr;
-    pub fn ft_widget_negate(handle: *mut core::ffi::c_void, v: <i64 as FfiType>::CRepr) -> <i64 as FfiType>::CRepr;
-    pub fn ft_widget_validate(handle: *mut core::ffi::c_void, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_parse_count(handle: *mut core::ffi::c_void, s: <&'static str as FfiType>::CRepr, result: *mut <i32 as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_describe(handle: *mut core::ffi::c_void, code: <i32 as FfiType>::CRepr, result: *mut <&'static str as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_fail_always(handle: *mut core::ffi::c_void, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_fail_with_value(handle: *mut core::ffi::c_void, result: *mut <i32 as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_set_tags(handle: *mut core::ffi::c_void, tags: *const ffier::FfierBytes, tags_len: usize);
-    pub fn ft_widget_tags_joined(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_widget_negate(
+        handle: *mut core::ffi::c_void,
+        v: <i64 as FfiType>::CRepr,
+    ) -> <i64 as FfiType>::CRepr;
+    pub fn ft_widget_validate(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_parse_count(
+        handle: *mut core::ffi::c_void,
+        s: <&'static str as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_describe(
+        handle: *mut core::ffi::c_void,
+        code: <i32 as FfiType>::CRepr,
+        result: *mut <&'static str as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_always(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_with_value(
+        handle: *mut core::ffi::c_void,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_set_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    );
+    pub fn ft_widget_tags_joined(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_widget_create_gadget(handle: *mut core::ffi::c_void) -> <Gadget as FfiType>::CRepr;
-    pub fn ft_widget_try_create_gadget(handle: *mut core::ffi::c_void, ok: <bool as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    pub fn ft_widget_read_gadget(handle: *mut core::ffi::c_void, g: <&'static Gadget as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
-    pub fn ft_widget_update_gadget(handle: *mut core::ffi::c_void, g: <&'static mut Gadget as FfiType>::CRepr, v: <i32 as FfiType>::CRepr);
-    pub fn ft_widget_set_name(handle: *mut core::ffi::c_void, name: <Option<&'static str> as FfiType>::CRepr);
+    pub fn ft_widget_try_create_gadget(
+        handle: *mut core::ffi::c_void,
+        ok: <bool as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void;
+    pub fn ft_widget_read_gadget(
+        handle: *mut core::ffi::c_void,
+        g: <&'static Gadget as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_update_gadget(
+        handle: *mut core::ffi::c_void,
+        g: <&'static mut Gadget as FfiType>::CRepr,
+        v: <i32 as FfiType>::CRepr,
+    );
+    pub fn ft_widget_set_name(
+        handle: *mut core::ffi::c_void,
+        name: <Option<&'static str> as FfiType>::CRepr,
+    );
     pub fn ft_widget_owned_name(handle: *mut core::ffi::c_void) -> <Box<str> as FfiType>::CRepr;
-    pub fn ft_widget_add_permission(handle: *mut core::ffi::c_void, base: <Permissions as FfiType>::CRepr, flag: <Permissions as FfiType>::CRepr) -> <Permissions as FfiType>::CRepr;
+    pub fn ft_widget_add_permission(
+        handle: *mut core::ffi::c_void,
+        base: <Permissions as FfiType>::CRepr,
+        flag: <Permissions as FfiType>::CRepr,
+    ) -> <Permissions as FfiType>::CRepr;
     pub fn ft_widget_consume(handle: *mut core::ffi::c_void);
-    pub fn ft_widget_fd_number(handle: *mut core::ffi::c_void, fd: <BorrowedFd<'static> as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
-    pub fn ft_widget_fd_number_optional(handle: *mut core::ffi::c_void, fd: <Option<BorrowedFd<'static>> as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
-    pub fn ft_widget_maybe_fd(handle: *mut core::ffi::c_void, selector: <i32 as FfiType>::CRepr, result: *mut <Option<BorrowedFd<'static>> as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
-    pub fn ft_widget_dup_fd(handle: *mut core::ffi::c_void, fd: <BorrowedFd<'static> as FfiType>::CRepr) -> <OwnedFd as FfiType>::CRepr;
+    pub fn ft_widget_fd_number(
+        handle: *mut core::ffi::c_void,
+        fd: <BorrowedFd<'static> as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_fd_number_optional(
+        handle: *mut core::ffi::c_void,
+        fd: <Option<BorrowedFd<'static>> as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_maybe_fd(
+        handle: *mut core::ffi::c_void,
+        selector: <i32 as FfiType>::CRepr,
+        result: *mut <Option<BorrowedFd<'static>> as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_dup_fd(
+        handle: *mut core::ffi::c_void,
+        fd: <BorrowedFd<'static> as FfiType>::CRepr,
+    ) -> <OwnedFd as FfiType>::CRepr;
 }
 
 pub struct Widget(*mut core::ffi::c_void);
 
 impl Widget {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Widget {
     const C_HANDLE_NAME: &'static str = "Widget";
     const TYPE_TAG: u32 = 2u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Widget {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Widget";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Widget {
@@ -233,7 +408,7 @@ impl Widget {
         <Widget as FfiType>::from_c(__raw)
     }
     #[doc = " Get the current count."]
-    pub fn get_count(&self, ) -> i32 {
+    pub fn get_count(&self) -> i32 {
         let __raw = unsafe { ft_widget_get_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -247,12 +422,12 @@ impl Widget {
         self
     }
     #[doc = " Get the widget name."]
-    pub fn name(&self, ) -> &str {
+    pub fn name(&self) -> &str {
         let __raw = unsafe { ft_widget_name(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
     #[doc = " Get the raw name bytes."]
-    pub fn data(&self, ) -> &[u8] {
+    pub fn data(&self) -> &[u8] {
         let __raw = unsafe { ft_widget_data(self.0) };
         <&[u8] as FfiType>::from_c(__raw)
     }
@@ -267,7 +442,7 @@ impl Widget {
         <&'a str as FfiType>::from_c(__raw)
     }
     #[doc = " Check if the widget is active."]
-    pub fn is_active(&self, ) -> bool {
+    pub fn is_active(&self) -> bool {
         let __raw = unsafe { ft_widget_is_active(self.0) };
         <bool as FfiType>::from_c(__raw)
     }
@@ -277,10 +452,14 @@ impl Widget {
         <i64 as FfiType>::from_c(__raw)
     }
     #[doc = " Validate internal state (always succeeds for default widget)."]
-    pub fn validate(&self, ) -> Result<(), TestError> {
+    pub fn validate(&self) -> Result<(), TestError> {
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
         let __r = unsafe { ft_widget_validate(self.0, &mut __err as *mut *mut core::ffi::c_void) };
-        if __r == 0 { Ok(()) } else { Err(TestError::from_ffi(__r)) }
+        if __r == 0 {
+            Ok(())
+        } else {
+            Err(TestError::from_ffi(__r))
+        }
     }
     #[doc = " Parse a count value from the name length, returning error if name matches trigger."]
     #[doc = ""]
@@ -294,7 +473,14 @@ impl Widget {
     pub fn parse_count(&self, s: &str) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_widget_parse_count(self.0, <&str as FfiType>::into_c(s), __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        let __r = unsafe {
+            ft_widget_parse_count(
+                self.0,
+                <&str as FfiType>::into_c(s),
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
@@ -309,7 +495,14 @@ impl Widget {
     pub fn describe(&self, code: i32) -> Result<&str, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_widget_describe(self.0, <i32 as FfiType>::into_c(code), __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        let __r = unsafe {
+            ft_widget_describe(
+                self.0,
+                <i32 as FfiType>::into_c(code),
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if __r == 0 {
             Ok(<&str as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
@@ -317,16 +510,27 @@ impl Widget {
         }
     }
     #[doc = " Always fails with an error."]
-    pub fn fail_always(&self, ) -> Result<(), TestError> {
+    pub fn fail_always(&self) -> Result<(), TestError> {
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_widget_fail_always(self.0, &mut __err as *mut *mut core::ffi::c_void) };
-        if __r == 0 { Ok(()) } else { Err(TestError::from_ffi(__r)) }
+        let __r =
+            unsafe { ft_widget_fail_always(self.0, &mut __err as *mut *mut core::ffi::c_void) };
+        if __r == 0 {
+            Ok(())
+        } else {
+            Err(TestError::from_ffi(__r))
+        }
     }
     #[doc = " Always fails with an error (value variant)."]
-    pub fn fail_with_value(&self, ) -> Result<i32, TestError> {
+    pub fn fail_with_value(&self) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_widget_fail_with_value(self.0, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        let __r = unsafe {
+            ft_widget_fail_with_value(
+                self.0,
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
@@ -335,23 +539,32 @@ impl Widget {
     }
     #[doc = " Set tags from a string slice."]
     pub fn set_tags(&mut self, tags: &[&str]) {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags.iter().map(|s| unsafe { ffier::FfierBytes::from_str(s) }).collect();
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
         unsafe { ft_widget_set_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) }
     }
     #[doc = " Get joined tags."]
-    pub fn tags_joined(&self, ) -> &str {
+    pub fn tags_joined(&self) -> &str {
         let __raw = unsafe { ft_widget_tags_joined(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
     #[doc = " Create a new gadget with the widget's count as initial value."]
-    pub fn create_gadget(&self, ) -> Gadget {
+    pub fn create_gadget(&self) -> Gadget {
         let __raw = unsafe { ft_widget_create_gadget(self.0) };
         <Gadget as FfiType>::from_c(__raw)
     }
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __raw = unsafe { ft_widget_try_create_gadget(self.0, <bool as FfiType>::into_c(ok), &mut __err as *mut *mut core::ffi::c_void) };
+        let __raw = unsafe {
+            ft_widget_try_create_gadget(
+                self.0,
+                <bool as FfiType>::into_c(ok),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if !__raw.is_null() {
             Ok(<Gadget as FfiType>::from_c(__raw))
         } else {
@@ -367,25 +580,36 @@ impl Widget {
     }
     #[doc = " Update a gadget's value."]
     pub fn update_gadget(&self, g: &mut Gadget, v: i32) {
-        unsafe { ft_widget_update_gadget(self.0, FfiHandle::as_handle(g), <i32 as FfiType>::into_c(v)) }
+        unsafe {
+            ft_widget_update_gadget(self.0, FfiHandle::as_handle(g), <i32 as FfiType>::into_c(v))
+        }
     }
     #[doc = " Set the name, or reset to default if `None`."]
     pub fn set_name(&mut self, name: Option<&str>) {
         unsafe { ft_widget_set_name(self.0, <Option<&str> as FfiType>::into_c(name)) }
     }
     #[doc = " Get an owned copy of the name."]
-    pub fn owned_name(&self, ) -> Box<str> {
+    pub fn owned_name(&self) -> Box<str> {
         let __raw = unsafe { ft_widget_owned_name(self.0) };
         <Box<str> as FfiType>::from_c(__raw)
     }
     #[doc = " Add a permission flag to the widget's permissions and return the result."]
     pub fn add_permission(&self, base: Permissions, flag: Permissions) -> Permissions {
-        let __raw = unsafe { ft_widget_add_permission(self.0, <Permissions as FfiType>::into_c(base), <Permissions as FfiType>::into_c(flag)) };
+        let __raw = unsafe {
+            ft_widget_add_permission(
+                self.0,
+                <Permissions as FfiType>::into_c(base),
+                <Permissions as FfiType>::into_c(flag),
+            )
+        };
         <Permissions as FfiType>::from_c(__raw)
     }
     #[doc = " Consume the widget (by-value self, void return)."]
-    pub fn consume(self, ) {
-        let __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
+    pub fn consume(self) {
+        let __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
         unsafe { ft_widget_consume(__handle) }
     }
     #[doc = " Get the raw fd number from a borrowed fd."]
@@ -395,7 +619,9 @@ impl Widget {
     }
     #[doc = " Get the raw fd number, or -1 if None."]
     pub fn fd_number_optional(&self, fd: Option<BorrowedFd<'_>>) -> i32 {
-        let __raw = unsafe { ft_widget_fd_number_optional(self.0, <Option<BorrowedFd<'_>> as FfiType>::into_c(fd)) };
+        let __raw = unsafe {
+            ft_widget_fd_number_optional(self.0, <Option<BorrowedFd<'_>> as FfiType>::into_c(fd))
+        };
         <i32 as FfiType>::from_c(__raw)
     }
     #[doc = " Maybe return a borrowed fd depending on `selector`:"]
@@ -403,9 +629,18 @@ impl Widget {
     pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_widget_maybe_fd(self.0, <i32 as FfiType>::into_c(selector), __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        let __r = unsafe {
+            ft_widget_maybe_fd(
+                self.0,
+                <i32 as FfiType>::into_c(selector),
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if __r == 0 {
-            Ok(<Option<BorrowedFd<'_>> as FfiType>::from_c(unsafe { __out.assume_init() }))
+            Ok(<Option<BorrowedFd<'_>> as FfiType>::from_c(unsafe {
+                __out.assume_init()
+            }))
         } else {
             Err(TestError::from_ffi(__r))
         }
@@ -432,22 +667,33 @@ pub struct Gadget(*mut core::ffi::c_void);
 
 impl Gadget {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Gadget {
     const C_HANDLE_NAME: &'static str = "Gadget";
     const TYPE_TAG: u32 = 3u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Gadget {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Gadget";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Gadget {
@@ -458,7 +704,7 @@ impl std::fmt::Debug for Gadget {
 
 impl Gadget {
     #[doc = " Get the gadget value."]
-    pub fn get(&self, ) -> i32 {
+    pub fn get(&self) -> i32 {
         let __raw = unsafe { ft_gadget_get(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -473,9 +719,15 @@ impl Drop for Gadget {
 unsafe extern "C" {
     pub fn ft_config_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_config_new() -> <Config as FfiType>::CRepr;
-    pub fn ft_config_set_name(handle: *mut core::ffi::c_void, name: <&'static str as FfiType>::CRepr);
+    pub fn ft_config_set_name(
+        handle: *mut core::ffi::c_void,
+        name: <&'static str as FfiType>::CRepr,
+    );
     pub fn ft_config_set_size(handle: *mut core::ffi::c_void, size: <i32 as FfiType>::CRepr);
-    pub fn ft_config_validated(handle: *mut core::ffi::c_void, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
+    pub fn ft_config_validated(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
     pub fn ft_config_get_name(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
     pub fn ft_config_get_size(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
@@ -484,22 +736,33 @@ pub struct Config(*mut core::ffi::c_void);
 
 impl Config {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Config {
     const C_HANDLE_NAME: &'static str = "Config";
     const TYPE_TAG: u32 = 4u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Config {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Config";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Config {
@@ -516,30 +779,58 @@ impl Config {
     }
     #[doc = " Set the name (builder pattern: consumes self, returns Self)."]
     pub fn set_name(self, name: &str) -> Self {
-        let mut __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
-        unsafe { ft_config_set_name(&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void, <&str as FfiType>::into_c(name)) };
+        let mut __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
+        unsafe {
+            ft_config_set_name(
+                &mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
+                <&str as FfiType>::into_c(name),
+            )
+        };
         Self(__handle)
     }
     #[doc = " Set the size (builder pattern)."]
     pub fn set_size(self, size: i32) -> Self {
-        let mut __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
-        unsafe { ft_config_set_size(&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void, <i32 as FfiType>::into_c(size)) };
+        let mut __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
+        unsafe {
+            ft_config_set_size(
+                &mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
+                <i32 as FfiType>::into_c(size),
+            )
+        };
         Self(__handle)
     }
     #[doc = " Validate and return self, or error if name is empty."]
-    pub fn validated(self, ) -> Result<Self, TestError> {
-        let mut __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
+    pub fn validated(self) -> Result<Self, TestError> {
+        let mut __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_config_validated(&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void, &mut __err as *mut *mut core::ffi::c_void) };
-        if __r == 0 { Ok(Self(__handle)) } else { Err(TestError::from_ffi(__r)) }
+        let __r = unsafe {
+            ft_config_validated(
+                &mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(Self(__handle))
+        } else {
+            Err(TestError::from_ffi(__r))
+        }
     }
     #[doc = " Get the config name."]
-    pub fn get_name(&self, ) -> &str {
+    pub fn get_name(&self) -> &str {
         let __raw = unsafe { ft_config_get_name(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
     #[doc = " Get the config size."]
-    pub fn get_size(&self, ) -> i32 {
+    pub fn get_size(&self) -> i32 {
         let __raw = unsafe { ft_config_get_size(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -561,22 +852,33 @@ pub struct Gizmo(*mut core::ffi::c_void);
 
 impl Gizmo {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Gizmo {
     const C_HANDLE_NAME: &'static str = "Gizmo";
     const TYPE_TAG: u32 = 5u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Gizmo {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Gizmo";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Gizmo {
@@ -587,12 +889,12 @@ impl std::fmt::Debug for Gizmo {
 
 impl Gizmo {
     #[doc = " Get the gizmo name."]
-    pub fn name(&self, ) -> &str {
+    pub fn name(&self) -> &str {
         let __raw = unsafe { ft_gizmo_name(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
     #[doc = " Get the gizmo size."]
-    pub fn size(&self, ) -> i32 {
+    pub fn size(&self) -> i32 {
         let __raw = unsafe { ft_gizmo_size(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -607,32 +909,49 @@ impl Drop for Gizmo {
 unsafe extern "C" {
     pub fn ft_gizmo_builder_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_gizmo_builder_new() -> <GizmoBuilder as FfiType>::CRepr;
-    pub fn ft_gizmo_builder_set_name(handle: *mut core::ffi::c_void, name: <&'static str as FfiType>::CRepr);
+    pub fn ft_gizmo_builder_set_name(
+        handle: *mut core::ffi::c_void,
+        name: <&'static str as FfiType>::CRepr,
+    );
     pub fn ft_gizmo_builder_set_size(handle: *mut core::ffi::c_void, size: <i32 as FfiType>::CRepr);
     pub fn ft_gizmo_builder_build(handle: *mut core::ffi::c_void) -> <Gizmo as FfiType>::CRepr;
-    pub fn ft_gizmo_builder_try_build(handle: *mut core::ffi::c_void, err_out: *mut *mut core::ffi::c_void) -> *mut core::ffi::c_void;
+    pub fn ft_gizmo_builder_try_build(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void;
 }
 
 pub struct GizmoBuilder(*mut core::ffi::c_void);
 
 impl GizmoBuilder {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for GizmoBuilder {
     const C_HANDLE_NAME: &'static str = "GizmoBuilder";
     const TYPE_TAG: u32 = 6u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for GizmoBuilder {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "GizmoBuilder";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for GizmoBuilder {
@@ -656,16 +975,24 @@ impl GizmoBuilder {
         unsafe { ft_gizmo_builder_set_size(self.0, <i32 as FfiType>::into_c(size)) }
     }
     #[doc = " Build the gizmo (consumes builder, returns different type)."]
-    pub fn build(self, ) -> Gizmo {
-        let __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
+    pub fn build(self) -> Gizmo {
+        let __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
         let __raw = unsafe { ft_gizmo_builder_build(__handle) };
         <Gizmo as FfiType>::from_c(__raw)
     }
     #[doc = " Try to build the gizmo; fails if name is empty."]
-    pub fn try_build(self, ) -> Result<Gizmo, TestError> {
-        let __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
+    pub fn try_build(self) -> Result<Gizmo, TestError> {
+        let __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __raw = unsafe { ft_gizmo_builder_try_build(__handle, &mut __err as *mut *mut core::ffi::c_void) };
+        let __raw = unsafe {
+            ft_gizmo_builder_try_build(__handle, &mut __err as *mut *mut core::ffi::c_void)
+        };
         if !__raw.is_null() {
             Ok(<Gizmo as FfiType>::from_c(__raw))
         } else {
@@ -684,10 +1011,18 @@ impl Drop for GizmoBuilder {
 
 unsafe extern "C" {
     pub fn ft_view_destroy(handle: *mut core::ffi::c_void);
-    pub fn ft_view_create(source: <&'static Widget as FfiType>::CRepr) -> <View<'static> as FfiType>::CRepr;
-    pub fn ft_view_create_labeled(source: <&'static Widget as FfiType>::CRepr, label: <&'static str as FfiType>::CRepr) -> <View<'static> as FfiType>::CRepr;
+    pub fn ft_view_create(
+        source: <&'static Widget as FfiType>::CRepr,
+    ) -> <View<'static> as FfiType>::CRepr;
+    pub fn ft_view_create_labeled(
+        source: <&'static Widget as FfiType>::CRepr,
+        label: <&'static str as FfiType>::CRepr,
+    ) -> <View<'static> as FfiType>::CRepr;
     pub fn ft_view_source_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
-    pub fn ft_view_set_label(handle: *mut core::ffi::c_void, label: <&'static str as FfiType>::CRepr);
+    pub fn ft_view_set_label(
+        handle: *mut core::ffi::c_void,
+        label: <&'static str as FfiType>::CRepr,
+    );
     pub fn ft_view_label(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
     pub fn ft_view_copy_label(handle: *mut core::ffi::c_void, other: *mut core::ffi::c_void);
 }
@@ -696,22 +1031,33 @@ pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
 
 impl<'a> View<'a> {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr, std::marker::PhantomData) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr, std::marker::PhantomData)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl<'a> FfiHandle for View<'a> {
     const C_HANDLE_NAME: &'static str = "View";
     const TYPE_TAG: u32 = 7u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl<'a> FfiType for View<'a> {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "View";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl<'a> std::fmt::Debug for View<'a> {
@@ -731,11 +1077,16 @@ impl<'a> View<'a> {
     #[doc = " Takes two reference params so lifetime elision can't resolve `'_`"]
     #[doc = " in the return type — the struct lifetime must be preserved explicitly."]
     pub fn create_labeled(source: &'a Widget, label: &str) -> View<'a> {
-        let __raw = unsafe { ft_view_create_labeled(FfiHandle::as_handle(source), <&str as FfiType>::into_c(label)) };
+        let __raw = unsafe {
+            ft_view_create_labeled(
+                FfiHandle::as_handle(source),
+                <&str as FfiType>::into_c(label),
+            )
+        };
         <View<'a> as FfiType>::from_c(__raw)
     }
     #[doc = " Read the source widget's count through the borrow."]
-    pub fn source_count(&self, ) -> i32 {
+    pub fn source_count(&self) -> i32 {
         let __raw = unsafe { ft_view_source_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -744,7 +1095,7 @@ impl<'a> View<'a> {
         unsafe { ft_view_set_label(self.0, <&str as FfiType>::into_c(label)) }
     }
     #[doc = " Get the view label."]
-    pub fn label(&self, ) -> &str {
+    pub fn label(&self) -> &str {
         let __raw = unsafe { ft_view_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -763,29 +1114,43 @@ impl<'a> Drop for View<'a> {
 unsafe extern "C" {
     pub fn ft_view_factory_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_view_factory_new() -> <ViewFactory as FfiType>::CRepr;
-    pub fn ft_view_factory_create_view(source: <&'static Widget as FfiType>::CRepr, label: <&'static str as FfiType>::CRepr) -> <View<'static> as FfiType>::CRepr;
+    pub fn ft_view_factory_create_view(
+        source: <&'static Widget as FfiType>::CRepr,
+        label: <&'static str as FfiType>::CRepr,
+    ) -> <View<'static> as FfiType>::CRepr;
 }
 
 pub struct ViewFactory(*mut core::ffi::c_void);
 
 impl ViewFactory {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for ViewFactory {
     const C_HANDLE_NAME: &'static str = "ViewFactory";
     const TYPE_TAG: u32 = 8u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for ViewFactory {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "ViewFactory";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for ViewFactory {
@@ -804,7 +1169,12 @@ impl ViewFactory {
     #[doc = " Multiple reference params + lifetime-parameterized return type forces"]
     #[doc = " the generator to introduce a method-level lifetime (can't elide)."]
     pub fn create_view<'a>(source: &'a Widget, label: &str) -> View<'a> {
-        let __raw = unsafe { ft_view_factory_create_view(FfiHandle::as_handle(source), <&str as FfiType>::into_c(label)) };
+        let __raw = unsafe {
+            ft_view_factory_create_view(
+                FfiHandle::as_handle(source),
+                <&str as FfiType>::into_c(label),
+            )
+        };
         <View<'a> as FfiType>::from_c(__raw)
     }
 }
@@ -818,31 +1188,50 @@ impl Drop for ViewFactory {
 unsafe extern "C" {
     pub fn ft_pipeline_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_pipeline_new() -> <Pipeline as FfiType>::CRepr;
-    pub fn ft_pipeline_run(handle: *mut core::ffi::c_void, proc: *mut core::ffi::c_void, input: <i32 as FfiType>::CRepr);
+    pub fn ft_pipeline_run(
+        handle: *mut core::ffi::c_void,
+        proc: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+    );
     pub fn ft_pipeline_result_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
-    pub fn ft_pipeline_last_result(handle: *mut core::ffi::c_void, result: *mut <i32 as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
+    pub fn ft_pipeline_last_result(
+        handle: *mut core::ffi::c_void,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
 }
 
 pub struct Pipeline(*mut core::ffi::c_void);
 
 impl Pipeline {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Pipeline {
     const C_HANDLE_NAME: &'static str = "Pipeline";
     const TYPE_TAG: u32 = 9u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Pipeline {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Pipeline";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Pipeline {
@@ -859,18 +1248,30 @@ impl Pipeline {
     }
     #[doc = " Run a processor on the given input."]
     pub fn run(&mut self, proc: impl Processor, input: i32) {
-        unsafe { ft_pipeline_run(self.0, proc.__into_raw_handle(), <i32 as FfiType>::into_c(input)) }
+        unsafe {
+            ft_pipeline_run(
+                self.0,
+                proc.__into_raw_handle(),
+                <i32 as FfiType>::into_c(input),
+            )
+        }
     }
     #[doc = " Get the number of results."]
-    pub fn result_count(&self, ) -> i32 {
+    pub fn result_count(&self) -> i32 {
         let __raw = unsafe { ft_pipeline_result_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
     #[doc = " Get the last result, or error if empty."]
-    pub fn last_result(&self, ) -> Result<i32, TestError> {
+    pub fn last_result(&self) -> Result<i32, TestError> {
         let mut __out = std::mem::MaybeUninit::uninit();
         let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-        let __r = unsafe { ft_pipeline_last_result(self.0, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        let __r = unsafe {
+            ft_pipeline_last_result(
+                self.0,
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
@@ -894,22 +1295,33 @@ pub struct Apple(*mut core::ffi::c_void);
 
 impl Apple {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Apple {
     const C_HANDLE_NAME: &'static str = "Apple";
     const TYPE_TAG: u32 = 11u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Apple {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Apple";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Apple {
@@ -940,22 +1352,33 @@ pub struct Orange(*mut core::ffi::c_void);
 
 impl Orange {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Orange {
     const C_HANDLE_NAME: &'static str = "Orange";
     const TYPE_TAG: u32 = 12u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Orange {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Orange";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Orange {
@@ -986,22 +1409,33 @@ pub struct Banana(*mut core::ffi::c_void);
 
 impl Banana {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Banana {
     const C_HANDLE_NAME: &'static str = "Banana";
     const TYPE_TAG: u32 = 13u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Banana {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Banana";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Banana {
@@ -1032,22 +1466,33 @@ pub struct Mango(*mut core::ffi::c_void);
 
 impl Mango {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Mango {
     const C_HANDLE_NAME: &'static str = "Mango";
     const TYPE_TAG: u32 = 14u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Mango {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Mango";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Mango {
@@ -1078,22 +1523,33 @@ pub struct Peach(*mut core::ffi::c_void);
 
 impl Peach {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Peach {
     const C_HANDLE_NAME: &'static str = "Peach";
     const TYPE_TAG: u32 = 15u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Peach {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Peach";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Peach {
@@ -1124,22 +1580,33 @@ pub struct Plum(*mut core::ffi::c_void);
 
 impl Plum {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Plum {
     const C_HANDLE_NAME: &'static str = "Plum";
     const TYPE_TAG: u32 = 16u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Plum {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Plum";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Plum {
@@ -1170,22 +1637,33 @@ pub struct Grape(*mut core::ffi::c_void);
 
 impl Grape {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Grape {
     const C_HANDLE_NAME: &'static str = "Grape";
     const TYPE_TAG: u32 = 17u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Grape {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Grape";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Grape {
@@ -1216,22 +1694,33 @@ pub struct Lemon(*mut core::ffi::c_void);
 
 impl Lemon {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Lemon {
     const C_HANDLE_NAME: &'static str = "Lemon";
     const TYPE_TAG: u32 = 18u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Lemon {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Lemon";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Lemon {
@@ -1257,10 +1746,25 @@ unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
-    pub fn ft_mixer_fruit_label_len(handle: *mut core::ffi::c_void, fruit: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
-    pub fn ft_mixer_blend_concrete(handle: *mut core::ffi::c_void, a: *mut core::ffi::c_void, b: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
-    pub fn ft_mixer_blend_hybrid(handle: *mut core::ffi::c_void, a: *mut core::ffi::c_void, b: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
-    pub fn ft_mixer_blend_dynamic(handle: *mut core::ffi::c_void, a: *mut core::ffi::c_void, b: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_mixer_fruit_label_len(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_mixer_blend_concrete(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_mixer_blend_hybrid(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_mixer_blend_dynamic(
+        handle: *mut core::ffi::c_void,
+        a: *mut core::ffi::c_void,
+        b: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
     pub fn ft_mixer_total(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
@@ -1268,22 +1772,33 @@ pub struct Mixer(*mut core::ffi::c_void);
 
 impl Mixer {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Mixer {
     const C_HANDLE_NAME: &'static str = "Mixer";
     const TYPE_TAG: u32 = 21u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Mixer {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Mixer";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Mixer {
@@ -1298,8 +1813,16 @@ impl Mixer {
         <Mixer as FfiType>::from_c(__raw)
     }
     pub fn add(self, fruit: impl Fruit) -> Self {
-        let mut __handle = { let this = std::mem::ManuallyDrop::new(self); this.0 };
-        unsafe { ft_mixer_add(&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void, fruit.__into_raw_handle()) };
+        let mut __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
+        unsafe {
+            ft_mixer_add(
+                &mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
+                fruit.__into_raw_handle(),
+            )
+        };
         Self(__handle)
     }
     #[doc = " Returns the length of a fruit's label. Used to test that vtable"]
@@ -1310,20 +1833,24 @@ impl Mixer {
     }
     #[doc = " Both concrete (9^2=81 > 64, override with annotation)."]
     pub fn blend_concrete(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_blend_concrete(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        let __raw = unsafe {
+            ft_mixer_blend_concrete(self.0, a.__into_raw_handle(), b.__into_raw_handle())
+        };
         <i32 as FfiType>::from_c(__raw)
     }
     #[doc = " First concrete, second vtable (hybrid: 9+9=18 branches)."]
     pub fn blend_hybrid(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_blend_hybrid(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        let __raw =
+            unsafe { ft_mixer_blend_hybrid(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
         <i32 as FfiType>::from_c(__raw)
     }
     #[doc = " Both vtable (9+9=18 branches)."]
     pub fn blend_dynamic(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        let __raw =
+            unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
         <i32 as FfiType>::from_c(__raw)
     }
-    pub fn total(&self, ) -> i32 {
+    pub fn total(&self) -> i32 {
         let __raw = unsafe { ft_mixer_total(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -1344,22 +1871,33 @@ pub struct Sprocket(*mut core::ffi::c_void);
 
 impl Sprocket {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self { Self(ptr) }
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl FfiHandle for Sprocket {
     const C_HANDLE_NAME: &'static str = "Sprocket";
     const TYPE_TAG: u32 = 22u32;
-    unsafe fn as_handle(&self) -> *mut core::ffi::c_void { self.0 }
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl FfiType for Sprocket {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "Sprocket";
-    fn into_c(self) -> *mut core::ffi::c_void { self.__into_raw() }
-    fn from_c(repr: *mut core::ffi::c_void) -> Self { Self::__from_raw(repr) }
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
 }
 
 impl std::fmt::Debug for Sprocket {
@@ -1383,10 +1921,13 @@ impl Drop for Sprocket {
 
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
-    fn name(&self, ) -> &str;
+    fn name(&self) -> &str;
     fn on_notify(&self, code: i32);
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static ProcessorVtable where Self: Sized {
+    fn __ffier_vtable() -> &'static ProcessorVtable
+    where
+        Self: Sized,
+    {
         &ProcessorVtable {
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
@@ -1396,7 +1937,8 @@ pub trait Processor {
             }),
             process: Some({
                 unsafe extern "C" fn __trampoline<__T: Processor>(
-                    __ud: *mut core::ffi::c_void, input: <i32 as FfiType>::CRepr,
+                    __ud: *mut core::ffi::c_void,
+                    input: <i32 as FfiType>::CRepr,
                 ) -> <i32 as FfiType>::CRepr {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.process(<i32 as FfiType>::from_c(input));
@@ -1416,7 +1958,8 @@ pub trait Processor {
             }),
             on_notify: Some({
                 unsafe extern "C" fn __trampoline<__T: Processor>(
-                    __ud: *mut core::ffi::c_void, code: <i32 as FfiType>::CRepr,
+                    __ud: *mut core::ffi::c_void,
+                    code: <i32 as FfiType>::CRepr,
                 ) {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.on_notify(<i32 as FfiType>::from_c(code));
@@ -1427,23 +1970,38 @@ pub trait Processor {
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
         let __vtable: &'static ProcessorVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<ProcessorVtable>().try_into().expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(10u32, 0, ffier::VtableHandle {
-            vtable_ptr: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
-            user_data: __user_data as *const core::ffi::c_void,
-            vtable_size,
-        })
+        let vtable_size: u16 = core::mem::size_of::<ProcessorVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            10u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
     }
 }
 
 #[repr(C)]
 pub struct ProcessorVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-    pub process: Option<unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as FfiType>::CRepr) -> <i32 as FfiType>::CRepr>,
-    pub name: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
+    pub process: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <i32 as FfiType>::CRepr,
+        ) -> <i32 as FfiType>::CRepr,
+    >,
+    pub name:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
     pub on_notify: Option<unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as FfiType>::CRepr)>,
 }
 
@@ -1451,7 +2009,10 @@ pub struct VtableProcessor(*mut core::ffi::c_void);
 
 impl VtableProcessor {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl Drop for VtableProcessor {
@@ -1459,8 +2020,11 @@ impl Drop for VtableProcessor {
 }
 
 pub trait Fruit {
-    fn value(&self, ) -> i32;
-    fn label(&self, ) -> &str where Self: Sized {
+    fn value(&self) -> i32;
+    fn label(&self) -> &str
+    where
+        Self: Sized,
+    {
         let __vtable: &'static FruitVtable = Self::__ffier_vtable();
         let __metadata: u32 = 2 | (1u32 << 2);
         let mut __temp = ffier::FfierHandle {
@@ -1472,11 +2036,19 @@ pub trait Fruit {
                 vtable_size: core::mem::size_of::<FruitVtable>() as u16,
             },
         };
-        let __raw = unsafe { ft_fruit_label(&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void) };
+        let __raw = unsafe {
+            ft_fruit_label(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+            )
+        };
         <&str as FfiType>::from_c(__raw)
     }
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static FruitVtable where Self: Sized {
+    fn __ffier_vtable() -> &'static FruitVtable
+    where
+        Self: Sized,
+    {
         &FruitVtable {
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
@@ -1507,15 +2079,24 @@ pub trait Fruit {
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
         let __vtable: &'static FruitVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<FruitVtable>().try_into().expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(20u32, 0, ffier::VtableHandle {
-            vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
-            user_data: __user_data as *const core::ffi::c_void,
-            vtable_size,
-        })
+        let vtable_size: u16 = core::mem::size_of::<FruitVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            20u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
     }
 }
 
@@ -1523,7 +2104,8 @@ pub trait Fruit {
 pub struct FruitVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
-    pub label: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
+    pub label:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
 }
 
 unsafe extern "C" {
@@ -1534,7 +2116,10 @@ pub struct VtableFruit(*mut core::ffi::c_void);
 
 impl VtableFruit {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl Drop for VtableFruit {
@@ -1542,9 +2127,12 @@ impl Drop for VtableFruit {
 }
 
 pub trait Weighable {
-    fn weight_grams(&self, ) -> i32;
+    fn weight_grams(&self) -> i32;
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static WeighableVtable where Self: Sized {
+    fn __ffier_vtable() -> &'static WeighableVtable
+    where
+        Self: Sized,
+    {
         &WeighableVtable {
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
@@ -1565,29 +2153,42 @@ pub trait Weighable {
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
         let __vtable: &'static WeighableVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<WeighableVtable>().try_into().expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(23u32, 0, ffier::VtableHandle {
-            vtable_ptr: __vtable as *const WeighableVtable as *const core::ffi::c_void,
-            user_data: __user_data as *const core::ffi::c_void,
-            vtable_size,
-        })
+        let vtable_size: u16 = core::mem::size_of::<WeighableVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            23u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const WeighableVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
     }
 }
 
 #[repr(C)]
 pub struct WeighableVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-    pub weight_grams: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
+    pub weight_grams:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
 }
 
 pub struct VtableWeighable(*mut core::ffi::c_void);
 
 impl VtableWeighable {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl Drop for VtableWeighable {
@@ -1597,7 +2198,10 @@ impl Drop for VtableWeighable {
 pub trait PushStr {
     fn push(&mut self, s: &str) -> bool;
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static PushStrVtable where Self: Sized {
+    fn __ffier_vtable() -> &'static PushStrVtable
+    where
+        Self: Sized,
+    {
         &PushStrVtable {
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
@@ -1607,7 +2211,8 @@ pub trait PushStr {
             }),
             push: Some({
                 unsafe extern "C" fn __trampoline<__T: PushStr>(
-                    __ud: *mut core::ffi::c_void, s: <&'static str as FfiType>::CRepr,
+                    __ud: *mut core::ffi::c_void,
+                    s: <&'static str as FfiType>::CRepr,
                 ) -> <bool as FfiType>::CRepr {
                     let __val = unsafe { &mut *(__ud as *mut __T) };
                     let __result = __val.push(<&str as FfiType>::from_c(s));
@@ -1618,29 +2223,46 @@ pub trait PushStr {
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
         let __vtable: &'static PushStrVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>().try_into().expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(24u32, 0, ffier::VtableHandle {
-            vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
-            user_data: __user_data as *const core::ffi::c_void,
-            vtable_size,
-        })
+        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            24u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
     }
 }
 
 #[repr(C)]
 pub struct PushStrVtable {
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
-    pub push: Option<unsafe extern "C" fn(*mut core::ffi::c_void, <&'static str as FfiType>::CRepr) -> <bool as FfiType>::CRepr>,
+    pub push: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as FfiType>::CRepr,
+        ) -> <bool as FfiType>::CRepr,
+    >,
 }
 
 pub struct VtablePushStr(*mut core::ffi::c_void);
 
 impl VtablePushStr {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void { let this = std::mem::ManuallyDrop::new(self); this.0 }
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
 }
 
 impl Drop for VtablePushStr {
@@ -1659,11 +2281,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Apple {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_apple_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1678,11 +2300,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Orange {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_orange_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1697,11 +2319,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Banana {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_banana_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1716,11 +2338,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Mango {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_mango_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1735,11 +2357,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Peach {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_peach_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1754,11 +2376,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Plum {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_plum_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1773,11 +2395,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Grape {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_grape_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1792,11 +2414,11 @@ unsafe extern "C" {
 }
 
 impl Fruit for Lemon {
-    fn value(&self, ) -> i32 {
+    fn value(&self) -> i32 {
         let __raw = unsafe { ft_lemon_value(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_fruit_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1807,9 +2429,11 @@ impl Fruit for Lemon {
 }
 
 pub trait Attachment {
-    fn label(&self, ) -> &str;
+    fn label(&self) -> &str;
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
 }
 
 unsafe extern "C" {
@@ -1817,7 +2441,7 @@ unsafe extern "C" {
 }
 
 impl Attachment for Sprocket {
-    fn label(&self, ) -> &str {
+    fn label(&self) -> &str {
         let __raw = unsafe { ft_sprocket_label(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
@@ -1828,23 +2452,27 @@ impl Attachment for Sprocket {
 }
 
 pub trait Snapshot<'a> {
-    fn snap_description(&self, ) -> &str;
-    fn snap_source_count(&self, ) -> i32;
+    fn snap_description(&self) -> &str;
+    fn snap_source_count(&self) -> i32;
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
 }
 
 unsafe extern "C" {
-    pub fn ft_view_snap_description(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_view_snap_description(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_view_snap_source_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
 impl<'a> Snapshot<'a> for View<'a> {
-    fn snap_description(&self, ) -> &str {
+    fn snap_description(&self) -> &str {
         let __raw = unsafe { ft_view_snap_description(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
-    fn snap_source_count(&self, ) -> i32 {
+    fn snap_source_count(&self) -> i32 {
         let __raw = unsafe { ft_view_snap_source_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -1855,16 +2483,18 @@ impl<'a> Snapshot<'a> for View<'a> {
 }
 
 unsafe extern "C" {
-    pub fn ft_widget_snap_description(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_widget_snap_description(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_widget_snap_source_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
 impl Snapshot<'static> for Widget {
-    fn snap_description(&self, ) -> &str {
+    fn snap_description(&self) -> &str {
         let __raw = unsafe { ft_widget_snap_description(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
-    fn snap_source_count(&self, ) -> i32 {
+    fn snap_source_count(&self) -> i32 {
         let __raw = unsafe { ft_widget_snap_source_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -1875,16 +2505,18 @@ impl Snapshot<'static> for Widget {
 }
 
 unsafe extern "C" {
-    pub fn ft_gadget_snap_description(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_gadget_snap_description(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_gadget_snap_source_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
 impl<'a> Snapshot<'a> for Gadget {
-    fn snap_description(&self, ) -> &str {
+    fn snap_description(&self) -> &str {
         let __raw = unsafe { ft_gadget_snap_description(self.0) };
         <&str as FfiType>::from_c(__raw)
     }
-    fn snap_source_count(&self, ) -> i32 {
+    fn snap_source_count(&self) -> i32 {
         let __raw = unsafe { ft_gadget_snap_source_count(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -1899,7 +2531,7 @@ unsafe extern "C" {
 }
 
 impl Weighable for Apple {
-    fn weight_grams(&self, ) -> i32 {
+    fn weight_grams(&self) -> i32 {
         let __raw = unsafe { ft_apple_weight_grams(self.0) };
         <i32 as FfiType>::from_c(__raw)
     }
@@ -1910,7 +2542,9 @@ impl Weighable for Apple {
 }
 
 unsafe extern "C" {
-    pub fn ft_log_level_name(level: <LogLevel as FfiType>::CRepr) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_log_level_name(
+        level: <LogLevel as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
 }
 
 #[doc = " Describe a log level as a string."]
@@ -1920,7 +2554,8 @@ pub fn log_level_name(level: LogLevel) -> &'static str {
 }
 
 unsafe extern "C" {
-    pub fn ft_log_level_is_enabled(level: <LogLevel as FfiType>::CRepr) -> <bool as FfiType>::CRepr;
+    pub fn ft_log_level_is_enabled(level: <LogLevel as FfiType>::CRepr)
+        -> <bool as FfiType>::CRepr;
 }
 
 #[doc = " Check if a log level is enabled (everything above Off)."]
@@ -1930,18 +2565,27 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 }
 
 unsafe extern "C" {
-    pub fn ft_clone_fd(fd: <BorrowedFd<'static> as FfiType>::CRepr, result: *mut <OwnedFd as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
+    pub fn ft_clone_fd(
+        fd: <BorrowedFd<'static> as FfiType>::CRepr,
+        result: *mut <OwnedFd as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
 }
 
 #[doc = " Duplicate a file descriptor."]
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     let mut __out = std::mem::MaybeUninit::uninit();
     let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-    let __r = unsafe { ft_clone_fd(<BorrowedFd<'_> as FfiType>::into_c(fd), __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+    let __r = unsafe {
+        ft_clone_fd(
+            <BorrowedFd<'_> as FfiType>::into_c(fd),
+            __out.as_mut_ptr(),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
     if __r == 0 {
         Ok(<OwnedFd as FfiType>::from_c(unsafe { __out.assume_init() }))
     } else {
         Err(TestError::from_ffi(__r))
     }
 }
-

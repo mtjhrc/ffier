@@ -10,9 +10,9 @@
 //! );
 //! ```
 
-pub use ffier_rt::ffier_result;
 pub use ffier_rt::FfierHandle;
 pub use ffier_rt::FfierResult;
+pub use ffier_rt::ffier_result;
 
 /// Streaming string writer for error messages (and other display output).
 ///

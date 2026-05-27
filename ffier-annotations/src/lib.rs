@@ -3312,7 +3312,12 @@ impl Parse for LibraryInput {
                 input.parse::<Token![enum]>()?;
                 let path: syn::Path = input.parse()?;
                 entries.push(LibraryEntry::Enum(path));
-            } else if input.peek(syn::Ident) && input.fork().parse::<syn::Ident>().map_or(false, |id| id == "bitflags") {
+            } else if input.peek(syn::Ident)
+                && input
+                    .fork()
+                    .parse::<syn::Ident>()
+                    .map_or(false, |id| id == "bitflags")
+            {
                 // `bitflags Path`
                 let _: syn::Ident = input.parse()?;
                 let path: syn::Path = input.parse()?;
