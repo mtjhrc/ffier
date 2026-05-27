@@ -149,6 +149,11 @@ pub fn generate(lib: &Library) -> String {
         emit_enum_type(&mut out, en, lib);
     }
 
+    // 0b. Bitflags constants (bitflags! invocations + FfiType impls)
+    for bf in &lib.bitflags_constants {
+        emit_bitflags_type(&mut out, bf, lib);
+    }
+
     // 1. Error enums
     for err in &lib.errors {
         emit_error(&mut out, err, lib);
@@ -1631,6 +1636,47 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     writeln!(
         out,
         "    fn from_c(repr: {repr}) -> Self {{ unsafe {{ core::mem::transmute(repr) }} }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Bitflags type generation
+// ===========================================================================
+
+fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
+    let entry = lib.type_entry(&bf.name).unwrap();
+    let repr = match &entry.kind {
+        TypeKind::Bitflags { alias_of } => alias_of.as_str(),
+        _ => panic!("bitflags type must have TypeKind::Bitflags"),
+    };
+
+    // bitflags! invocation
+    writeln!(out, "bitflags::bitflags! {{").unwrap();
+    writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
+    writeln!(out, "    pub struct {}: {repr} {{", bf.name).unwrap();
+    for v in &bf.variants {
+        writeln!(out, "        const {} = {};", v.name, v.value).unwrap();
+    }
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiType impl
+    writeln!(out, "impl FfiType for {} {{", bf.name).unwrap();
+    writeln!(out, "    type CRepr = {repr};").unwrap();
+    writeln!(
+        out,
+        "    const C_TYPE_NAME: &'static str = \"{}\";",
+        bf.name
+    )
+    .unwrap();
+    writeln!(out, "    fn into_c(self) -> {repr} {{ self.bits() }}").unwrap();
+    writeln!(
+        out,
+        "    fn from_c(repr: {repr}) -> Self {{ Self::from_bits_retain(repr) }}"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();

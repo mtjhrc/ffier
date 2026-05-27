@@ -9,10 +9,10 @@ use quote::{format_ident, quote};
 use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
-    HasPrefix, MetaEnum, MetaError, MetaExportable, MetaFreeFunction, MetaImplementable,
-    MetaMethod, MetaMethodContext, MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl,
-    MetaTypePair, camel_to_snake, camel_to_upper_snake, erase_lifetimes_tokens, peek_meta_field,
-    peek_meta_tag,
+    HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
+    MetaImplementable, MetaMethod, MetaMethodContext, MetaParamKind, MetaReceiver, MetaReturn,
+    MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake, erase_lifetimes_tokens,
+    peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -142,8 +142,8 @@ fn generate_one(
             };
             generate_trait_impl_bridge(meta, trait_map, lib_crate)
         }
-        "enum_constants" => {
-            // No bridge code needed — enums are value types passed by value.
+        "enum_constants" | "bitflags_constants" => {
+            // No bridge code needed — enums/bitflags are value types passed by value.
             quote! {}
         }
         "free_fn" => {
@@ -208,6 +208,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let mut implementables = Vec::new();
     let mut trait_impls = Vec::new();
     let mut enum_constants = Vec::new();
+    let mut bitflags_constants = Vec::new();
     let mut free_fns = Vec::new();
 
     for item in &items {
@@ -217,6 +218,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             "implementable" => implementables.push(item.clone()),
             "trait_impl" => trait_impls.push(item.clone()),
             "enum_constants" => enum_constants.push(item.clone()),
+            "bitflags_constants" => bitflags_constants.push(item.clone()),
             "free_fn" => free_fns.push(item.clone()),
             tag => {
                 let msg = format!("unknown metadata tag `@{tag}` in batch");
@@ -401,6 +403,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(implementables.iter())
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
+        .chain(bitflags_constants.iter())
         .chain(free_fns.iter())
     {
         all_code.push(generate_one(
@@ -419,6 +422,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(implementables.iter())
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
+        .chain(bitflags_constants.iter())
         .chain(free_fns.iter())
         .next()
         .map(|item| peek_meta_field(item, "prefix"))
@@ -473,6 +477,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         &implementables,
         &trait_impls,
         &enum_constants,
+        &bitflags_constants,
         &free_fns,
     );
 
@@ -1890,6 +1895,7 @@ fn emit_json(
     implementables: &[TokenStream2],
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
+    bitflags_constants: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) {
     // CARGO_MANIFEST_DIR is always set by cargo when rustc runs, even without
@@ -1922,6 +1928,7 @@ fn emit_json(
         implementables,
         trait_impls,
         enum_constants,
+        bitflags_constants,
         free_fns,
     );
     let json = library.to_json();
@@ -2047,6 +2054,7 @@ fn build_schema(
     implementables: &[TokenStream2],
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
+    bitflags_constants: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) -> ffier_schema::Library {
     let errors_parsed: Vec<_> = errors
@@ -2080,6 +2088,13 @@ fn build_schema(
         .iter()
         .map(|item| {
             syn::parse2::<MetaEnum>(item.clone()).expect("failed to parse @enum_constants metadata")
+        })
+        .collect();
+    let bitflags_parsed: Vec<_> = bitflags_constants
+        .iter()
+        .map(|item| {
+            syn::parse2::<MetaBitflags>(item.clone())
+                .expect("failed to parse @bitflags_constants metadata")
         })
         .collect();
     let free_fns_parsed: Vec<_> = free_fns
@@ -2234,6 +2249,22 @@ fn build_schema(
         );
     }
 
+    // Bitflags constants
+    for bf in &bitflags_parsed {
+        let name = bf.name.to_string();
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::Bitflags {
+                    alias_of: bf.repr.clone(),
+                },
+                type_tag: None,
+                bless: None,
+                lifetime_params: vec![],
+            },
+        );
+    }
+
     // Handles (exported types)
     for e in &exportables_parsed {
         let name = e.struct_name.to_string();
@@ -2336,6 +2367,10 @@ fn build_schema(
             .iter()
             .map(|e| convert_enum(e, &resolver))
             .collect(),
+        bitflags_constants: bitflags_parsed
+            .iter()
+            .map(|bf| convert_bitflags(bf, &resolver))
+            .collect(),
         free_functions: free_fns_parsed
             .iter()
             .map(|f| convert_free_fn(f, &resolver))
@@ -2367,6 +2402,29 @@ fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
                 ffier_schema::EnumVariant {
                     name: v.name.to_string(),
                     c_name: format!("{}{}_{}", r.upper_pfx, name_upper, variant_upper),
+                    value: v.value,
+                }
+            })
+            .collect(),
+    }
+}
+
+fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::EnumType {
+    let name = meta.name.to_string();
+    let name_upper = camel_to_upper_snake(&name);
+    ffier_schema::EnumType {
+        name: name.clone(),
+        variants: meta
+            .variants
+            .iter()
+            .map(|v| {
+                // Bitflags constant names are already UPPER_SNAKE_CASE
+                // (e.g. READ, WRITE), so use them verbatim — don't run
+                // camel_to_upper_snake which would split "READ" into "R_E_A_D".
+                let variant_name = v.name.to_string();
+                ffier_schema::EnumVariant {
+                    name: variant_name.clone(),
+                    c_name: format!("{}{}_{}", r.upper_pfx, name_upper, variant_name),
                     value: v.value,
                 }
             })

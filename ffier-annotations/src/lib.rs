@@ -447,6 +447,151 @@ fn extract_repr(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
 }
 
 // ---------------------------------------------------------------------------
+// ffier::exportable_bitflags! — export a bitflags type via FFI
+// ---------------------------------------------------------------------------
+
+/// Export a `bitflags!` type for FFI.
+///
+/// Place this after the `bitflags!` macro invocation. It generates the
+/// `FfiType` impl and metadata macro needed for the type to be used as
+/// a parameter/return type in exported methods and to appear in the JSON
+/// schema as named flag constants.
+///
+/// ```ignore
+/// bitflags::bitflags! {
+///     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///     pub struct Permissions: u32 {
+///         const READ  = 0b001;
+///         const WRITE = 0b010;
+///         const EXEC  = 0b100;
+///     }
+/// }
+///
+/// ffier::exportable_bitflags!(Permissions: u32 {
+///     const READ  = 0b001;
+///     const WRITE = 0b010;
+///     const EXEC  = 0b100;
+/// });
+/// ```
+#[proc_macro]
+pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
+    let parsed = parse_macro_input!(input as BitflagsInput);
+    let name = &parsed.name;
+    let repr_ident = &parsed.repr;
+    let repr_str = repr_ident.to_string();
+
+    let mut variants_meta = Vec::new();
+    for (flag_name, value) in &parsed.flags {
+        variants_meta.push(quote! {
+            { name = #flag_name, value = #value, }
+        });
+    }
+
+    let bf_snake = camel_to_snake(&name.to_string());
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_{bf_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{name}");
+    let helper_mod_name = format_ident!("_ffier_{bf_snake}");
+    let bf_path = quote! { $crate::#name };
+
+    let output = quote! {
+        #[doc(hidden)]
+        pub mod #helper_mod_name {}
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #internal_macro_name {
+            (@reexport) => {
+                impl FfiType for #name {
+                    type CRepr = #repr_ident;
+                    const C_TYPE_NAME: &'static str = stringify!(#name);
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> #repr_ident { self.bits() }
+                    fn from_c(repr: #repr_ident) -> Self { Self::from_bits_retain(repr) }
+                }
+            };
+            // Tagged invocation (from library_definition! shim): includes prefix
+            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @bitflags_constants,
+                    name = #name,
+                    path = (#bf_path),
+                    prefix = $prefix,
+                    repr = #repr_str,
+                    variants = [#(#variants_meta),*],
+                } $(, $($rest)*)? }
+            };
+            // Untagged invocation
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @bitflags_constants,
+                    name = #name,
+                    path = (#bf_path),
+                    prefix = $prefix,
+                    repr = #repr_str,
+                    variants = [#(#variants_meta),*],
+                } $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
+    };
+
+    output.into()
+}
+
+/// Parsed input for `exportable_bitflags!`: `Name: repr { const FLAG = val; ... }`
+struct BitflagsInput {
+    name: syn::Ident,
+    repr: syn::Ident,
+    flags: Vec<(syn::Ident, u64)>,
+}
+
+impl Parse for BitflagsInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let name: syn::Ident = input.parse()?;
+        input.parse::<Token![:]>()?;
+        let repr: syn::Ident = input.parse()?;
+
+        // Validate repr is a supported integer type
+        let repr_s = repr.to_string();
+        if !matches!(
+            repr_s.as_str(),
+            "u8" | "u16" | "u32" | "u64" | "i8" | "i16" | "i32" | "i64"
+        ) {
+            return Err(syn::Error::new(
+                repr.span(),
+                "bitflags repr must be one of u8, u16, u32, u64, i8, i16, i32, i64",
+            ));
+        }
+
+        let content;
+        syn::braced!(content in input);
+
+        let mut flags = Vec::new();
+        while !content.is_empty() {
+            content.parse::<Token![const]>()?;
+            let flag_name: syn::Ident = content.parse()?;
+            content.parse::<Token![=]>()?;
+
+            // Parse the value expression — support integer literals and
+            // simple binary/hex literals.
+            let lit: syn::LitInt = content.parse()?;
+            let value = lit.base10_parse::<u64>()?;
+
+            flags.push((flag_name, value));
+
+            // Optional semicolon and/or comma
+            let _ = content.parse::<Token![;]>();
+            let _ = content.parse::<Token![,]>();
+        }
+
+        Ok(BitflagsInput { name, repr, flags })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // #[ffier::exportable] on free functions
 // ---------------------------------------------------------------------------
 
@@ -2647,6 +2792,38 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     });
                 }
             }
+            LibraryEntry::Bitflags(path) => {
+                let last_ident = path_last_ident(path);
+                let alias = meta_alias_for_type(path);
+                let alias_chain = to_chain_path(&alias);
+
+                // Shim macro — no type tag needed for bitflags
+                let shim_name = format_ident!("__ffier_bitflags_{prefix_str}_{last_ident}");
+                shim_macros.push(quote! {
+                    #[doc(hidden)]
+                    #[macro_export]
+                    macro_rules! #shim_name {
+                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                        };
+                    }
+                });
+
+                // @reexport generates the FfiType impl for the bitflags type
+                reexport_invocations.push(quote! { #alias!(@reexport); });
+                chain_paths.push(quote! { $crate::#shim_name });
+
+                // Helper module re-export for qualified paths
+                let helper_mod_name =
+                    format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
+                if path.segments.len() > 1 {
+                    let helper_mod_path = replace_last_segment(path, &helper_mod_name);
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #helper_mod_path;
+                    });
+                }
+            }
             LibraryEntry::FreeFn(path) => {
                 let last_ident = path_last_ident(path);
                 let alias = meta_alias_for_type(path);
@@ -2980,6 +3157,8 @@ enum LibraryEntry {
     },
     /// An enum constant type (no type tag, value type): `enum Path`
     Enum(syn::Path),
+    /// A bitflags type (no type tag, value type): `bitflags Path`
+    Bitflags(syn::Path),
     /// A free function: `fn Path`
     FreeFn(syn::Path),
 }
@@ -3017,6 +3196,11 @@ impl Parse for LibraryInput {
                 input.parse::<Token![enum]>()?;
                 let path: syn::Path = input.parse()?;
                 entries.push(LibraryEntry::Enum(path));
+            } else if input.peek(syn::Ident) && input.fork().parse::<syn::Ident>().map_or(false, |id| id == "bitflags") {
+                // `bitflags Path`
+                let _: syn::Ident = input.parse()?;
+                let path: syn::Path = input.parse()?;
+                entries.push(LibraryEntry::Bitflags(path));
             } else if input.peek(Token![fn]) {
                 // `fn Path`
                 input.parse::<Token![fn]>()?;

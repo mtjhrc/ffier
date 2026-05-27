@@ -53,6 +53,11 @@ pub fn generate(lib: &Library, guard: &str) -> String {
         emit_enum_section(&mut out, en);
     }
 
+    // Bitflags constant sections (same format as enum constants)
+    for bf in &lib.bitflags_constants {
+        emit_enum_section(&mut out, bf);
+    }
+
     // Error sections
     for err in &lib.errors {
         emit_error_section(&mut out, err, lib);
