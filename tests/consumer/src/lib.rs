@@ -282,4 +282,18 @@ mod tests {
             assert_eq!(dispatch_kind_of(Banana { sweetness: 7 }), "VtableFruit");
         }
     }
+
+    #[test]
+    fn test_bitflags_roundtrip() {
+        let w = make_widget();
+        let perms = w.add_permission(api::Permissions::READ, api::Permissions::WRITE);
+        assert_eq!(perms, api::Permissions::READ | api::Permissions::WRITE);
+    }
+
+    #[test]
+    fn test_bitflags_single_flag() {
+        let w = make_widget();
+        let perms = w.add_permission(api::Permissions::empty(), api::Permissions::EXECUTE);
+        assert_eq!(perms, api::Permissions::EXECUTE);
+    }
 }
