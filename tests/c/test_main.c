@@ -563,6 +563,36 @@ void lifetime_type_str_methods(void) {
 }
 
 /* ===================================================================== */
+/* Optional fd (Result<Option<BorrowedFd>, E>)                          */
+/* ===================================================================== */
+
+void method_returning_result_optional_fd_some(void) {
+    FtWidget w = ft_widget_new();
+    int fd = -1;
+    FtResult r = ft_widget_maybe_fd(w, 1, &fd, NULL);
+    assert(r == FT_RESULT_SUCCESS);
+    assert(fd == 0); /* stdin */
+    ft_widget_destroy(w);
+}
+
+void method_returning_result_optional_fd_none(void) {
+    FtWidget w = ft_widget_new();
+    int fd = 99;
+    FtResult r = ft_widget_maybe_fd(w, 0, &fd, NULL);
+    assert(r == FT_RESULT_SUCCESS);
+    assert(fd == -1); /* None sentinel */
+    ft_widget_destroy(w);
+}
+
+void method_returning_result_optional_fd_err(void) {
+    FtWidget w = ft_widget_new();
+    int fd = 99;
+    FtResult r = ft_widget_maybe_fd(w, -1, &fd, NULL);
+    assert(r == FT_ERROR_TEST_INVALID_INPUT);
+    ft_widget_destroy(w);
+}
+
+/* ===================================================================== */
 /* Destroy                                                               */
 /* ===================================================================== */
 
@@ -651,6 +681,11 @@ int main(void) {
     RUN_TEST(lifetime_type_borrowing_handle);
     RUN_TEST(lifetime_type_reading_through_borrow);
     RUN_TEST(lifetime_type_str_methods);
+
+    printf("\n[optional fd]\n");
+    RUN_TEST(method_returning_result_optional_fd_some);
+    RUN_TEST(method_returning_result_optional_fd_none);
+    RUN_TEST(method_returning_result_optional_fd_err);
 
     printf("\n[destroy]\n");
     RUN_TEST(destroy_handle);
