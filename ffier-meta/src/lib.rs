@@ -454,6 +454,28 @@ pub struct MetaEnumVariant {
 }
 
 // ---------------------------------------------------------------------------
+// Bitflags metadata
+// ---------------------------------------------------------------------------
+
+/// Bitflags metadata — structurally identical to `MetaEnum` but carries
+/// a distinct `@bitflags_constants` tag so generators can emit `bitflags!`
+/// invocations (Rust) or annotated `#define` groups (C) instead of plain enums.
+pub struct MetaBitflags {
+    pub name: Ident,
+    pub path: TokenStream,
+    pub prefix: String,
+    /// The underlying integer type (e.g. "u32", "u64").
+    pub repr: String,
+    pub variants: Vec<MetaEnumVariant>,
+}
+
+impl HasPrefix for MetaBitflags {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Free function metadata
 // ---------------------------------------------------------------------------
 
@@ -992,6 +1014,60 @@ impl syn::parse::Parse for MetaEnum {
         parse_comma(input)?;
 
         Ok(MetaEnum {
+            name,
+            path,
+            prefix,
+            repr,
+            variants,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bitflags metadata parsing
+// ---------------------------------------------------------------------------
+
+impl syn::parse::Parse for MetaBitflags {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let tag: Ident = input.parse()?;
+        if tag != "bitflags_constants" {
+            return Err(syn::Error::new(tag.span(), "expected `bitflags_constants`"));
+        }
+        parse_comma(input)?;
+
+        expect_key(input, "name")?;
+        let name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "path")?;
+        let path = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "repr")?;
+        let repr = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "variants")?;
+        let variants = parse_bracketed_list(input, |content| {
+            let inner;
+            syn::braced!(inner in content);
+            expect_key(&inner, "name")?;
+            let name: Ident = inner.parse()?;
+            parse_comma(&inner)?;
+            expect_key(&inner, "value")?;
+            let value: syn::LitInt = inner.parse()?;
+            let value = value.base10_parse::<u64>()?;
+            parse_comma(&inner)?;
+            Ok(MetaEnumVariant { name, value })
+        })?;
+        parse_comma(input)?;
+
+        Ok(MetaBitflags {
             name,
             path,
             prefix,

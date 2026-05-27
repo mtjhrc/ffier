@@ -11,4 +11,5 @@ fruit-label = []
 ffier = { path = "../../ffier" }
 ffier-builtins = { path = "../../ffier-builtins" }
 foreign-trait-crate = { path = "../foreign-trait-crate" }
+bitflags = "2"
 thiserror = "2"

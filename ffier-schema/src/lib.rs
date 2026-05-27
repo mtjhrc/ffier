@@ -30,6 +30,9 @@ pub struct Library {
     /// Plain enums exported as C `#define` constants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enum_constants: Vec<EnumType>,
+    /// Bitflags types exported as C `#define` constants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bitflags_constants: Vec<EnumType>,
     /// Free (non-method) functions exported via `#[ffier::exportable]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free_functions: Vec<FreeFunction>,
@@ -129,6 +132,14 @@ pub enum TypeKind {
     /// (resolved via `alias_of`), but the schema carries the variant names
     /// and values so generators can emit `#define` constants / typed enums.
     Enum {
+        /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
+        alias_of: std::string::String,
+    },
+    /// Bitflags type — a newtype struct over an integer with named flag
+    /// constants. Like `Enum`, the C ABI passes the underlying integer
+    /// type by value. Generators emit `#define` constants for C and
+    /// `bitflags!` invocations for Rust client code.
+    Bitflags {
         /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
         alias_of: std::string::String,
     },
@@ -587,7 +598,9 @@ impl Library {
                 .get(current)
                 .unwrap_or_else(|| panic!("type `{current}` not found in type_registry"));
             match &entry.kind {
-                TypeKind::Alias { alias_of } | TypeKind::Enum { alias_of } => {
+                TypeKind::Alias { alias_of }
+                | TypeKind::Enum { alias_of }
+                | TypeKind::Bitflags { alias_of } => {
                     current = alias_of;
                 }
                 TypeKind::Primitive { c_type } => return c_type,
@@ -660,6 +673,9 @@ impl Library {
         for en in &self.enum_constants {
             refs.insert(en.name.as_str());
         }
+        for bf in &self.bitflags_constants {
+            refs.insert(bf.name.as_str());
+        }
         for f in &self.free_functions {
             collect_from_params(&f.params, &mut refs);
             collect_from_return(&f.ret, &mut refs);
@@ -728,7 +744,9 @@ impl Library {
             let snapshot: Vec<&str> = refs.iter().copied().collect();
             for name in snapshot {
                 if let Some(entry) = self.type_registry.get(name) {
-                    if let TypeKind::Alias { alias_of } | TypeKind::Enum { alias_of } = &entry.kind
+                    if let TypeKind::Alias { alias_of }
+                    | TypeKind::Enum { alias_of }
+                    | TypeKind::Bitflags { alias_of } = &entry.kind
                     {
                         if refs.insert(alias_of) {
                             changed = true;
