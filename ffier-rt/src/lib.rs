@@ -192,6 +192,49 @@ impl VtableHandle {
 }
 
 // ---------------------------------------------------------------------------
+// PushStrHandle — fmt::Write adapter for a PushStr vtable handle
+// ---------------------------------------------------------------------------
+
+/// Wraps a raw PushStr handle (`*mut FfierHandle<VtableHandle>`) and
+/// implements `fmt::Write` by calling the `push` vtable slot.
+///
+/// The vtable layout must be:
+/// - slot 0: `drop`
+/// - slot 1: `push(user_data: *mut c_void, s: FfierBytes) -> bool`
+pub struct PushStrHandle {
+    handle: *mut c_void,
+}
+
+impl PushStrHandle {
+    /// Wrap a raw PushStr handle.
+    ///
+    /// # Safety
+    /// `handle` must point to a valid `FfierHandle<VtableHandle>` whose
+    /// vtable has a `push` function at slot 1.
+    pub unsafe fn new(handle: *mut c_void) -> Self {
+        Self { handle }
+    }
+}
+
+impl core::fmt::Write for PushStrHandle {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let vh = unsafe { &(*(self.handle as *const FfierHandle<VtableHandle>)).value };
+        // push is at slot 1, after drop (slot 0 = Option<fn(*mut c_void)>)
+        let push_offset = core::mem::size_of::<Option<unsafe extern "C" fn(*mut c_void)>>();
+        type PushFn = unsafe extern "C" fn(*mut c_void, FfierBytes) -> bool;
+        let push: Option<PushFn> = unsafe { vh.field_or_none(push_offset) };
+        if let Some(push) = push {
+            let bytes = FfierBytes {
+                data: s.as_ptr(),
+                len: s.len(),
+            };
+            unsafe { push(vh.user_data as *mut c_void, bytes) };
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FfierBytes --- zero-copy byte slice for C FFI (&[u8], &str, &Path)
 // ---------------------------------------------------------------------------
 

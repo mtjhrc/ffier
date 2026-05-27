@@ -108,6 +108,7 @@ dependencies = [
 name = "ffier-test-compat"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "ffier",
 ]
 

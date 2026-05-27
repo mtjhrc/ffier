@@ -469,6 +469,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // static_message tables.
     let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &lib_crate);
 
+    // Generate error payload extraction & strerror
+    let error_payload_fn = generate_error_payload_bridge(&first_prefix, &errors, &lib_crate);
+
     // Generate str_free function for dropping owned strings (Box<str>)
     let str_free_fn = generate_str_free(&first_prefix);
 
@@ -493,7 +496,161 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         #strerror_fn
 
+        #error_payload_fn
+
         #str_free_fn
+    }
+}
+
+// ===========================================================================
+// Error payload extraction & strerror
+// ===========================================================================
+
+/// Generate `{prefix}_error_into_payload(handle) -> *mut c_void` — extracts
+/// the error's inner data and destroys the handle, returning a pointer to
+/// the CRepr of the payload (or null for fieldless variants).
+///
+/// Also generate `{prefix}_result_strerror(code, *const c_void, PushStr)` —
+/// reconstructs the error from code + payload and calls Display into PushStr.
+fn generate_error_payload_bridge(
+    prefix: &str,
+    errors: &[TokenStream2],
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    let fn_pfx = format!("{prefix}_");
+    let into_payload_fn = format_ident!("{fn_pfx}error_into_payload");
+    let result_strerror_fn = format_ident!("{fn_pfx}result_strerror");
+
+    let mut into_payload_arms = Vec::new();
+    let mut strerror_arms = Vec::new();
+
+    for item in errors {
+        let Ok(meta) = syn::parse2::<MetaError>(item.clone()) else {
+            continue;
+        };
+        let type_tag = meta.type_tag;
+        let path = &meta.path;
+
+        // into_payload: downcast handle to error, match variant, copy CRepr
+        // into caller-provided buffer
+        let mut variant_into_arms = Vec::new();
+        let mut variant_strerror_arms = Vec::new();
+
+        for v in &meta.variants {
+            let var_ident = &v.name;
+            let code = v.code;
+
+            if v.field_types.is_empty() {
+                // Fieldless variant: nothing to copy
+                variant_into_arms.push(quote! {
+                    #path::#var_ident => {}
+                });
+                variant_strerror_arms.push(quote! {
+                    #code => {
+                        use core::fmt::Write;
+                        let _ = write!(writer, "{}", #path::#var_ident);
+                    }
+                });
+            } else if v.field_types.len() == 1 {
+                // Single-field tuple variant — copy CRepr into out_buf
+                let field_ty_str = &v.field_types[0];
+                let field_ty: syn::Type =
+                    syn::parse_str(field_ty_str).expect("failed to parse error field type");
+                variant_into_arms.push(quote! {
+                    #path::#var_ident(val) => {
+                        let c_val = <#field_ty as #lib_crate::FfiType>::into_c(val);
+                        let expected_size = core::mem::size_of::<<#field_ty as #lib_crate::FfiType>::CRepr>();
+                        assert!(
+                            buf_size >= expected_size,
+                            "error payload buffer too small: got {} bytes, need {}",
+                            buf_size, expected_size,
+                        );
+                        unsafe {
+                            core::ptr::write(
+                                out_buf as *mut <#field_ty as #lib_crate::FfiType>::CRepr,
+                                c_val,
+                            );
+                        }
+                    }
+                });
+                variant_strerror_arms.push(quote! {
+                    #code => {
+                        // Read a copy of the CRepr, reconstruct the error value
+                        // for Display, then forget it to avoid dropping the inner
+                        // allocation (the caller retains ownership of the payload).
+                        let payload_ptr = payload as *const <#field_ty as #lib_crate::FfiType>::CRepr;
+                        let c_val = unsafe { core::ptr::read(payload_ptr) };
+                        let val = <#field_ty as #lib_crate::FfiType>::from_c(c_val);
+                        let err = #path::#var_ident(val);
+                        use core::fmt::Write;
+                        let _ = write!(writer, "{}", err);
+                        core::mem::forget(err);
+                    }
+                });
+            }
+        }
+
+        into_payload_arms.push(quote! {
+            #type_tag => {
+                let err: #path = unsafe { ffier::ffier_handle_consume(handle) };
+                match err {
+                    #(#variant_into_arms)*
+                    #[allow(unreachable_patterns)]
+                    _ => {}
+                }
+            }
+        });
+
+        strerror_arms.push(quote! {
+            #type_tag => {
+                let code = ffier::ffier_result_code(r);
+                match code {
+                    #(#variant_strerror_arms)*
+                    _ => {}
+                }
+            }
+        });
+    }
+
+    quote! {
+        /// Extract the payload from an error handle into caller-provided
+        /// storage and destroy the handle.
+        ///
+        /// `out_buf` points to caller-allocated storage (e.g. a
+        /// `MaybeUninit<CRepr>` on the stack). `buf_size` is its size in
+        /// bytes. The bridge copies the CRepr into `out_buf` and frees
+        /// the handle. For fieldless variants, `out_buf` is untouched.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #into_payload_fn(
+            r: ffier::FfierResult,
+            handle: *mut core::ffi::c_void,
+            out_buf: *mut core::ffi::c_void,
+            buf_size: usize,
+        ) {
+            if handle.is_null() { return; }
+            let type_tag = ffier::ffier_result_type_tag(r);
+            match type_tag {
+                #(#into_payload_arms)*
+                _ => {}
+            }
+        }
+
+        /// Reconstruct an error from its result code + payload pointer,
+        /// call Display, and write the message to the given PushStr handle.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #result_strerror_fn(
+            r: ffier::FfierResult,
+            payload: *const core::ffi::c_void,
+            writer: *mut core::ffi::c_void,
+        ) {
+            if r == 0 { return; }
+            let mut writer = unsafe { ffier::PushStrHandle::new(writer) };
+            let type_tag = ffier::ffier_result_type_tag(r);
+            match type_tag {
+                #(#strerror_arms)*
+                _ => {}
+            }
+        }
     }
 }
 
@@ -2368,6 +2525,7 @@ fn build_schema(
                 type_tag: Some(i.type_tag),
                 bless: i.bless.as_deref().map(|b| match b {
                     "error_trait" => ffier_schema::Blessing::ErrorTrait,
+                    "push_str" => ffier_schema::Blessing::PushStr,
                     _ => panic!("unknown bless value `{b}` — add a Blessing variant for it"),
                 }),
                 lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
@@ -2528,11 +2686,21 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
         variants: meta
             .variants
             .iter()
-            .map(|v| ffier_schema::ErrorVariant {
-                name: v.name.to_string(),
-                c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
-                code: v.code,
-                message: v.message.clone(),
+            .map(|v| {
+                let fields = v
+                    .field_types
+                    .iter()
+                    .map(|ty_str| ffier_schema::ErrorField {
+                        type_ref: r.to_type_ref(ty_str),
+                    })
+                    .collect();
+                ffier_schema::ErrorVariant {
+                    name: v.name.to_string(),
+                    c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
+                    code: v.code,
+                    message: v.message.clone(),
+                    fields,
+                }
             })
             .collect(),
     }
