@@ -129,7 +129,15 @@ impl FfiType for LogLevel {
         self as u32
     }
     fn from_c(repr: u32) -> Self {
-        unsafe { core::mem::transmute(repr) }
+        match repr {
+            0 => Self::Off,
+            1 => Self::Error,
+            2 => Self::Warn,
+            3 => Self::Info,
+            4 => Self::Debug,
+            5 => Self::Trace,
+            unknown => panic!("invalid LogLevel discriminant: {}", unknown),
+        }
     }
 }
 

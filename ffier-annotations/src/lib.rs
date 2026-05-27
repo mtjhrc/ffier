@@ -331,6 +331,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
 
     // Collect variant names and discriminant values.
     let mut variants_meta = Vec::new();
+    let mut variant_values: Vec<(syn::Ident, u64)> = Vec::new();
     let mut next_value: u64 = 0;
     for variant in &data_enum.variants {
         if !variant.fields.is_empty() {
@@ -365,10 +366,22 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
         };
         next_value = value + 1;
         let var_ident = &variant.ident;
+        variant_values.push((var_ident.clone(), value));
         variants_meta.push(quote! {
             { name = #var_ident, value = #value, }
         });
     }
+
+    // Build match arms for from_c: each discriminant maps to its variant,
+    // unknown values panic.
+    let from_c_arms: Vec<_> = variant_values
+        .iter()
+        .map(|(ident, val)| {
+            let lit = proc_macro2::Literal::u64_unsuffixed(*val);
+            quote! { #lit => Self::#ident, }
+        })
+        .collect();
+    let name_str = name.to_string();
 
     let enum_snake = camel_to_snake(&name.to_string());
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -392,7 +405,15 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
                     const C_TYPE_NAME: &'static str = stringify!(#name);
                     const IS_HANDLE: bool = false;
                     fn into_c(self) -> #repr_ident { self as #repr_ident }
-                    fn from_c(repr: #repr_ident) -> Self { unsafe { core::mem::transmute(repr) } }
+                    fn from_c(repr: #repr_ident) -> Self {
+                        match repr {
+                            #(#from_c_arms)*
+                            unknown => panic!(
+                                "invalid {} discriminant: {}",
+                                #name_str, unknown
+                            ),
+                        }
+                    }
                 }
             };
             // Tagged invocation (from library_definition! shim): includes prefix
