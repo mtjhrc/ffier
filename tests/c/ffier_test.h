@@ -46,7 +46,7 @@ typedef struct {
     size_t len;
 } FtBytes;
 
-#define FT_STR(s) ((FtStr){ .data = (s), .len = strlen(s) })
+#define FT_STR(s) ((FtStr){ .data = (s), .len = (s) ? strlen(s) : 0 })
 #if defined(__GNUC__)
 #define FT_BYTES(arr) ({ \
     _Static_assert( \

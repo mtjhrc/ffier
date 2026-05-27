@@ -112,6 +112,14 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // Option<&str> FfiType impl
+    writeln!(out, "impl<'a> FfiType for Option<&'a str> {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
+    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     // &[u8] FfiType impl
     writeln!(out, "impl FfiType for &[u8] {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();

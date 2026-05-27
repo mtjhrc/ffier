@@ -179,6 +179,11 @@ impl Widget {
         g.value = v;
     }
 
+    /// Set the name, or reset to default if `None`.
+    pub fn set_name(&mut self, name: Option<&str>) {
+        self.name = name.unwrap_or("widget").to_owned();
+    }
+
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);
