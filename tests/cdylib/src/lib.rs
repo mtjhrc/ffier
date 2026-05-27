@@ -327,7 +327,21 @@ mod tests {
             let r = ft_widget_describe(w, 99, &mut result, &mut err as *mut *mut core::ffi::c_void);
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
-            ft_error_destroy(err);
+            assert!(!err.is_null(), "err handle should be non-null");
+            // Test into_payload extracts the Box<str> payload into caller storage
+            let mut payload_buf = core::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
+            ft_error_into_payload(
+                r,
+                err,
+                payload_buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<ffier::FfierBytes>(),
+            );
+            let c_val = payload_buf.assume_init();
+            let s =
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(c_val.data, c_val.len));
+            assert_eq!(s, "code 99");
+            // Free the owned string via the library's allocator
+            ft_str_free(c_val);
             ft_widget_destroy(w);
         }
     }
@@ -500,7 +514,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-                                                        // After error with by-value self, handle is consumed
+            // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -559,15 +573,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]

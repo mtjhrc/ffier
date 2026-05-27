@@ -963,9 +963,32 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         });
 
+        // Collect field types for data-carrying variants
+        let field_types: Vec<_> = match &variant.fields {
+            syn::Fields::Unit => vec![],
+            syn::Fields::Unnamed(fields) => fields
+                .unnamed
+                .iter()
+                .map(|f| {
+                    let ty = &f.ty;
+                    let ty_str = quote!(#ty).to_string();
+                    quote! { #ty_str }
+                })
+                .collect(),
+            syn::Fields::Named(_) => {
+                return syn::Error::new_spanned(
+                    variant,
+                    "FfiError: named fields in variants are not yet supported; \
+                     use tuple variants like Variant(Box<str>)",
+                )
+                .to_compile_error()
+                .into();
+            }
+        };
+
         codes_entries.push(quote! { (#upper_name, #code) });
         variant_meta_tokens.push(quote! {
-            { name = #var_ident, code = #code, message = #message, }
+            { name = #var_ident, code = #code, message = #message, fields = [#(#field_types),*], }
         });
     }
 
@@ -3067,7 +3090,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             const IS_HANDLE: bool = false;
             fn into_c(self) -> ffier::FfierBytes {
                 let leaked: &mut str = Box::leak(self);
-                ffier::FfierBytes { data: leaked.as_ptr(), len: leaked.len() }
+                ffier::FfierBytes { data: leaked.as_mut_ptr() as *const u8, len: leaked.len() }
             }
             fn from_c(repr: ffier::FfierBytes) -> Self {
                 unsafe {

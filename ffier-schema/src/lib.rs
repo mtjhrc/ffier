@@ -68,6 +68,8 @@ pub enum Blessing {
     OwnedFd,
     /// Builder method return — `void` at C level, `-> Self` in Rust.
     ReplacesSelf,
+    /// Streaming string writer trait (PushStr).
+    PushStr,
 }
 
 /// An entry in the type registry.
@@ -479,6 +481,17 @@ pub struct ErrorVariant {
     pub code: u32,
     /// Human-readable message.
     pub message: String,
+    /// Payload fields carried by this variant. Empty for unit variants.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<ErrorField>,
+}
+
+/// A payload field in a data-carrying error variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ErrorField {
+    /// Field type reference (e.g. `str` for `Box<str>`).
+    #[serde(flatten)]
+    pub type_ref: TypeRef,
 }
 
 // ---------------------------------------------------------------------------

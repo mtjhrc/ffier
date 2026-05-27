@@ -75,7 +75,7 @@ impl FfiType for Box<str> {
     fn into_c(self) -> ffier::FfierBytes {
         let leaked: &mut str = Box::leak(self);
         ffier::FfierBytes {
-            data: leaked.as_ptr(),
+            data: leaked.as_mut_ptr() as *const u8,
             len: leaked.len(),
         }
     }
@@ -223,18 +223,38 @@ impl FfiType for Permissions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum TestError {
-    NotFound,
+    NotFound(Box<str>),
     CustomMessage,
     InvalidInput,
 }
 
 impl TestError {
-    pub fn from_ffi(r: ffier::FfierResult) -> Self {
+    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
+        let mut __payload_1: std::mem::MaybeUninit<<Box<str> as FfiType>::CRepr> =
+            std::mem::MaybeUninit::uninit();
         match code {
-            1u32 => Self::NotFound,
+            1u32 => unsafe {
+                ft_error_into_payload(
+                    r,
+                    err_handle,
+                    __payload_1.as_mut_ptr() as *mut core::ffi::c_void,
+                    core::mem::size_of::<<Box<str> as FfiType>::CRepr>(),
+                )
+            },
+            _ => {
+                if !err_handle.is_null() {
+                    unsafe { ft_error_destroy(err_handle) }
+                }
+            }
+        }
+        match code {
+            1u32 => {
+                let c_val = unsafe { __payload_1.assume_init() };
+                Self::NotFound(<Box<str> as FfiType>::from_c(c_val))
+            }
             2u32 => Self::CustomMessage,
             3u32 => Self::InvalidInput,
             other => panic!("unknown {} error code {}", "TestError", other),
@@ -244,15 +264,65 @@ impl TestError {
 
 impl std::fmt::Display for TestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NotFound => write!(f, "NotFound(...)"),
-            Self::CustomMessage => write!(f, "CustomMessage"),
-            Self::InvalidInput => write!(f, "InvalidInput"),
+        let code = match self {
+            Self::NotFound(..) => 1u32,
+            Self::CustomMessage => 2u32,
+            Self::InvalidInput => 3u32,
+        };
+        let r = ffier::ffier_result(1u32, code);
+        let __payload_storage: std::mem::MaybeUninit<ffier::FfierBytes>;
+        let payload: *const core::ffi::c_void = match self {
+            Self::NotFound(val) => {
+                __payload_storage =
+                    std::mem::MaybeUninit::new(<Box<str> as FfiType>::into_c(val.clone()));
+                __payload_storage.as_ptr() as *const core::ffi::c_void
+            }
+            Self::CustomMessage => core::ptr::null(),
+            Self::InvalidInput => core::ptr::null(),
+        };
+        struct FmtWriter(*mut core::ffi::c_void);
+        impl PushStr for FmtWriter {
+            fn push(&mut self, s: &str) -> bool {
+                unsafe {
+                    (&mut *(self.0 as *mut std::fmt::Formatter<'_>))
+                        .write_str(s)
+                        .is_ok()
+                }
+            }
         }
+        let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
+        let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 24u32,
+            metadata: 0,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
+                user_data: &mut __writer as *mut FmtWriter as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<PushStrVtable>() as u16,
+            },
+        };
+        let __writer_handle =
+            &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void;
+        unsafe { ft_result_strerror(r, payload, __writer_handle) };
+        Ok(())
     }
 }
 
 impl std::error::Error for TestError {}
+
+unsafe extern "C" {
+    fn ft_error_into_payload(
+        r: ffier::FfierResult,
+        handle: *mut core::ffi::c_void,
+        out_buf: *mut core::ffi::c_void,
+        buf_size: usize,
+    );
+    fn ft_result_strerror(
+        r: ffier::FfierResult,
+        payload: *const core::ffi::c_void,
+        writer: *mut core::ffi::c_void,
+    );
+}
 
 unsafe extern "C" {
     pub fn ft_widget_destroy(handle: *mut core::ffi::c_void);
@@ -458,7 +528,7 @@ impl Widget {
         if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Parse a count value from the name length, returning error if name matches trigger."]
@@ -484,7 +554,7 @@ impl Widget {
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Describe a code as a string."]
@@ -506,7 +576,7 @@ impl Widget {
         if __r == 0 {
             Ok(<&str as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Always fails with an error."]
@@ -517,7 +587,7 @@ impl Widget {
         if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Always fails with an error (value variant)."]
@@ -534,7 +604,7 @@ impl Widget {
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Set tags from a string slice."]
@@ -569,8 +639,7 @@ impl Widget {
             Ok(<Gadget as FfiType>::from_c(__raw))
         } else {
             let __r = unsafe { ft_error_result(__err) };
-            unsafe { ft_error_destroy(__err) };
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Read a gadget's value."]
@@ -642,7 +711,7 @@ impl Widget {
                 __out.assume_init()
             }))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Duplicate a file descriptor (returns owned fd)."]
@@ -821,7 +890,7 @@ impl Config {
         if __r == 0 {
             Ok(Self(__handle))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
     #[doc = " Get the config name."]
@@ -997,8 +1066,7 @@ impl GizmoBuilder {
             Ok(<Gizmo as FfiType>::from_c(__raw))
         } else {
             let __r = unsafe { ft_error_result(__err) };
-            unsafe { ft_error_destroy(__err) };
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
 }
@@ -1275,7 +1343,7 @@ impl Pipeline {
         if __r == 0 {
             Ok(<i32 as FfiType>::from_c(unsafe { __out.assume_init() }))
         } else {
-            Err(TestError::from_ffi(__r))
+            Err(TestError::from_ffi(__r, __err))
         }
     }
 }
@@ -2586,6 +2654,6 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     if __r == 0 {
         Ok(<OwnedFd as FfiType>::from_c(unsafe { __out.assume_init() }))
     } else {
-        Err(TestError::from_ffi(__r))
+        Err(TestError::from_ffi(__r, __err))
     }
 }
