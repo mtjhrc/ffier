@@ -1981,6 +1981,17 @@ impl CTypeResolver {
     fn to_type_ref(&self, rust_type: &str) -> ffier_schema::TypeRef {
         let s = rust_type.trim();
 
+        // Unwrap Option<_> wrapper: `Option < & 'static str >` → `& 'static str`
+        if let Some(rest) = s.strip_prefix("Option") {
+            let rest = rest.trim();
+            if let Some(inner) = rest.strip_prefix('<') {
+                let inner = inner.trim().trim_end_matches('>').trim();
+                let mut tr = self.to_type_ref(inner);
+                tr.optional = true;
+                return tr;
+            }
+        }
+
         // Parse reference: & or &mut, with optional lifetime.
         // TokenStream renders both `&mut 'a T` and `&'a mut T` forms.
         let (ref_kind, ref_lifetime, after_ref) = if let Some(rest) = s.strip_prefix('&') {
@@ -2043,6 +2054,7 @@ impl CTypeResolver {
             ref_kind,
             ref_lifetime,
             type_args,
+            optional: false,
         }
     }
 }
@@ -2590,6 +2602,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                     ref_kind: ffier_schema::RefKind::Shared,
                     ref_lifetime: None,
                     type_args: vec![],
+                    optional: false,
                 },
                 c_params: vec![
                     ffier_schema::CParam {
@@ -2627,6 +2640,7 @@ fn builder_self_type_ref() -> ffier_schema::TypeRef {
         ref_kind: ffier_schema::RefKind::None,
         ref_lifetime: None,
         type_args: vec![],
+        optional: false,
     }
 }
 

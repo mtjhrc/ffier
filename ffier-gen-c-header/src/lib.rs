@@ -135,7 +135,7 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
     out.push_str("    size_t len;\n");
     out.push_str(&format!("}} {bytes_c};\n\n"));
     out.push_str(&format!(
-        "#define {str_macro}(s) (({str_c}){{ .data = (s), .len = strlen(s) }})\n"
+        "#define {str_macro}(s) (({str_c}){{ .data = (s), .len = (s) ? strlen(s) : 0 }})\n"
     ));
     out.push_str("#if defined(__GNUC__)\n");
     out.push_str(&format!("#define {bytes_macro}(arr) ({{ \\\n"));

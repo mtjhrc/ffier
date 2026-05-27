@@ -165,6 +165,12 @@ pub struct TypeRef {
     /// (e.g. `["a"]` in `View<'a>`, `["b"]` in `&'a View<'b>`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_args: Vec<String>,
+    /// Whether this type is wrapped in `Option<_>`. At the C ABI level
+    /// the representation is the same (e.g. `FfierBytes` with null data
+    /// for `None`), but generators use this to emit `Option<&str>` in
+    /// Rust client code.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
 }
 
 /// How a type is accessed at a usage site.
@@ -185,6 +191,15 @@ impl TypeRef {
     /// E.g. `TypeRef { type: "Widget", ref_kind: Shared, ref_lifetime: Some("a") }` → `&'a Widget`
     /// E.g. `TypeRef { type: "View", type_args: ["a"] }` → `View<'a>`
     pub fn to_rust_type(&self) -> String {
+        let inner = self.to_rust_type_inner(false);
+        if self.optional {
+            format!("Option<{inner}>")
+        } else {
+            inner
+        }
+    }
+
+    fn to_rust_type_inner(&self, use_static: bool) -> String {
         let mut s = String::new();
 
         // Reference prefix
@@ -192,7 +207,9 @@ impl TypeRef {
             RefKind::None => {}
             RefKind::Shared => {
                 s.push('&');
-                if let Some(lt) = &self.ref_lifetime {
+                if use_static {
+                    s.push_str("'static ");
+                } else if let Some(lt) = &self.ref_lifetime {
                     s.push('\'');
                     s.push_str(lt);
                     s.push(' ');
@@ -200,7 +217,9 @@ impl TypeRef {
             }
             RefKind::Mut => {
                 s.push('&');
-                if let Some(lt) = &self.ref_lifetime {
+                if use_static {
+                    s.push_str("'static ");
+                } else if let Some(lt) = &self.ref_lifetime {
                     s.push('\'');
                     s.push_str(lt);
                     s.push(' ');
@@ -219,8 +238,12 @@ impl TypeRef {
                 if i > 0 {
                     s.push_str(", ");
                 }
-                s.push('\'');
-                s.push_str(arg);
+                if use_static {
+                    s.push_str("'static");
+                } else {
+                    s.push('\'');
+                    s.push_str(arg);
+                }
             }
             s.push('>');
         }
@@ -230,32 +253,12 @@ impl TypeRef {
 
     /// Reconstruct with lifetimes erased to `'static` (for extern declarations).
     pub fn to_rust_type_static(&self) -> String {
-        let mut s = String::new();
-
-        match self.ref_kind {
-            RefKind::None => {}
-            RefKind::Shared => {
-                s.push_str("&'static ");
-            }
-            RefKind::Mut => {
-                s.push_str("&'static mut ");
-            }
+        let inner = self.to_rust_type_inner(true);
+        if self.optional {
+            format!("Option<{inner}>")
+        } else {
+            inner
         }
-
-        s.push_str(&self.type_name);
-
-        if !self.type_args.is_empty() {
-            s.push('<');
-            for (i, _) in self.type_args.iter().enumerate() {
-                if i > 0 {
-                    s.push_str(", ");
-                }
-                s.push_str("'static");
-            }
-            s.push('>');
-        }
-
-        s
     }
 }
 

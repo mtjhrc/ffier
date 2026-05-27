@@ -767,6 +767,26 @@ struct AliasContext {
     helper_mod: syn::Ident,
 }
 
+/// Check if a TypePath is `Option<_>`.
+fn is_option(tp: &syn::TypePath) -> bool {
+    tp.qself.is_none() && {
+        let last = tp.path.segments.last().unwrap();
+        last.ident == "Option" && matches!(&last.arguments, syn::PathArguments::AngleBracketed(_))
+    }
+}
+
+/// Extract the inner type from `Option<T>`.
+fn option_inner(tp: &syn::TypePath) -> &Type {
+    let last = tp.path.segments.last().unwrap();
+    match &last.arguments {
+        syn::PathArguments::AngleBracketed(args) => match args.args.first().unwrap() {
+            syn::GenericArgument::Type(ty) => ty,
+            _ => panic!("Option<_> must have a type argument"),
+        },
+        _ => panic!("Option must have angle bracket arguments"),
+    }
+}
+
 const PRIMITIVES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
 ];
@@ -802,6 +822,11 @@ impl AliasContext {
                 quote! { [#elem] }
             }
             Type::Path(tp) if tp.path.is_ident("str") => quote! { str },
+            Type::Path(tp) if is_option(tp) => {
+                let inner_ty = option_inner(tp);
+                let inner = self.bridge_tokens(inner_ty);
+                quote! { Option<#inner> }
+            }
             _ => self.alias_tokens(ty),
         }
     }
@@ -2992,6 +3017,28 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 unsafe {
                     let bytes = core::slice::from_raw_parts(repr.data, repr.len);
                     core::str::from_utf8_unchecked(bytes)
+                }
+            }
+        }
+
+        impl<'a> FfiType for Option<&'a str> {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierStr";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes {
+                match self {
+                    Some(s) => unsafe { ffier::FfierBytes::from_str(s) },
+                    None => ffier::FfierBytes::EMPTY,
+                }
+            }
+            fn from_c(repr: ffier::FfierBytes) -> Self {
+                if repr.data.is_null() {
+                    None
+                } else {
+                    unsafe {
+                        let bytes = core::slice::from_raw_parts(repr.data, repr.len);
+                        Some(core::str::from_utf8_unchecked(bytes))
+                    }
                 }
             }
         }
