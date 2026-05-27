@@ -210,6 +210,8 @@ int32_t ft_widget_fd_number(FtWidget handle, int fd);
  * @param fd
  */
 int ft_widget_dup_fd(FtWidget handle, int fd);
+int ft_widget_fd_number_optional(FtWidget handle, int fd);
+FtResult ft_widget_maybe_fd(FtWidget handle, int32_t selector, int* result, FtError* err_out);
 void ft_widget_destroy(FtWidget handle);
 
 /* Gadget ------------------------------------------------------------ */

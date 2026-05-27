@@ -209,6 +209,19 @@ impl Widget {
         fd.map_or(-1, |f| f.as_raw_fd())
     }
 
+    /// Maybe return a borrowed fd depending on `selector`:
+    /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(stdin)).
+    pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
+        if selector < 0 {
+            Err(TestError::InvalidInput)
+        } else if selector == 0 {
+            Ok(None)
+        } else {
+            // Safety: fd 0 (stdin) exists for the process lifetime
+            Ok(Some(unsafe { BorrowedFd::borrow_raw(0) }))
+        }
+    }
+
     /// Duplicate a file descriptor (returns owned fd).
     pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {
         fd.try_clone_to_owned().expect("dup failed")

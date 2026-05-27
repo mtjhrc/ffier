@@ -66,6 +66,12 @@ impl<'fd> FfiType for BorrowedFd<'fd> {
     fn from_c(fd: RawFd) -> Self { unsafe { BorrowedFd::borrow_raw(fd as _) } }
 }
 
+impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
+    type CRepr = RawFd; const C_TYPE_NAME: &'static str = "int"; const IS_HANDLE: bool = false;
+    fn into_c(self) -> RawFd { match self { Some(fd) => fd.as_raw_fd() as RawFd, None => -1 } }
+    fn from_c(fd: RawFd) -> Self { if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd as _) }) } }
+}
+
 impl<T: FfiHandle + 'static> FfiType for &T {
     type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
@@ -182,6 +188,8 @@ unsafe extern "C" {
     pub fn ft_widget_add_permission(handle: *mut core::ffi::c_void, base: <Permissions as FfiType>::CRepr, flag: <Permissions as FfiType>::CRepr) -> <Permissions as FfiType>::CRepr;
     pub fn ft_widget_consume(handle: *mut core::ffi::c_void);
     pub fn ft_widget_fd_number(handle: *mut core::ffi::c_void, fd: <BorrowedFd<'static> as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_fd_number_optional(handle: *mut core::ffi::c_void, fd: <Option<BorrowedFd<'static>> as FfiType>::CRepr) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_maybe_fd(handle: *mut core::ffi::c_void, selector: <i32 as FfiType>::CRepr, result: *mut <Option<BorrowedFd<'static>> as FfiType>::CRepr, err_out: *mut *mut core::ffi::c_void) -> ffier::FfierResult;
     pub fn ft_widget_dup_fd(handle: *mut core::ffi::c_void, fd: <BorrowedFd<'static> as FfiType>::CRepr) -> <OwnedFd as FfiType>::CRepr;
 }
 
@@ -384,6 +392,23 @@ impl Widget {
     pub fn fd_number(&self, fd: BorrowedFd<'_>) -> i32 {
         let __raw = unsafe { ft_widget_fd_number(self.0, <BorrowedFd<'_> as FfiType>::into_c(fd)) };
         <i32 as FfiType>::from_c(__raw)
+    }
+    #[doc = " Get the raw fd number, or -1 if None."]
+    pub fn fd_number_optional(&self, fd: Option<BorrowedFd<'_>>) -> i32 {
+        let __raw = unsafe { ft_widget_fd_number_optional(self.0, <Option<BorrowedFd<'_>> as FfiType>::into_c(fd)) };
+        <i32 as FfiType>::from_c(__raw)
+    }
+    #[doc = " Maybe return a borrowed fd depending on `selector`:"]
+    #[doc = " < 0 → error, 0 → Ok(None), > 0 → Ok(Some(stdin))."]
+    pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
+        let mut __out = std::mem::MaybeUninit::uninit();
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe { ft_widget_maybe_fd(self.0, <i32 as FfiType>::into_c(selector), __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) };
+        if __r == 0 {
+            Ok(<Option<BorrowedFd<'_>> as FfiType>::from_c(unsafe { __out.assume_init() }))
+        } else {
+            Err(TestError::from_ffi(__r))
+        }
     }
     #[doc = " Duplicate a file descriptor (returns owned fd)."]
     pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {

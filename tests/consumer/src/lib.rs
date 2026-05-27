@@ -10,6 +10,8 @@ use ffier_test_lib_via_cdylib as api;
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsRawFd;
+
     use super::api::{self, Config, Gadget, Mixer, View, Widget};
 
     fn make_widget() -> Widget {
@@ -295,5 +297,29 @@ mod tests {
         let w = make_widget();
         let perms = w.add_permission(api::Permissions::empty(), api::Permissions::EXECUTE);
         assert_eq!(perms, api::Permissions::EXECUTE);
+    }
+
+    #[test]
+    fn test_maybe_fd_some() {
+        let mut w = make_widget();
+        w.set_count(1);
+        let result = w.maybe_fd(1);
+        let fd = result.unwrap().unwrap();
+        // Should be stdin (fd 0)
+        assert_eq!(fd.as_raw_fd(), 0);
+    }
+
+    #[test]
+    fn test_maybe_fd_none() {
+        let w = make_widget();
+        let result = w.maybe_fd(0);
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_maybe_fd_error() {
+        let w = make_widget();
+        let result = w.maybe_fd(-1);
+        assert_eq!(result.unwrap_err(), api::TestError::InvalidInput);
     }
 }
