@@ -1615,6 +1615,14 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         .unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+
+        // Option<BorrowedFd>
+        writeln!(out, "impl<'fd> FfiType for Option<BorrowedFd<'fd>> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
+        writeln!(out, "    fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ BorrowedFd::borrow_raw(fd as _) }}) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
 }
 

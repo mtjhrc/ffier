@@ -204,6 +204,11 @@ impl Widget {
         fd.as_raw_fd()
     }
 
+    /// Get the raw fd number, or -1 if None.
+    pub fn fd_number_optional(&self, fd: Option<BorrowedFd<'_>>) -> i32 {
+        fd.map_or(-1, |f| f.as_raw_fd())
+    }
+
     /// Duplicate a file descriptor (returns owned fd).
     pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {
         fd.try_clone_to_owned().expect("dup failed")
