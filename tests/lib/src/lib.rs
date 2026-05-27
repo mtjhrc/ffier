@@ -189,6 +189,11 @@ impl Widget {
         self.name.clone().into_boxed_str()
     }
 
+    /// Add a permission flag to the widget's permissions and return the result.
+    pub fn add_permission(&self, base: Permissions, flag: Permissions) -> Permissions {
+        base | flag
+    }
+
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);
