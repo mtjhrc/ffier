@@ -120,6 +120,14 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // Box<str> FfiType impl
+    writeln!(out, "impl FfiType for Box<str> {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ let leaked: &mut str = Box::leak(self); ffier::FfierBytes {{ data: leaked.as_ptr(), len: leaked.len() }} }}").unwrap();
+    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     // &[u8] FfiType impl
     writeln!(out, "impl FfiType for &[u8] {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();

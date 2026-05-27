@@ -38,13 +38,13 @@ typedef struct {
     size_t len;
 } FtStr;
 
-/* Caller must ensure data is a valid UTF-8 path */
-typedef FtStr FtPath;
-
 typedef struct {
     const uint8_t* data;
     size_t len;
 } FtBytes;
+
+/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */
+typedef FtBytes FtPath;
 
 #define FT_STR(s) ((FtStr){ .data = (s), .len = (s) ? strlen(s) : 0 })
 #if defined(__GNUC__)

@@ -787,6 +787,23 @@ fn option_inner(tp: &syn::TypePath) -> &Type {
     }
 }
 
+/// Check if a TypePath is `Box<str>`.
+fn is_box_str(tp: &syn::TypePath) -> bool {
+    tp.qself.is_none() && {
+        let last = tp.path.segments.last().unwrap();
+        if last.ident != "Box" {
+            return false;
+        }
+        match &last.arguments {
+            syn::PathArguments::AngleBracketed(args) => match args.args.first() {
+                Some(syn::GenericArgument::Type(Type::Path(inner))) => inner.path.is_ident("str"),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+}
+
 const PRIMITIVES: &[&str] = &[
     "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "bool", "f32", "f64",
 ];
@@ -827,6 +844,7 @@ impl AliasContext {
                 let inner = self.bridge_tokens(inner_ty);
                 quote! { Option<#inner> }
             }
+            Type::Path(tp) if is_box_str(tp) => quote! { Box<str> },
             _ => self.alias_tokens(ty),
         }
     }
@@ -3039,6 +3057,22 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         let bytes = core::slice::from_raw_parts(repr.data, repr.len);
                         Some(core::str::from_utf8_unchecked(bytes))
                     }
+                }
+            }
+        }
+
+        impl FfiType for Box<str> {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierStr";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes {
+                let leaked: &mut str = Box::leak(self);
+                ffier::FfierBytes { data: leaked.as_ptr(), len: leaked.len() }
+            }
+            fn from_c(repr: ffier::FfierBytes) -> Self {
+                unsafe {
+                    let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len);
+                    Box::from_raw(core::str::from_utf8_unchecked_mut(slice))
                 }
             }
         }

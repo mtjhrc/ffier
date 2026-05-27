@@ -111,7 +111,7 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
     let result_c = blessed_c_type(lib, Blessing::Result);
     let str_c = blessed_c_type(lib, Blessing::Str);
     let bytes_c = blessed_c_type(lib, Blessing::Bytes);
-    let path_c = blessed_c_type(lib, Blessing::Path);
+    let path_c = try_blessed_c_type(lib, Blessing::Path);
     let vtable_handle_c = blessed_c_type(lib, Blessing::VtableHandle);
     let result_success = format!("{upper_pfx}RESULT_SUCCESS");
     let str_macro = format!("{upper_pfx}STR");
@@ -128,12 +128,14 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
     out.push_str("    const char* data;\n");
     out.push_str("    size_t len;\n");
     out.push_str(&format!("}} {str_c};\n\n"));
-    out.push_str("/* Caller must ensure data is a valid UTF-8 path */\n");
-    out.push_str(&format!("typedef {str_c} {path_c};\n\n"));
     out.push_str("typedef struct {\n");
     out.push_str("    const uint8_t* data;\n");
     out.push_str("    size_t len;\n");
     out.push_str(&format!("}} {bytes_c};\n\n"));
+    if let Some(path_c) = &path_c {
+        out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
+        out.push_str(&format!("typedef {bytes_c} {path_c};\n\n"));
+    }
     out.push_str(&format!(
         "#define {str_macro}(s) (({str_c}){{ .data = (s), .len = (s) ? strlen(s) : 0 }})\n"
     ));
@@ -154,6 +156,14 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
         "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }})\n"
     ));
     out.push_str("#endif\n\n");
+
+    // str_free — free an owned string returned from Rust
+    let fn_pfx = lib.prefix.to_lowercase();
+    let str_free_fn = format!("{fn_pfx}_str_free");
+    out.push_str(&format!(
+        "/* Free an owned string returned by the library */\n"
+    ));
+    out.push_str(&format!("void {str_free_fn}({str_c} s);\n\n"));
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
     let vtable_handle_macro = format!("{upper_pfx}VTABLE_HANDLE");
@@ -627,6 +637,11 @@ fn blessed_c_type(lib: &Library, tag: ffier_schema::Blessing) -> String {
         .blessed(tag)
         .unwrap_or_else(|| panic!("no type blessed as {tag:?} found in schema"));
     lib.c_type_of(name).to_string()
+}
+
+fn try_blessed_c_type(lib: &Library, tag: ffier_schema::Blessing) -> Option<String> {
+    lib.blessed(tag)
+        .map(|(name, _)| lib.c_type_of(name).to_string())
 }
 
 fn snake_to_pascal(s: &str) -> String {

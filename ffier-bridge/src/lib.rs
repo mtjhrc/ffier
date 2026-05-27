@@ -469,6 +469,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // static_message tables.
     let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &lib_crate);
 
+    // Generate str_free function for dropping owned strings (Box<str>)
+    let str_free_fn = generate_str_free(&first_prefix);
+
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
     emit_json(
         &first_prefix,
@@ -489,6 +492,31 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         #(#all_code)*
 
         #strerror_fn
+
+        #str_free_fn
+    }
+}
+
+// ===========================================================================
+// str_free — drop an owned string (Box<str>) returned across FFI
+// ===========================================================================
+
+/// Generate `{prefix}_str_free(FfierBytes s)` that reconstitutes and drops a
+/// `Box<str>` previously leaked via `Box::leak` in a `Box<str>` return.
+fn generate_str_free(prefix: &str) -> TokenStream2 {
+    let fn_pfx = format!("{prefix}_");
+    let str_free_fn = format_ident!("{fn_pfx}str_free");
+
+    quote! {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #str_free_fn(s: ffier::FfierBytes) {
+            if !s.data.is_null() {
+                unsafe {
+                    let slice = core::slice::from_raw_parts_mut(s.data as *mut u8, s.len);
+                    drop(Box::from_raw(core::str::from_utf8_unchecked_mut(slice)));
+                }
+            }
+        }
     }
 }
 
@@ -1992,6 +2020,24 @@ impl CTypeResolver {
             }
         }
 
+        // Box<str> → owned str (same C repr as &str)
+        if let Some(rest) = s.strip_prefix("Box") {
+            let rest = rest.trim();
+            if let Some(inner) = rest.strip_prefix('<') {
+                let inner = inner.trim().trim_end_matches('>').trim();
+                if inner == "str" {
+                    return ffier_schema::TypeRef {
+                        type_name: "str".to_string(),
+                        ref_kind: ffier_schema::RefKind::None,
+                        ref_lifetime: None,
+                        type_args: vec![],
+                        optional: false,
+                        owned: true,
+                    };
+                }
+            }
+        }
+
         // Parse reference: & or &mut, with optional lifetime.
         // TokenStream renders both `&mut 'a T` and `&'a mut T` forms.
         let (ref_kind, ref_lifetime, after_ref) = if let Some(rest) = s.strip_prefix('&') {
@@ -2055,6 +2101,7 @@ impl CTypeResolver {
             ref_lifetime,
             type_args,
             optional: false,
+            owned: false,
         }
     }
 }
@@ -2603,6 +2650,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                     ref_lifetime: None,
                     type_args: vec![],
                     optional: false,
+                    owned: false,
                 },
                 c_params: vec![
                     ffier_schema::CParam {
@@ -2641,6 +2689,7 @@ fn builder_self_type_ref() -> ffier_schema::TypeRef {
         ref_lifetime: None,
         type_args: vec![],
         optional: false,
+        owned: false,
     }
 }
 
