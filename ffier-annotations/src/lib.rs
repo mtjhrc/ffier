@@ -3122,6 +3122,20 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 fn into_c(self) -> i32 { self.as_raw_fd() }
                 fn from_c(fd: i32) -> Self { unsafe { BorrowedFd::borrow_raw(fd) } }
             }
+            impl<'a> FfiType for Option<BorrowedFd<'a>> {
+                type CRepr = i32;
+                const C_TYPE_NAME: &'static str = "int";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> i32 {
+                    match self {
+                        Some(fd) => fd.as_raw_fd(),
+                        None => -1,
+                    }
+                }
+                fn from_c(fd: i32) -> Self {
+                    if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd) }) }
+                }
+            }
         };
 
         impl<T: FfiHandle + 'static> FfiType for &T {
