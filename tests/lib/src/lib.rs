@@ -184,6 +184,11 @@ impl Widget {
         self.name = name.unwrap_or("widget").to_owned();
     }
 
+    /// Get an owned copy of the name.
+    pub fn owned_name(&self) -> Box<str> {
+        self.name.clone().into_boxed_str()
+    }
+
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);

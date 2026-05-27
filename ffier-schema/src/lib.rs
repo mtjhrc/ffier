@@ -171,6 +171,11 @@ pub struct TypeRef {
     /// Rust client code.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub optional: bool,
+    /// Whether this type is owned via `Box<_>`. At the C ABI level the
+    /// representation is the same (e.g. `FfierBytes`), but generators
+    /// use this to emit `Box<str>` and the caller must free the value.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub owned: bool,
 }
 
 /// How a type is accessed at a usage site.
@@ -191,12 +196,14 @@ impl TypeRef {
     /// E.g. `TypeRef { type: "Widget", ref_kind: Shared, ref_lifetime: Some("a") }` → `&'a Widget`
     /// E.g. `TypeRef { type: "View", type_args: ["a"] }` → `View<'a>`
     pub fn to_rust_type(&self) -> String {
-        let inner = self.to_rust_type_inner(false);
-        if self.optional {
-            format!("Option<{inner}>")
-        } else {
-            inner
+        let mut s = self.to_rust_type_inner(false);
+        if self.owned {
+            s = format!("Box<{s}>");
         }
+        if self.optional {
+            s = format!("Option<{s}>");
+        }
+        s
     }
 
     fn to_rust_type_inner(&self, use_static: bool) -> String {
@@ -253,12 +260,14 @@ impl TypeRef {
 
     /// Reconstruct with lifetimes erased to `'static` (for extern declarations).
     pub fn to_rust_type_static(&self) -> String {
-        let inner = self.to_rust_type_inner(true);
-        if self.optional {
-            format!("Option<{inner}>")
-        } else {
-            inner
+        let mut s = self.to_rust_type_inner(true);
+        if self.owned {
+            s = format!("Box<{s}>");
         }
+        if self.optional {
+            s = format!("Option<{s}>");
+        }
+        s
     }
 }
 
