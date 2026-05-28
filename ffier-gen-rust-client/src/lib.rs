@@ -68,7 +68,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    const C_TYPE_NAME: &'static str;").unwrap();
     writeln!(out, "    const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> Self::CRepr;").unwrap();
-    writeln!(out, "    fn from_c(repr: Self::CRepr) -> Self;").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: Self::CRepr) -> Self;").unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> Self::CRepr;").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -80,7 +80,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "            type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;").unwrap();
     writeln!(
         out,
-        "            fn into_c(self) -> Self {{ self }} fn from_c(r: Self) -> Self {{ r }} fn borrow_as_c(&self) -> Self {{ *self }}"
+        "            fn into_c(self) -> Self {{ self }} unsafe fn from_c(r: Self) -> Self {{ r }} fn borrow_as_c(&self) -> Self {{ *self }}"
     )
     .unwrap();
     writeln!(out, "        }}").unwrap();
@@ -109,7 +109,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "impl FfiType for &str {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
-    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) }} }}").unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -118,7 +118,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "impl<'a> FfiType for Option<&'a str> {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
-    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -127,7 +127,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "impl FfiType for Box<str> {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ let leaked: &mut str = Box::leak(self); ffier::FfierBytes {{ data: leaked.as_mut_ptr() as *const u8, len: leaked.len() }} }}").unwrap();
-    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) }} }}").unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ ffier::FfierBytes {{ data: self.as_ptr(), len: self.len() }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -136,7 +136,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "impl FfiType for &[u8] {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
-    writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ if repr.data.is_null() {{ &[] }} else {{ core::slice::from_raw_parts(repr.data, repr.len) }} }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ if repr.data.is_null() {{ &[] }} else {{ core::slice::from_raw_parts(repr.data, repr.len) }} }} }}").unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -152,7 +152,7 @@ pub fn generate(lib: &Library) -> String {
         "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
     )
     .unwrap();
-    writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &T from_c\") }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &T from_c\") }}").unwrap();
     writeln!(
         out,
         "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
@@ -166,7 +166,7 @@ pub fn generate(lib: &Library) -> String {
         "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
     )
     .unwrap();
-    writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &mut T from_c\") }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &mut T from_c\") }}").unwrap();
     writeln!(
         out,
         "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
@@ -331,7 +331,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
             .unwrap();
             writeln!(
                 out,
-                "        <{field_ty} as FfiType>::from_c(unsafe {{ __buf.assume_init() }})"
+                "        unsafe {{ <{field_ty} as FfiType>::from_c(__buf.assume_init()) }}"
             )
             .unwrap();
             writeln!(out, "    }}").unwrap();
@@ -663,7 +663,7 @@ fn emit_exported_type(
     .unwrap();
     writeln!(
         out,
-        "    fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
+        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
     )
     .unwrap();
     writeln!(
@@ -966,7 +966,7 @@ fn emit_method_body(
                 "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            writeln!(out, "        <{ty} as FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "        unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
         }
         Return::Result {
             ok: Some(_),
@@ -1029,7 +1029,11 @@ fn emit_method_body(
             writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
-            writeln!(out, "            Ok(<{ty} as FfiType>::from_c(__raw))").unwrap();
+            writeln!(
+                out,
+                "            Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
+            )
+            .unwrap();
             writeln!(out, "        }} else {{").unwrap();
             writeln!(
                 out,
@@ -1059,7 +1063,7 @@ fn emit_method_body(
             writeln!(out, "        if __r == 0 {{").unwrap();
             writeln!(
                 out,
-                "            Ok(<{ty} as FfiType>::from_c(unsafe {{ __out.assume_init() }}))"
+                "            Ok(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
             )
             .unwrap();
             writeln!(out, "        }} else {{").unwrap();
@@ -1476,7 +1480,10 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                 match &p.param_type {
                     ParamType::Regular(tr) => {
                         let ty = tr.to_rust_type();
-                        call_args.push(format!("<{ty} as FfiType>::from_c({})", p.name));
+                        call_args.push(format!(
+                            "unsafe {{ <{ty} as FfiType>::from_c({}) }}",
+                            p.name
+                        ));
                     }
                     ParamType::ImplTrait { .. } => {
                         call_args.push(p.name.clone());
@@ -1781,7 +1788,7 @@ fn emit_ffi_call_return(
                 "{indent}let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            writeln!(out, "{indent}<{ty} as FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "{indent}unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
         }
         Return::Result { .. } => {
             // Result returns have complex dispatch (void/handle/out-param) —
@@ -1822,7 +1829,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() as {repr} }}").unwrap();
         writeln!(
             out,
-            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd as _) }} }}"
+            "    unsafe fn from_c(fd: {repr}) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd as _) }} }}"
         )
         .unwrap();
         writeln!(
@@ -1845,7 +1852,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         .unwrap();
         writeln!(
             out,
-            "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd as _) }} }}"
+            "    unsafe fn from_c(fd: {repr}) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd as _) }} }}"
         )
         .unwrap();
         writeln!(
@@ -1860,7 +1867,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         writeln!(out, "impl<'fd> FfiType for Option<BorrowedFd<'fd>> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
-        writeln!(out, "    fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ BorrowedFd::borrow_raw(fd as _) }}) }} }}").unwrap();
+        writeln!(out, "    unsafe fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ BorrowedFd::borrow_raw(fd as _) }}) }} }}").unwrap();
         writeln!(out, "    fn borrow_as_c(&self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
@@ -1898,7 +1905,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     )
     .unwrap();
     writeln!(out, "    fn into_c(self) -> {repr} {{ self as {repr} }}").unwrap();
-    writeln!(out, "    fn from_c(repr: {repr}) -> Self {{").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: {repr}) -> Self {{").unwrap();
     writeln!(out, "        match repr {{").unwrap();
     for v in &en.variants {
         writeln!(out, "            {} => Self::{},", v.value, v.name).unwrap();
@@ -1954,7 +1961,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     writeln!(out, "    fn into_c(self) -> {repr} {{ self.bits() }}").unwrap();
     writeln!(
         out,
-        "    fn from_c(repr: {repr}) -> Self {{ Self::from_bits_retain(repr) }}"
+        "    unsafe fn from_c(repr: {repr}) -> Self {{ Self::from_bits_retain(repr) }}"
     )
     .unwrap();
     writeln!(out, "    fn borrow_as_c(&self) -> {repr} {{ self.bits() }}").unwrap();
@@ -2019,7 +2026,7 @@ fn emit_free_function(
                 f.ffi_name
             )
             .unwrap();
-            writeln!(out, "    <{ty} as FfiType>::from_c(__raw)").unwrap();
+            writeln!(out, "    unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
         }
         Return::Result { ok: None, err_type } => {
             writeln!(
@@ -2059,7 +2066,11 @@ fn emit_free_function(
                 .unwrap();
                 let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
                 writeln!(out, "    if !__raw.is_null() {{").unwrap();
-                writeln!(out, "        Ok(<{ty} as FfiType>::from_c(__raw))").unwrap();
+                writeln!(
+                    out,
+                    "        Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
+                )
+                .unwrap();
                 writeln!(out, "    }} else {{").unwrap();
                 writeln!(
                     out,
@@ -2084,7 +2095,7 @@ fn emit_free_function(
                 writeln!(out, "    if __r == 0 {{").unwrap();
                 writeln!(
                     out,
-                    "        Ok(<{ty} as FfiType>::from_c(unsafe {{ __out.assume_init() }}))"
+                    "        Ok(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
                 )
                 .unwrap();
                 writeln!(out, "    }} else {{").unwrap();

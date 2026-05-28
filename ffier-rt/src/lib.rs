@@ -335,7 +335,11 @@ pub trait FfiError: std::error::Error + Sized {
     /// The written CRepr borrows from `&self` — the caller must not
     /// outlive the error value. `buf_size` is checked for safety.
     /// Fieldless (empty-tuple) variants are a no-op.
-    fn payload(&self, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {}
+    ///
+    /// # Safety
+    /// `out_buf` must point to a valid, aligned buffer of at least
+    /// `buf_size` bytes.
+    unsafe fn payload(&self, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {}
 }
 
 // ---------------------------------------------------------------------------

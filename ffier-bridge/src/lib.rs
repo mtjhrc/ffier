@@ -532,7 +532,7 @@ fn generate_error_getters(
         dispatch_arms.push(quote! {
             #type_tag => {
                 let err: &#path = unsafe { ffier::ffier_handle_borrow(handle) };
-                ffier::FfiError::payload(err, out_buf, buf_size);
+                unsafe { ffier::FfiError::payload(err, out_buf, buf_size) };
             }
         });
     }
@@ -1198,7 +1198,8 @@ fn generate_free_fn_bridge(
             MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
                 sig_names.push(id.clone());
                 sig_types.push(quote! { <#bridge_type as #lib_crate::FfiType>::CRepr });
-                converted_args.push(quote! { <#bridge_type as #lib_crate::FfiType>::from_c(#id) });
+                converted_args
+                    .push(quote! { unsafe { <#bridge_type as #lib_crate::FfiType>::from_c(#id) } });
             }
             MetaParamKind::StrSlice => {
                 sig_names.push(id.clone());
@@ -1569,7 +1570,7 @@ fn meta_param_conversion(
 ) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { <#bridge_type as #lib_crate::FfiType>::from_c(#id) }
+            quote! { unsafe { <#bridge_type as #lib_crate::FfiType>::from_c(#id) } }
         }
         MetaParamKind::StrSlice => {
             let len_id = len_ident.expect("StrSlice conversion needs len_ident");
@@ -1701,7 +1702,8 @@ fn generate_self_dispatch_bridge(
             } else {
                 let bt = p.bridge_type();
                 bridge_params.push(quote! { #param_name: <#bt as #lib_crate::FfiType>::CRepr });
-                call_args.push(quote! { <#bt as #lib_crate::FfiType>::from_c(#param_name) });
+                call_args
+                    .push(quote! { unsafe { <#bt as #lib_crate::FfiType>::from_c(#param_name) } });
             }
         }
 
@@ -1925,7 +1927,8 @@ fn generate_trait_impl_bridge(
             } else {
                 let bt = p.bridge_type();
                 bridge_params.push(quote! { #param_name: <#bt as #lib_crate::FfiType>::CRepr });
-                call_args.push(quote! { <#bt as #lib_crate::FfiType>::from_c(#param_name) });
+                call_args
+                    .push(quote! { unsafe { <#bt as #lib_crate::FfiType>::from_c(#param_name) } });
             }
         }
 
