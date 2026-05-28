@@ -9,13 +9,14 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 pub enum TestError {
     #[error("not found: {0}")]
     #[ffier(code = 1)]
+    #[non_exhaustive]
     NotFound(Box<str>),
     #[error("custom error message")]
     #[ffier(code = 2)]
-    CustomMessage,
+    CustomMessage(),
     #[error("invalid input")]
     #[ffier(code = 3)]
-    InvalidInput,
+    InvalidInput(),
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +103,7 @@ impl Widget {
         if self.count >= 0 {
             Ok(())
         } else {
-            Err(TestError::InvalidInput)
+            Err(TestError::InvalidInput())
         }
     }
 
@@ -138,12 +139,12 @@ impl Widget {
 
     /// Always fails with an error.
     pub fn fail_always(&self) -> Result<(), TestError> {
-        Err(TestError::CustomMessage)
+        Err(TestError::CustomMessage())
     }
 
     /// Always fails with an error (value variant).
     pub fn fail_with_value(&self) -> Result<i32, TestError> {
-        Err(TestError::InvalidInput)
+        Err(TestError::InvalidInput())
     }
 
     /// Set tags from a string slice.
@@ -214,7 +215,7 @@ impl Widget {
     /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(stdin)).
     pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
         if selector < 0 {
-            Err(TestError::InvalidInput)
+            Err(TestError::InvalidInput())
         } else if selector == 0 {
             Ok(None)
         } else {
@@ -285,7 +286,7 @@ impl Config {
     /// Validate and return self, or error if name is empty.
     pub fn validated(self) -> Result<Self, TestError> {
         if self.name.is_empty() {
-            Err(TestError::InvalidInput)
+            Err(TestError::InvalidInput())
         } else {
             Ok(self)
         }
@@ -366,7 +367,7 @@ impl GizmoBuilder {
     /// Try to build the gizmo; fails if name is empty.
     pub fn try_build(self) -> Result<Gizmo, TestError> {
         if self.name.is_empty() {
-            Err(TestError::InvalidInput)
+            Err(TestError::InvalidInput())
         } else {
             Ok(Gizmo {
                 name: self.name,
@@ -914,7 +915,8 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 #[ffier::exportable]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
-    fd.try_clone_to_owned().map_err(|_| TestError::InvalidInput)
+    fd.try_clone_to_owned()
+        .map_err(|_| TestError::InvalidInput())
 }
 
 // ---------------------------------------------------------------------------

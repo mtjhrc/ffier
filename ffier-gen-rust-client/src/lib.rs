@@ -69,6 +69,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> Self::CRepr;").unwrap();
     writeln!(out, "    fn from_c(repr: Self::CRepr) -> Self;").unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> Self::CRepr;").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -79,7 +80,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "            type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;").unwrap();
     writeln!(
         out,
-        "            fn into_c(self) -> Self {{ self }} fn from_c(r: Self) -> Self {{ r }}"
+        "            fn into_c(self) -> Self {{ self }} fn from_c(r: Self) -> Self {{ r }} fn borrow_as_c(&self) -> Self {{ *self }}"
     )
     .unwrap();
     writeln!(out, "        }}").unwrap();
@@ -109,6 +110,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
     writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) }} }}").unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -117,6 +119,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
     writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -125,6 +128,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ let leaked: &mut str = Box::leak(self); ffier::FfierBytes {{ data: leaked.as_mut_ptr() as *const u8, len: leaked.len() }} }}").unwrap();
     writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) }} }}").unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ ffier::FfierBytes {{ data: self.as_ptr(), len: self.len() }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -133,6 +137,7 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
     writeln!(out, "    fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ if repr.data.is_null() {{ &[] }} else {{ core::slice::from_raw_parts(repr.data, repr.len) }} }} }}").unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -148,6 +153,11 @@ pub fn generate(lib: &Library) -> String {
     )
     .unwrap();
     writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &T from_c\") }}").unwrap();
+    writeln!(
+        out,
+        "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &mut T {{").unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;").unwrap();
@@ -157,6 +167,11 @@ pub fn generate(lib: &Library) -> String {
     )
     .unwrap();
     writeln!(out, "    fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"client-side &mut T from_c\") }}").unwrap();
+    writeln!(
+        out,
+        "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -259,108 +274,121 @@ pub fn generate_from_file(json_path: &str) -> Result<String, Box<dyn std::error:
 fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
+    let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
+    let payload_fn = format!("{prefix}_error_payload");
 
-    let has_data_variants = err.variants.iter().any(|v| !v.fields.is_empty());
+    // Find the error_message dispatch function from the Error trait
+    let error_msg_fn = find_error_message_fn(lib);
 
-    // Enum definition
-    if has_data_variants {
-        writeln!(out, "#[derive(Debug)]").unwrap();
-    } else {
-        writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
+    // ErrorHandle — wraps the opaque handle, Drop calls ft_error_destroy
+    let handle_name = format!("{}ErrorHandle", err.name);
+    writeln!(out, "pub struct {handle_name}(*mut core::ffi::c_void);").unwrap();
+    writeln!(out, "impl {handle_name} {{").unwrap();
+    writeln!(
+        out,
+        "    fn handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "impl Drop for {handle_name} {{").unwrap();
+    writeln!(
+        out,
+        "    fn drop(&mut self) {{ if !self.0.is_null() {{ unsafe {{ {error_destroy_fn}(self.0) }} }} }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "impl std::fmt::Debug for {handle_name} {{").unwrap();
+    writeln!(
+        out,
+        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ write!(f, \"ErrorHandle({{:?}})\", self.0) }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Per-variant data structs for data-carrying variants
+    for v in &err.variants {
+        if v.fields.is_empty() {
+            continue;
+        }
+        let data_name = format!("{}{}Data", err.name, v.name);
+        writeln!(out, "pub struct {data_name}({handle_name});").unwrap();
+        writeln!(out, "impl {data_name} {{").unwrap();
+        // Getter per field — calls ft_error_payload, returns borrowed data
+        for (i, field) in v.fields.iter().enumerate() {
+            let field_ty = field.type_ref.to_rust_type();
+            let getter_name = format!("field_{i}");
+            writeln!(out, "    pub fn {getter_name}(&self) -> {field_ty} {{").unwrap();
+            writeln!(
+                out,
+                "        let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<ffier::FfierBytes>()) }};"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        <{field_ty} as FfiType>::from_c(unsafe {{ __buf.assume_init() }})"
+            )
+            .unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out, "impl std::fmt::Debug for {data_name} {{").unwrap();
+        writeln!(
+            out,
+            "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{ write!(f, \"{}(...)\") }}",
+            v.name,
+        )
+        .unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
+
+    // Enum definition — every variant holds ErrorHandle (fieldless) or
+    // VariantData (data-carrying, which wraps ErrorHandle)
+    writeln!(out, "#[derive(Debug)]").unwrap();
     writeln!(out, "pub enum {} {{", err.name).unwrap();
     for v in &err.variants {
         if v.fields.is_empty() {
-            writeln!(out, "    {},", v.name).unwrap();
+            writeln!(out, "    {}({handle_name}),", v.name).unwrap();
         } else {
-            // Data-carrying variant — emit the FfiType client-side types
-            let field_types: Vec<String> =
-                v.fields.iter().map(|f| f.type_ref.to_rust_type()).collect();
-            writeln!(out, "    {}({}),", v.name, field_types.join(", ")).unwrap();
+            let data_name = format!("{}{}Data", err.name, v.name);
+            writeln!(out, "    {}({data_name}),", v.name).unwrap();
         }
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // result_code() helper — returns the packed FfierResult for this variant
-    // (needed for Display to call ft_result_strerror)
-    let err_entry = lib.type_entry(&err.name).unwrap();
-    let err_type_tag = err_entry.type_tag.unwrap();
-
+    // from_ffi — just match on code and stash the handle
     writeln!(out, "impl {} {{", err.name).unwrap();
-
-    // from_ffi: takes the result code and error handle, extracts payload
-    let into_payload_fn = format!("{prefix}_error_into_payload");
     writeln!(
         out,
         "    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {{"
     )
     .unwrap();
     writeln!(out, "        let code = ffier::ffier_result_code(r);").unwrap();
-
-    // For data-carrying variants, declare MaybeUninit storage for each
-    // variant's CRepr. For fieldless-only errors, just destroy the handle.
-    let data_variants: Vec<_> = err
-        .variants
-        .iter()
-        .filter(|v| !v.fields.is_empty())
-        .collect();
-
-    if data_variants.is_empty() {
-        let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
-        writeln!(
-            out,
-            "        if !err_handle.is_null() {{ unsafe {{ {error_destroy_fn}(err_handle) }}; }}"
-        )
-        .unwrap();
-    } else {
-        // Declare a union-like storage large enough for the largest CRepr.
-        // For simplicity with single data variants, just declare per-variant.
-        for dv in &data_variants {
-            let field_ty = dv.fields[0].type_ref.to_rust_type();
-            writeln!(
-                out,
-                "        let mut __payload_{}: std::mem::MaybeUninit<<{field_ty} as FfiType>::CRepr> = std::mem::MaybeUninit::uninit();",
-                dv.code
-            )
-            .unwrap();
-        }
-        // Call into_payload with the right buffer based on code
-        writeln!(out, "        match code {{").unwrap();
-        for dv in &data_variants {
-            let field_ty = dv.fields[0].type_ref.to_rust_type();
-            writeln!(out, "            {}u32 => unsafe {{ {into_payload_fn}(r, err_handle, __payload_{}.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{field_ty} as FfiType>::CRepr>()) }},", dv.code, dv.code).unwrap();
-        }
-        // For fieldless variants, still need to destroy the handle
-        let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
-        writeln!(
-            out,
-            "            _ => if !err_handle.is_null() {{ unsafe {{ {error_destroy_fn}(err_handle) }} }},"
-        )
-        .unwrap();
-        writeln!(out, "        }}").unwrap();
-    }
-
+    writeln!(out, "        let handle = {handle_name}(err_handle);").unwrap();
     writeln!(out, "        match code {{").unwrap();
     for v in &err.variants {
         if v.fields.is_empty() {
-            writeln!(out, "            {}u32 => Self::{},", v.code, v.name).unwrap();
+            writeln!(
+                out,
+                "            {}u32 => Self::{}(handle),",
+                v.code, v.name
+            )
+            .unwrap();
         } else {
-            let field_ty = v.fields[0].type_ref.to_rust_type();
-            writeln!(out, "            {}u32 => {{", v.code).unwrap();
+            let data_name = format!("{}{}Data", err.name, v.name);
             writeln!(
                 out,
-                "                let c_val = unsafe {{ __payload_{}.assume_init() }};",
-                v.code
+                "            {}u32 => Self::{}({data_name}(handle)),",
+                v.code, v.name
             )
             .unwrap();
-            writeln!(
-                out,
-                "                Self::{}(<{field_ty} as FfiType>::from_c(c_val))",
-                v.name
-            )
-            .unwrap();
-            writeln!(out, "            }}").unwrap();
         }
     }
     writeln!(
@@ -371,69 +399,30 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
+
+    // message() — calls ft_error_message with a PushStr handle wrapping a String
+    writeln!(out, "    fn handle_ptr(&self) -> *mut core::ffi::c_void {{").unwrap();
+    writeln!(out, "        match self {{").unwrap();
+    for v in &err.variants {
+        if v.fields.is_empty() {
+            writeln!(out, "            Self::{}(h) => h.handle(),", v.name).unwrap();
+        } else {
+            writeln!(out, "            Self::{}(d) => d.0.handle(),", v.name).unwrap();
+        }
+    }
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // Display — calls ft_result_strerror with a stack-local PushStr VtableHandle
-    let result_strerror_fn = format!("{prefix}_result_strerror");
+    // Display — calls ft_error_message with a stack-local PushStr VtableHandle
     writeln!(out, "impl std::fmt::Display for {} {{", err.name).unwrap();
     writeln!(
         out,
         "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"
     )
     .unwrap();
-
-    // Build the packed FfierResult for this variant
-    writeln!(out, "        let code = match self {{").unwrap();
-    for v in &err.variants {
-        if v.fields.is_empty() {
-            writeln!(out, "            Self::{} => {}u32,", v.name, v.code).unwrap();
-        } else {
-            writeln!(out, "            Self::{}(..) => {}u32,", v.name, v.code).unwrap();
-        }
-    }
-    writeln!(out, "        }};").unwrap();
-    writeln!(
-        out,
-        "        let r = ffier::ffier_result({}u32, code);",
-        err_type_tag
-    )
-    .unwrap();
-
-    // Build payload pointer — null for fieldless, pointer to CRepr for data
-    writeln!(
-        out,
-        "        let __payload_storage: std::mem::MaybeUninit<ffier::FfierBytes>;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        let payload: *const core::ffi::c_void = match self {{"
-    )
-    .unwrap();
-    for v in &err.variants {
-        if v.fields.is_empty() {
-            writeln!(out, "            Self::{} => core::ptr::null(),", v.name).unwrap();
-        } else {
-            let field_ty = v.fields[0].type_ref.to_rust_type();
-            // We need to convert to CRepr without consuming — clone first
-            writeln!(out, "            Self::{}(val) => {{", v.name).unwrap();
-            writeln!(
-                out,
-                "                __payload_storage = std::mem::MaybeUninit::new(<{field_ty} as FfiType>::into_c(val.clone()));"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "                __payload_storage.as_ptr() as *const core::ffi::c_void"
-            )
-            .unwrap();
-            writeln!(out, "            }}").unwrap();
-        }
-    }
-    writeln!(out, "        }};").unwrap();
-
-    // Construct stack-local FmtPushStr and VtableHandle
+    // FmtWriter: implements PushStr by writing to the Formatter
     writeln!(out, "        struct FmtWriter(*mut core::ffi::c_void);").unwrap();
     writeln!(out, "        impl PushStr for FmtWriter {{").unwrap();
     writeln!(
@@ -442,7 +431,6 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     )
     .unwrap();
     writeln!(out, "        }}").unwrap();
-
     writeln!(
         out,
         "        let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);"
@@ -484,7 +472,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(
         out,
-        "        unsafe {{ {result_strerror_fn}(r, payload, __writer_handle) }};"
+        "        unsafe {{ {error_msg_fn}(self.handle_ptr(), __writer_handle) }};"
     )
     .unwrap();
     writeln!(out, "        Ok(())").unwrap();
@@ -496,18 +484,11 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "impl std::error::Error for {} {{}}", err.name).unwrap();
     writeln!(out).unwrap();
 
-    // Extern declarations for error payload and strerror bridge functions
-    let into_payload_fn = format!("{prefix}_error_into_payload");
-    let result_strerror_fn = format!("{prefix}_result_strerror");
+    // Extern declaration for payload getter
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
     writeln!(
         out,
-        "    fn {into_payload_fn}(r: ffier::FfierResult, handle: *mut core::ffi::c_void, out_buf: *mut core::ffi::c_void, buf_size: usize);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    fn {result_strerror_fn}(r: ffier::FfierResult, payload: *const core::ffi::c_void, writer: *mut core::ffi::c_void);"
+        "    fn {payload_fn}(handle: *const core::ffi::c_void, out_buf: *mut core::ffi::c_void, buf_size: usize);"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();
@@ -517,6 +498,26 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
 struct PushStrTraitInfo {
     type_tag: u32,
     vtable_name: String,
+}
+
+fn find_error_message_fn(lib: &Library) -> String {
+    let (name, _) = lib
+        .blessed(ffier_schema::Blessing::ErrorTrait)
+        .expect("no type blessed as ErrorTrait found in schema");
+    let error_trait = lib
+        .traits
+        .iter()
+        .find(|t| t.name == name)
+        .expect("blessed ErrorTrait type not found in traits list");
+    error_trait
+        .methods
+        .iter()
+        .find(|m| m.name == "message")
+        .and_then(|m| match &m.context {
+            MethodContext::Trait { ffi_name, .. } => Some(ffi_name.clone()),
+            _ => None,
+        })
+        .expect("error trait has no 'message' method")
 }
 
 fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
@@ -663,6 +664,11 @@ fn emit_exported_type(
     writeln!(
         out,
         "    fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ self.0 }}"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();
@@ -1819,6 +1825,11 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
             "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ OwnedFd::from_raw_fd(fd as _) }} }}"
         )
         .unwrap();
+        writeln!(
+            out,
+            "    fn borrow_as_c(&self) -> {repr} {{ self.as_raw_fd() as {repr} }}"
+        )
+        .unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1837,6 +1848,11 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
             "    fn from_c(fd: {repr}) -> Self {{ unsafe {{ BorrowedFd::borrow_raw(fd as _) }} }}"
         )
         .unwrap();
+        writeln!(
+            out,
+            "    fn borrow_as_c(&self) -> {repr} {{ self.as_raw_fd() as {repr} }}"
+        )
+        .unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
 
@@ -1845,6 +1861,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
         writeln!(out, "    fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ BorrowedFd::borrow_raw(fd as _) }}) }} }}").unwrap();
+        writeln!(out, "    fn borrow_as_c(&self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1894,6 +1911,11 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     .unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
+    writeln!(
+        out,
+        "    fn borrow_as_c(&self) -> {repr} {{ *self as {repr} }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -1935,6 +1957,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
         "    fn from_c(repr: {repr}) -> Self {{ Self::from_bits_retain(repr) }}"
     )
     .unwrap();
+    writeln!(out, "    fn borrow_as_c(&self) -> {repr} {{ self.bits() }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }

@@ -14,13 +14,14 @@ pub trait FfiType {
     const IS_HANDLE: bool = false;
     fn into_c(self) -> Self::CRepr;
     fn from_c(repr: Self::CRepr) -> Self;
+    fn borrow_as_c(&self) -> Self::CRepr;
 }
 
 macro_rules! impl_ffi_identity {
     ($($t:ty => $n:expr),* $(,)?) => { $(
         impl FfiType for $t {
             type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;
-            fn into_c(self) -> Self { self } fn from_c(r: Self) -> Self { r }
+            fn into_c(self) -> Self { self } fn from_c(r: Self) -> Self { r } fn borrow_as_c(&self) -> Self { *self }
         }
     )* };
 }
@@ -42,6 +43,9 @@ impl FfiType for &str {
             let b = core::slice::from_raw_parts(repr.data, repr.len);
             core::str::from_utf8_unchecked(b)
         }
+    }
+    fn borrow_as_c(&self) -> ffier::FfierBytes {
+        unsafe { ffier::FfierBytes::from_str(self) }
     }
 }
 
@@ -66,6 +70,12 @@ impl<'a> FfiType for Option<&'a str> {
             }
         }
     }
+    fn borrow_as_c(&self) -> ffier::FfierBytes {
+        match self {
+            Some(s) => unsafe { ffier::FfierBytes::from_str(s) },
+            None => ffier::FfierBytes::EMPTY,
+        }
+    }
 }
 
 impl FfiType for Box<str> {
@@ -83,6 +93,12 @@ impl FfiType for Box<str> {
         unsafe {
             let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len);
             Box::from_raw(core::str::from_utf8_unchecked_mut(slice))
+        }
+    }
+    fn borrow_as_c(&self) -> ffier::FfierBytes {
+        ffier::FfierBytes {
+            data: self.as_ptr(),
+            len: self.len(),
         }
     }
 }
@@ -103,6 +119,9 @@ impl FfiType for &[u8] {
             }
         }
     }
+    fn borrow_as_c(&self) -> ffier::FfierBytes {
+        unsafe { ffier::FfierBytes::from_bytes(self) }
+    }
 }
 
 impl FfiType for OwnedFd {
@@ -116,6 +135,9 @@ impl FfiType for OwnedFd {
     fn from_c(fd: RawFd) -> Self {
         unsafe { OwnedFd::from_raw_fd(fd as _) }
     }
+    fn borrow_as_c(&self) -> RawFd {
+        self.as_raw_fd() as RawFd
+    }
 }
 
 impl<'fd> FfiType for BorrowedFd<'fd> {
@@ -127,6 +149,9 @@ impl<'fd> FfiType for BorrowedFd<'fd> {
     }
     fn from_c(fd: RawFd) -> Self {
         unsafe { BorrowedFd::borrow_raw(fd as _) }
+    }
+    fn borrow_as_c(&self) -> RawFd {
+        self.as_raw_fd() as RawFd
     }
 }
 
@@ -147,6 +172,12 @@ impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
             Some(unsafe { BorrowedFd::borrow_raw(fd as _) })
         }
     }
+    fn borrow_as_c(&self) -> RawFd {
+        match self {
+            Some(fd) => fd.as_raw_fd() as RawFd,
+            None => -1,
+        }
+    }
 }
 
 impl<T: FfiHandle + 'static> FfiType for &T {
@@ -159,6 +190,9 @@ impl<T: FfiHandle + 'static> FfiType for &T {
     fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("client-side &T from_c")
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        unsafe { self.as_handle() }
+    }
 }
 impl<T: FfiHandle + 'static> FfiType for &mut T {
     type CRepr = *mut core::ffi::c_void;
@@ -169,6 +203,9 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     }
     fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("client-side &mut T from_c")
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        unsafe { self.as_handle() }
     }
 }
 
@@ -200,6 +237,9 @@ impl FfiType for LogLevel {
             unknown => panic!("invalid LogLevel discriminant: {}", unknown),
         }
     }
+    fn borrow_as_c(&self) -> u32 {
+        *self as u32
+    }
 }
 
 bitflags::bitflags! {
@@ -221,65 +261,79 @@ impl FfiType for Permissions {
     fn from_c(repr: u32) -> Self {
         Self::from_bits_retain(repr)
     }
+    fn borrow_as_c(&self) -> u32 {
+        self.bits()
+    }
+}
+
+pub struct TestErrorErrorHandle(*mut core::ffi::c_void);
+impl TestErrorErrorHandle {
+    fn handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+}
+impl Drop for TestErrorErrorHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ft_error_destroy(self.0) }
+        }
+    }
+}
+impl std::fmt::Debug for TestErrorErrorHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ErrorHandle({:?})", self.0)
+    }
+}
+
+pub struct TestErrorNotFoundData(TestErrorErrorHandle);
+impl TestErrorNotFoundData {
+    pub fn field_0(&self) -> Box<str> {
+        let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
+        unsafe {
+            ft_error_payload(
+                self.0.handle() as *const core::ffi::c_void,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<ffier::FfierBytes>(),
+            )
+        };
+        <Box<str> as FfiType>::from_c(unsafe { __buf.assume_init() })
+    }
+}
+impl std::fmt::Debug for TestErrorNotFoundData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NotFound(...)")
+    }
 }
 
 #[derive(Debug)]
 pub enum TestError {
-    NotFound(Box<str>),
-    CustomMessage,
-    InvalidInput,
+    NotFound(TestErrorNotFoundData),
+    CustomMessage(TestErrorErrorHandle),
+    InvalidInput(TestErrorErrorHandle),
 }
 
 impl TestError {
     pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
-        let mut __payload_1: std::mem::MaybeUninit<<Box<str> as FfiType>::CRepr> =
-            std::mem::MaybeUninit::uninit();
+        let handle = TestErrorErrorHandle(err_handle);
         match code {
-            1u32 => unsafe {
-                ft_error_into_payload(
-                    r,
-                    err_handle,
-                    __payload_1.as_mut_ptr() as *mut core::ffi::c_void,
-                    core::mem::size_of::<<Box<str> as FfiType>::CRepr>(),
-                )
-            },
-            _ => {
-                if !err_handle.is_null() {
-                    unsafe { ft_error_destroy(err_handle) }
-                }
-            }
-        }
-        match code {
-            1u32 => {
-                let c_val = unsafe { __payload_1.assume_init() };
-                Self::NotFound(<Box<str> as FfiType>::from_c(c_val))
-            }
-            2u32 => Self::CustomMessage,
-            3u32 => Self::InvalidInput,
+            1u32 => Self::NotFound(TestErrorNotFoundData(handle)),
+            2u32 => Self::CustomMessage(handle),
+            3u32 => Self::InvalidInput(handle),
             other => panic!("unknown {} error code {}", "TestError", other),
+        }
+    }
+    fn handle_ptr(&self) -> *mut core::ffi::c_void {
+        match self {
+            Self::NotFound(d) => d.0.handle(),
+            Self::CustomMessage(h) => h.handle(),
+            Self::InvalidInput(h) => h.handle(),
         }
     }
 }
 
 impl std::fmt::Display for TestError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let code = match self {
-            Self::NotFound(..) => 1u32,
-            Self::CustomMessage => 2u32,
-            Self::InvalidInput => 3u32,
-        };
-        let r = ffier::ffier_result(1u32, code);
-        let __payload_storage: std::mem::MaybeUninit<ffier::FfierBytes>;
-        let payload: *const core::ffi::c_void = match self {
-            Self::NotFound(val) => {
-                __payload_storage =
-                    std::mem::MaybeUninit::new(<Box<str> as FfiType>::into_c(val.clone()));
-                __payload_storage.as_ptr() as *const core::ffi::c_void
-            }
-            Self::CustomMessage => core::ptr::null(),
-            Self::InvalidInput => core::ptr::null(),
-        };
         struct FmtWriter(*mut core::ffi::c_void);
         impl PushStr for FmtWriter {
             fn push(&mut self, s: &str) -> bool {
@@ -303,7 +357,7 @@ impl std::fmt::Display for TestError {
         };
         let __writer_handle =
             &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void;
-        unsafe { ft_result_strerror(r, payload, __writer_handle) };
+        unsafe { ft_error_message(self.handle_ptr(), __writer_handle) };
         Ok(())
     }
 }
@@ -311,16 +365,10 @@ impl std::fmt::Display for TestError {
 impl std::error::Error for TestError {}
 
 unsafe extern "C" {
-    fn ft_error_into_payload(
-        r: ffier::FfierResult,
-        handle: *mut core::ffi::c_void,
+    fn ft_error_payload(
+        handle: *const core::ffi::c_void,
         out_buf: *mut core::ffi::c_void,
         buf_size: usize,
-    );
-    fn ft_result_strerror(
-        r: ffier::FfierResult,
-        payload: *const core::ffi::c_void,
-        writer: *mut core::ffi::c_void,
     );
 }
 
@@ -457,6 +505,9 @@ impl FfiType for Widget {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -763,6 +814,9 @@ impl FfiType for Gadget {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Gadget {
@@ -831,6 +885,9 @@ impl FfiType for Config {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -948,6 +1005,9 @@ impl FfiType for Gizmo {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Gizmo {
@@ -1020,6 +1080,9 @@ impl FfiType for GizmoBuilder {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1126,6 +1189,9 @@ impl<'a> FfiType for View<'a> {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl<'a> std::fmt::Debug for View<'a> {
@@ -1219,6 +1285,9 @@ impl FfiType for ViewFactory {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for ViewFactory {
@@ -1299,6 +1368,9 @@ impl FfiType for Pipeline {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1390,6 +1462,9 @@ impl FfiType for Apple {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Apple {
@@ -1446,6 +1521,9 @@ impl FfiType for Orange {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1504,6 +1582,9 @@ impl FfiType for Banana {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Banana {
@@ -1560,6 +1641,9 @@ impl FfiType for Mango {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1618,6 +1702,9 @@ impl FfiType for Peach {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Peach {
@@ -1674,6 +1761,9 @@ impl FfiType for Plum {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1732,6 +1822,9 @@ impl FfiType for Grape {
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
 
 impl std::fmt::Debug for Grape {
@@ -1788,6 +1881,9 @@ impl FfiType for Lemon {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1866,6 +1962,9 @@ impl FfiType for Mixer {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 
@@ -1965,6 +2064,9 @@ impl FfiType for Sprocket {
     }
     fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
+    }
+    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
+        self.0
     }
 }
 

@@ -4,17 +4,19 @@ use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 // -- Error types --
 
 #[derive(Clone, Copy, Debug, thiserror::Error, ffier::FfiError)]
+#[non_exhaustive]
 pub enum CalcError {
     #[error("division by zero")]
     #[ffier(code = 1)]
-    DivisionByZero,
+    DivisionByZero(),
 }
 
 #[derive(Clone, Copy, Debug, thiserror::Error, ffier::FfiError)]
+#[non_exhaustive]
 pub enum BufferError {
     #[error("write failed")]
     #[ffier(code = 1)]
-    WriteFailed,
+    WriteFailed(),
 }
 
 // -- Calculator: primitives, results --
@@ -41,7 +43,7 @@ impl Calculator {
     /// Divide `a` by `b`, returning an error if `b` is zero.
     pub fn divide(&self, a: i32, b: i32) -> Result<i32, CalcError> {
         if b == 0 {
-            Err(CalcError::DivisionByZero)
+            Err(CalcError::DivisionByZero())
         } else {
             Ok(a / b)
         }
@@ -97,7 +99,7 @@ impl TextBuffer {
         let mut f = unsafe { std::fs::File::from_raw_fd(self.output_fd.as_raw_fd()) };
         let result = f.write_all(self.contents.as_bytes());
         std::mem::forget(f);
-        result.map_err(|_| BufferError::WriteFailed)
+        result.map_err(|_| BufferError::WriteFailed())
     }
 
     pub fn clear(&mut self) {

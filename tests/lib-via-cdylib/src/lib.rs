@@ -121,7 +121,7 @@ mod tests {
     fn method_returning_result_void_err() {
         let w = Widget::new();
         let err = w.fail_always().unwrap_err();
-        assert!(matches!(err, TestError::CustomMessage));
+        assert!(matches!(err, TestError::CustomMessage(..)));
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod tests {
     fn method_returning_result_value_err() {
         let w = Widget::new();
         let err = w.parse_count("error").unwrap_err();
-        assert!(matches!(err, TestError::NotFound(_)));
+        assert!(matches!(err, TestError::NotFound(..)));
     }
 
     #[test]
@@ -148,7 +148,7 @@ mod tests {
     fn method_returning_result_str_err() {
         let w = Widget::new();
         let err = w.describe(99).unwrap_err();
-        assert!(matches!(err, TestError::NotFound(_)));
+        assert!(matches!(err, TestError::NotFound(..)));
     }
 
     #[test]
@@ -163,14 +163,14 @@ mod tests {
     fn method_returning_result_handle_err() {
         let w = Widget::new();
         let err = w.try_create_gadget(false).unwrap_err();
-        assert!(matches!(err, TestError::NotFound(_)));
+        assert!(matches!(err, TestError::NotFound(..)));
     }
 
     #[test]
     fn method_returning_result_fail_with_value() {
         let w = Widget::new();
         let err = w.fail_with_value().unwrap_err();
-        assert!(matches!(err, TestError::InvalidInput));
+        assert!(matches!(err, TestError::InvalidInput(..)));
     }
 
     // ================================================================
@@ -222,7 +222,7 @@ mod tests {
     #[test]
     fn builder_method_returning_result_self_err() {
         let err = Config::new().validated().unwrap_err();
-        assert!(matches!(err, TestError::InvalidInput));
+        assert!(matches!(err, TestError::InvalidInput(..)));
     }
 
     #[test]
@@ -250,7 +250,7 @@ mod tests {
         let b = GizmoBuilder::new();
         // name empty — try_build() should fail
         let err = b.try_build().unwrap_err();
-        assert!(matches!(err, TestError::InvalidInput));
+        assert!(matches!(err, TestError::InvalidInput(..)));
     }
 
     // ================================================================
@@ -259,17 +259,18 @@ mod tests {
 
     #[test]
     fn error_display() {
-        // Client-side Display calls ft_result_strerror which invokes
-        // the library's real Display impl through a PushStr vtable.
-        assert_eq!(
-            format!("{}", TestError::NotFound("test".into())),
-            "not found: test"
-        );
-        assert_eq!(
-            format!("{}", TestError::CustomMessage),
-            "custom error message"
-        );
-        assert_eq!(format!("{}", TestError::InvalidInput), "invalid input");
+        // Client-side Display calls ft_error_message through a PushStr
+        // vtable — tests the real library Display impl, no hardcoded strings.
+        let w = Widget::new();
+        // describe(99) → NotFound("code 99")
+        let err = w.describe(99).unwrap_err();
+        assert_eq!(format!("{err}"), "not found: code 99");
+        // fail_always() → CustomMessage
+        let err = w.fail_always().unwrap_err();
+        assert_eq!(format!("{err}"), "custom error message");
+        // fail_with_value() → InvalidInput
+        let err = w.fail_with_value().unwrap_err();
+        assert_eq!(format!("{err}"), "invalid input");
     }
 
     // ================================================================
