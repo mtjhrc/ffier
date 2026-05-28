@@ -192,7 +192,7 @@ impl VtableHandle {
 }
 
 // ---------------------------------------------------------------------------
-// PushStrHandle — fmt::Write adapter for a PushStr vtable handle
+// FfierBytes --- zero-copy byte slice for C FFI (&[u8], &str, &Path)
 // ---------------------------------------------------------------------------
 
 /// Wraps a raw PushStr handle (`*mut FfierHandle<VtableHandle>`) and
