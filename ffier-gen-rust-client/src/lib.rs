@@ -314,11 +314,15 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
         let data_name = format!("{}{}Data", err.name, v.name);
         writeln!(out, "pub struct {data_name}({handle_name});").unwrap();
         writeln!(out, "impl {data_name} {{").unwrap();
-        // Getter per field — calls ft_error_payload, returns borrowed data
+        // Getter per field — calls ft_error_payload, returns borrowed data.
+        // The payload borrows from the handle, so the getter returns a
+        // reference tied to &self (which keeps the handle alive).
         for (i, field) in v.fields.iter().enumerate() {
-            let field_ty = field.type_ref.to_rust_type();
             let getter_name = format!("field_{i}");
-            writeln!(out, "    pub fn {getter_name}(&self) -> {field_ty} {{").unwrap();
+            // The field type in the schema is the owned type (e.g. Box<str>),
+            // but the getter borrows — return &str for Box<str>, etc.
+            let borrow_ty = borrowed_type_for(&field.type_ref);
+            writeln!(out, "    pub fn {getter_name}(&self) -> {borrow_ty} {{").unwrap();
             writeln!(
                 out,
                 "        let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();"
@@ -331,7 +335,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ <{field_ty} as FfiType>::from_c(__buf.assume_init()) }}"
+                "        unsafe {{ <{borrow_ty} as FfiType>::from_c(__buf.assume_init()) }}"
             )
             .unwrap();
             writeln!(out, "    }}").unwrap();
@@ -518,6 +522,22 @@ fn find_error_message_fn(lib: &Library) -> String {
             _ => None,
         })
         .expect("error trait has no 'message' method")
+}
+
+/// Map an owned field type to its borrowed equivalent for error payload getters.
+/// The getter borrows from the handle, so it can't return owned types.
+fn borrowed_type_for(type_ref: &ffier_schema::TypeRef) -> String {
+    let owned = type_ref.to_rust_type();
+    // Box<str> → &str
+    if owned == "Box<str>" {
+        return "&str".to_string();
+    }
+    // Already a reference type — return as-is
+    if owned.starts_with('&') {
+        return owned;
+    }
+    // Primitives (Copy types) — return as-is, borrow_as_c copies them
+    owned
 }
 
 fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {

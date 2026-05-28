@@ -287,7 +287,7 @@ impl std::fmt::Debug for TestErrorErrorHandle {
 
 pub struct TestErrorNotFoundData(TestErrorErrorHandle);
 impl TestErrorNotFoundData {
-    pub fn field_0(&self) -> Box<str> {
+    pub fn field_0(&self) -> &str {
         let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
         unsafe {
             ft_error_payload(
@@ -296,7 +296,7 @@ impl TestErrorNotFoundData {
                 core::mem::size_of::<ffier::FfierBytes>(),
             )
         };
-        unsafe { <Box<str> as FfiType>::from_c(__buf.assume_init()) }
+        unsafe { <&str as FfiType>::from_c(__buf.assume_init()) }
     }
 }
 impl std::fmt::Debug for TestErrorNotFoundData {
