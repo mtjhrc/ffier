@@ -89,7 +89,7 @@ mod tests {
     #[test]
     fn test_result_err() {
         let err = result_err_path().unwrap_err();
-        assert!(matches!(err, api::TestError::CustomMessage));
+        assert!(matches!(err, api::TestError::CustomMessage(..)));
     }
 
     #[test]
@@ -320,6 +320,9 @@ mod tests {
     fn test_maybe_fd_error() {
         let w = make_widget();
         let result = w.maybe_fd(-1);
-        assert!(matches!(result.unwrap_err(), api::TestError::InvalidInput));
+        assert!(matches!(
+            result.unwrap_err(),
+            api::TestError::InvalidInput(..)
+        ));
     }
 }

@@ -330,6 +330,12 @@ pub trait FfiError: std::error::Error + Sized {
 
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
     fn codes() -> &'static [(&'static str, u32)];
+
+    /// Shallow-copy the variant's payload CRepr into `out_buf`.
+    /// The written CRepr borrows from `&self` — the caller must not
+    /// outlive the error value. `buf_size` is checked for safety.
+    /// Fieldless (empty-tuple) variants are a no-op.
+    fn payload(&self, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {}
 }
 
 // ---------------------------------------------------------------------------

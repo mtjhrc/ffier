@@ -328,11 +328,10 @@ mod tests {
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 1); // NotFound
             assert!(!err.is_null(), "err handle should be non-null");
-            // Test into_payload extracts the Box<str> payload into caller storage
+            // Test error_payload borrows the Box<str> payload from the handle
             let mut payload_buf = core::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
-            ft_error_into_payload(
-                r,
-                err,
+            ft_error_payload(
+                err as *const core::ffi::c_void,
                 payload_buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<ffier::FfierBytes>(),
             );
@@ -340,8 +339,8 @@ mod tests {
             let s =
                 core::str::from_utf8_unchecked(core::slice::from_raw_parts(c_val.data, c_val.len));
             assert_eq!(s, "code 99");
-            // Free the owned string via the library's allocator
-            ft_str_free(c_val);
+            // No need to free — c_val borrows from the handle
+            ft_error_destroy(err);
             ft_widget_destroy(w);
         }
     }
