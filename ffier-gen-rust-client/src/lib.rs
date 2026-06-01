@@ -527,17 +527,15 @@ fn find_error_message_fn(lib: &Library) -> String {
 /// Map an owned field type to its borrowed equivalent for error payload getters.
 /// The getter borrows from the handle, so it can't return owned types.
 fn borrowed_type_for(type_ref: &ffier_schema::TypeRef) -> String {
-    let owned = type_ref.to_rust_type();
-    // Box<str> → &str
-    if owned == "Box<str>" {
-        return "&str".to_string();
+    if type_ref.owned {
+        // Owned type (e.g. Box<str>) → shared reference (e.g. &str)
+        let mut borrowed = type_ref.clone();
+        borrowed.owned = false;
+        borrowed.ref_kind = ffier_schema::RefKind::Shared;
+        borrowed.to_rust_type()
+    } else {
+        type_ref.to_rust_type()
     }
-    // Already a reference type — return as-is
-    if owned.starts_with('&') {
-        return owned;
-    }
-    // Primitives (Copy types) — return as-is, borrow_as_c copies them
-    owned
 }
 
 fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
