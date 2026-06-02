@@ -673,8 +673,8 @@ impl Library {
                     ParamType::Regular(tr) => {
                         refs.insert(&tr.type_name);
                     }
-                    ParamType::Slice { .. } => {
-                        refs.insert("str");
+                    ParamType::Slice { element, .. } => {
+                        refs.insert(&element.type_name);
                     }
                     ParamType::ImplTrait { trait_name, .. } => {
                         refs.insert(trait_name);

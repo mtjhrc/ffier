@@ -513,7 +513,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -572,21 +572,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -1318,6 +1312,69 @@ mod tests {
             ft_weighable_destroy(apple);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Handle slice: &[&T] as param
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn handle_slice_param_method() {
+        unsafe {
+            let w = ft_widget_new();
+
+            // Create gadgets via widget (they have widget's count as initial value)
+            ft_widget_set_count(w, 5);
+            let g1 = ft_widget_create_gadget(w);
+            let g2 = ft_widget_create_gadget(w);
+
+            ft_widget_set_count(w, 7);
+            let g3 = ft_widget_create_gadget(w);
+
+            // sum_gadgets takes &[&Gadget]
+            let handles = [g1, g2, g3];
+            let sum = ft_widget_sum_gadgets(w, handles.as_ptr(), handles.len());
+            // g1.value=5, g2.value=5, g3.value=7 → sum=17
+            assert_eq!(sum, 17);
+
+            ft_gadget_destroy(g1);
+            ft_gadget_destroy(g2);
+            ft_gadget_destroy(g3);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn handle_slice_param_free_function() {
+        unsafe {
+            let w = ft_widget_new();
+            ft_widget_set_count(w, 3);
+            let g1 = ft_widget_create_gadget(w);
+            ft_widget_set_count(w, 4);
+            let g2 = ft_widget_create_gadget(w);
+
+            let handles = [g1, g2];
+            let sum = ft_sum_gadget_values(handles.as_ptr(), handles.len());
+            // g1.value=3, g2.value=4 → sum=7
+            assert_eq!(sum, 7);
+
+            ft_gadget_destroy(g1);
+            ft_gadget_destroy(g2);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn handle_slice_param_empty() {
+        unsafe {
+            let w = ft_widget_new();
+            // Empty slice
+            let sum = ft_widget_sum_gadgets(w, core::ptr::null(), 0);
+            assert_eq!(sum, 0);
+            ft_widget_destroy(w);
+        }
+    }
+
+    // -----------------------------------------------------------------------
 
     #[test]
     fn foreign_trait_vtable_dispatch() {
