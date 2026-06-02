@@ -563,6 +563,10 @@ pub trait Fruit {
     /// Fallible count — returns error if input is negative.
     #[ffier(index = 2)]
     fn try_count(&self, input: i32) -> Result<i32, TestError>;
+
+    /// Count how many of the given tags match the fruit's label.
+    #[ffier(index = 3)]
+    fn count_tags(&self, tags: &[&str]) -> i32;
 }
 
 #[cfg(not(feature = "fruit-label"))]
@@ -573,6 +577,9 @@ pub trait Fruit {
 
     #[ffier(index = 2)]
     fn try_count(&self, input: i32) -> Result<i32, TestError>;
+
+    #[ffier(index = 3)]
+    fn count_tags(&self, tags: &[&str]) -> i32;
 }
 
 #[ffier::trait_impl]
@@ -587,6 +594,9 @@ impl Fruit for Apple {
             Ok(self.weight + input)
         }
     }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32 + self.weight
+    }
 }
 
 #[ffier::trait_impl]
@@ -600,6 +610,9 @@ impl Fruit for Orange {
         } else {
             Ok(self.juice * input)
         }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32 + self.juice
     }
 }
 
@@ -624,6 +637,9 @@ impl Fruit for Banana {
             Ok(self.0 + input)
         }
     }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
+    }
 }
 
 pub struct Mango(i32);
@@ -644,6 +660,9 @@ impl Fruit for Mango {
         } else {
             Ok(self.0 + input)
         }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
     }
 }
 
@@ -666,6 +685,9 @@ impl Fruit for Peach {
             Ok(self.0 + input)
         }
     }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
+    }
 }
 
 pub struct Plum(i32);
@@ -686,6 +708,9 @@ impl Fruit for Plum {
         } else {
             Ok(self.0 + input)
         }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
     }
 }
 
@@ -708,6 +733,9 @@ impl Fruit for Grape {
             Ok(self.0 + input)
         }
     }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
+    }
 }
 
 pub struct Lemon(i32);
@@ -728,6 +756,9 @@ impl Fruit for Lemon {
         } else {
             Ok(self.0 + input)
         }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        tags.len() as i32
     }
 }
 

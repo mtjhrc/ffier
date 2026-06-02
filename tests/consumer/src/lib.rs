@@ -212,6 +212,18 @@ mod tests {
         fn value(&self) -> i32 {
             self.sweetness
         }
+        fn try_count(&self, input: i32) -> Result<i32, api::TestError> {
+            // Only native mode can construct TestError directly
+            // (via-cdylib TestError wraps an error handle that requires FFI)
+            #[cfg(feature = "native")]
+            if input < 0 {
+                return Err(api::TestError::InvalidInput());
+            }
+            Ok(self.sweetness + input)
+        }
+        fn count_tags(&self, tags: &[&str]) -> i32 {
+            tags.len() as i32
+        }
     }
 
     #[test]

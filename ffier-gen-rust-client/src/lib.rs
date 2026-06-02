@@ -1401,7 +1401,12 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                         call_args.push(p.name.clone());
                     }
                     ParamType::Slice { .. } => {
-                        call_args.push(format!("{}", p.name)); // TODO: proper slice conversion
+                        let vec_name = format!("__slice_{}", p.name);
+                        writeln!(out,
+                            "                    let {vec_name}: Vec<&str> = unsafe {{ core::slice::from_raw_parts({}, {}_len) }}.iter().map(|b| unsafe {{ b.as_str_unchecked() }}).collect();",
+                            p.name, p.name
+                        ).unwrap();
+                        call_args.push(format!("&{vec_name}"));
                     }
                 }
             }
@@ -1453,7 +1458,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            unsafe {{ *err_out = <_ as FfiType>::into_c(__e) }};").unwrap();
+                            writeln!(out, "                            unsafe {{ *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void }};").unwrap();
                             writeln!(out, "                            core::ptr::null_mut()")
                                 .unwrap();
                             writeln!(out, "                        }}").unwrap();
@@ -1477,13 +1482,14 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
+                            writeln!(out, "                            unsafe {{ *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void }};").unwrap();
+                            // Any non-zero FfierResult signals error. The bridge reads
+                            // the error handle from err_out, not the packed code.
                             writeln!(
                                 out,
-                                "                            let __code = FfiError::code(&__e);"
+                                "                            ffier::ffier_result({err_type_tag}, 1)"
                             )
                             .unwrap();
-                            writeln!(out, "                            unsafe {{ *err_out = <_ as FfiType>::into_c(__e) }};").unwrap();
-                            writeln!(out, "                            ffier::ffier_result({err_type_tag}, __code)").unwrap();
                             writeln!(out, "                        }}").unwrap();
                         }
                     }
@@ -1829,6 +1835,7 @@ fn emit_ffi_call_return(
     ret: &Return,
     indent: &str,
 ) {
+    let sep = if args_str.is_empty() { "" } else { ", " };
     match ret {
         Return::Void => {
             writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
@@ -1842,10 +1849,57 @@ fn emit_ffi_call_return(
             .unwrap();
             writeln!(out, "{indent}unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
         }
-        Return::Result { .. } => {
-            // Result returns have complex dispatch (void/handle/out-param) —
-            // handled inline by caller, not here.
-            unreachable!("Result returns must be handled by caller");
+        Return::Result {
+            ok: None, err_type, ..
+        } => {
+            writeln!(
+                out,
+                "{indent}let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "{indent}let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(
+                out,
+                "{indent}if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}"
+            )
+            .unwrap();
+        }
+        Return::Result {
+            ok: Some(ok_tr),
+            err_type,
+            c_convention,
+        } => {
+            use ffier_schema::CResultConvention;
+            let ty = ok_tr.to_rust_type();
+            writeln!(
+                out,
+                "{indent}let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            match c_convention {
+                CResultConvention::HandleOrNull => {
+                    writeln!(out, "{indent}let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+                    writeln!(out, "{indent}if !__raw.is_null() {{").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}    Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
+                    )
+                    .unwrap();
+                    writeln!(out, "{indent}}} else {{").unwrap();
+                    writeln!(out, "{indent}    Err({err_type}::from_ffi(0, __err))").unwrap();
+                    writeln!(out, "{indent}}}").unwrap();
+                }
+                CResultConvention::OutParam => {
+                    let ty_static = ok_tr.to_rust_type_static();
+                    writeln!(out, "{indent}let mut __result = core::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();").unwrap();
+                    writeln!(out, "{indent}let __r = unsafe {{ {ffi_name}({args_str}{sep}__result.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+                    writeln!(out, "{indent}if __r == 0 {{").unwrap();
+                    writeln!(out, "{indent}    Ok(unsafe {{ <{ty} as FfiType>::from_c(__result.assume_init()) }})").unwrap();
+                    writeln!(out, "{indent}}} else {{").unwrap();
+                    writeln!(out, "{indent}    Err({err_type}::from_ffi(__r, __err))").unwrap();
+                    writeln!(out, "{indent}}}").unwrap();
+                }
+            }
         }
     }
 }

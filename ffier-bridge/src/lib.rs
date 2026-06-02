@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use ffier_meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    peek_meta_field, peek_meta_tag,
+    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake, peek_meta_field,
+    peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -685,12 +685,7 @@ fn generate_exportable_bridge(
         let is_builder = m.is_builder();
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(
-            m,
-            &meta.prefix,
-            handle_types,
-            lib_crate,
-        );
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
@@ -768,7 +763,10 @@ fn generate_exportable_bridge(
         let sig_ret = &c_sig.ret;
 
         let builder_ctx = if is_builder {
-            Some(BuilderCtx { struct_path, is_by_value })
+            Some(BuilderCtx {
+                struct_path,
+                is_by_value,
+            })
         } else {
             None
         };
@@ -1180,12 +1178,7 @@ fn generate_free_fn_bridge(
     let ffi_name = format_ident!("{}", ffi_name_str);
 
     // Use the same signature builder as methods.
-    let c_sig = c_signature_for_method(
-        m,
-        &meta.prefix,
-        handle_types,
-        lib_crate,
-    );
+    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
 
     // Shared param conversion + impl Trait dispatch.
     let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
@@ -1331,8 +1324,7 @@ fn wrap_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
-            let ok_is_handle =
-                ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
+            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
 
             let err_info = error_map.get(err_ident);
             let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
@@ -1578,8 +1570,6 @@ fn meta_param_conversion(
         }
     }
 }
-
-
 
 // ===========================================================================
 // Self-dispatch bridge generation
@@ -2506,7 +2496,11 @@ fn convert_free_fn(
     }
 }
 
-fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver, handle_types: &HashSet<String>) -> ffier_schema::ExportedType {
+fn convert_exportable(
+    meta: &MetaExportable,
+    r: &CTypeResolver,
+    handle_types: &HashSet<String>,
+) -> ffier_schema::ExportedType {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
     let is_builder_type = meta
@@ -2578,7 +2572,11 @@ fn convert_implementable(
     }
 }
 
-fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver, handle_types: &HashSet<String>) -> ffier_schema::TraitImpl {
+fn convert_trait_impl(
+    meta: &MetaTraitImpl,
+    r: &CTypeResolver,
+    handle_types: &HashSet<String>,
+) -> ffier_schema::TraitImpl {
     let struct_snake = camel_to_snake(&meta.struct_name.to_string());
     let ffi_prefix = format!("{struct_snake}_");
     ffier_schema::TraitImpl {
@@ -2621,7 +2619,13 @@ fn convert_method(
         }
     };
 
-    let ret = convert_return(&meta.ret, &meta.rust_ret, r, meta.is_builder(), handle_types);
+    let ret = convert_return(
+        &meta.ret,
+        &meta.rust_ret,
+        r,
+        meta.is_builder(),
+        handle_types,
+    );
 
     ffier_schema::Method {
         name: meta.name.to_string(),

@@ -138,7 +138,6 @@ pub fn erase_lifetimes(ty: &syn::Type) -> syn::Type {
 /// Erase lifetimes from type tokens for extern fn signatures.
 ///
 
-
 // ---------------------------------------------------------------------------
 // Shared prefix helpers
 // ---------------------------------------------------------------------------
@@ -473,8 +472,6 @@ impl HasPrefix for MetaImplementable {
         &self.prefix
     }
 }
-
-
 
 // ---------------------------------------------------------------------------
 // Trait impl metadata (impl Trait for Struct, exported via C ABI)

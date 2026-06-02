@@ -1777,11 +1777,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
-    let vtable_methods =
-        match extract_vtable_methods(&trait_item, &args.reserved, &mut ctx) {
-            Ok(v) => v,
-            Err(e) => return e.to_compile_error().into(),
-        };
+    let vtable_methods = match extract_vtable_methods(&trait_item, &args.reserved, &mut ctx) {
+        Ok(v) => v,
+        Err(e) => return e.to_compile_error().into(),
+    };
     let own_method_count = vtable_methods.len();
     let bless_tokens = match &args.bless {
         Some(s) => quote::quote! { #s },
@@ -2025,7 +2024,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-
     let reserved_lits: Vec<_> = args.reserved.iter().map(|r| quote! { #r }).collect();
 
     let trait_path_tokens = quote! { $crate::#trait_name };
@@ -2039,9 +2037,9 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote! {}
     } else {
         let has_supertraits = trait_item
-                .supertraits
-                .iter()
-                .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
+            .supertraits
+            .iter()
+            .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
         // Traits with `impl Trait` params aren't dyn-compatible
         let has_impl_trait = vtable_methods
             .iter()
@@ -2566,7 +2564,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 // @reexport with type_tag + handle names generates the vtable struct + wrapper type + impls.
-                reexport_invocations.push(quote! { #alias!(@reexport, #tag, [#(#handle_type_idents),*]); });
+                reexport_invocations
+                    .push(quote! { #alias!(@reexport, #tag, [#(#handle_type_idents),*]); });
                 chain_paths.push(quote! { $crate::#shim_name });
             }
             LibraryEntry::Enum(path) => {
@@ -3182,7 +3181,6 @@ struct GenerateVtableInput {
 
 impl Parse for GenerateVtableInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-
         let mut vtable_struct = None;
         let mut wrapper = None;
         let mut trait_path = None;
@@ -3194,7 +3192,6 @@ impl Parse for GenerateVtableInput {
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
         let mut method_sigs: Vec<syn::Signature> = Vec::new();
         let mut default_helpers = Vec::new();
-
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -3271,7 +3268,11 @@ impl Parse for GenerateVtableInput {
                     syn::bracketed!(content in input);
                     while !content.is_empty() {
                         // Keep the braces — MetaMethod::parse expects them
-                        methods.push(content.parse::<proc_macro2::TokenTree>()?.into_token_stream());
+                        methods.push(
+                            content
+                                .parse::<proc_macro2::TokenTree>()?
+                                .into_token_stream(),
+                        );
                         if !content.is_empty() {
                             let _ = content.parse::<Token![,]>();
                         }
@@ -3296,17 +3297,28 @@ impl Parse for GenerateVtableInput {
                 }
 
                 other => {
-                    return Err(syn::Error::new(key.span(), format!("unknown key `{other}` in __generate_vtable")));
+                    return Err(syn::Error::new(
+                        key.span(),
+                        format!("unknown key `{other}` in __generate_vtable"),
+                    ));
                 }
             }
         }
 
         Ok(GenerateVtableInput {
-            vtable_struct: vtable_struct.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "missing vtable_struct"))?,
-            wrapper: wrapper.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "missing wrapper"))?,
-            trait_path: trait_path.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "missing trait_path"))?,
+            vtable_struct: vtable_struct.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "missing vtable_struct")
+            })?,
+            wrapper: wrapper.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "missing wrapper")
+            })?,
+            trait_path: trait_path.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "missing trait_path")
+            })?,
             trait_generics: trait_generics.unwrap_or_default(),
-            crate_path: crate_path.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path"))?,
+            crate_path: crate_path.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path")
+            })?,
             handles,
             reserved,
             own_method_count,
@@ -3370,7 +3382,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         }
 
         let method_name = &m.name;
-            // Build param types for the fn pointer
+        // Build param types for the fn pointer
         let mut param_types = vec![quote! { *mut core::ffi::c_void }];
         for p in &m.params {
             match &p.kind {
