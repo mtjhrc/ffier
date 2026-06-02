@@ -195,49 +195,6 @@ impl VtableHandle {
 // FfierBytes --- zero-copy byte slice for C FFI (&[u8], &str, &Path)
 // ---------------------------------------------------------------------------
 
-/// Wraps a raw PushStr handle (`*mut FfierHandle<VtableHandle>`) and
-/// implements `fmt::Write` by calling the `push` vtable slot.
-///
-/// The vtable layout must be:
-/// - slot 0: `drop`
-/// - slot 1: `push(user_data: *mut c_void, s: FfierBytes) -> bool`
-pub struct PushStrHandle {
-    handle: *mut c_void,
-}
-
-impl PushStrHandle {
-    /// Wrap a raw PushStr handle.
-    ///
-    /// # Safety
-    /// `handle` must point to a valid `FfierHandle<VtableHandle>` whose
-    /// vtable has a `push` function at slot 1.
-    pub unsafe fn new(handle: *mut c_void) -> Self {
-        Self { handle }
-    }
-}
-
-impl core::fmt::Write for PushStrHandle {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        let vh = unsafe { &(*(self.handle as *const FfierHandle<VtableHandle>)).value };
-        // push is at slot 1, after drop (slot 0 = Option<fn(*mut c_void)>)
-        let push_offset = core::mem::size_of::<Option<unsafe extern "C" fn(*mut c_void)>>();
-        type PushFn = unsafe extern "C" fn(*mut c_void, FfierBytes) -> bool;
-        let push: Option<PushFn> = unsafe { vh.field_or_none(push_offset) };
-        if let Some(push) = push {
-            let bytes = FfierBytes {
-                data: s.as_ptr(),
-                len: s.len(),
-            };
-            unsafe { push(vh.user_data as *mut c_void, bytes) };
-        }
-        Ok(())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// FfierBytes --- zero-copy byte slice for C FFI (&[u8], &str, &Path)
-// ---------------------------------------------------------------------------
-
 /// `#[repr(C)]` byte slice passed across FFI. In C, each usage gets a
 /// typedef (`Str`, `Bytes`, `Path`) from the same underlying struct.
 #[derive(Clone, Copy)]
@@ -372,11 +329,3 @@ pub fn ffier_result_code(r: FfierResult) -> u32 {
 
 /// Success value.
 pub const FFIER_RESULT_SUCCESS: FfierResult = 0;
-
-/// Convert an error value into a `FfierResult`.
-///
-/// `type_tag` identifies the error enum (assigned in `library_definition!`).
-#[inline]
-pub fn ffier_result_from_err<E: FfiError>(e: &E, type_tag: u32) -> FfierResult {
-    ffier_result(type_tag, e.code())
-}
