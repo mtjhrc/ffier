@@ -707,7 +707,6 @@ mod tests {
     // Vtable / implementable
     // ================================================================
 
-    static LAST_NOTIFY_CODE: AtomicI32 = AtomicI32::new(-1);
     static DROP_CALLED: AtomicBool = AtomicBool::new(false);
 
     unsafe extern "C" fn test_process(_self_data: *mut core::ffi::c_void, input: i32) -> i32 {
@@ -721,10 +720,6 @@ mod tests {
         unsafe { ffier::FfierBytes::from_str("test_proc") }
     }
 
-    unsafe extern "C" fn test_on_notify(_self_data: *mut core::ffi::c_void, code: i32) {
-        LAST_NOTIFY_CODE.store(code, Ordering::SeqCst);
-    }
-
     unsafe extern "C" fn test_drop(_self_data: *mut core::ffi::c_void) {
         DROP_CALLED.store(true, Ordering::SeqCst);
     }
@@ -733,7 +728,6 @@ mod tests {
         drop: Some(test_drop),
         process: Some(test_process),
         name: Some(test_processor_name),
-        on_notify: Some(test_on_notify),
     };
 
     fn make_processor_handle(user_data: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
@@ -752,28 +746,14 @@ mod tests {
     fn vtable_dyn_dispatch_process() {
         unsafe {
             let p = ft_pipeline_new();
-            LAST_NOTIFY_CODE.store(-1, Ordering::SeqCst);
             let proc = make_processor_handle(ptr::null_mut());
             ft_pipeline_run(p, proc, 21);
-            assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 42);
             assert_eq!(ft_pipeline_result_count(p), 1);
             let mut last: i32 = -1;
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_pipeline_last_result(p, &mut last, &mut err as *mut *mut core::ffi::c_void);
             assert_eq!(r, 0);
             assert_eq!(last, 42);
-            ft_pipeline_destroy(p);
-        }
-    }
-
-    #[test]
-    fn vtable_supertrait_method() {
-        unsafe {
-            let p = ft_pipeline_new();
-            LAST_NOTIFY_CODE.store(-1, Ordering::SeqCst);
-            let proc = make_processor_handle(ptr::null_mut());
-            ft_pipeline_run(p, proc, 5);
-            assert_eq!(LAST_NOTIFY_CODE.load(Ordering::SeqCst), 10);
             ft_pipeline_destroy(p);
         }
     }

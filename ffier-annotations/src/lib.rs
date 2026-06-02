@@ -1267,7 +1267,6 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 // ===========================================================================
 
 struct ImplementableArgs {
-    supers: Vec<SupertraitBlock>,
     /// Reserved vtable slot indices (retired methods). These slots are padded
     /// in the vtable struct to keep the layout stable.
     reserved: Vec<usize>,
@@ -1278,14 +1277,8 @@ struct ImplementableArgs {
     bless: Option<String>,
 }
 
-struct SupertraitBlock {
-    trait_name: syn::Ident,
-    methods: Vec<syn::TraitItemFn>,
-}
-
 impl Parse for ImplementableArgs {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        let mut supers = Vec::new();
         let mut reserved = Vec::new();
         let mut foreign = false;
         let mut bless = None;
@@ -1296,24 +1289,6 @@ impl Parse for ImplementableArgs {
             if ident == "prefix" {
                 input.parse::<Token![=]>()?;
                 let _lit: LitStr = input.parse()?;
-            } else if ident == "supers" {
-                let content;
-                syn::parenthesized!(content in input);
-                while !content.is_empty() {
-                    let trait_name: syn::Ident = content.parse()?;
-                    let methods_content;
-                    syn::braced!(methods_content in content);
-                    let mut methods = Vec::new();
-                    while !methods_content.is_empty() {
-                        methods.push(methods_content.parse::<syn::TraitItemFn>()?);
-                    }
-                    supers.push(SupertraitBlock {
-                        trait_name,
-                        methods,
-                    });
-                    // optional comma between supertrait blocks
-                    let _ = content.parse::<Token![,]>();
-                }
             } else if ident == "reserved" {
                 let content;
                 syn::parenthesized!(content in input);
@@ -1331,14 +1306,13 @@ impl Parse for ImplementableArgs {
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
-                    "expected `prefix`, `supers`, `reserved`, `foreign`, or `bless`",
+                    "expected `prefix`, `reserved`, `foreign`, or `bless`",
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
 
         Ok(Self {
-            supers,
             reserved,
             foreign,
             bless,
@@ -1352,7 +1326,6 @@ impl Parse for ImplementableArgs {
 
 fn extract_vtable_methods(
     trait_item: &ItemTrait,
-    supers: &[SupertraitBlock],
     reserved: &[usize],
     ctx: &mut AliasContext,
 ) -> syn::Result<Vec<MethodInfo>> {
@@ -1383,34 +1356,6 @@ fn extract_vtable_methods(
             })?;
             m.index = index;
             methods.push(m);
-        }
-    }
-
-    // Supertrait methods are always required (no defaults — the supers(...)
-    // syntax only declares signatures, not default bodies).
-    for sup in supers {
-        for method in &sup.methods {
-            let mattrs = parse_ffier_method_attrs(&method.attrs)?;
-            if let Some(mut m) = parse_method_sig(
-                &method.sig,
-                &method.attrs,
-                ctx,
-                None,
-                false,
-                mattrs.raw_handle,
-            ) {
-                let index = mattrs.index.ok_or_else(|| {
-                    syn::Error::new_spanned(
-                        &method.sig.ident,
-                        format!(
-                            "supertrait vtable method `{}` is missing `#[ffier(index = N)]`",
-                            method.sig.ident,
-                        ),
-                    )
-                })?;
-                m.index = index;
-                methods.push(m);
-            }
         }
     }
 
@@ -1857,17 +1802,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
-    // Extract all methods (trait + supertraits).
-    // own_method_count tracks how many belong to this trait (before supers).
     let vtable_methods =
-        match extract_vtable_methods(&trait_item, &args.supers, &args.reserved, &mut ctx) {
+        match extract_vtable_methods(&trait_item, &args.reserved, &mut ctx) {
             Ok(v) => v,
             Err(e) => return e.to_compile_error().into(),
         };
-    // Count own methods (excluding supertrait methods which are appended
-    // by extract_vtable_methods after the trait's own methods).
-    let super_method_count: usize = args.supers.iter().map(|s| s.methods.len()).sum();
-    let own_method_count = vtable_methods.len() - super_method_count;
+    let own_method_count = vtable_methods.len();
     let bless_tokens = match &args.bless {
         Some(s) => quote::quote! { #s },
         None => quote::quote! { none },
@@ -1912,115 +1852,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `vtable_struct_ref` is the token stream referencing the vtable struct
     // (e.g. `PushStrVtable` for direct output, or `$crate::PushStrVtable`
     // for use inside a macro_rules! body that expands in another crate).
-    let vtable_call_body = |vm: &MethodInfo,
-                            sig: &syn::Signature,
-                            fallback: Option<proc_macro2::TokenStream>,
-                            _method_index: Option<usize>,
-                            vtable_struct_ref: &proc_macro2::TokenStream|
-     -> proc_macro2::TokenStream {
-        let name = &vm.name;
-        let name_str = name.to_string();
-        // Check if any param is impl Trait — vtable dispatch through C
-        // function pointers can't handle impl Trait params generically
-        // (the value might not be an FFI handle). If so, the vtable branch
-        // panics at runtime.
-        let has_impl_trait_params = vm.params.iter().any(|p| p.is_impl_trait());
-
-        let vtable_args: Vec<_> = vm
-            .params
-            .iter()
-            .map(|p| {
-                let id = &p.name;
-                if p.is_impl_trait() {
-                    // Placeholder — won't actually be reached due to the panic
-                    // guard below, but needed for the code to compile.
-                    quote! { core::ptr::null_mut() }
-                } else {
-                    // Use rust_type (elided lifetimes) for the conversion call,
-                    // not bridge_type ('static lifetimes). The actual value has
-                    // the caller's lifetime, not 'static.
-                    let rt = p.rust_type();
-                    quote! { <#rt as FfiType>::into_c(#id) }
-                }
-            })
-            .collect();
-        // Build the concrete fn pointer type for this vtable field
-        let param_bridge_types: Vec<_> = vm
-            .params
-            .iter()
-            .map(|p| {
-                if p.is_impl_trait() {
-                    // impl Trait → *mut c_void in the function pointer signature
-                    quote! { *mut core::ffi::c_void }
-                } else {
-                    let bt = p.bridge_type();
-                    quote! { <#bt as FfiType>::CRepr }
-                }
-            })
-            .collect();
-        let fn_ret = match vm.ret_bridge_type() {
-            None => quote! {},
-            Some(bt) => quote! { -> <#bt as FfiType>::CRepr },
-        };
-        let fn_ptr_type = quote! {
-            unsafe extern "C" fn(*mut core::ffi::c_void #(, #param_bridge_types)*) #fn_ret
-        };
-
-        let raw_call = quote! {
-            unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
-        };
-        let vtable_branch = if has_impl_trait_params {
-            // Methods with impl Trait params can't dispatch through C vtable
-            // function pointers — the generic param isn't necessarily an FFI
-            // handle. Panic if this path is ever reached at runtime.
-            let wrapper_str = wrapper_name.to_string();
-            quote! {
-                let _ = __f;
-                panic!(
-                    "{}: vtable dispatch for method `{}` with impl Trait params is not supported",
-                    #wrapper_str, #name_str,
-                )
-            }
-        } else {
-            match vm.ret_bridge_type() {
-                None => raw_call,
-                Some(bt) => quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } },
-            }
-        };
-        let none_branch = match &fallback {
-            Some(fb) => fb.clone(),
-            None => {
-                let wrapper_str = wrapper_name.to_string();
-                quote! {
-                    panic!(
-                        "{}: required vtable method `{}` not provided",
-                        #wrapper_str, #name_str,
-                    )
-                }
-            }
-        };
-        // No metadata check inside VtableFoo::method() — the metadata field
-        // lives outside the provenance of `&self`. The self-dispatch function
-        // reads metadata from the raw handle pointer (which has full provenance
-        // over the entire handle) and skips vtable dispatch if the metadata
-        // indicates a default-method dispatch skip.
-        let metadata_check = quote! {};
-        quote! {
-            #sig {
-                #metadata_check
-                let __field: Option<#fn_ptr_type> = unsafe {
-                    self.value.field_or_none(
-                        core::mem::offset_of!(#vtable_struct_ref, #name),
-                    )
-                };
-                match __field {
-                    Some(__f) => { #vtable_branch }
-                    None => { #none_branch }
-                }
-            }
-        }
-    };
-
     // --- Default method extraction ---
     // For methods with default bodies, extract the body into a free helper function
     // and rewrite the trait's default to call it. This allows the VtableXxx impl's
@@ -2171,37 +2002,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // These are used inside the @reexport macro arm. The vtable struct is
     // a sibling (also in @reexport), so bare names resolve correctly.
     let vtable_struct_ref = quote! { #vtable_struct_name };
-    // Supertrait impls — all required (supers don't have defaults)
-    let super_impls: Vec<_> = args
-        .supers
-        .iter()
-        .map(|sup| {
-            let tn = &sup.trait_name;
-            let method_impls: Vec<_> = sup
-                .methods
-                .iter()
-                .filter_map(|method| {
-                    let name = &method.sig.ident;
-                    let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-                    Some(vtable_call_body(
-                        vm,
-                        &method.sig,
-                        None,
-                        None,
-                        &vtable_struct_ref,
-                    ))
-                })
-                .collect();
-
-            // Use $crate:: for supertrait path so it resolves in the defining crate.
-            quote! {
-                impl $crate::#tn for #wrapper_name {
-                    #(#method_impls)*
-                }
-            }
-        })
-        .collect();
-
     // --- Compute max vtable slot for metadata ---
     // The highest slot index that needs to be padded in the vtable struct.
     // This accounts for both method indices and reserved (retired) slots.
@@ -2263,8 +2063,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let boxdyn_impl = if is_foreign {
         quote! {}
     } else {
-        let has_supertraits = !args.supers.is_empty()
-            || trait_item
+        let has_supertraits = trait_item
                 .supertraits
                 .iter()
                 .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
@@ -2333,7 +2132,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     methods = [#(#vtable_method_meta),*];
                     method_sigs = [#(#vtable_method_sigs),*];
                     default_helpers = [#(#default_helper_tokens),*];
-                    super_impl_tokens = (#(#super_impls)*);
                 }
 
                 #[repr(C)]
@@ -3392,7 +3190,7 @@ impl Parse for LibraryInput {
 /// reserved = [N, N, ...];
 /// methods = [ {method_meta}, ... ];
 /// default_helpers = [ method_name => (path tokens), ... ];
-/// super_impl_tokens = (baked tokens for supertrait impls);
+
 /// ```
 struct GenerateVtableInput {
     vtable_struct: syn::Ident,
@@ -3407,7 +3205,6 @@ struct GenerateVtableInput {
     methods: Vec<proc_macro2::TokenStream>,
     method_sigs: Vec<syn::Signature>,
     default_helpers: Vec<(syn::Ident, proc_macro2::TokenStream)>,
-    super_impl_tokens: proc_macro2::TokenStream,
 }
 
 impl Parse for GenerateVtableInput {
@@ -3426,7 +3223,7 @@ impl Parse for GenerateVtableInput {
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
         let mut method_sigs: Vec<syn::Signature> = Vec::new();
         let mut default_helpers = Vec::new();
-        let mut super_impl_tokens = quote! {};
+
 
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
@@ -3529,12 +3326,7 @@ impl Parse for GenerateVtableInput {
                     }
                     input.parse::<Token![;]>()?;
                 }
-                "super_impl_tokens" => {
-                    let content;
-                    syn::parenthesized!(content in input);
-                    super_impl_tokens = content.parse::<proc_macro2::TokenStream>()?;
-                    input.parse::<Token![;]>()?;
-                }
+
                 other => {
                     return Err(syn::Error::new(key.span(), format!("unknown key `{other}` in __generate_vtable")));
                 }
@@ -3554,7 +3346,6 @@ impl Parse for GenerateVtableInput {
             methods,
             method_sigs,
             default_helpers,
-            super_impl_tokens,
         })
     }
 }
@@ -3678,7 +3469,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
     // --- Trait impl methods ---
     // Only process own methods (not supertrait methods) for the trait impl.
-    // Supertrait impls are passed through as baked tokens via super_impl_tokens.
+
     // method_sigs are parallel to own non-raw methods (same filtering as @reexport).
     let own_methods = &parsed_methods[..inp.own_method_count];
     let own_non_raw: Vec<_> = own_methods.iter().filter(|m| !m.raw_handle()).collect();
@@ -3877,8 +3668,6 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let super_impl_tokens = &inp.super_impl_tokens;
-
     let output = quote! {
         #[repr(C)]
         pub struct #vtable_struct {
@@ -3893,7 +3682,6 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 #(#own_method_impls)*
             }
 
-            #super_impl_tokens
         };
     };
 

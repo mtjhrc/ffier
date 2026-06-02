@@ -466,20 +466,11 @@ impl Default for ViewFactory {
 }
 
 // ---------------------------------------------------------------------------
-// Implementable trait: Processor (with supertrait Observer)
+// Implementable trait: Processor
 // ---------------------------------------------------------------------------
 
-pub trait Observer {
-    fn on_notify(&self, code: i32);
-}
-
-#[ffier::implementable(
-    supers(Observer {
-        #[ffier(index = 2)]
-        fn on_notify(&self, code: i32);
-    })
-)]
-pub trait Processor: Observer {
+#[ffier::implementable]
+pub trait Processor {
     #[ffier(index = 0)]
     fn process(&self, input: i32) -> i32;
     #[ffier(index = 1)]
@@ -506,7 +497,6 @@ impl Pipeline {
     /// Run a processor on the given input.
     pub fn run(&mut self, proc: impl Processor, input: i32) {
         let result = proc.process(input);
-        proc.on_notify(result);
         self.results.push(result);
     }
 
