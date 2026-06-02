@@ -24,6 +24,12 @@ mod tests {
         fn value(&self) -> i32 {
             self.weight
         }
+        fn try_count(&self, input: i32) -> Result<i32, TestError> {
+            Ok(self.weight + input)
+        }
+        fn count_tags(&self, tags: &[&str]) -> i32 {
+            tags.len() as i32
+        }
     }
 
     #[test]

@@ -346,7 +346,6 @@ typedef struct {
     void (*drop)(void* self_data);
     int32_t (*process)(void* self_data, int32_t input);
     FtStr (*name)(void* self_data);
-    void (*on_notify)(void* self_data, int32_t code);
 } FtProcessorVtable;
 
 /* Processor (dispatch) ---------------------------------------------- */
@@ -363,12 +362,16 @@ typedef struct {
     void (*drop)(void* self_data);
     int32_t (*value)(void* self_data);
     FtStr (*label)(void* self_data);
+    FtResult (*try_count)(void* self_data, int32_t input, int32_t* result, FtError* err_out);
+    int32_t (*count_tags)(void* self_data, const FtStr* tags, size_t tags_len);
 } FtFruitVtable;
 
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(FtFruit handle);
 FtStr ft_fruit_label(FtFruit handle);
+FtResult ft_fruit_try_count(FtFruit handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_fruit_count_tags(FtFruit handle, const FtStr* tags, size_t tags_len);
 void ft_fruit_destroy(FtFruit handle);
 
 /* FtWeighableVtable ------------------------------------------------- */
@@ -417,13 +420,29 @@ void ft_error_message(FtError handle, FtPushStr writer);
 uint64_t ft_error_result(FtError handle);
 void ft_error_destroy(FtError handle);
 int32_t ft_apple_value(FtApple handle);
+FtResult ft_apple_try_count(FtApple handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_apple_count_tags(FtApple handle, const FtStr* tags, size_t tags_len);
 int32_t ft_orange_value(FtOrange handle);
+FtResult ft_orange_try_count(FtOrange handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_orange_count_tags(FtOrange handle, const FtStr* tags, size_t tags_len);
 int32_t ft_banana_value(FtBanana handle);
+FtResult ft_banana_try_count(FtBanana handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_banana_count_tags(FtBanana handle, const FtStr* tags, size_t tags_len);
 int32_t ft_mango_value(FtMango handle);
+FtResult ft_mango_try_count(FtMango handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_mango_count_tags(FtMango handle, const FtStr* tags, size_t tags_len);
 int32_t ft_peach_value(FtPeach handle);
+FtResult ft_peach_try_count(FtPeach handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_peach_count_tags(FtPeach handle, const FtStr* tags, size_t tags_len);
 int32_t ft_plum_value(FtPlum handle);
+FtResult ft_plum_try_count(FtPlum handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_plum_count_tags(FtPlum handle, const FtStr* tags, size_t tags_len);
 int32_t ft_grape_value(FtGrape handle);
+FtResult ft_grape_try_count(FtGrape handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_grape_count_tags(FtGrape handle, const FtStr* tags, size_t tags_len);
 int32_t ft_lemon_value(FtLemon handle);
+FtResult ft_lemon_try_count(FtLemon handle, int32_t input, int32_t* result, FtError* err_out);
+int32_t ft_lemon_count_tags(FtLemon handle, const FtStr* tags, size_t tags_len);
 FtStr ft_sprocket_label(FtSprocket handle);
 FtStr ft_view_snap_description(FtView handle);
 int32_t ft_view_snap_source_count(FtView handle);

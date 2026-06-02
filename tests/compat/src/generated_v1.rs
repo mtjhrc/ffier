@@ -2090,7 +2090,6 @@ impl Drop for Sprocket {
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
     fn name(&self) -> &str;
-    fn on_notify(&self, code: i32);
     #[doc(hidden)]
     fn __ffier_vtable() -> &'static ProcessorVtable
     where
@@ -2121,17 +2120,6 @@ pub trait Processor {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.name();
                     <&str as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            on_notify: Some({
-                unsafe extern "C" fn __trampoline<__T: Processor>(
-                    __ud: *mut core::ffi::c_void,
-                    code: <i32 as FfiType>::CRepr,
-                ) {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.on_notify(unsafe { <i32 as FfiType>::from_c(code) });
-                    __result
                 }
                 __trampoline::<Self>
             }),
@@ -2170,7 +2158,6 @@ pub struct ProcessorVtable {
     >,
     pub name:
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
-    pub on_notify: Option<unsafe extern "C" fn(*mut core::ffi::c_void, <i32 as FfiType>::CRepr)>,
 }
 
 pub struct VtableProcessor(*mut core::ffi::c_void);
@@ -2212,6 +2199,8 @@ pub trait Fruit {
         };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
+    fn try_count(&self, input: i32) -> Result<i32, TestError>;
+    fn count_tags(&self, tags: &[&str]) -> i32;
     #[doc(hidden)]
     fn __ffier_vtable() -> &'static FruitVtable
     where
@@ -2241,6 +2230,47 @@ pub trait Fruit {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __result = __val.label();
                     <&str as FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            }),
+            try_count: Some({
+                unsafe extern "C" fn __trampoline<__T: Fruit>(
+                    __ud: *mut core::ffi::c_void,
+                    input: <i32 as FfiType>::CRepr,
+                    result: *mut <i32 as FfiType>::CRepr,
+                    err_out: *mut *mut core::ffi::c_void,
+                ) -> ffier::FfierResult {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.try_count(unsafe { <i32 as FfiType>::from_c(input) });
+                    match __result {
+                        Ok(__ok) => {
+                            unsafe { result.write(<i32 as FfiType>::into_c(__ok)) };
+                            0 // FFIER_RESULT_SUCCESS
+                        }
+                        Err(__e) => {
+                            unsafe {
+                                *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void
+                            };
+                            ffier::ffier_result(1, 1)
+                        }
+                    }
+                }
+                __trampoline::<Self>
+            }),
+            count_tags: Some({
+                unsafe extern "C" fn __trampoline<__T: Fruit>(
+                    __ud: *mut core::ffi::c_void,
+                    tags: *const ffier::FfierBytes,
+                    tags_len: usize,
+                ) -> <i32 as FfiType>::CRepr {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __slice_tags: Vec<&str> =
+                        unsafe { core::slice::from_raw_parts(tags, tags_len) }
+                            .iter()
+                            .map(|b| unsafe { b.as_str_unchecked() })
+                            .collect();
+                    let __result = __val.count_tags(&__slice_tags);
+                    <i32 as FfiType>::into_c(__result)
                 }
                 __trampoline::<Self>
             }),
@@ -2274,6 +2304,21 @@ pub struct FruitVtable {
     pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
     pub label:
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
+    pub try_count: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <i32 as FfiType>::CRepr,
+            *mut <i32 as FfiType>::CRepr,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult,
+    >,
+    pub count_tags: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *const ffier::FfierBytes,
+            usize,
+        ) -> <i32 as FfiType>::CRepr,
+    >,
 }
 
 unsafe extern "C" {
@@ -2446,11 +2491,47 @@ unsafe extern "C" {
 
 unsafe extern "C" {
     pub fn ft_apple_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_apple_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_apple_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Apple {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_apple_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_apple_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_apple_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2465,11 +2546,47 @@ impl Fruit for Apple {
 
 unsafe extern "C" {
     pub fn ft_orange_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_orange_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_orange_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_orange_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_orange_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_orange_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2484,11 +2601,47 @@ impl Fruit for Orange {
 
 unsafe extern "C" {
     pub fn ft_banana_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_banana_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_banana_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Banana {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_banana_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_banana_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_banana_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2503,11 +2656,47 @@ impl Fruit for Banana {
 
 unsafe extern "C" {
     pub fn ft_mango_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_mango_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_mango_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Mango {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_mango_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_mango_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_mango_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2522,11 +2711,47 @@ impl Fruit for Mango {
 
 unsafe extern "C" {
     pub fn ft_peach_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_peach_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_peach_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Peach {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_peach_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_peach_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_peach_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2541,11 +2766,47 @@ impl Fruit for Peach {
 
 unsafe extern "C" {
     pub fn ft_plum_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_plum_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_plum_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Plum {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_plum_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_plum_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_plum_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2560,11 +2821,47 @@ impl Fruit for Plum {
 
 unsafe extern "C" {
     pub fn ft_grape_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_grape_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_grape_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Grape {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_grape_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_grape_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_grape_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {
@@ -2579,11 +2876,47 @@ impl Fruit for Grape {
 
 unsafe extern "C" {
     pub fn ft_lemon_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_lemon_try_count(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_lemon_count_tags(
+        handle: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 impl Fruit for Lemon {
     fn value(&self) -> i32 {
         let __raw = unsafe { ft_lemon_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_lemon_try_count(
+                self.0,
+                <i32 as FfiType>::into_c(input),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn count_tags(&self, tags: &[&str]) -> i32 {
+        let __ffi_tags: Vec<ffier::FfierBytes> = tags
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw = unsafe { ft_lemon_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     fn label(&self) -> &str {

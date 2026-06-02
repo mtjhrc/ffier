@@ -513,7 +513,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-                                                        // After error with by-value self, handle is consumed
+            // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -572,15 +572,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]
@@ -778,6 +784,23 @@ mod tests {
         self_data as i32
     }
 
+    unsafe extern "C" fn fruit_count_tags(
+        _self_data: *mut core::ffi::c_void,
+        tags: *const ffier::FfierBytes,
+        tags_len: usize,
+    ) -> i32 {
+        // Just return the count of tags passed
+        tags_len as i32
+    }
+
+    static FRUIT_VT_WITH_COUNT_TAGS: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
+        drop: Some(fruit_drop),
+        value: Some(fruit_value),
+        label: None,
+        try_count: None,
+        count_tags: Some(fruit_count_tags),
+    };
+
     unsafe extern "C" fn fruit_drop(_self_data: *mut core::ffi::c_void) {}
 
     // Static vtable variants for fruit tests — vtable must outlive handles.
@@ -786,6 +809,7 @@ mod tests {
         value: Some(fruit_value),
         label: None,
         try_count: None,
+        count_tags: None,
     };
 
     static FRUIT_VT_VALUE_ONLY: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
@@ -793,6 +817,7 @@ mod tests {
         value: Some(fruit_value),
         label: None,
         try_count: None,
+        count_tags: None,
     };
 
     fn make_fruit_handle(
@@ -961,6 +986,39 @@ mod tests {
     }
 
     #[test]
+    fn self_dispatch_count_tags_on_apple() {
+        unsafe {
+            let apple = ft_apple_new(10);
+            let tags = [
+                ffier::FfierBytes::from_str("a"),
+                ffier::FfierBytes::from_str("b"),
+                ffier::FfierBytes::from_str("c"),
+            ];
+            // Apple::count_tags returns tags.len() + self.weight = 3 + 10 = 13
+            assert_eq!(ft_fruit_count_tags(apple, tags.as_ptr(), tags.len()), 13);
+            ft_apple_destroy(apple);
+        }
+    }
+
+    #[test]
+    fn vtable_count_tags() {
+        unsafe {
+            let handle = make_fruit_handle(
+                42 as *mut core::ffi::c_void,
+                &FRUIT_VT_WITH_COUNT_TAGS,
+                core::mem::size_of_val(&FRUIT_VT_WITH_COUNT_TAGS),
+            );
+            let tags = [
+                ffier::FfierBytes::from_str("x"),
+                ffier::FfierBytes::from_str("y"),
+            ];
+            // VtableFruit dispatches through C fn ptr, which returns tags_len = 2
+            assert_eq!(ft_fruit_count_tags(handle, tags.as_ptr(), tags.len()), 2);
+            ft_fruit_destroy(handle);
+        }
+    }
+
+    #[test]
     fn self_dispatch_fruit_destroy_on_apple() {
         unsafe {
             let apple = ft_apple_new(1);
@@ -1022,6 +1080,7 @@ mod tests {
         value: Some(fruit_value),
         label: Some(custom_label),
         try_count: None,
+        count_tags: None,
     };
 
     #[test]

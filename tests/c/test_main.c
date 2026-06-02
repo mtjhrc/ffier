@@ -446,13 +446,6 @@ static FtStr test_processor_name(void* self_data) {
     return s;
 }
 
-static int g_last_notify_code = -1;
-
-static void test_on_notify(void* self_data, int32_t code) {
-    (void)self_data;
-    g_last_notify_code = code;
-}
-
 static int g_drop_called = 0;
 
 static void test_drop(void* self_data) {
@@ -464,7 +457,6 @@ static const FtProcessorVtable g_test_vtable = {
     .drop = test_drop,
     .process = test_process,
     .name = test_processor_name,
-    .on_notify = test_on_notify,
 };
 
 /* Construct a heap-allocated processor handle (same layout as FfierHandle<VtableHandle>).
@@ -494,28 +486,13 @@ void vtable_constructor(void) {
 
 void vtable_dyn_dispatch_process(void) {
     FtPipeline p = ft_pipeline_new();
-    g_last_notify_code = -1;
     void* proc = make_processor_handle(NULL);
     ft_pipeline_run(p, proc, 21);
-    /* process(21) = 42, then on_notify(42) */
-    assert(g_last_notify_code == 42);
     assert(ft_pipeline_result_count(p) == 1);
     int32_t last = -1;
     FtResult r = ft_pipeline_last_result(p, &last, NULL);
     assert(r == FT_RESULT_SUCCESS);
     assert(last == 42);
-    ft_pipeline_destroy(p);
-}
-
-void vtable_supertrait_method(void) {
-    /* on_notify is tested via vtable_dyn_dispatch_process above.
-     * Here verify it independently through a separate invocation. */
-    FtPipeline p = ft_pipeline_new();
-    g_last_notify_code = -1;
-    void* proc = make_processor_handle(NULL);
-    ft_pipeline_run(p, proc, 5);
-    /* process(5) = 10, on_notify(10) */
-    assert(g_last_notify_code == 10);
     ft_pipeline_destroy(p);
 }
 
@@ -674,7 +651,7 @@ int main(void) {
 
     printf("\n[vtable/implementable]\n");
     RUN_TEST(vtable_dyn_dispatch_process);
-    RUN_TEST(vtable_supertrait_method);
+
     RUN_TEST(vtable_drop_callback);
 
     printf("\n[lifetime types]\n");
