@@ -1309,14 +1309,7 @@ fn emit_vtable_struct(
         if let Some(m) = method_by_index.get(&slot) {
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
             push_extern_param_types(&m.params, &mut params);
-            let ret = match &m.ret {
-                Return::Void => String::new(),
-                Return::Value(tr) => {
-                    let ty = tr.to_rust_type_static();
-                    format!(" -> <{ty} as FfiType>::CRepr")
-                }
-                Return::Result { .. } => " -> ffier::FfierResult".to_string(),
-            };
+            let ret = push_return_and_out_param_types(&m.ret, &mut params);
             let params_str = params.join(", ");
             writeln!(
                 out,
@@ -1337,7 +1330,7 @@ fn emit_vtable_struct(
     writeln!(out).unwrap();
 }
 
-fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Library) {
+fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let vtable_name = &tr.vtable_struct_name;
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
@@ -1366,19 +1359,11 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
             let is_mut = m.receiver == Receiver::Mut;
             let borrow = if is_mut { "&mut *" } else { "&*" };
 
-            // Build trampoline params
+            // Build trampoline params — same convention as vtable struct field
             let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
             push_extern_params(&m.params, &mut tramp_params);
+            let ret = push_return_and_out_params(&m.ret, &mut tramp_params, false);
             let tramp_params_str = tramp_params.join(", ");
-
-            let ret = match &m.ret {
-                Return::Void => String::new(),
-                Return::Value(tr) => {
-                    let ty = tr.to_rust_type_static();
-                    format!(" -> <{ty} as FfiType>::CRepr")
-                }
-                Return::Result { .. } => " -> ffier::FfierResult".to_string(),
-            };
 
             writeln!(out, "            {}: Some({{", m.name).unwrap();
             writeln!(
@@ -1431,7 +1416,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
 
             match &m.ret {
                 Return::Void => {
-                    writeln!(out, "                    __result").unwrap();
+                    // Nothing to convert
                 }
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type();
@@ -1441,8 +1426,68 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
                     )
                     .unwrap();
                 }
-                _ => {
-                    writeln!(out, "                    __result").unwrap();
+                Return::Result {
+                    ok,
+                    c_convention,
+                    err_type,
+                } => {
+                    use ffier_schema::CResultConvention;
+                    let err_type_tag = lib
+                        .type_entry(err_type)
+                        .and_then(|e| e.type_tag)
+                        .unwrap_or(0);
+                    writeln!(out, "                    match __result {{").unwrap();
+                    match c_convention {
+                        CResultConvention::HandleOrNull => {
+                            match ok {
+                                Some(ok_tr) => {
+                                    let ty = ok_tr.to_rust_type();
+                                    writeln!(out, "                        Ok(__ok) => <{ty} as FfiType>::into_c(__ok),").unwrap();
+                                }
+                                None => {
+                                    writeln!(
+                                        out,
+                                        "                        Ok(()) => core::ptr::null_mut(),"
+                                    )
+                                    .unwrap();
+                                }
+                            }
+                            writeln!(out, "                        Err(__e) => {{").unwrap();
+                            writeln!(out, "                            unsafe {{ *err_out = <_ as FfiType>::into_c(__e) }};").unwrap();
+                            writeln!(out, "                            core::ptr::null_mut()")
+                                .unwrap();
+                            writeln!(out, "                        }}").unwrap();
+                        }
+                        CResultConvention::OutParam => {
+                            match ok {
+                                Some(ok_tr) => {
+                                    let ty = ok_tr.to_rust_type();
+                                    writeln!(out, "                        Ok(__ok) => {{")
+                                        .unwrap();
+                                    writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__ok)) }};").unwrap();
+                                    writeln!(
+                                        out,
+                                        "                            0 // FFIER_RESULT_SUCCESS"
+                                    )
+                                    .unwrap();
+                                    writeln!(out, "                        }}").unwrap();
+                                }
+                                None => {
+                                    writeln!(out, "                        Ok(()) => 0, // FFIER_RESULT_SUCCESS").unwrap();
+                                }
+                            }
+                            writeln!(out, "                        Err(__e) => {{").unwrap();
+                            writeln!(
+                                out,
+                                "                            let __code = FfiError::code(&__e);"
+                            )
+                            .unwrap();
+                            writeln!(out, "                            unsafe {{ *err_out = <_ as FfiType>::into_c(__e) }};").unwrap();
+                            writeln!(out, "                            ffier::ffier_result({err_type_tag}, __code)").unwrap();
+                            writeln!(out, "                        }}").unwrap();
+                        }
+                    }
+                    writeln!(out, "                    }}").unwrap();
                 }
             }
 
@@ -1684,6 +1729,35 @@ fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
                 out.push(format!("{}: *mut core::ffi::c_void", p.name));
             }
         }
+    }
+}
+
+/// Append return type-only strings (no param names) for vtable fn pointer
+/// fields. Companion to `push_extern_param_types`.
+fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> String {
+    use ffier_schema::CResultConvention;
+    match ret {
+        Return::Void => String::new(),
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type_static();
+            format!(" -> <{ty} as FfiType>::CRepr")
+        }
+        Return::Result {
+            ok, c_convention, ..
+        } => match c_convention {
+            CResultConvention::HandleOrNull => {
+                out.push("*mut *mut core::ffi::c_void".to_string());
+                " -> *mut core::ffi::c_void".to_string()
+            }
+            CResultConvention::OutParam => {
+                if let Some(ok_tr) = ok {
+                    let ty = ok_tr.to_rust_type_static();
+                    out.push(format!("*mut <{ty} as FfiType>::CRepr"));
+                }
+                out.push("*mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
+        },
     }
 }
 

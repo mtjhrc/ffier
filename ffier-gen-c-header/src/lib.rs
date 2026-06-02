@@ -294,7 +294,8 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
             let mut params = vec!["void* self_data".to_string()];
             format_c_params(&m.params, lib, &mut params);
 
-            let ret_type = format_return_type_simple(&m.ret, lib);
+            let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
+            params.extend(extra_params);
 
             let params_str = params.join(", ");
             out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
@@ -499,15 +500,6 @@ fn format_dispatch_declaration(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Simple C return type — used for vtable function pointer fields.
-fn format_return_type_simple(ret: &Return, lib: &Library) -> String {
-    match ret {
-        Return::Void => "void".to_string(),
-        Return::Value(type_ref) => lib.c_type_of(&type_ref.type_name).to_string(),
-        Return::Result { .. } => blessed_c_type(lib, ffier_schema::Blessing::Result),
-    }
-}
 
 /// Compute the C return type and any extra out-parameters for a method.
 /// Returns `(c_return_type, extra_params_to_append)`.
