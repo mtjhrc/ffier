@@ -13,13 +13,12 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    MethodContext, ParamType, Receiver, Return, TraitImpl, TypeKind,
+    MethodContext, Param, ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 
 /// Generate a C header string from a library schema.
 pub fn generate(lib: &Library, guard: &str) -> String {
     let mut out = String::new();
-    let type_pfx = snake_to_pascal(&lib.prefix);
     let upper_pfx = format!("{}_", lib.prefix.to_ascii_uppercase());
     let fn_pfx = format!("{}_", lib.prefix);
 
@@ -42,7 +41,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     }
 
     // Trait typedefs with implementor lists
-    emit_trait_typedefs(&mut out, lib, &type_pfx);
+    emit_trait_typedefs(&mut out, lib);
     out.push('\n');
 
     // Shared types
@@ -65,13 +64,13 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Type sections (exportable methods + destroy)
     for ty in &lib.exported_types {
-        emit_type_section(&mut out, ty, &type_pfx, lib);
+        emit_type_section(&mut out, ty, lib);
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
         emit_vtable_section(&mut out, tr, lib);
-        emit_dispatch_section(&mut out, tr, &type_pfx, lib);
+        emit_dispatch_section(&mut out, tr, lib);
     }
 
     // Trait impl bridge functions
@@ -81,7 +80,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Free functions
     if !lib.free_functions.is_empty() {
-        emit_free_functions(&mut out, &lib.free_functions, &type_pfx, lib);
+        emit_free_functions(&mut out, &lib.free_functions, lib);
     }
 
     // Utility functions
@@ -224,7 +223,7 @@ fn emit_error_section(out: &mut String, err: &ErrorType, lib: &Library) {
 // Trait typedefs with implementor lists
 // ---------------------------------------------------------------------------
 
-fn emit_trait_typedefs(out: &mut String, lib: &Library, type_pfx: &str) {
+fn emit_trait_typedefs(out: &mut String, lib: &Library) {
     // Build a map: trait_name → vec of implementor C names
     let mut trait_implementors: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
@@ -293,23 +292,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
         if let Some(m) = method_by_index.get(&slot) {
             // Build the function pointer signature
             let mut params = vec!["void* self_data".to_string()];
-            for p in &m.params {
-                match &p.param_type {
-                    ParamType::Regular(type_ref) => {
-                        let c_type = lib.c_type_of(&type_ref.type_name);
-                        params.push(format!("{} {}", c_type, p.name));
-                    }
-                    ParamType::Slice { c_params, .. } => {
-                        for cp in c_params {
-                            params.push(format!("{} {}", cp.c_type, cp.name));
-                        }
-                    }
-                    ParamType::ImplTrait { trait_name, .. } => {
-                        let c_type = lib.c_type_of(trait_name);
-                        params.push(format!("{} {}", c_type, p.name));
-                    }
-                }
-            }
+            format_c_params(&m.params, lib, &mut params);
 
             let ret_type = format_return_type_simple(&m.ret, lib);
 
@@ -330,7 +313,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_type_section(out: &mut String, ty: &ExportedType, type_pfx: &str, lib: &Library) {
+fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library) {
     emit_section_header(out, &ty.name);
 
     let c_name = lib.c_type_of(&ty.name);
@@ -340,7 +323,7 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, type_pfx: &str, lib: &
             continue;
         };
         emit_doc_comment(out, &m.doc);
-        let decl = format_c_declaration(ffi_name, c_name, m, ty.is_builder_type, type_pfx, lib);
+        let decl = format_c_declaration(ffi_name, c_name, m, ty.is_builder_type, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -363,8 +346,7 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let type_pfx = snake_to_pascal(&lib.prefix);
-        let decl = format_trait_method_declaration(ffi_name, &struct_c_name, m, &type_pfx, lib);
+        let decl = format_dispatch_declaration(ffi_name, &struct_c_name, m, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -374,7 +356,7 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
 // Self-dispatch functions for implementable traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &str, lib: &Library) {
+fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     let handle_c_name = lib.c_type_of(&tr.name);
@@ -385,7 +367,7 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &s
             continue;
         };
         emit_doc_comment(out, &m.doc);
-        let decl = format_trait_method_declaration(ffi_name, handle_c_name, m, type_pfx, lib);
+        let decl = format_dispatch_declaration(ffi_name, handle_c_name, m, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -398,42 +380,17 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, type_pfx: &s
 }
 
 // ---------------------------------------------------------------------------
-// Error handle functions
-// ---------------------------------------------------------------------------
-
-// ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
 
-fn emit_free_functions(
-    out: &mut String,
-    functions: &[FreeFunction],
-    type_pfx: &str,
-    lib: &Library,
-) {
+fn emit_free_functions(out: &mut String, functions: &[FreeFunction], lib: &Library) {
     emit_section_header(out, "Free functions");
 
     for f in functions {
         emit_doc_comment(out, &f.doc);
 
         let mut params: Vec<String> = Vec::new();
-        for p in &f.params {
-            match &p.param_type {
-                ParamType::Regular(type_ref) => {
-                    let c_type = lib.c_type_of(&type_ref.type_name);
-                    params.push(format!("{} {}", c_type, p.name));
-                }
-                ParamType::Slice { c_params: _, .. } => {
-                    let str_c = lib.c_type_of("str");
-                    params.push(format!("const {str_c}* {}", p.name));
-                    params.push(format!("size_t {}_len", p.name));
-                }
-                ParamType::ImplTrait { trait_name, .. } => {
-                    let c_type = lib.c_type_of(trait_name);
-                    params.push(format!("{} {}", c_type, p.name));
-                }
-            }
-        }
+        format_c_params(&f.params, lib, &mut params);
 
         let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
         params.extend(extra_params);
@@ -461,15 +418,41 @@ fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library) {
 }
 
 // ---------------------------------------------------------------------------
+// Param formatting (shared across all declaration types)
+// ---------------------------------------------------------------------------
+
+/// Append C parameter strings for a list of schema params.
+/// Uses `c_params` from the schema for Slice types (no guessing).
+fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
+    for p in params {
+        match &p.param_type {
+            ParamType::Regular(type_ref) => {
+                let c_type = lib.c_type_of(&type_ref.type_name);
+                out.push(format!("{} {}", c_type, p.name));
+            }
+            ParamType::Slice { c_params, .. } => {
+                for cp in c_params {
+                    out.push(format!("{} {}", cp.c_type, cp.name));
+                }
+            }
+            ParamType::ImplTrait { trait_name, .. } => {
+                let c_type = lib.c_type_of(trait_name);
+                out.push(format!("{} {}", c_type, p.name));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Declaration formatting
 // ---------------------------------------------------------------------------
 
+/// Format a C function declaration for an exportable method.
 fn format_c_declaration(
     ffi_name: &str,
     handle_c_name: &str,
     m: &Method,
     is_builder_type: bool,
-    type_pfx: &str,
     lib: &Library,
 ) -> String {
     let mut params: Vec<String> = Vec::new();
@@ -478,8 +461,6 @@ fn format_c_declaration(
     match m.receiver {
         Receiver::None => {}
         Receiver::Value if is_builder_type => {
-            // By-value self on builder type: pointer-to-handle so the bridge
-            // can swap the handle after consuming the old value.
             params.push(format!("{handle_c_name}* handle"));
         }
         Receiver::Ref | Receiver::Mut | Receiver::Value => {
@@ -487,24 +468,7 @@ fn format_c_declaration(
         }
     }
 
-    // Regular params
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(type_ref) => {
-                let c_type = lib.c_type_of(&type_ref.type_name);
-                params.push(format!("{} {}", c_type, p.name));
-            }
-            ParamType::Slice { c_params: _, .. } => {
-                let str_c = lib.c_type_of("str");
-                params.push(format!("const {str_c}* {}", p.name));
-                params.push(format!("size_t {}_len", p.name));
-            }
-            ParamType::ImplTrait { trait_name, .. } => {
-                let c_type = lib.c_type_of(trait_name);
-                params.push(format!("{} {}", c_type, p.name));
-            }
-        }
-    }
+    format_c_params(&m.params, lib, &mut params);
 
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
@@ -514,32 +478,15 @@ fn format_c_declaration(
     format!("{ret_type} {ffi_name}({params_str});")
 }
 
-fn format_trait_method_declaration(
+/// Format a C function declaration for a trait dispatch or trait impl method.
+fn format_dispatch_declaration(
     ffi_name: &str,
     handle_c_name: &str,
     m: &Method,
-    type_pfx: &str,
     lib: &Library,
 ) -> String {
     let mut params = vec![format!("{handle_c_name} handle")];
-
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(type_ref) => {
-                let c_type = lib.c_type_of(&type_ref.type_name);
-                params.push(format!("{} {}", c_type, p.name));
-            }
-            ParamType::Slice { c_params: _, .. } => {
-                let str_c = lib.c_type_of("str");
-                params.push(format!("const {str_c}* {}", p.name));
-                params.push(format!("size_t {}_len", p.name));
-            }
-            ParamType::ImplTrait { trait_name, .. } => {
-                let c_type = lib.c_type_of(trait_name);
-                params.push(format!("{} {}", c_type, p.name));
-            }
-        }
-    }
+    format_c_params(&m.params, lib, &mut params);
 
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
@@ -642,16 +589,4 @@ fn blessed_c_type(lib: &Library, tag: ffier_schema::Blessing) -> String {
 fn try_blessed_c_type(lib: &Library, tag: ffier_schema::Blessing) -> Option<String> {
     lib.blessed(tag)
         .map(|(name, _)| lib.c_type_of(name).to_string())
-}
-
-fn snake_to_pascal(s: &str) -> String {
-    s.split('_')
-        .map(|part| {
-            let mut chars = part.chars();
-            match chars.next() {
-                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
 }
