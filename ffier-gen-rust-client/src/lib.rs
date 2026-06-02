@@ -190,18 +190,9 @@ pub fn generate(lib: &Library) -> String {
         emit_error(&mut out, err, lib);
     }
 
-    // Build handle type set (for Result<Handle, E> detection)
-    let vtable_names: Vec<String> = lib.traits.iter().map(|t| t.wrapper_name.clone()).collect();
-    let handle_types: HashSet<&str> = lib
-        .exported_types
-        .iter()
-        .map(|t| t.name.as_str())
-        .chain(vtable_names.iter().map(|s| s.as_str()))
-        .collect();
-
     // 2. Exported types
     for ty in &lib.exported_types {
-        emit_exported_type(&mut out, ty, lib, &handle_types);
+        emit_exported_type(&mut out, ty, lib);
     }
 
     // 3. Implementable traits
@@ -235,33 +226,29 @@ pub fn generate(lib: &Library) -> String {
             // a trait definition (it would collide with the error enum).
             // Only emit extern declarations so the GLib-style Result wrapper
             // can call error_result / error_destroy.
-            emit_error_trait_externs(&mut out, tr, lib, &handle_types);
+            emit_error_trait_externs(&mut out, tr, lib);
             defined_traits.insert(tr.name.clone());
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib, &handle_types);
+        emit_implementable_trait(&mut out, tr, lib);
         defined_traits.insert(tr.name.clone());
     }
 
     // 4. Trait impls — only emit for structs that exist as handle types
     // in the client (exported types + vtable wrappers).
     for ti in &lib.trait_impls {
-        if !handle_types.contains(ti.struct_name.as_str()) {
+        let is_handle = lib
+            .type_entry(&ti.struct_name)
+            .is_some_and(|e| matches!(e.kind, TypeKind::Handle { .. }));
+        if !is_handle {
             continue;
         }
-        emit_trait_impl(
-            &mut out,
-            ti,
-            lib,
-            &mut defined_traits,
-            &trait_defaults,
-            &handle_types,
-        );
+        emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
     }
 
     // 5. Free functions
     for f in &lib.free_functions {
-        emit_free_function(&mut out, f, lib, &handle_types);
+        emit_free_function(&mut out, f, lib);
     }
 
     out
@@ -566,12 +553,7 @@ fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
 // Exported type generation
 // ===========================================================================
 
-fn emit_exported_type(
-    out: &mut String,
-    ty: &ExportedType,
-    lib: &Library,
-    handle_types: &HashSet<&str>,
-) {
+fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library) {
     let entry = lib.type_entry(&ty.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let lifetimes = &entry.lifetime_params;
@@ -602,7 +584,7 @@ fn emit_exported_type(
         let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
-        let sig = build_extern_signature(ffi_name, m, lib, handle_types);
+        let sig = build_extern_signature(ffi_name, m, lib);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -727,15 +709,7 @@ fn emit_exported_type(
         let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
-        emit_method_wrapper(
-            out,
-            m,
-            ffi_name,
-            ty.is_builder_type,
-            has_lifetimes,
-            lib,
-            handle_types,
-        );
+        emit_method_wrapper(out, m, ffi_name, ty.is_builder_type, has_lifetimes, lib);
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -753,12 +727,7 @@ fn emit_exported_type(
 // Extern signature building
 // ===========================================================================
 
-fn build_extern_signature(
-    ffi_name: &str,
-    m: &Method,
-    lib: &Library,
-    handle_types: &HashSet<&str>,
-) -> String {
+fn build_extern_signature(ffi_name: &str, m: &Method, lib: &Library) -> String {
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let mut params = Vec::new();
 
@@ -776,7 +745,7 @@ fn build_extern_signature(
     push_extern_params(&m.params, &mut params);
 
     // Return type + extra out-params
-    let ret_str = push_return_and_out_params(&m.ret, &mut params, is_builder, handle_types);
+    let ret_str = push_return_and_out_params(&m.ret, &mut params, is_builder);
 
     let params_str = params.join(", ");
     format!("{ffi_name}({params_str}){ret_str}")
@@ -793,7 +762,6 @@ fn emit_method_wrapper(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
-    handle_types: &HashSet<&str>,
 ) {
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
@@ -836,15 +804,7 @@ fn emit_method_wrapper(
     .unwrap();
 
     // Method body
-    emit_method_body(
-        out,
-        m,
-        ffi_name,
-        is_builder_type,
-        has_lifetimes,
-        lib,
-        handle_types,
-    );
+    emit_method_body(out, m, ffi_name, is_builder_type, has_lifetimes, lib);
 
     writeln!(out, "    }}").unwrap();
 }
@@ -874,7 +834,6 @@ fn emit_method_body(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
-    handle_types: &HashSet<&str>,
 ) {
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     // Build FFI call arguments
@@ -923,7 +882,13 @@ fn emit_method_body(
     let sep = if args_str.is_empty() { "" } else { ", " };
 
     // Emit body based on return kind
-    let is_ok_handle = matches!(&m.ret, Return::Result { ok: Some(tr), .. } if handle_types.contains(tr.type_name.as_str()));
+    let is_ok_handle = matches!(
+        &m.ret,
+        Return::Result {
+            c_convention: ffier_schema::CResultConvention::HandleOrNull,
+            ..
+        }
+    );
 
     match &m.ret {
         Return::Value(_) if is_builder && m.receiver == Receiver::Mut => {
@@ -1067,18 +1032,13 @@ fn emit_method_body(
 /// This avoids emitting a `pub trait Error { ... }` that would collide with
 /// the user's error enum, while still making the symbols available for
 /// GLib-style Result wrappers.
-fn emit_error_trait_externs(
-    out: &mut String,
-    tr: &ImplementableTrait,
-    lib: &Library,
-    handle_types: &HashSet<&str>,
-) {
+fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, _lib: &Library) {
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
     for m in &tr.methods {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
+        let sig = build_dispatch_extern_sig(ffi_name, m);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     // Destroy
@@ -1119,12 +1079,7 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
 // Implementable trait generation
 // ===========================================================================
 
-fn emit_implementable_trait(
-    out: &mut String,
-    tr: &ImplementableTrait,
-    lib: &Library,
-    handle_types: &HashSet<&str>,
-) {
+fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
@@ -1228,7 +1183,7 @@ fn emit_implementable_trait(
             if !*has_default {
                 continue;
             }
-            let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
+            let sig = build_dispatch_extern_sig(ffi_name, m);
             writeln!(out, "    pub fn {sig};").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -1502,15 +1457,10 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
     writeln!(out, "        }}").unwrap();
 }
 
-fn build_dispatch_extern_sig(
-    extern_name: &str,
-    m: &Method,
-    _lib: &Library,
-    handle_types: &HashSet<&str>,
-) -> String {
+fn build_dispatch_extern_sig(extern_name: &str, m: &Method) -> String {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
     push_extern_params(&m.params, &mut params);
-    let ret = push_return_and_out_params(&m.ret, &mut params, false, handle_types);
+    let ret = push_return_and_out_params(&m.ret, &mut params, false);
     let params_str = params.join(", ");
     format!("{extern_name}({params_str}){ret}")
 }
@@ -1525,7 +1475,6 @@ fn emit_trait_impl(
     lib: &Library,
     defined_traits: &mut HashSet<String>,
     trait_defaults: &HashMap<String, Vec<&Method>>,
-    handle_types: &HashSet<&str>,
 ) {
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
@@ -1539,7 +1488,7 @@ fn emit_trait_impl(
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
+        let sig = build_dispatch_extern_sig(ffi_name, m);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -1690,12 +1639,8 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 /// out-params and GLib-style for handle-returning Results).
 ///
 /// Shared by all extern signature builders.
-fn push_return_and_out_params(
-    ret: &Return,
-    params: &mut Vec<String>,
-    is_builder: bool,
-    handle_types: &HashSet<&str>,
-) -> String {
+fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder: bool) -> String {
+    use ffier_schema::CResultConvention;
     match ret {
         Return::Void => String::new(),
         Return::Value(_) if is_builder => String::new(),
@@ -1703,16 +1648,14 @@ fn push_return_and_out_params(
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
         }
-        Return::Result { ok, .. } => {
-            let is_ok_handle = ok
-                .as_ref()
-                .map(|tr| handle_types.contains(tr.type_name.as_str()))
-                .unwrap_or(false);
-
-            if is_ok_handle {
+        Return::Result {
+            ok, c_convention, ..
+        } => match c_convention {
+            CResultConvention::HandleOrNull => {
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> *mut core::ffi::c_void".to_string()
-            } else {
+            }
+            CResultConvention::OutParam => {
                 if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
                     let ty = ok_tr.to_rust_type_static();
                     params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
@@ -1720,7 +1663,7 @@ fn push_return_and_out_params(
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> ffier::FfierResult".to_string()
             }
-        }
+        },
     }
 }
 
@@ -2008,15 +1951,10 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
 // Free function generation
 // ===========================================================================
 
-fn emit_free_function(
-    out: &mut String,
-    f: &FreeFunction,
-    lib: &Library,
-    handle_types: &HashSet<&str>,
-) {
+fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library) {
     // Extern declaration
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
-    let sig = build_free_fn_extern_sig(&f.ffi_name, f, handle_types);
+    let sig = build_free_fn_extern_sig(&f.ffi_name, f);
     writeln!(out, "    pub fn {sig};").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -2086,11 +2024,10 @@ fn emit_free_function(
         Return::Result {
             ok: Some(ok_tr),
             err_type,
-            ..
+            c_convention,
         } => {
             let ty = ok_tr.to_rust_type();
-            let is_ok_handle = handle_types.contains(ok_tr.type_name.as_str());
-            if is_ok_handle {
+            if *c_convention == ffier_schema::CResultConvention::HandleOrNull {
                 writeln!(
                     out,
                     "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -2147,40 +2084,10 @@ fn emit_free_function(
     writeln!(out).unwrap();
 }
 
-fn build_free_fn_extern_sig(
-    ffi_name: &str,
-    f: &FreeFunction,
-    handle_types: &HashSet<&str>,
-) -> String {
+fn build_free_fn_extern_sig(ffi_name: &str, f: &FreeFunction) -> String {
     let mut params = Vec::new();
     push_extern_params(&f.params, &mut params);
-
-    let ret_str = match &f.ret {
-        Return::Void => String::new(),
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as FfiType>::CRepr")
-        }
-        Return::Result { ok, .. } => {
-            let is_ok_handle = ok
-                .as_ref()
-                .map(|tr| handle_types.contains(tr.type_name.as_str()))
-                .unwrap_or(false);
-
-            if is_ok_handle {
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> *mut core::ffi::c_void".to_string()
-            } else {
-                if let Some(ok_tr) = ok {
-                    let ty = ok_tr.to_rust_type_static();
-                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
-                }
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-        }
-    };
-
+    let ret_str = push_return_and_out_params(&f.ret, &mut params, false);
     let params_str = params.join(", ");
     format!("{ffi_name}({params_str}){ret_str}")
 }
