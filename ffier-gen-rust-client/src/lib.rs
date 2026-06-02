@@ -235,11 +235,11 @@ pub fn generate(lib: &Library) -> String {
             // a trait definition (it would collide with the error enum).
             // Only emit extern declarations so the GLib-style Result wrapper
             // can call error_result / error_destroy.
-            emit_error_trait_externs(&mut out, tr, lib);
+            emit_error_trait_externs(&mut out, tr, lib, &handle_types);
             defined_traits.insert(tr.name.clone());
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib);
+        emit_implementable_trait(&mut out, tr, lib, &handle_types);
         defined_traits.insert(tr.name.clone());
     }
 
@@ -249,7 +249,14 @@ pub fn generate(lib: &Library) -> String {
         if !handle_types.contains(ti.struct_name.as_str()) {
             continue;
         }
-        emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
+        emit_trait_impl(
+            &mut out,
+            ti,
+            lib,
+            &mut defined_traits,
+            &trait_defaults,
+            &handle_types,
+        );
     }
 
     // 5. Free functions
@@ -769,34 +776,7 @@ fn build_extern_signature(
     push_extern_params(&m.params, &mut params);
 
     // Return type + extra out-params
-    let ret_str = match &m.ret {
-        Return::Void => String::new(),
-        Return::Value(_) if is_builder => String::new(),
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as FfiType>::CRepr")
-        }
-        Return::Result { ok, err_type: _ } => {
-            let is_ok_handle = ok
-                .as_ref()
-                .map(|tr| handle_types.contains(tr.type_name.as_str()))
-                .unwrap_or(false);
-
-            if is_ok_handle {
-                // GLib-style: returns handle pointer, null on error
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> *mut core::ffi::c_void".to_string()
-            } else {
-                // Result<Self, E>: ok is Self, no out-param needed
-                if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
-                    let ty = ok_tr.to_rust_type_static();
-                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
-                }
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-        }
-    };
+    let ret_str = push_return_and_out_params(&m.ret, &mut params, is_builder, handle_types);
 
     let params_str = params.join(", ");
     format!("{ffi_name}({params_str}){ret_str}")
@@ -1081,13 +1061,18 @@ fn emit_method_body(
 /// This avoids emitting a `pub trait Error { ... }` that would collide with
 /// the user's error enum, while still making the symbols available for
 /// GLib-style Result wrappers.
-fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_error_trait_externs(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    handle_types: &HashSet<&str>,
+) {
     writeln!(out, "unsafe extern \"C\" {{").unwrap();
     for m in &tr.methods {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let sig = build_dispatch_extern_sig(ffi_name, m, lib);
+        let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     // Destroy
@@ -1128,7 +1113,12 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
 // Implementable trait generation
 // ===========================================================================
 
-fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_implementable_trait(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    handle_types: &HashSet<&str>,
+) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
@@ -1232,7 +1222,7 @@ fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Lib
             if !*has_default {
                 continue;
             }
-            let sig = build_dispatch_extern_sig(ffi_name, m, lib);
+            let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
             writeln!(out, "    pub fn {sig};").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -1506,17 +1496,15 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
     writeln!(out, "        }}").unwrap();
 }
 
-fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> String {
+fn build_dispatch_extern_sig(
+    extern_name: &str,
+    m: &Method,
+    _lib: &Library,
+    handle_types: &HashSet<&str>,
+) -> String {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
     push_extern_params(&m.params, &mut params);
-    let ret = match &m.ret {
-        Return::Void => String::new(),
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as FfiType>::CRepr")
-        }
-        Return::Result { .. } => " -> ffier::FfierResult".to_string(),
-    };
+    let ret = push_return_and_out_params(&m.ret, &mut params, false, handle_types);
     let params_str = params.join(", ");
     format!("{extern_name}({params_str}){ret}")
 }
@@ -1531,6 +1519,7 @@ fn emit_trait_impl(
     lib: &Library,
     defined_traits: &mut HashSet<String>,
     trait_defaults: &HashMap<String, Vec<&Method>>,
+    handle_types: &HashSet<&str>,
 ) {
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
@@ -1544,7 +1533,7 @@ fn emit_trait_impl(
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let sig = build_dispatch_extern_sig(ffi_name, m, lib);
+        let sig = build_dispatch_extern_sig(ffi_name, m, lib, handle_types);
         writeln!(out, "    pub fn {sig};").unwrap();
     }
     writeln!(out, "}}").unwrap();
@@ -1690,6 +1679,45 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 /// via `FfiType::into_c`, `as_handle()`, `__into_raw_handle()`, or pre-bound
 /// slice reference. For borrowed handle params (`&Handle`), uses `as_handle()`
 /// instead of `into_c()` to avoid lifetime escape.
+/// Append return-type out-params and return the return-type string for an
+/// extern "C" function. Handles Void, Value, Result (FfierResult-style with
+/// out-params and GLib-style for handle-returning Results).
+///
+/// Shared by all extern signature builders.
+fn push_return_and_out_params(
+    ret: &Return,
+    params: &mut Vec<String>,
+    is_builder: bool,
+    handle_types: &HashSet<&str>,
+) -> String {
+    match ret {
+        Return::Void => String::new(),
+        Return::Value(_) if is_builder => String::new(),
+        Return::Value(tr) => {
+            let ty = tr.to_rust_type_static();
+            format!(" -> <{ty} as FfiType>::CRepr")
+        }
+        Return::Result { ok, .. } => {
+            let is_ok_handle = ok
+                .as_ref()
+                .map(|tr| handle_types.contains(tr.type_name.as_str()))
+                .unwrap_or(false);
+
+            if is_ok_handle {
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> *mut core::ffi::c_void".to_string()
+            } else {
+                if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
+                    let ty = ok_tr.to_rust_type_static();
+                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
+                }
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
+        }
+    }
+}
+
 /// Append C extern param strings (`"name: <Type as FfiType>::CRepr"` etc.)
 /// for a list of schema params. Shared by all extern signature builders.
 fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
