@@ -267,7 +267,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         #[macro_export]
         macro_rules! #internal_macro_name {
             (@reexport) => {};
-            // Tagged invocation (from library_definition! shim): includes type_tag
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @exportable,
@@ -275,18 +274,6 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
                     type_tag = $type_tag,
-                    lifetimes = (#(#lifetime_idents),*),
-                    methods = [#(#method_meta_tokens),*],
-                } $(, $($rest)*)? }
-            };
-            // Untagged invocation (legacy / direct): type_tag defaults to 0
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @exportable,
-                    name = #struct_ident,
-                    struct_path = (#struct_path_tokens),
-                    prefix = $prefix,
-                    type_tag = 0,
                     lifetimes = (#(#lifetime_idents),*),
                     methods = [#(#method_meta_tokens),*],
                 } $(, $($rest)*)? }
@@ -417,19 +404,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
                     fn borrow_as_c(&self) -> #repr_ident { *self as #repr_ident }
                 }
             };
-            // Tagged invocation (from library_definition! shim): includes prefix
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @enum_constants,
-                    name = #name,
-                    path = (#enum_path),
-                    prefix = $prefix,
-                    repr = #repr_str,
-                    variants = [#(#variants_meta),*],
-                } $(, $($rest)*)? }
-            };
-            // Untagged invocation
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @enum_constants,
                     name = #name,
@@ -535,17 +510,6 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
             };
             // Tagged invocation (from library_definition! shim): includes prefix
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @bitflags_constants,
-                    name = #name,
-                    path = (#bf_path),
-                    prefix = $prefix,
-                    repr = #repr_str,
-                    variants = [#(#variants_meta),*],
-                } $(, $($rest)*)? }
-            };
-            // Untagged invocation
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @bitflags_constants,
                     name = #name,
@@ -663,17 +627,6 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
         macro_rules! #internal_macro_name {
             (@reexport) => {};
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @free_fn,
-                    name = #fn_name,
-                    fn_path = (#fn_path),
-                    prefix = $prefix,
-                    ffi_name = #fn_name_str,
-                    doc = [#(#doc_lines),*],
-                    methods = [#(#method_meta_tokens),*],
-                } $(, $($rest)*)? }
-            };
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @free_fn,
                     name = #fn_name,
@@ -1131,17 +1084,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                     path = (#error_path),
                     prefix = $prefix,
                     type_tag = $type_tag,
-                    variants = [#(#variant_meta_tokens),*],
-                } $(, $($rest)*)? }
-            };
-            // Untagged invocation (legacy / direct): type_tag defaults to 0
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @error,
-                    name = #name,
-                    path = (#error_path),
-                    prefix = $prefix,
-                    type_tag = 0,
                     variants = [#(#variant_meta_tokens),*],
                 } $(, $($rest)*)? }
             };
@@ -2513,42 +2455,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     type_tag = $type_tag,
                     vtable_struct = ($($vstruct)*),
                     wrapper_name = ($($wrapper)*),
-                    trait_lifetimes = (#(#trait_lifetime_idents),*),
-                    vtable_methods = [#(#vtable_method_meta),*],
-                    own_method_count = #own_method_count,
-                    max_vtable_slot = #max_vtable_slot_val,
-                    bless = #bless_tokens,
-                } $(, $($rest)*)? }
-            };
-            // Tagged invocation (legacy, same-crate): wrapper_name defaults to
-            // $crate::VtableFoo. Still works for same-crate traits but NOT for
-            // cross-crate (wrapper is now generated by @reexport in the user's crate).
-            ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @implementable,
-                    trait_name = #trait_name,
-                    trait_path = (#trait_path_tokens),
-                    prefix = $prefix,
-                    type_tag = $type_tag,
-                    vtable_struct = ($crate::#vtable_struct_name),
-                    wrapper_name = ($crate::#wrapper_name),
-                    trait_lifetimes = (#(#trait_lifetime_idents),*),
-                    vtable_methods = [#(#vtable_method_meta),*],
-                    own_method_count = #own_method_count,
-                    max_vtable_slot = #max_vtable_slot_val,
-                    bless = #bless_tokens,
-                } $(, $($rest)*)? }
-            };
-            // Untagged invocation (legacy / direct): type_tag defaults to 0
-            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                $callback! { {
-                    @implementable,
-                    trait_name = #trait_name,
-                    trait_path = (#trait_path_tokens),
-                    prefix = $prefix,
-                    type_tag = 0,
-                    vtable_struct = ($crate::#vtable_struct_name),
-                    wrapper_name = ($crate::#wrapper_name),
                     trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
