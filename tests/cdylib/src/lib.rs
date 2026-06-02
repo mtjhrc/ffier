@@ -513,7 +513,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -572,21 +572,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -811,12 +805,14 @@ mod tests {
         drop: Some(fruit_drop),
         value: Some(fruit_value),
         label: None,
+        try_count: None,
     };
 
     static FRUIT_VT_VALUE_ONLY: ffier_test_lib::FruitVtable = ffier_test_lib::FruitVtable {
         drop: None,
         value: Some(fruit_value),
         label: None,
+        try_count: None,
     };
 
     fn make_fruit_handle(
@@ -1045,6 +1041,7 @@ mod tests {
         drop: Some(fruit_drop),
         value: Some(fruit_value),
         label: Some(custom_label),
+        try_count: None,
     };
 
     #[test]

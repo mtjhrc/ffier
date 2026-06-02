@@ -140,7 +140,7 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_trait_impl_bridge(meta, trait_map, lib_crate)
+            generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate)
         }
         "enum_constants" | "bitflags_constants" => {
             // No bridge code needed — enums/bitflags are value types passed by value.
@@ -1751,6 +1751,8 @@ fn generate_self_dispatch_bridge(
 fn generate_trait_impl_bridge(
     meta: MetaTraitImpl,
     trait_map: &TraitMap,
+    error_map: &ErrorMap,
+    handle_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
@@ -1775,15 +1777,19 @@ fn generate_trait_impl_bridge(
         let ffi_name_str = format!("{fn_pfx}{struct_snake}_{method_name}");
         let ffi_name = format_ident!("{ffi_name_str}");
 
-        // C params for the bridge function
-        let mut bridge_params = vec![quote! { handle: *mut core::ffi::c_void }];
+        // Use shared signature builder + return wrapper
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+        let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
+        let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
+        let sig_ret = &c_sig.ret;
+
+        // Build call args from method params
         let mut call_args = Vec::new();
         let mut impl_trait_borrows = Vec::new();
 
         for p in &m.params {
             let param_name = &p.name;
             if let Some(impl_trait_name) = p.impl_trait_name() {
-                bridge_params.push(quote! { #param_name: *mut core::ffi::c_void });
                 let wrapper_path = trait_map
                     .get(impl_trait_name)
                     .and_then(|info| info.implementable.as_ref())
@@ -1801,46 +1807,36 @@ fn generate_trait_impl_bridge(
                 call_args.push(quote! { #borrow_name });
             } else {
                 let bt = p.bridge_type();
-                bridge_params.push(quote! { #param_name: <#bt as #lib_crate::FfiType>::CRepr });
                 call_args
                     .push(quote! { unsafe { <#bt as #lib_crate::FfiType>::from_c(#param_name) } });
             }
         }
 
-        // Return type
-        let (ret_type, ret_conversion) = match &m.ret {
-            MetaReturn::Void => (quote! {}, quote! { call_result }),
-            MetaReturn::Value(MetaTypePair { bridge_type, .. }) => (
-                quote! { -> <#bridge_type as #lib_crate::FfiType>::CRepr },
-                quote! { <#bridge_type as #lib_crate::FfiType>::into_c(call_result) },
-            ),
-            MetaReturn::Result { .. } => {
-                unreachable!("Result returns not yet supported in trait methods")
-            }
-        };
-
-        let fn_body = if m.raw_handle() {
-            // raw_handle: cast handle and pass directly, no &self borrow
+        let call_expr = if m.raw_handle() {
             quote! {
-                let call_result = <#struct_path as #trait_path>::#method_name(
-                    handle as *const ffier::FfierHandle<#struct_path> #(, #call_args)*
-                );
-                #ret_conversion
+                <#struct_path as #trait_path>::#method_name(
+                    handle as *const ffier::FfierHandle<#struct_path> #(, #call_args)*)
             }
         } else {
             let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut());
-            quote! {
-                #borrow
-                let call_result = <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*);
-                #ret_conversion
-            }
+            quote! { { #borrow <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*) } }
         };
+
+        let return_body = wrap_return(
+            call_expr,
+            &m.ret,
+            &m.rust_ret,
+            handle_types,
+            error_map,
+            None,
+            lib_crate,
+        );
 
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn #ffi_name(#(#bridge_params),*) #ret_type {
+            pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#impl_trait_borrows)*
-                #fn_body
+                #return_body
             }
         });
     }
