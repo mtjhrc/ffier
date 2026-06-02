@@ -43,7 +43,7 @@ struct TraitVariant {
 struct ImplementableInfo {
     pub trait_path: TokenStream2,
     pub wrapper_path: TokenStream2,
-    pub vtable_struct_path: TokenStream2,
+
     pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
     /// Only the first `own_method_count` methods are dispatched in self-dispatch
@@ -80,7 +80,6 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             let trait_name = meta.trait_name.to_string();
             let wrapper_name = format!("Vtable{trait_name}");
             let wrapper_path = meta.wrapper_name.clone();
-            let vtable_struct_path = meta.vtable_struct_name.clone();
             let methods = meta.methods;
             let own_method_count = meta.own_method_count;
 
@@ -95,7 +94,6 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             info.implementable = Some(ImplementableInfo {
                 trait_path: meta.trait_path,
                 wrapper_path,
-                vtable_struct_path,
                 methods,
                 own_method_count,
             });

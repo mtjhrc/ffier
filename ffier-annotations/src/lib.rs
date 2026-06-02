@@ -105,31 +105,6 @@ impl ParamInfo {
     fn is_impl_trait(&self) -> bool {
         matches!(self.kind, ParamKind::ImplTrait { .. })
     }
-
-    /// Bridge type tokens. Panics for `StrSlice` (which has no single bridge type).
-    fn bridge_type(&self) -> &proc_macro2::TokenStream {
-        &self
-            .types
-            .as_ref()
-            .expect("StrSlice has no bridge_type")
-            .bridge
-    }
-
-    /// Rust type tokens. Panics for `StrSlice`.
-    fn rust_type(&self) -> &proc_macro2::TokenStream {
-        &self.types.as_ref().expect("StrSlice has no rust_type").rust
-    }
-}
-
-impl MethodInfo {
-    /// Bridge type for the return value. None for void returns.
-    fn ret_bridge_type(&self) -> Option<&proc_macro2::TokenStream> {
-        match &self.ret {
-            ReturnKind::Void => None,
-            ReturnKind::Value(tp) => Some(&tp.bridge),
-            ReturnKind::Result { ok, .. } => ok.as_ref().map(|tp| &tp.bridge),
-        }
-    }
 }
 
 /// Detect `&[&str]` — a slice of string references.
@@ -2001,7 +1976,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // --- Generate VtableXxx method impls ---
     // These are used inside the @reexport macro arm. The vtable struct is
     // a sibling (also in @reexport), so bare names resolve correctly.
-    let vtable_struct_ref = quote! { #vtable_struct_name };
+
     // --- Compute max vtable slot for metadata ---
     // The highest slot index that needs to be padded in the vtable struct.
     // This accounts for both method indices and reserved (retired) slots.
@@ -2050,7 +2025,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         })
         .collect();
 
-    let max_vtable_slot_lit = max_vtable_slot_val;
+
     let reserved_lits: Vec<_> = args.reserved.iter().map(|r| quote! { #r }).collect();
 
     let trait_path_tokens = quote! { $crate::#trait_name };
@@ -2126,7 +2101,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     trait_generics = (#trait_ty_generics);
                     crate_path = ($crate);
                     handles = [$($__handle),*];
-                    max_slot = #max_vtable_slot_lit;
                     reserved = [#(#reserved_lits),*];
                     own_method_count = #own_method_count;
                     methods = [#(#vtable_method_meta),*];
@@ -3173,7 +3147,7 @@ impl Parse for LibraryInput {
 // Called from the @reexport arm of #[implementable] with handle type names
 // from library_definition!. Generates:
 // 1. #[repr(C)] pub struct VtableStruct { drop, method fields... }
-// 2. const _: () = { use $crate::*; impl Trait for Wrapper { methods... } super_impls... };
+// 2. const _: () = { use $crate::*; impl Trait for Wrapper { methods... } };
 //
 // Result-returning methods use GLib-style (HandleOrNull) when the ok type's
 // name matches one of the handle names, otherwise OutParam (FfierResult).
@@ -3186,7 +3160,7 @@ impl Parse for LibraryInput {
 /// trait_generics = (token tokens);  // e.g. <'static> or empty
 /// crate_path = (token tokens);      // typically $crate
 /// handles = [Ident, Ident, ...];
-/// max_slot = N;
+
 /// reserved = [N, N, ...];
 /// methods = [ {method_meta}, ... ];
 /// default_helpers = [ method_name => (path tokens), ... ];
@@ -3199,7 +3173,6 @@ struct GenerateVtableInput {
     trait_generics: proc_macro2::TokenStream,
     crate_path: proc_macro2::TokenStream,
     handles: Vec<syn::Ident>,
-    max_slot: usize,
     reserved: Vec<usize>,
     own_method_count: usize,
     methods: Vec<proc_macro2::TokenStream>,
@@ -3209,7 +3182,6 @@ struct GenerateVtableInput {
 
 impl Parse for GenerateVtableInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        use ffier_meta::peek_meta_tag;
 
         let mut vtable_struct = None;
         let mut wrapper = None;
@@ -3217,7 +3189,6 @@ impl Parse for GenerateVtableInput {
         let mut trait_generics = None;
         let mut crate_path = None;
         let mut handles = Vec::new();
-        let mut max_slot = 0usize;
         let mut own_method_count = 0usize;
         let mut reserved = Vec::new();
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
@@ -3266,10 +3237,7 @@ impl Parse for GenerateVtableInput {
                     }
                     input.parse::<Token![;]>()?;
                 }
-                "max_slot" => {
-                    max_slot = input.parse::<syn::LitInt>()?.base10_parse()?;
-                    input.parse::<Token![;]>()?;
-                }
+
                 "own_method_count" => {
                     own_method_count = input.parse::<syn::LitInt>()?.base10_parse()?;
                     input.parse::<Token![;]>()?;
@@ -3340,7 +3308,6 @@ impl Parse for GenerateVtableInput {
             trait_generics: trait_generics.unwrap_or_default(),
             crate_path: crate_path.ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path"))?,
             handles,
-            max_slot,
             reserved,
             own_method_count,
             methods,
