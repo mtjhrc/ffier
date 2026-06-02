@@ -10,9 +10,9 @@ use std::collections::{HashMap, HashSet};
 
 use ffier_meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
-    MetaImplementable, MetaMethod, MetaMethodContext, MetaParamKind, MetaReceiver, MetaReturn,
-    MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake, erase_lifetimes_tokens,
-    peek_meta_field, peek_meta_tag,
+    MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
+    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
+    erase_lifetimes_tokens, peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -20,7 +20,7 @@ pub type TraitMap = HashMap<String, TraitDispatchInfo>;
 
 /// Maps error type names to their metadata (type tag, path, variants).
 ///
-/// Used by exportable bridge generation to emit `ffier_result_from_err`
+/// Used by bridge generation to emit `ffier_result(type_tag, code)`
 /// with the correct type tag for `Result<T, E>` returns.
 pub type ErrorMap = HashMap<String, ErrorInfo>;
 
@@ -151,7 +151,7 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_free_fn_bridge(meta, error_map, handle_types, lib_crate)
+            generate_free_fn_bridge(meta, error_map, handle_types, trait_map, lib_crate)
         }
         _ => {
             let msg = format!("unknown metadata tag `@{tag}`");
@@ -740,106 +740,14 @@ fn generate_exportable_bridge(
             None
         };
 
-        // Collect all impl Trait params with their dispatch info
-        struct ImplTraitParam {
-            name: syn::Ident,
-            dispatch: ffier_meta::DispatchMode,
-            trait_name: String,
-            variants: Vec<(String, TokenStream2)>,
-        }
-        let impl_trait_params: Vec<_> = m
-            .params
-            .iter()
-            .filter_map(|p| {
-                if let MetaParamKind::ImplTrait {
-                    trait_name,
-                    dispatch,
-                    ..
-                } = &p.kind
-                {
-                    trait_map.get(trait_name).map(|info| ImplTraitParam {
-                        name: p.name.clone(),
-                        dispatch: *dispatch,
-                        trait_name: trait_name.clone(),
-                        variants: info
-                            .variants
-                            .iter()
-                            .map(|v| (v.name.clone(), v.bridge_type.clone()))
-                            .collect(),
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Check for dispatch limit (auto mode only)
-        let concrete_params: Vec<_> = impl_trait_params
-            .iter()
-            .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
-            .collect();
-        let total_branches: u64 = concrete_params
-            .iter()
-            .map(|p| p.variants.len() as u64)
-            .product();
-        if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
-            && impl_trait_params
-                .iter()
-                .any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
-        {
-            let method_name_str = m.name.to_string();
-            let msg = format!(
-                "ffier: method `{method_name_str}` would generate {total_branches} dispatch \
-                 branches (limit: {}). Add `#[ffier(dispatch = vtable)]` to the impl Trait \
-                 param(s) or `#[ffier(dispatch = concrete)]` to override the limit.",
-                ffier_meta::DEFAULT_MAX_DISPATCH,
-            );
-            return quote! { compile_error!(#msg); };
-        }
-
-        // Check vtable dispatch is possible (trait must be #[implementable])
-        for p in &impl_trait_params {
-            if p.dispatch == ffier_meta::DispatchMode::Vtable
-                && trait_map
-                    .get(&p.trait_name)
-                    .and_then(|info| info.implementable.as_ref())
-                    .is_none()
-            {
-                let msg = format!(
-                    "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
-                     to have `#[ffier::implementable]`",
-                    p.name, p.trait_name,
-                );
-                return quote! { compile_error!(#msg); };
-            }
-        }
-
-        // Pre-bindings for multi-param types
-        let mut pre_bindings = Vec::new();
-        let converted_args: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| {
-                let id = &p.name;
-                match &p.kind {
-                    MetaParamKind::ImplTrait { .. } => quote! { #id },
-                    MetaParamKind::StrSlice => {
-                        let len_name = format!("{}_len", p.name);
-                        let len_id = &c_sig
-                            .params
-                            .iter()
-                            .find(|cp| cp.name == len_name)
-                            .expect("StrSlice must have _len param in c_sig")
-                            .name;
-                        let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
-                        let vec_id = format_ident!("__{id}_vec");
-                        pre_bindings.push(quote! { let #vec_id = #binding; });
-                        quote! { &#vec_id }
-                    }
-                    other => meta_param_conversion(id, other, None, lib_crate),
-                }
-            })
-            .collect();
+        // Shared param conversion + impl Trait dispatch.
+        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+            Ok(cp) => cp,
+            Err(err) => return err,
+        };
+        let converted_args = &cp.converted_args;
+        let pre_bindings = &cp.pre_bindings;
+        let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
         // Build the method call expression
         let base_method_call = if has_receiver {
@@ -848,120 +756,13 @@ fn generate_exportable_bridge(
             quote! { <#struct_path>::#method_name(#(#converted_args),*) }
         };
 
-        // Determine effective dispatch mode for each param.
-        // Auto mode: if total branches ≤ limit, all concrete. Otherwise,
-        // first auto param stays concrete, rest become vtable.
-        let all_concrete = impl_trait_params
-            .iter()
-            .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
-            && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
-                || impl_trait_params
-                    .iter()
-                    .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
-        let effective_dispatch: Vec<bool> = if all_concrete {
-            // All concrete dispatch
-            vec![false; impl_trait_params.len()]
-        } else {
-            // Hybrid: explicit concrete stays concrete, explicit vtable stays vtable,
-            // auto params: first one concrete, rest vtable
-            let mut first_auto_seen = false;
-            impl_trait_params
-                .iter()
-                .map(|p| match p.dispatch {
-                    ffier_meta::DispatchMode::Concrete => false, // concrete
-                    ffier_meta::DispatchMode::Vtable => true,    // vtable
-                    ffier_meta::DispatchMode::Auto => {
-                        if !first_auto_seen {
-                            first_auto_seen = true;
-                            false // first auto → concrete
-                        } else {
-                            true // rest → vtable
-                        }
-                    }
-                })
-                .collect()
-        };
-
-        // Dynamic dispatch: wrap each vtable-mode param into a
-        // Box<dyn Trait> and pass &mut *box to the method. Linear in
-        // variants (N branches per param).
-        let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
-        for (i, p) in impl_trait_params.iter().enumerate() {
-            if !effective_dispatch[i] {
-                continue;
-            }
-            let dyn_id = &p.name;
-            let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
-            let info = trait_map.get(&p.trait_name).unwrap();
-
-            let trait_ident = if let Some(imp) = &info.implementable {
-                imp.trait_path.clone()
-            } else {
-                let ident = format_ident!("{}", p.trait_name);
-                quote! { #ident }
-            };
-
-            let mut branches = Vec::new();
-            for v in &info.variants {
-                let ty = &v.bridge_type;
-                branches.push(quote! {
-                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
-                        let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
-                        Box::new(__val) as Box<dyn #trait_ident>
-                    }
-                });
-            }
-
-            let expected_msg = format!("impl {}", p.trait_name);
-            let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
-
-            vtable_pre_bindings.push(quote! {
-                let mut #dyn_box_id: Box<dyn #trait_ident> = {
-                    let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                    #(#branches else)* {
-                        __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                    }
-                };
-                let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
-            });
-        }
-
-        // Concrete nested dispatch for non-vtable impl Trait params.
-        let concrete_impl_trait_params: Vec<_> = impl_trait_params
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !effective_dispatch[*i])
-            .map(|(_, p)| p)
-            .collect();
-        let method_call =
-            concrete_impl_trait_params
-                .iter()
-                .rev()
-                .fold(base_method_call, |inner, p| {
-                    let dyn_id = &p.name;
-                    let variants = &p.variants;
-                    let if_branches: Vec<_> = variants
-                        .iter()
-                        .map(|(_, ty_tokens)| {
-                            quote! {
-                                if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
-                                    let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
-                                    #inner
-                                }
-                            }
-                        })
-                        .collect();
-
-                    let expected_msg = format!("impl {}", p.trait_name);
-                    let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
-
-                    quote! {{
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                        #(#if_branches else)* {
-                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                        }
-                    }}
-                });
+        let method_call = wrap_concrete_dispatch(
+            base_method_call,
+            &m.params,
+            &ffi_name_str,
+            trait_map,
+            lib_crate,
+        );
 
         // Extern fn signature from c_sig (shared across all return variants)
         let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
@@ -1170,13 +971,332 @@ fn generate_error_bridge(_meta: MetaError, _lib_crate: &TokenStream2) -> TokenSt
 }
 
 // ===========================================================================
+// Shared param conversion + impl Trait dispatch
+// ===========================================================================
+
+/// Intermediate result of converting method/function params into bridge code.
+struct ConvertedParams {
+    /// Pre-binding statements (e.g. `let __tags_vec = { ... };`)
+    pre_bindings: Vec<TokenStream2>,
+    /// Vtable dispatch pre-bindings (e.g. `let mut __dyn_box_fruit = ...;`)
+    vtable_pre_bindings: Vec<TokenStream2>,
+    /// Converted argument expressions to pass to the Rust function call.
+    converted_args: Vec<TokenStream2>,
+}
+
+/// Build the body pieces shared between method and free function bridge
+/// generation: param conversion, pre-bindings, and impl Trait dispatch.
+///
+/// `c_sig` is used to look up the `_len` ident for StrSlice params.
+/// `ffi_name_str` is the FFI function name (for error messages in dispatch panics).
+fn convert_params(
+    params: &[MetaParam],
+    c_sig: &CExternSignature,
+    ffi_name_str: &str,
+    trait_map: &TraitMap,
+    lib_crate: &TokenStream2,
+) -> Result<ConvertedParams, TokenStream2> {
+    // Collect all impl Trait params with their dispatch info
+    struct ImplTraitParam {
+        name: syn::Ident,
+        dispatch: ffier_meta::DispatchMode,
+        trait_name: String,
+        variants: Vec<(String, TokenStream2)>,
+    }
+    let impl_trait_params: Vec<_> = params
+        .iter()
+        .filter_map(|p| {
+            if let MetaParamKind::ImplTrait {
+                trait_name,
+                dispatch,
+                ..
+            } = &p.kind
+            {
+                trait_map.get(trait_name).map(|info| ImplTraitParam {
+                    name: p.name.clone(),
+                    dispatch: *dispatch,
+                    trait_name: trait_name.clone(),
+                    variants: info
+                        .variants
+                        .iter()
+                        .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                        .collect(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Check for dispatch limit (auto mode only)
+    let concrete_params: Vec<_> = impl_trait_params
+        .iter()
+        .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        .collect();
+    let total_branches: u64 = concrete_params
+        .iter()
+        .map(|p| p.variants.len() as u64)
+        .product();
+    if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
+        && impl_trait_params
+            .iter()
+            .any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
+    {
+        let msg = format!(
+            "ffier: `{ffi_name_str}` would generate {total_branches} dispatch \
+             branches (limit: {}). Add `#[ffier(dispatch = vtable)]` to the impl Trait \
+             param(s) or `#[ffier(dispatch = concrete)]` to override the limit.",
+            ffier_meta::DEFAULT_MAX_DISPATCH,
+        );
+        return Err(quote! { compile_error!(#msg); });
+    }
+
+    // Check vtable dispatch is possible (trait must be #[implementable])
+    for p in &impl_trait_params {
+        if p.dispatch == ffier_meta::DispatchMode::Vtable
+            && trait_map
+                .get(&p.trait_name)
+                .and_then(|info| info.implementable.as_ref())
+                .is_none()
+        {
+            let msg = format!(
+                "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
+                 to have `#[ffier::implementable]`",
+                p.name, p.trait_name,
+            );
+            return Err(quote! { compile_error!(#msg); });
+        }
+    }
+
+    // Convert params
+    let mut pre_bindings = Vec::new();
+    let converted_args: Vec<_> = params
+        .iter()
+        .map(|p| {
+            let id = &p.name;
+            match &p.kind {
+                MetaParamKind::ImplTrait { .. } => quote! { #id },
+                MetaParamKind::StrSlice => {
+                    let len_name = format!("{}_len", p.name);
+                    let len_id = &c_sig
+                        .params
+                        .iter()
+                        .find(|cp| cp.name == len_name)
+                        .expect("StrSlice must have _len param in c_sig")
+                        .name;
+                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
+                    let vec_id = format_ident!("__{id}_vec");
+                    pre_bindings.push(quote! { let #vec_id = #binding; });
+                    quote! { &#vec_id }
+                }
+                other => meta_param_conversion(id, other, None, lib_crate),
+            }
+        })
+        .collect();
+
+    // Determine effective dispatch mode for each param.
+    let all_concrete = impl_trait_params
+        .iter()
+        .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
+            || impl_trait_params
+                .iter()
+                .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
+    let effective_dispatch: Vec<bool> = if all_concrete {
+        vec![false; impl_trait_params.len()]
+    } else {
+        let mut first_auto_seen = false;
+        impl_trait_params
+            .iter()
+            .map(|p| match p.dispatch {
+                ffier_meta::DispatchMode::Concrete => false,
+                ffier_meta::DispatchMode::Vtable => true,
+                ffier_meta::DispatchMode::Auto => {
+                    if !first_auto_seen {
+                        first_auto_seen = true;
+                        false
+                    } else {
+                        true
+                    }
+                }
+            })
+            .collect()
+    };
+
+    // Dynamic dispatch: wrap each vtable-mode param into a Box<dyn Trait>
+    let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
+    for (i, p) in impl_trait_params.iter().enumerate() {
+        if !effective_dispatch[i] {
+            continue;
+        }
+        let dyn_id = &p.name;
+        let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
+        let info = trait_map.get(&p.trait_name).unwrap();
+
+        let trait_ident = if let Some(imp) = &info.implementable {
+            imp.trait_path.clone()
+        } else {
+            let ident = format_ident!("{}", p.trait_name);
+            quote! { #ident }
+        };
+
+        let mut branches = Vec::new();
+        for v in &info.variants {
+            let ty = &v.bridge_type;
+            branches.push(quote! {
+                if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                    let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
+                    Box::new(__val) as Box<dyn #trait_ident>
+                }
+            });
+        }
+
+        let expected_msg = format!("impl {}", p.trait_name);
+        let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
+
+        vtable_pre_bindings.push(quote! {
+            let mut #dyn_box_id: Box<dyn #trait_ident> = {
+                let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                #(#branches else)* {
+                    __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+                }
+            };
+            let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
+        });
+    }
+
+    Ok(ConvertedParams {
+        pre_bindings,
+        vtable_pre_bindings,
+        converted_args,
+    })
+}
+
+/// Wrap a base call expression in concrete impl Trait dispatch (nested
+/// type-tag matches for non-vtable impl Trait params).
+fn wrap_concrete_dispatch(
+    base_call: TokenStream2,
+    params: &[MetaParam],
+    ffi_name_str: &str,
+    trait_map: &TraitMap,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    // Collect impl Trait params with dispatch info (same as convert_params)
+    struct ImplTraitParam {
+        name: syn::Ident,
+        dispatch: ffier_meta::DispatchMode,
+        trait_name: String,
+        variants: Vec<(String, TokenStream2)>,
+    }
+    let impl_trait_params: Vec<_> = params
+        .iter()
+        .filter_map(|p| {
+            if let MetaParamKind::ImplTrait {
+                trait_name,
+                dispatch,
+                ..
+            } = &p.kind
+            {
+                trait_map.get(trait_name).map(|info| ImplTraitParam {
+                    name: p.name.clone(),
+                    dispatch: *dispatch,
+                    trait_name: trait_name.clone(),
+                    variants: info
+                        .variants
+                        .iter()
+                        .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                        .collect(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Recompute effective dispatch (same logic as convert_params)
+    let concrete_params: Vec<_> = impl_trait_params
+        .iter()
+        .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        .collect();
+    let total_branches: u64 = concrete_params
+        .iter()
+        .map(|p| p.variants.len() as u64)
+        .product();
+    let all_concrete = impl_trait_params
+        .iter()
+        .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
+            || impl_trait_params
+                .iter()
+                .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
+    let effective_dispatch: Vec<bool> = if all_concrete {
+        vec![false; impl_trait_params.len()]
+    } else {
+        let mut first_auto_seen = false;
+        impl_trait_params
+            .iter()
+            .map(|p| match p.dispatch {
+                ffier_meta::DispatchMode::Concrete => false,
+                ffier_meta::DispatchMode::Vtable => true,
+                ffier_meta::DispatchMode::Auto => {
+                    if !first_auto_seen {
+                        first_auto_seen = true;
+                        false
+                    } else {
+                        true
+                    }
+                }
+            })
+            .collect()
+    };
+
+    // Concrete nested dispatch for non-vtable impl Trait params.
+    let concrete_impl_trait_params: Vec<_> = impl_trait_params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !effective_dispatch[*i])
+        .map(|(_, p)| p)
+        .collect();
+
+    concrete_impl_trait_params
+        .iter()
+        .rev()
+        .fold(base_call, |inner, p| {
+            let dyn_id = &p.name;
+            let variants = &p.variants;
+            let if_branches: Vec<_> = variants
+                .iter()
+                .map(|(_, ty_tokens)| {
+                    quote! {
+                        if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
+                            let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
+                            #inner
+                        }
+                    }
+                })
+                .collect();
+
+            let expected_msg = format!("impl {}", p.trait_name);
+            let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
+
+            quote! {{
+                let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                #(#if_branches else)* {
+                    __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+                }
+            }}
+        })
+}
+
+// ===========================================================================
 // Free function bridge generation
 // ===========================================================================
 
 fn generate_free_fn_bridge(
     meta: MetaFreeFunction,
     error_map: &ErrorMap,
-    _handle_types: &HashSet<String>,
+    handle_types: &HashSet<String>,
+    trait_map: &TraitMap,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let fn_path = &meta.fn_path;
@@ -1187,48 +1307,44 @@ fn generate_free_fn_bridge(
     let ffi_name_str = format!("{}{}", fn_pfx, meta.ffi_name);
     let ffi_name = format_ident!("{}", ffi_name_str);
 
-    // Build params
-    let mut sig_names = Vec::new();
-    let mut sig_types = Vec::new();
-    let mut converted_args = Vec::new();
+    // Use the same signature builder as methods.
+    let c_sig = c_signature_for_method(
+        m,
+        &meta.prefix,
+        SignatureContext::Bridge,
+        handle_types,
+        lib_crate,
+    );
 
-    for p in &m.params {
-        let id = &p.name;
-        match &p.kind {
-            MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-                sig_names.push(id.clone());
-                sig_types.push(quote! { <#bridge_type as #lib_crate::FfiType>::CRepr });
-                converted_args
-                    .push(quote! { unsafe { <#bridge_type as #lib_crate::FfiType>::from_c(#id) } });
-            }
-            MetaParamKind::StrSlice => {
-                sig_names.push(id.clone());
-                sig_types.push(quote! { *const ffier::FfierBytes });
-                let len_id = format_ident!("{}_len", id);
-                sig_names.push(len_id.clone());
-                sig_types.push(quote! { usize });
-                // TODO: proper str slice conversion for free functions
-                converted_args.push(
-                    quote! { compile_error!("str slice in free functions not yet supported") },
-                );
-            }
-            MetaParamKind::ImplTrait { .. } => {
-                sig_names.push(id.clone());
-                sig_types.push(quote! { *mut core::ffi::c_void });
-                converted_args.push(
-                    quote! { compile_error!("impl Trait in free functions not yet supported") },
-                );
-            }
-        }
-    }
+    // Shared param conversion + impl Trait dispatch.
+    let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        Ok(cp) => cp,
+        Err(err) => return err,
+    };
 
-    let method_call = quote! { #fn_path(#(#converted_args),*) };
+    let converted_args = &cp.converted_args;
+    let base_method_call = quote! { #fn_path(#(#converted_args),*) };
+    let method_call = wrap_concrete_dispatch(
+        base_method_call,
+        &m.params,
+        &ffi_name_str,
+        trait_map,
+        lib_crate,
+    );
+
+    let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
+    let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
+    let sig_ret = &c_sig.ret;
+    let pre_bindings = &cp.pre_bindings;
+    let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
     match &m.ret {
         MetaReturn::Void => {
             quote! {
                 #[unsafe(no_mangle)]
-                pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) {
+                pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
+                    #(#vtable_pre_bindings)*
+                    #(#pre_bindings)*
                     #method_call;
                 }
             }
@@ -1238,7 +1354,9 @@ fn generate_free_fn_bridge(
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn #ffi_name(
                     #(#sig_names: #sig_types),*
-                ) -> <#bridge_type as #lib_crate::FfiType>::CRepr {
+                ) #sig_ret {
+                    #(#vtable_pre_bindings)*
+                    #(#pre_bindings)*
                     let result = #method_call;
                     <#bridge_type as #lib_crate::FfiType>::into_c(result)
                 }
@@ -1279,23 +1397,13 @@ fn generate_free_fn_bridge(
                 }
             };
 
-            // Add out-params
-            let mut all_names = sig_names.clone();
-            let mut all_types = sig_types.clone();
-
-            if ok.is_some() {
-                let ok_bt = &ok.as_ref().unwrap().bridge_type;
-                all_names.push(format_ident!("result"));
-                all_types.push(quote! { *mut <#ok_bt as #lib_crate::FfiType>::CRepr });
-            }
-            all_names.push(format_ident!("err_out"));
-            all_types.push(quote! { *mut *mut core::ffi::c_void });
-
             quote! {
                 #[unsafe(no_mangle)]
                 pub unsafe extern "C" fn #ffi_name(
-                    #(#all_names: #all_types),*
-                ) -> ffier::FfierResult {
+                    #(#sig_names: #sig_types),*
+                ) #sig_ret {
+                    #(#vtable_pre_bindings)*
+                    #(#pre_bindings)*
                     match #method_call {
                         #ok_branch
                         #err_branch
