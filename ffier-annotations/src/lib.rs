@@ -3500,27 +3500,36 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             // Build vtable call args (converting Rust values to C)
             let has_impl_trait_params = m.params.iter().any(|p| matches!(&p.kind, ffier_meta::MetaParamKind::ImplTrait { .. }));
 
-            let vtable_args: Vec<_> = m.params.iter().map(|p| {
+            let mut vtable_pre = Vec::<proc_macro2::TokenStream>::new();
+            let mut vtable_args = Vec::<proc_macro2::TokenStream>::new();
+            for p in &m.params {
                 let id = &p.name;
                 match &p.kind {
                     ffier_meta::MetaParamKind::ImplTrait { .. } => {
-                        quote! { core::ptr::null_mut() }
+                        vtable_args.push(quote! { core::ptr::null_mut() });
                     }
                     ffier_meta::MetaParamKind::StrSlice => {
-                        // StrSlice in vtable dispatch — not yet supported
-                        quote! { core::ptr::null(), 0 }
+                        let vec_id = format_ident!("__{id}_ffierbytes");
+                        vtable_pre.push(quote! {
+                            let #vec_id: Vec<ffier::FfierBytes> = #id.iter()
+                                .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+                                .collect();
+                        });
+                        vtable_args.push(quote! { #vec_id.as_ptr() });
+                        vtable_args.push(quote! { #vec_id.len() });
                     }
                     ffier_meta::MetaParamKind::Regular(tp) => {
                         let rt = &tp.rust_type;
-                        quote! { <#rt as FfiType>::into_c(#id) }
+                        vtable_args.push(quote! { <#rt as FfiType>::into_c(#id) });
                     }
                 }
-            }).collect();
+            }
 
             // Build the call expression
-            let raw_call = quote! {
+            let raw_call = quote! { {
+                #(#vtable_pre)*
                 unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
-            };
+            } };
 
             // Build vtable_branch (converting C result back to Rust)
             let vtable_branch = if has_impl_trait_params {
