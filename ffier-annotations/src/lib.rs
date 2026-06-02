@@ -53,6 +53,8 @@ enum ParamKind {
         /// Dispatch mode: "auto", "concrete", or "vtable".
         /// For trait methods this defaults to "auto".
         dispatch: String,
+        /// How the param is passed: "value", "ref", or "mut".
+        ref_kind: String,
         /// Lifetime arguments on the trait (e.g. `["a"]` for `impl Snapshot<'a>`).
         trait_lifetime_args: Vec<String>,
     },
@@ -1497,10 +1499,13 @@ fn parse_method_sig(
             };
 
             // Unwrap reference for impl Trait detection:
-            // `&mut impl PushStr` → inner type is `impl PushStr`
-            let inner_ty = match &*pt.ty {
-                Type::Reference(r) => &*r.elem,
-                other => other,
+            // `&mut impl PushStr` → inner type is `impl PushStr`, ref_kind = "mut"
+            let (inner_ty, impl_trait_ref_kind) = match &*pt.ty {
+                Type::Reference(r) => {
+                    let rk = if r.mutability.is_some() { "mut" } else { "ref" };
+                    (&*r.elem, rk)
+                }
+                other => (other, "value"),
             };
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
@@ -1511,6 +1516,7 @@ fn parse_method_sig(
                     kind: ParamKind::ImplTrait {
                         trait_name,
                         dispatch,
+                        ref_kind: impl_trait_ref_kind.to_string(),
                         trait_lifetime_args,
                     },
                     types: Some(TypePair {
@@ -1700,10 +1706,15 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         let kind_tokens = match &p.kind {
             ParamKind::Regular => quote! { regular },
             ParamKind::StrSlice => quote! { str_slice },
-            ParamKind::ImplTrait { trait_name, dispatch, trait_lifetime_args } => {
+            ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args } => {
                 let dispatch_ident = format_ident!("{dispatch}");
+                let ref_kind_ident = match ref_kind.as_str() {
+                    "ref" => format_ident!("r#ref"),
+                    "mut" => format_ident!("r#mut"),
+                    other => format_ident!("{other}"),
+                };
                 let lt_idents: Vec<_> = trait_lifetime_args.iter().map(|lt| format_ident!("{lt}")).collect();
-                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, trait_lifetime_args = [#(#lt_idents),*] }
+                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*] }
             }
         };
         let type_tokens = match &p.types {
@@ -1861,69 +1872,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
         Some(s) => quote::quote! { #s },
         None => quote::quote! { none },
     };
-
-    // --- Generate vtable struct fields (ordered by explicit index, with padding for gaps) ---
-    // Sort methods by their explicit index to determine vtable layout.
-    let mut sorted_methods: Vec<&MethodInfo> = vtable_methods.iter().collect();
-    sorted_methods.sort_by_key(|m| m.index);
-
-    let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut next_slot = 0usize;
-
-    for m in &sorted_methods {
-        // raw_handle methods don't occupy vtable slots — they're dispatched
-        // via the bridge directly (composing other trait methods).
-        if m.raw_handle {
-            continue;
-        }
-
-        // Insert padding fields for any gaps
-        while next_slot < m.index {
-            let pad_name = format_ident!("__reserved_{next_slot}");
-            vtable_fields.push(quote! {
-                #[doc(hidden)]
-                pub #pad_name: Option<unsafe extern "C" fn()>
-            });
-            next_slot += 1;
-        }
-
-        let name = &m.name;
-        let params: Vec<_> = m
-            .params
-            .iter()
-            .map(|p| {
-                if p.is_impl_trait() {
-                    // impl Trait → raw handle pointer in the vtable fn signature
-                    quote! { *mut core::ffi::c_void }
-                } else {
-                    let bt = p.bridge_type();
-                    quote! { <#bt as FfiType>::CRepr }
-                }
-            })
-            .collect();
-        let ret = match m.ret_bridge_type() {
-            None => quote! {},
-            Some(bt) => quote! { -> <#bt as FfiType>::CRepr },
-        };
-        vtable_fields.push(quote! {
-            pub #name: Option<unsafe extern "C" fn(*mut core::ffi::c_void, #(#params),*) #ret>
-        });
-        next_slot = m.index + 1;
-    }
-
-    // Add trailing padding for reserved slots beyond the last method index.
-    // Gaps between methods are already handled by the loop above; here we only
-    // need to extend the vtable for reserved indices that fall after all methods.
-    if let Some(&max_reserved) = args.reserved.iter().max() {
-        while next_slot <= max_reserved {
-            let pad_name = format_ident!("__reserved_{next_slot}");
-            vtable_fields.push(quote! {
-                #[doc(hidden)]
-                pub #pad_name: Option<unsafe extern "C" fn()>
-            });
-            next_slot += 1;
-        }
-    }
 
     // Build trait path with 'static lifetimes for the wrapper impl
     let trait_generics = &trait_item.generics;
@@ -2223,51 +2171,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // These are used inside the @reexport macro arm. The vtable struct is
     // a sibling (also in @reexport), so bare names resolve correctly.
     let vtable_struct_ref = quote! { #vtable_struct_name };
-    let own_method_impls: Vec<_> = trait_item_erased
-        .items
-        .iter()
-        .filter_map(|item| {
-            let TraitItem::Fn(method) = item else {
-                return None;
-            };
-            let name = &method.sig.ident;
-            let vm = vtable_methods.iter().find(|v| v.name == *name)?;
-            // Skip raw_handle methods — they don't take &self, so the
-            // VtableWrapper can't override them. The trait's default impl
-            // handles dispatch (it calls other trait methods via &self).
-            if vm.raw_handle {
-                return None;
-            }
-            // Use the explicit index for metadata dispatch
-            let method_index = Some(vm.index);
-            let fallback = default_helper_names.get(&name.to_string()).map(|helper| {
-                let params_pass: Vec<_> = method
-                    .sig
-                    .inputs
-                    .iter()
-                    .filter_map(|arg| {
-                        if let syn::FnArg::Typed(pat_type) = arg {
-                            if let syn::Pat::Ident(pi) = &*pat_type.pat {
-                                return Some(pi.ident.clone());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                // Use $crate:: prefix so the helper resolves in the defining crate
-                // when @reexport expands in a different crate.
-                quote! { $crate::#helper(self #(, #params_pass)*) }
-            });
-            Some(vtable_call_body(
-                vm,
-                &method.sig,
-                fallback,
-                method_index,
-                &vtable_struct_ref,
-            ))
-        })
-        .collect();
-
     // Supertrait impls — all required (supers don't have defaults)
     let super_impls: Vec<_> = args
         .supers
@@ -2743,12 +2646,18 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         .collect();
 
     // Collect handle type names — used to determine GLib vs FfierResult
-    // convention for Result-returning vtable methods.
+    // convention for Result-returning vtable methods. Includes both
+    // plain Tagged types (Widget, Gadget) and VtableFoo wrappers from
+    // TaggedTrait entries to match the bridge's handle_types set.
     let handle_type_idents: Vec<syn::Ident> = parsed
         .entries
         .iter()
         .filter_map(|e| match e {
             LibraryEntry::Tagged(path, _) => Some(path_last_ident(path).clone()),
+            LibraryEntry::TaggedTrait(path, _) => {
+                let trait_name = path_last_ident(path);
+                Some(format_ident!("Vtable{trait_name}"))
+            }
             _ => None,
         })
         .collect();
