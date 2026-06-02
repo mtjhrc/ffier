@@ -47,6 +47,9 @@ enum ParamKind {
     Regular,
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
+    /// `&[T]` where T is an exported handle type — slice of struct references,
+    /// expands to two C params (pointer to handle array + length).
+    HandleSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
     ImplTrait {
         trait_name: String,
@@ -67,6 +70,9 @@ enum ReturnKind {
         ok: Option<TypePair>,
         err_ident: String,
     },
+    /// `&[T]` where T is an exported handle type — returns a pointer+length
+    /// pair through out-params.
+    HandleSlice(TypePair),
 }
 
 struct ParamInfo {
@@ -119,6 +125,30 @@ fn is_str_slice(ty: &Type) -> bool {
         return false;
     };
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
+}
+
+/// Detect `&[&T]` where T is a non-primitive named type (i.e. an exported handle type).
+/// Matches `&[&SomeStruct]` but not `&[&str]` (handled as StrSlice).
+fn is_handle_slice(ty: &Type) -> bool {
+    let Type::Reference(ref_ty) = ty else {
+        return false;
+    };
+    let Type::Slice(sl) = &*ref_ty.elem else {
+        return false;
+    };
+    let Type::Reference(inner_ref) = &*sl.elem else {
+        return false;
+    };
+    // Not &[&str] (already handled by is_str_slice)
+    if matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str")) {
+        return false;
+    }
+    // Must be a named type that isn't a primitive
+    let Type::Path(tp) = &*inner_ref.elem else {
+        return false;
+    };
+    let name = tp.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+    !PRIMITIVES.contains(&name.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -1468,6 +1498,32 @@ fn parse_method_sig(
                 });
             }
 
+            if is_handle_slice(&param_ty_bridge) {
+                // Extract the inner type T from &[&T] for bridge resolution
+                let Type::Reference(ref_ty) = &param_ty_bridge else { unreachable!() };
+                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
+                let Type::Reference(inner_ref) = &*sl.elem else { unreachable!() };
+                let inner_ty = &*inner_ref.elem;
+                let elem_bridge = ctx.bridge_tokens(inner_ty);
+                let elem_rust = match self_ty {
+                    Some(sty) => {
+                        let replaced = replace_self_type(inner_ty, sty);
+                        quote! { #replaced }
+                    }
+                    None => {
+                        quote! { #inner_ty }
+                    }
+                };
+                return Some(ParamInfo {
+                    name: pi.ident.clone(),
+                    kind: ParamKind::HandleSlice,
+                    types: Some(TypePair {
+                        bridge: elem_bridge,
+                        rust: elem_rust,
+                    }),
+                });
+            }
+
             let bridge = ctx.bridge_tokens(&param_ty_bridge);
             Some(ParamInfo {
                 name: pi.ident.clone(),
@@ -1516,6 +1572,21 @@ fn parse_method_sig(
             if is_builder && extract_result_types(&ty_bridge).is_none() {
                 // Builder returning Self → void in C
                 ReturnKind::Void
+            } else if is_handle_slice(&ty_bridge) {
+                // &[&T] where T is an exported handle → out-params
+                let Type::Reference(ref_ty) = &ty_bridge else { unreachable!() };
+                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
+                let Type::Reference(inner_ref) = &*sl.elem else { unreachable!() };
+                let inner_ty = &*inner_ref.elem;
+                let elem_bridge = ctx.bridge_tokens(inner_ty);
+                let Type::Reference(ref_ty_rust) = &ty_rust else { unreachable!() };
+                let Type::Slice(sl_rust) = &*ref_ty_rust.elem else { unreachable!() };
+                let Type::Reference(inner_ref_rust) = &*sl_rust.elem else { unreachable!() };
+                let inner_ty_rust = &*inner_ref_rust.elem;
+                ReturnKind::HandleSlice(TypePair {
+                    bridge: elem_bridge,
+                    rust: quote! { #inner_ty_rust },
+                })
             } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
@@ -1626,6 +1697,7 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         let kind_tokens = match &p.kind {
             ParamKind::Regular => quote! { regular },
             ParamKind::StrSlice => quote! { str_slice },
+            ParamKind::HandleSlice => quote! { handle_slice },
             ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args } => {
                 let dispatch_ident = format_ident!("{dispatch}");
                 let ref_kind_ident = match ref_kind.as_str() {
@@ -1665,6 +1737,11 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
                 }
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
+        }
+        ReturnKind::HandleSlice(tp) => {
+            let bt = &tp.bridge;
+            let rt = &tp.rust;
+            quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
         }
     };
 
@@ -3393,6 +3470,10 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     param_types.push(quote! { *const ffier::FfierBytes });
                     param_types.push(quote! { usize });
                 }
+                ffier_meta::MetaParamKind::HandleSlice(_) => {
+                    param_types.push(quote! { *const *mut core::ffi::c_void });
+                    param_types.push(quote! { usize });
+                }
                 ffier_meta::MetaParamKind::Regular(tp) => {
                     let bt = &tp.bridge_type;
                     param_types.push(quote! { <#bt as FfiType>::CRepr });
@@ -3406,6 +3487,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             ffier_meta::MetaReturn::Value(tp) => {
                 let bt = &tp.bridge_type;
                 quote! { -> <#bt as FfiType>::CRepr }
+            }
+            ffier_meta::MetaReturn::HandleSlice(_) => {
+                // HandleSlice returns through out-params (void return)
+                param_types.push(quote! { *mut *const *mut core::ffi::c_void });
+                param_types.push(quote! { *mut usize });
+                quote! {}
             }
             ffier_meta::MetaReturn::Result { ok, .. } => {
                 let ok_is_handle = ok.as_ref().map_or(false, |tp| {
@@ -3472,6 +3559,10 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         fn_ptr_param_types.push(quote! { *const ffier::FfierBytes });
                         fn_ptr_param_types.push(quote! { usize });
                     }
+                    ffier_meta::MetaParamKind::HandleSlice(_) => {
+                        fn_ptr_param_types.push(quote! { *const *mut core::ffi::c_void });
+                        fn_ptr_param_types.push(quote! { usize });
+                    }
                     ffier_meta::MetaParamKind::Regular(tp) => {
                         let bt = &tp.bridge_type;
                         fn_ptr_param_types.push(quote! { <#bt as FfiType>::CRepr });
@@ -3489,6 +3580,11 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 ffier_meta::MetaReturn::Value(tp) => {
                     let bt = &tp.bridge_type;
                     quote! { -> <#bt as FfiType>::CRepr }
+                }
+                ffier_meta::MetaReturn::HandleSlice(_) => {
+                    fn_ptr_param_types.push(quote! { *mut *const *mut core::ffi::c_void });
+                    fn_ptr_param_types.push(quote! { *mut usize });
+                    quote! {}
                 }
                 ffier_meta::MetaReturn::Result { ok, .. } => {
                     if ok_is_handle {
@@ -3530,6 +3626,17 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #vec_id.as_ptr() });
                         vtable_args.push(quote! { #vec_id.len() });
                     }
+                    ffier_meta::MetaParamKind::HandleSlice(tp) => {
+                        let rt = &tp.rust_type;
+                        let vec_id = format_ident!("__{id}_handles");
+                        vtable_pre.push(quote! {
+                            let #vec_id: Vec<*mut core::ffi::c_void> = #id.iter()
+                                .map(|item| <&#rt as FfiType>::into_c(*item))
+                                .collect();
+                        });
+                        vtable_args.push(quote! { #vec_id.as_ptr() });
+                        vtable_args.push(quote! { #vec_id.len() });
+                    }
                     ffier_meta::MetaParamKind::Regular(tp) => {
                         let rt = &tp.rust_type;
                         vtable_args.push(quote! { <#rt as FfiType>::into_c(#id) });
@@ -3560,6 +3667,26 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     ffier_meta::MetaReturn::Value(tp) => {
                         let bt = &tp.bridge_type;
                         quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
+                    }
+                    ffier_meta::MetaReturn::HandleSlice(tp) => {
+                        // HandleSlice vtable dispatch: call __f with out-params,
+                        // reconstruct Vec<&T> from the returned handle array.
+                        let bt = &tp.bridge_type;
+                        quote! {{
+                            let mut __out_ptr: *const *mut core::ffi::c_void = core::ptr::null();
+                            let mut __out_len: usize = 0;
+                            unsafe { __f(
+                                self.value.user_data as *mut core::ffi::c_void,
+                                #(#vtable_args,)*
+                                &mut __out_ptr,
+                                &mut __out_len,
+                            ) };
+                            let __handles = unsafe { core::slice::from_raw_parts(__out_ptr, __out_len) };
+                            let __refs: Vec<&#bt> = __handles.iter()
+                                .map(|h| unsafe { ffier::ffier_handle_borrow::<#bt>(*h) })
+                                .collect();
+                            __refs
+                        }}
                     }
                     ffier_meta::MetaReturn::Result { ok, err_ident, .. } => {
                         let err_ty = format_ident!("{err_ident}");

@@ -326,6 +326,10 @@ pub enum ImplTraitRefKind {
 pub enum MetaParamKind {
     Regular(MetaTypePair),
     StrSlice,
+    /// `&[T]` where T is an exported handle type — slice of struct references,
+    /// expands to two C params (pointer to handle array + length).
+    /// The `MetaTypePair` contains the element type (T, not &[T]).
+    HandleSlice(MetaTypePair),
     /// `impl Trait` parameter — the generator resolves concrete dispatch
     /// types from the trait map built from `@trait_impl`/`@implementable` entries.
     ImplTrait {
@@ -346,6 +350,9 @@ pub enum MetaReturn {
         ok: Option<MetaTypePair>,
         err_ident: String,
     },
+    /// `&[T]` where T is an exported handle type — returns a pointer+length
+    /// pair through out-params. The `MetaTypePair` contains the element type T.
+    HandleSlice(MetaTypePair),
 }
 
 // ---------------------------------------------------------------------------
@@ -755,6 +762,11 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 MetaParamKind::StrSlice
             }
+            "handle_slice" => {
+                parse_comma(input)?;
+                let types = parse_type_pair(input)?;
+                MetaParamKind::HandleSlice(types)
+            }
             "impl_trait" => {
                 parse_comma(input)?;
                 expect_key(input, "trait_name")?;
@@ -846,6 +858,12 @@ impl syn::parse::Parse for MetaReturn {
                 parse_comma(&content)?;
 
                 Ok(MetaReturn::Result { ok, err_ident })
+            }
+            "handle_slice" => {
+                let content;
+                syn::parenthesized!(content in input);
+                let tp = parse_type_pair(&content)?;
+                Ok(MetaReturn::HandleSlice(tp))
             }
             other => Err(syn::Error::new(
                 kind.span(),

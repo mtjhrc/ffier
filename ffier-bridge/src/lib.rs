@@ -952,13 +952,13 @@ fn convert_params(
             let id = &p.name;
             match &p.kind {
                 MetaParamKind::ImplTrait { .. } => quote! { #id },
-                MetaParamKind::StrSlice => {
+                MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_) => {
                     let len_name = format!("{}_len", p.name);
                     let len_id = &c_sig
                         .params
                         .iter()
                         .find(|cp| cp.name == len_name)
-                        .expect("StrSlice must have _len param in c_sig")
+                        .expect("Slice param must have _len param in c_sig")
                         .name;
                     let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
                     let vec_id = format_ident!("__{id}_vec");
@@ -1323,6 +1323,24 @@ fn wrap_return(
                 <#bridge_type as #lib_crate::FfiType>::into_c(result)
             }
         }
+        MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
+            // &[&T] → convert each &T element to its handle pointer (borrowed),
+            // write pointer+length through out-params.
+            // Each &T is inside a FfierHandle, so as_handle()/borrow_as_c() works.
+            // We leak the Vec so the pointer stays valid — the caller must use the
+            // data before the parent handle is destroyed (the handles are borrowed).
+            quote! {
+                let __slice = #call_expr;
+                let __handles: Vec<*mut core::ffi::c_void> = __slice.iter()
+                    .map(|item| <&#bridge_type as #lib_crate::FfiType>::borrow_as_c(item))
+                    .collect();
+                unsafe {
+                    *out_ptr = __handles.as_ptr();
+                    *out_len = __handles.len();
+                }
+                core::mem::forget(__handles);
+            }
+        }
         MetaReturn::Result { ok, err_ident } => {
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
 
@@ -1449,7 +1467,7 @@ fn c_signature_for_method(
 
     // Regular params
     for p in &method.params {
-        if matches!(p.kind, MetaParamKind::StrSlice) {
+        if matches!(p.kind, MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_)) {
             params.push(CExternParam {
                 name: p.name.clone(),
                 c_type: c_param_type(&p.kind, lib_crate),
@@ -1474,6 +1492,20 @@ fn c_signature_for_method(
             // Handles return *mut c_void, primitives return their CRepr.
             let ty = c_return_type(_vk, lib_crate);
             quote! { -> #ty }
+        }
+        MetaReturn::HandleSlice(_) => {
+            // &[T] where T is a handle — return through out-params:
+            // *mut *const *mut c_void (pointer to output array pointer)
+            // *mut usize (pointer to output length)
+            params.push(CExternParam {
+                name: format_ident!("out_ptr"),
+                c_type: quote! { *mut *const *mut core::ffi::c_void },
+            });
+            params.push(CExternParam {
+                name: format_ident!("out_len"),
+                c_type: quote! { *mut usize },
+            });
+            quote! {}
         }
         MetaReturn::Result { ok, .. } => {
             let ok_is_handle = ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types);
@@ -1529,6 +1561,7 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
+        MetaParamKind::HandleSlice(_) => quote! { *const *mut core::ffi::c_void },
     }
 }
 
@@ -1563,6 +1596,19 @@ fn meta_param_conversion(
                         core::slice::from_raw_parts(b.data, b.len))
                 }).collect();
                 __strs
+            } }
+        }
+        MetaParamKind::HandleSlice(MetaTypePair { bridge_type, .. }) => {
+            let len_id = len_ident.expect("HandleSlice conversion needs len_ident");
+            quote! { {
+                if #len_id == 0 {
+                    Vec::new()
+                } else {
+                    let __handles = unsafe { core::slice::from_raw_parts(#id, #len_id) };
+                    __handles.iter()
+                        .map(|h| unsafe { ffier::ffier_handle_borrow::<#bridge_type>(*h) })
+                        .collect()
+                }
             } }
         }
         MetaParamKind::ImplTrait { .. } => {
@@ -2683,6 +2729,32 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
                 ],
             }
         }
+        MetaParamKind::HandleSlice(tp) => {
+            // &[&T] → two C params: pointer to handle array + length.
+            let rt = tp.rust_type.to_string();
+            let elem_ref = r.to_type_ref(&rt);
+            let handle_c = r.handle_c_name(&elem_ref.type_name);
+            ffier_schema::ParamType::Slice {
+                element: ffier_schema::TypeRef {
+                    type_name: elem_ref.type_name,
+                    ref_kind: ffier_schema::RefKind::Shared,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                },
+                c_params: vec![
+                    ffier_schema::CParam {
+                        name: p.name.to_string(),
+                        c_type: format!("const {handle_c}*"),
+                    },
+                    ffier_schema::CParam {
+                        name: format!("{}_len", p.name),
+                        c_type: "size_t".to_string(),
+                    },
+                ],
+            }
+        }
         MetaParamKind::ImplTrait {
             trait_name,
             trait_lifetime_args,
@@ -2728,6 +2800,20 @@ fn convert_return(
         MetaReturn::Value(tp) => {
             let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
+        }
+        MetaReturn::HandleSlice(tp) => {
+            // &[&T] → void return with out-params. The schema represents it
+            // as a Slice return (analogous to param Slice but for returns).
+            let rt = tp.rust_type.to_string();
+            let elem_ref = r.to_type_ref(&rt);
+            ffier_schema::Return::Value(ffier_schema::TypeRef {
+                type_name: elem_ref.type_name,
+                ref_kind: ffier_schema::RefKind::Shared,
+                ref_lifetime: None,
+                type_args: vec![],
+                optional: false,
+                owned: false,
+            })
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
             // Builder `-> Result<Self, E>`: ok was suppressed to None by

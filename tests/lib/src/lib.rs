@@ -196,6 +196,11 @@ impl Widget {
         base | flag
     }
 
+    /// Sum the values of a slice of gadgets.
+    pub fn sum_gadgets(&self, gadgets: &[&Gadget]) -> i32 {
+        gadgets.iter().map(|g| g.value).sum()
+    }
+
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);
@@ -997,6 +1002,12 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 }
 
 #[ffier::exportable]
+/// Count the number of gadgets in a slice and return the sum of their values.
+pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
+    gadgets.iter().map(|g| g.value).sum()
+}
+
+#[ffier::exportable]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     fd.try_clone_to_owned()
@@ -1041,4 +1052,5 @@ ffier::library_definition!("ft",
     fn log_level_name,
     fn log_level_is_enabled,
     fn clone_fd,
+    fn sum_gadget_values,
 );
