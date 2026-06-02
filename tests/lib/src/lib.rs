@@ -569,6 +569,10 @@ pub trait Fruit {
     fn label(&self) -> &str {
         "fruit"
     }
+
+    /// Fallible count — returns error if input is negative.
+    #[ffier(index = 2)]
+    fn try_count(&self, input: i32) -> Result<i32, TestError>;
 }
 
 #[cfg(not(feature = "fruit-label"))]
@@ -576,6 +580,9 @@ pub trait Fruit {
 pub trait Fruit {
     #[ffier(index = 0)]
     fn value(&self) -> i32;
+
+    #[ffier(index = 2)]
+    fn try_count(&self, input: i32) -> Result<i32, TestError>;
 }
 
 #[ffier::trait_impl]
@@ -583,12 +590,26 @@ impl Fruit for Apple {
     fn value(&self) -> i32 {
         self.weight
     }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.weight + input)
+        }
+    }
 }
 
 #[ffier::trait_impl]
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         self.juice
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.juice * input)
+        }
     }
 }
 
@@ -606,6 +627,13 @@ impl Fruit for Banana {
     fn value(&self) -> i32 {
         self.0
     }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
+    }
 }
 
 pub struct Mango(i32);
@@ -619,6 +647,13 @@ impl Mango {
 impl Fruit for Mango {
     fn value(&self) -> i32 {
         self.0
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
     }
 }
 
@@ -634,6 +669,13 @@ impl Fruit for Peach {
     fn value(&self) -> i32 {
         self.0
     }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
+    }
 }
 
 pub struct Plum(i32);
@@ -647,6 +689,13 @@ impl Plum {
 impl Fruit for Plum {
     fn value(&self) -> i32 {
         self.0
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
     }
 }
 
@@ -662,6 +711,13 @@ impl Fruit for Grape {
     fn value(&self) -> i32 {
         self.0
     }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
+    }
 }
 
 pub struct Lemon(i32);
@@ -675,6 +731,13 @@ impl Lemon {
 impl Fruit for Lemon {
     fn value(&self) -> i32 {
         self.0
+    }
+    fn try_count(&self, input: i32) -> Result<i32, TestError> {
+        if input < 0 {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.0 + input)
+        }
     }
 }
 
