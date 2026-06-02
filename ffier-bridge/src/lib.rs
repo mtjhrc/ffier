@@ -12,35 +12,35 @@ use ffier_meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
     MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    erase_lifetimes_tokens, peek_meta_field, peek_meta_tag,
+    peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
-pub type TraitMap = HashMap<String, TraitDispatchInfo>;
+type TraitMap = HashMap<String, TraitDispatchInfo>;
 
 /// Maps error type names to their metadata (type tag, path, variants).
 ///
 /// Used by bridge generation to emit `ffier_result(type_tag, code)`
 /// with the correct type tag for `Result<T, E>` returns.
-pub type ErrorMap = HashMap<String, ErrorInfo>;
+type ErrorMap = HashMap<String, ErrorInfo>;
 
-pub struct ErrorInfo {
+struct ErrorInfo {
     pub type_tag: u32,
     pub path: TokenStream2,
 }
 
-pub struct TraitDispatchInfo {
+struct TraitDispatchInfo {
     pub variants: Vec<TraitVariant>,
     /// If the trait is `#[implementable]`, the wrapper type path and vtable struct path.
     pub implementable: Option<ImplementableInfo>,
 }
 
-pub struct TraitVariant {
+struct TraitVariant {
     pub name: String,
     pub bridge_type: TokenStream2,
 }
 
-pub struct ImplementableInfo {
+struct ImplementableInfo {
     pub trait_path: TokenStream2,
     pub wrapper_path: TokenStream2,
     pub vtable_struct_path: TokenStream2,
@@ -688,7 +688,6 @@ fn generate_exportable_bridge(
         let c_sig = c_signature_for_method(
             m,
             &meta.prefix,
-            SignatureContext::Bridge,
             handle_types,
             lib_crate,
         );
@@ -1311,7 +1310,6 @@ fn generate_free_fn_bridge(
     let c_sig = c_signature_for_method(
         m,
         &meta.prefix,
-        SignatureContext::Bridge,
         handle_types,
         lib_crate,
     );
@@ -1445,7 +1443,7 @@ fn type_name(ty: &syn::Type) -> Option<String> {
 /// Check if a Result<T, E> Ok type is a handle, using the original Rust
 /// return type tokens (e.g. `Result<Gadget, TestError>`) rather than the
 /// bridge_type alias (which may be an opaque `_TypeN`).
-pub fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
+fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
     let ok_tokens = extract_result_ok_type(rust_ret);
     let Ok(ok_ty) = syn::parse2::<syn::Type>(ok_tokens) else {
         return false;
@@ -1456,7 +1454,7 @@ pub fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<Strin
 }
 
 /// Extract the Ok type from `Result<OkType, ErrType>` tokens.
-pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
+fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
         && let syn::Type::Path(tp) = &ty
         && let Some(last) = tp.path.segments.last()
@@ -1469,32 +1467,10 @@ pub fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
     tokens.clone()
 }
 
-/// Context for type resolution in extern fn signatures.
-///
-/// Both contexts resolve to the same C types via `<T as FfiType>::CRepr`,
-/// but use different token streams for the type `T`:
-/// - `Bridge`: uses `bridge_type` ($crate:: paths that resolve in cdylib)
-/// - `Client`: uses `rust_type` (plain types for standalone source)
-///
-/// TODO(remove): This enum and the `Client` variant exist solely because
-/// `ffier-gen-rust` calls `c_signature_for_method` with `Client` to generate
-/// extern declarations. Once `ffier-gen-rust` is ported to consume the JSON
-/// schema instead of calling into `ffier-bridge`, delete `SignatureContext`,
-/// the `Client` variant, and all `rust_type` branches in `c_param_type` /
-/// `c_return_type` / `c_out_param_type`. The bridge should only deal with
-/// `bridge_type`.
-pub enum SignatureContext {
-    /// C bridge in cdylib — types via $crate:: paths
-    Bridge,
-    /// Standalone Rust client source — types via original names.
-    /// TODO(remove): see enum-level doc comment.
-    Client,
-}
-
 /// A single parameter in a C extern signature.
-pub struct CExternParam {
-    pub name: syn::Ident,
-    pub c_type: TokenStream2,
+struct CExternParam {
+    name: syn::Ident,
+    c_type: TokenStream2,
 }
 
 /// Complete C extern function signature for a method.
@@ -1502,25 +1478,22 @@ pub struct CExternParam {
 /// Contains all the information needed to emit an `unsafe extern "C" { fn ... }`
 /// declaration. The parameters include handle, regular params, and out-param
 /// (for Result returns) in the order they appear.
-pub struct CExternSignature {
+struct CExternSignature {
     /// Fully qualified extern function name (e.g. "mylib_calculator_add").
-    pub fn_name: String,
+    _fn_name: String,
     /// All parameters in declaration order.
-    pub params: Vec<CExternParam>,
+    params: Vec<CExternParam>,
     /// Return type tokens (empty for void).
-    pub ret: TokenStream2,
+    ret: TokenStream2,
 }
 
 /// Compute the full C extern signature for a method.
 ///
 /// This is the single source of truth for "what does this method look like
-/// as an `extern "C"` function". Both the C bridge generator and the Rust
-/// client generator should agree on this.
-///
-pub fn c_signature_for_method(
+/// as an `extern "C"` function".
+fn c_signature_for_method(
     method: &MetaMethod,
     prefix: &str,
-    ctx: SignatureContext,
     handle_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> CExternSignature {
@@ -1545,7 +1518,7 @@ pub fn c_signature_for_method(
         if matches!(p.kind, MetaParamKind::StrSlice) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, None, &ctx, lib_crate),
+                c_type: c_param_type(&p.kind, lib_crate),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -1554,7 +1527,7 @@ pub fn c_signature_for_method(
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, Some(p.rust_type()), &ctx, lib_crate),
+                c_type: c_param_type(&p.kind, lib_crate),
             });
         }
     }
@@ -1565,7 +1538,7 @@ pub fn c_signature_for_method(
         MetaReturn::Value(_vk) => {
             // All values (handles and primitives) returned directly.
             // Handles return *mut c_void, primitives return their CRepr.
-            let ty = c_return_type(_vk, &method.rust_ret, &ctx, lib_crate);
+            let ty = c_return_type(_vk, lib_crate);
             quote! { -> #ty }
         }
         MetaReturn::Result { ok, .. } => {
@@ -1591,10 +1564,9 @@ pub fn c_signature_for_method(
                 // double-pointer, so no separate result out-param.
                 if !is_builder_self_result {
                     if let Some(vk) = ok {
-                        let ok_rust_type = extract_result_ok_type(&method.rust_ret);
                         params.push(CExternParam {
                             name: format_ident!("result"),
-                            c_type: c_out_param_type(vk, &ok_rust_type, &ctx, lib_crate),
+                            c_type: c_out_param_type(vk, lib_crate),
                         });
                     }
                 }
@@ -1609,35 +1581,17 @@ pub fn c_signature_for_method(
     };
 
     CExternSignature {
-        fn_name,
+        _fn_name: fn_name,
         params,
         ret,
     }
 }
 
-/// Produce the concrete C type tokens for a parameter kind.
-///
-/// This is the canonical "what C type does this parameter have?" function.
-/// Both the bridge generator and the client generator use it to ensure
-/// their extern declarations agree.
-///
-/// Produce the C type tokens for a parameter.
-pub fn c_param_type(
-    kind: &MetaParamKind,
-    rust_type: Option<&TokenStream2>,
-    ctx: &SignatureContext,
-    lib_crate: &TokenStream2,
-) -> TokenStream2 {
+/// Produce the C type tokens for a parameter kind.
+fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            let ty = match ctx {
-                SignatureContext::Client => {
-                    let rt = rust_type.expect("Regular param must have rust_type");
-                    erase_lifetimes_tokens(rt)
-                }
-                SignatureContext::Bridge => bridge_type.clone(),
-            };
-            quote! { <#ty as #lib_crate::FfiType>::CRepr }
+            quote! { <#bridge_type as #lib_crate::FfiType>::CRepr }
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
@@ -1645,28 +1599,14 @@ pub fn c_param_type(
 }
 
 /// Produce the C return type tokens for a value kind.
-pub fn c_return_type(
-    kind: &MetaTypePair,
-    rust_ret: &TokenStream2,
-    ctx: &SignatureContext,
-    lib_crate: &TokenStream2,
-) -> TokenStream2 {
+fn c_return_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
     let bridge_type = &kind.bridge_type;
-    let ty = match ctx {
-        SignatureContext::Client => erase_lifetimes_tokens(rust_ret),
-        SignatureContext::Bridge => bridge_type.clone(),
-    };
-    quote! { <#ty as #lib_crate::FfiType>::CRepr }
+    quote! { <#bridge_type as #lib_crate::FfiType>::CRepr }
 }
 
 /// Produce the C type for a Result ok-value out-parameter.
-pub fn c_out_param_type(
-    kind: &MetaTypePair,
-    rust_ret: &TokenStream2,
-    ctx: &SignatureContext,
-    lib_crate: &TokenStream2,
-) -> TokenStream2 {
-    let inner = c_return_type(kind, rust_ret, ctx, lib_crate);
+fn c_out_param_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
+    let inner = c_return_type(kind, lib_crate);
     quote! { *mut #inner }
 }
 
@@ -1697,20 +1637,7 @@ fn meta_param_conversion(
     }
 }
 
-/// Format a C type name with the library prefix.
-///
-/// - Names starting with "Ffier" (e.g. "FfierStr") → replace prefix: "ExStr"
-/// - Names starting with uppercase (e.g. "Widget") → prepend prefix: "ExWidget"
-/// - Everything else (e.g. "int32_t", "bool") → use as-is
-pub fn format_c_type_name(c_type_name: &str, type_pfx: &str) -> String {
-    if let Some(suffix) = c_type_name.strip_prefix("Ffier") {
-        format!("{type_pfx}{suffix}")
-    } else if c_type_name.starts_with(|c: char| c.is_uppercase()) {
-        format!("{type_pfx}{c_type_name}")
-    } else {
-        c_type_name.to_string()
-    }
-}
+
 
 // ===========================================================================
 // Self-dispatch bridge generation
