@@ -414,7 +414,27 @@ pub enum Return {
         ok: Option<TypeRef>,
         /// Error type name — key into `type_registry`.
         err_type: String,
+        /// The C-level calling convention for this Result return.
+        /// Determined by the bridge at schema-emission time.
+        c_convention: CResultConvention,
     },
+}
+
+/// C-level calling convention for a `Result<T, E>` return.
+///
+/// Determined once by the bridge and stored in the schema.
+/// All generators read this — no independent convention derivation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CResultConvention {
+    /// Return `FfierResult` (packed type_tag + error code), ok value via
+    /// out-param (`*mut T`), error handle via out-param (`*mut *mut c_void`).
+    /// Used for `Result<PrimitiveType, E>`, `Result<(), E>`.
+    OutParam,
+    /// Return the ok handle pointer directly (`*mut c_void`), `NULL` on error.
+    /// Error handle via out-param (`*mut *mut c_void`).
+    /// Used for `Result<HandleType, E>`.
+    HandleOrNull,
 }
 
 /// Well-known type name for builder methods that return `Self`.
@@ -446,7 +466,7 @@ impl Return {
             Return::Void => "()".to_string(),
             Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
             Return::Value(tr) => tr.to_rust_type(),
-            Return::Result { ok, err_type } => {
+            Return::Result { ok, err_type, .. } => {
                 let ok_str = match ok {
                     Some(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
                     Some(tr) => tr.to_rust_type(),
@@ -669,7 +689,7 @@ impl Library {
                 Return::Value(tr) => {
                     refs.insert(&tr.type_name);
                 }
-                Return::Result { ok, err_type } => {
+                Return::Result { ok, err_type, .. } => {
                     if let Some(tr) = ok {
                         refs.insert(&tr.type_name);
                     }

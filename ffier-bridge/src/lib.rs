@@ -2106,6 +2106,18 @@ fn build_schema(
 
     let resolver = CTypeResolver::new(prefix);
 
+    // Build handle_types set for Result convention detection.
+    let handle_types: HashSet<String> = {
+        let mut set = HashSet::new();
+        for e in &exportables_parsed {
+            set.insert(e.struct_name.to_string());
+        }
+        for i in &implementables_parsed {
+            set.insert(format!("Vtable{}", i.trait_name));
+        }
+        set
+    };
+
     // Build type registry
     let mut type_registry = std::collections::BTreeMap::new();
 
@@ -2357,7 +2369,7 @@ fn build_schema(
         type_registry,
         exported_types: exportables_parsed
             .iter()
-            .map(|e| convert_exportable(e, &resolver))
+            .map(|e| convert_exportable(e, &resolver, &handle_types))
             .collect(),
         errors: errors_parsed
             .iter()
@@ -2373,15 +2385,15 @@ fn build_schema(
             .collect(),
         free_functions: free_fns_parsed
             .iter()
-            .map(|f| convert_free_fn(f, &resolver))
+            .map(|f| convert_free_fn(f, &resolver, &handle_types))
             .collect(),
         traits: implementables_parsed
             .iter()
-            .map(|i| convert_implementable(i, &resolver))
+            .map(|i| convert_implementable(i, &resolver, &handle_types))
             .collect(),
         trait_impls: trait_impls_parsed
             .iter()
-            .map(|t| convert_trait_impl(t, &resolver))
+            .map(|t| convert_trait_impl(t, &resolver, &handle_types))
             .collect(),
     };
     library.prune_unreferenced_types();
@@ -2432,7 +2444,11 @@ fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::Enu
     }
 }
 
-fn convert_free_fn(meta: &MetaFreeFunction, r: &CTypeResolver) -> ffier_schema::FreeFunction {
+fn convert_free_fn(
+    meta: &MetaFreeFunction,
+    r: &CTypeResolver,
+    handle_types: &HashSet<String>,
+) -> ffier_schema::FreeFunction {
     // A free function has exactly one "method" in its methods list.
     let m = &meta.methods[0];
     ffier_schema::FreeFunction {
@@ -2440,11 +2456,11 @@ fn convert_free_fn(meta: &MetaFreeFunction, r: &CTypeResolver) -> ffier_schema::
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
         doc: meta.doc.clone(),
         params: m.params.iter().map(|p| convert_param(p, r)).collect(),
-        ret: convert_return(&m.ret, r, false),
+        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
     }
 }
 
-fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema::ExportedType {
+fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver, handle_types: &HashSet<String>) -> ffier_schema::ExportedType {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
     let is_builder_type = meta
@@ -2458,7 +2474,7 @@ fn convert_exportable(meta: &MetaExportable, r: &CTypeResolver) -> ffier_schema:
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, None))
+            .map(|m| convert_method(m, r, None, handle_types))
             .collect(),
     }
 }
@@ -2492,6 +2508,7 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
 fn convert_implementable(
     meta: &MetaImplementable,
     r: &CTypeResolver,
+    handle_types: &HashSet<String>,
 ) -> ffier_schema::ImplementableTrait {
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
@@ -2508,14 +2525,14 @@ fn convert_implementable(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, Some(&ffi_prefix)))
+            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types))
             .collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
     }
 }
 
-fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::TraitImpl {
+fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver, handle_types: &HashSet<String>) -> ffier_schema::TraitImpl {
     let struct_snake = camel_to_snake(&meta.struct_name.to_string());
     let ffi_prefix = format!("{struct_snake}_");
     ffier_schema::TraitImpl {
@@ -2527,7 +2544,7 @@ fn convert_trait_impl(meta: &MetaTraitImpl, r: &CTypeResolver) -> ffier_schema::
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, Some(&ffi_prefix)))
+            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types))
             .collect(),
     }
 }
@@ -2540,6 +2557,7 @@ fn convert_method(
     meta: &MetaMethod,
     r: &CTypeResolver,
     parent_ffi_prefix: Option<&str>,
+    handle_types: &HashSet<String>,
 ) -> ffier_schema::Method {
     let context = match &meta.context {
         MetaMethodContext::Exportable { ffi_name, .. } => ffier_schema::MethodContext::Exportable {
@@ -2557,7 +2575,7 @@ fn convert_method(
         }
     };
 
-    let ret = convert_return(&meta.ret, r, meta.is_builder());
+    let ret = convert_return(&meta.ret, &meta.rust_ret, r, meta.is_builder(), handle_types);
 
     ffier_schema::Method {
         name: meta.name.to_string(),
@@ -2644,7 +2662,13 @@ fn builder_self_type_ref() -> ffier_schema::TypeRef {
     }
 }
 
-fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffier_schema::Return {
+fn convert_return(
+    ret: &MetaReturn,
+    rust_ret: &TokenStream2,
+    r: &CTypeResolver,
+    is_builder: bool,
+    handle_types: &HashSet<String>,
+) -> ffier_schema::Return {
     match ret {
         MetaReturn::Void if is_builder => {
             // `-> Self`: encode as Value(Self).
@@ -2665,9 +2689,15 @@ fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffie
                     Some(r.to_type_ref(&rt))
                 }
             };
+            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             ffier_schema::Return::Result {
                 ok: ok_ref,
                 err_type: err_ident.clone(),
+                c_convention: if ok_is_handle {
+                    ffier_schema::CResultConvention::HandleOrNull
+                } else {
+                    ffier_schema::CResultConvention::OutParam
+                },
             }
         }
         MetaReturn::Result { ok, err_ident } => {
@@ -2675,9 +2705,15 @@ fn convert_return(ret: &MetaReturn, r: &CTypeResolver, is_builder: bool) -> ffie
                 let rt = tp.rust_type.to_string();
                 r.to_type_ref(&rt)
             });
+            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             ffier_schema::Return::Result {
                 ok: ok_ref,
                 err_type: err_ident.clone(),
+                c_convention: if ok_is_handle {
+                    ffier_schema::CResultConvention::HandleOrNull
+                } else {
+                    ffier_schema::CResultConvention::OutParam
+                },
             }
         }
     }
