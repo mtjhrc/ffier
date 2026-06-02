@@ -766,21 +766,7 @@ fn build_extern_signature(
     }
 
     // Method params
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type_static();
-                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
-            }
-            ParamType::Slice { .. } => {
-                params.push(format!("{}: *const ffier::FfierBytes", p.name));
-                params.push(format!("{}_len: usize", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                params.push(format!("{}: *mut core::ffi::c_void", p.name));
-            }
-        }
-    }
+    push_extern_params(&m.params, &mut params);
 
     // Return type + extra out-params
     let ret_str = match &m.ret {
@@ -1371,21 +1357,7 @@ fn emit_vtable_struct(
     for slot in 0..=tr.max_vtable_slot {
         if let Some(m) = method_by_index.get(&slot) {
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
-            for p in &m.params {
-                match &p.param_type {
-                    ParamType::Regular(tr) => {
-                        let ty = tr.to_rust_type_static();
-                        params.push(format!("<{ty} as FfiType>::CRepr"));
-                    }
-                    ParamType::Slice { .. } => {
-                        params.push("*const ffier::FfierBytes".to_string());
-                        params.push("usize".to_string());
-                    }
-                    ParamType::ImplTrait { .. } => {
-                        params.push("*mut core::ffi::c_void".to_string());
-                    }
-                }
-            }
+            push_extern_param_types(&m.params, &mut params);
             let ret = match &m.ret {
                 Return::Void => String::new(),
                 Return::Value(tr) => {
@@ -1445,21 +1417,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
 
             // Build trampoline params
             let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
-            for p in &m.params {
-                match &p.param_type {
-                    ParamType::Regular(tr) => {
-                        let ty = tr.to_rust_type_static();
-                        tramp_params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
-                    }
-                    ParamType::ImplTrait { .. } => {
-                        tramp_params.push(format!("{}: *mut core::ffi::c_void", p.name));
-                    }
-                    ParamType::Slice { .. } => {
-                        tramp_params.push(format!("{}: *const ffier::FfierBytes", p.name));
-                        tramp_params.push(format!("{}_len: usize", p.name));
-                    }
-                }
-            }
+            push_extern_params(&m.params, &mut tramp_params);
             let tramp_params_str = tramp_params.join(", ");
 
             let ret = match &m.ret {
@@ -1550,21 +1508,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
 
 fn build_dispatch_extern_sig(extern_name: &str, m: &Method, _lib: &Library) -> String {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
-    for p in &m.params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type_static();
-                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
-            }
-            ParamType::Slice { .. } => {
-                params.push(format!("{}: *const ffier::FfierBytes", p.name));
-                params.push(format!("{}_len: usize", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                params.push(format!("{}: *mut core::ffi::c_void", p.name));
-            }
-        }
-    }
+    push_extern_params(&m.params, &mut params);
     let ret = match &m.ret {
         Return::Void => String::new(),
         Return::Value(tr) => {
@@ -1746,6 +1690,45 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 /// via `FfiType::into_c`, `as_handle()`, `__into_raw_handle()`, or pre-bound
 /// slice reference. For borrowed handle params (`&Handle`), uses `as_handle()`
 /// instead of `into_c()` to avoid lifetime escape.
+/// Append C extern param strings (`"name: <Type as FfiType>::CRepr"` etc.)
+/// for a list of schema params. Shared by all extern signature builders.
+fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
+    for p in params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type_static();
+                out.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
+            }
+            ParamType::Slice { .. } => {
+                out.push(format!("{}: *const ffier::FfierBytes", p.name));
+                out.push(format!("{}_len: usize", p.name));
+            }
+            ParamType::ImplTrait { .. } => {
+                out.push(format!("{}: *mut core::ffi::c_void", p.name));
+            }
+        }
+    }
+}
+
+/// Append C type-only strings (no param names) for vtable struct fields.
+fn push_extern_param_types(params: &[ffier_schema::Param], out: &mut Vec<String>) {
+    for p in params {
+        match &p.param_type {
+            ParamType::Regular(tr) => {
+                let ty = tr.to_rust_type_static();
+                out.push(format!("<{ty} as FfiType>::CRepr"));
+            }
+            ParamType::Slice { .. } => {
+                out.push("*const ffier::FfierBytes".to_string());
+                out.push("usize".to_string());
+            }
+            ParamType::ImplTrait { .. } => {
+                out.push("*mut core::ffi::c_void".to_string());
+            }
+        }
+    }
+}
+
 fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
     let mut args = Vec::new();
     for p in params {
@@ -2133,22 +2116,7 @@ fn build_free_fn_extern_sig(
     handle_types: &HashSet<&str>,
 ) -> String {
     let mut params = Vec::new();
-
-    for p in &f.params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type_static();
-                params.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
-            }
-            ParamType::Slice { .. } => {
-                params.push(format!("{}: *const ffier::FfierBytes", p.name));
-                params.push(format!("{}_len: usize", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                params.push(format!("{}: *mut core::ffi::c_void", p.name));
-            }
-        }
-    }
+    push_extern_params(&f.params, &mut params);
 
     let ret_str = match &f.ret {
         Return::Void => String::new(),
