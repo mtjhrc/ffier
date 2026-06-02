@@ -66,7 +66,7 @@ pub fn peek_meta_tag(input: &TokenStream) -> String {
 /// Peek at the type/trait name from a metadata token stream.
 ///
 /// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
-pub fn peek_meta_name(input: &TokenStream) -> String {
+fn peek_meta_name(input: &TokenStream) -> String {
     let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
     for i in 0..tokens.len().saturating_sub(2) {
         if let proc_macro2::TokenTree::Ident(ref id) = tokens[i]
@@ -137,36 +137,7 @@ pub fn erase_lifetimes(ty: &syn::Type) -> syn::Type {
 
 /// Erase lifetimes from type tokens for extern fn signatures.
 ///
-/// Replaces named lifetimes with `'static` and adds `'static` to bare
-/// references (`&str` → `&'static str`). Operates on token streams —
-/// falls back to returning the input unchanged if parsing fails.
-pub fn erase_lifetimes_tokens(tokens: &TokenStream) -> TokenStream {
-    use quote::quote;
-    use syn::visit_mut::VisitMut;
-    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone()) {
-        struct Eraser;
-        impl VisitMut for Eraser {
-            fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
-                *lt = syn::Lifetime::new("'static", lt.apostrophe);
-            }
-            fn visit_type_reference_mut(&mut self, r: &mut syn::TypeReference) {
-                // Add 'static to bare references (elided lifetimes)
-                if r.lifetime.is_none() {
-                    r.lifetime = Some(syn::Lifetime::new(
-                        "'static",
-                        proc_macro2::Span::call_site(),
-                    ));
-                }
-                syn::visit_mut::visit_type_reference_mut(self, r);
-            }
-        }
-        let mut ty = ty;
-        syn::visit_mut::VisitMut::visit_type_mut(&mut Eraser, &mut ty);
-        quote! { #ty }
-    } else {
-        tokens.clone()
-    }
-}
+
 
 // ---------------------------------------------------------------------------
 // Shared prefix helpers
@@ -209,12 +180,6 @@ pub struct MetaExportable {
 impl HasPrefix for MetaExportable {
     fn prefix(&self) -> &str {
         &self.prefix
-    }
-}
-
-impl MetaExportable {
-    pub fn handle_c_name(&self) -> String {
-        format!("{}{}", self.type_pfx(), self.struct_name)
     }
 }
 
@@ -332,14 +297,6 @@ impl MetaMethod {
 
     // --- Return type accessors ---
 
-    pub fn ret_bridge_type(&self) -> Option<&TokenStream> {
-        match &self.ret {
-            MetaReturn::Void => None,
-            MetaReturn::Value(tp) => Some(&tp.bridge_type),
-            MetaReturn::Result { ok, .. } => ok.as_ref().map(|tp| &tp.bridge_type),
-        }
-    }
-
     pub fn is_mut(&self) -> bool {
         self.receiver == MetaReceiver::Mut
     }
@@ -353,31 +310,6 @@ pub struct MetaParam {
 impl MetaParam {
     pub fn is_impl_trait(&self) -> bool {
         matches!(self.kind, MetaParamKind::ImplTrait { .. })
-    }
-
-    pub fn impl_trait_name(&self) -> Option<&str> {
-        match &self.kind {
-            MetaParamKind::ImplTrait { trait_name, .. } => Some(trait_name),
-            _ => None,
-        }
-    }
-
-    /// Bridge type. Panics for StrSlice.
-    pub fn bridge_type(&self) -> &TokenStream {
-        match &self.kind {
-            MetaParamKind::Regular(tp) => &tp.bridge_type,
-            MetaParamKind::ImplTrait { types, .. } => &types.bridge_type,
-            MetaParamKind::StrSlice => panic!("StrSlice has no single bridge_type"),
-        }
-    }
-
-    /// Rust type. Panics for StrSlice.
-    pub fn rust_type(&self) -> &TokenStream {
-        match &self.kind {
-            MetaParamKind::Regular(tp) => &tp.rust_type,
-            MetaParamKind::ImplTrait { types, .. } => &types.rust_type,
-            MetaParamKind::StrSlice => panic!("StrSlice has no single rust_type"),
-        }
     }
 }
 
@@ -542,19 +474,7 @@ impl HasPrefix for MetaImplementable {
     }
 }
 
-impl MetaImplementable {
-    pub fn vtable_c_name(&self) -> String {
-        format!("{}{}Vtable", self.type_pfx(), self.trait_name)
-    }
 
-    pub fn constructor_name(&self) -> String {
-        format!(
-            "{}{}_from_vtable",
-            self.fn_pfx(),
-            camel_to_snake(&self.trait_name.to_string())
-        )
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Trait impl metadata (impl Trait for Struct, exported via C ABI)

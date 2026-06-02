@@ -13,7 +13,7 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    MethodContext, Param, ParamType, Receiver, Return, TraitImpl, TypeKind,
+    MethodContext, Param, ParamType, Receiver, Return, TraitImpl,
 };
 
 /// Generate a C header string from a library schema.
