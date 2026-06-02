@@ -955,6 +955,7 @@ fn emit_method_body(
         Return::Result {
             ok: Some(_),
             err_type,
+            ..
         } if is_builder && by_value_self => {
             // Builder Result<Self, E> by-value: __handle was updated by bridge
             writeln!(
@@ -972,6 +973,7 @@ fn emit_method_body(
         Return::Result {
             ok: Some(_),
             err_type,
+            ..
         } if is_builder && m.receiver == Receiver::Mut => {
             // Builder Result<Self, E> &mut self
             writeln!(
@@ -986,7 +988,9 @@ fn emit_method_body(
             )
             .unwrap();
         }
-        Return::Result { ok: None, err_type } => {
+        Return::Result {
+            ok: None, err_type, ..
+        } => {
             writeln!(
                 out,
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -1002,6 +1006,7 @@ fn emit_method_body(
         Return::Result {
             ok: Some(ok_tr),
             err_type,
+            ..
         } if is_ok_handle => {
             // GLib-style: returns handle, null on error
             let ty = ok_tr.to_rust_type();
@@ -1030,6 +1035,7 @@ fn emit_method_body(
         Return::Result {
             ok: Some(ok_tr),
             err_type,
+            ..
         } => {
             // FfierResult-style with out-param
             let ty = ok_tr.to_rust_type();
@@ -2027,7 +2033,7 @@ fn emit_free_function(
     let ret_type = match &f.ret {
         Return::Void => String::new(),
         Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
-        Return::Result { ok, err_type } => {
+        Return::Result { ok, err_type, .. } => {
             let ok_str = match ok {
                 Some(tr) => tr.to_rust_type(),
                 None => "()".to_string(),
@@ -2057,7 +2063,9 @@ fn emit_free_function(
             .unwrap();
             writeln!(out, "    unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
         }
-        Return::Result { ok: None, err_type } => {
+        Return::Result {
+            ok: None, err_type, ..
+        } => {
             writeln!(
                 out,
                 "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -2078,6 +2086,7 @@ fn emit_free_function(
         Return::Result {
             ok: Some(ok_tr),
             err_type,
+            ..
         } => {
             let ty = ok_tr.to_rust_type();
             let is_ok_handle = handle_types.contains(ok_tr.type_name.as_str());
