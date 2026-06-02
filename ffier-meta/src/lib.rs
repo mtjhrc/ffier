@@ -381,6 +381,17 @@ impl MetaParam {
     }
 }
 
+/// How an `impl Trait` parameter is referenced at the call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplTraitRefKind {
+    /// `param: impl Trait` — by value, handle is consumed.
+    Value,
+    /// `param: &impl Trait` — shared reference, handle is borrowed.
+    Ref,
+    /// `param: &mut impl Trait` — mutable reference, handle is borrowed mutably.
+    Mut,
+}
+
 pub enum MetaParamKind {
     Regular(MetaTypePair),
     StrSlice,
@@ -390,6 +401,8 @@ pub enum MetaParamKind {
         trait_name: String,
         dispatch: DispatchMode,
         types: MetaTypePair,
+        /// How the param is passed: by value, &, or &mut.
+        ref_kind: ImplTraitRefKind,
         /// Lifetime arguments on the trait at this usage site (e.g. `["a"]` for `impl Snapshot<'a>`).
         trait_lifetime_args: Vec<Ident>,
     },
@@ -844,6 +857,20 @@ impl syn::parse::Parse for MetaParam {
                     }
                 };
                 parse_comma(input)?;
+                expect_key(input, "ref_kind")?;
+                let ref_kind_ident: Ident = input.parse()?;
+                let ref_kind = match ref_kind_ident.to_string().as_str() {
+                    "value" => ImplTraitRefKind::Value,
+                    "r#ref" | "ref" => ImplTraitRefKind::Ref,
+                    "r#mut" | "mut" => ImplTraitRefKind::Mut,
+                    other => {
+                        return Err(syn::Error::new(
+                            ref_kind_ident.span(),
+                            format!("unknown ref_kind `{other}`"),
+                        ));
+                    }
+                };
+                parse_comma(input)?;
                 expect_key(input, "trait_lifetime_args")?;
                 let trait_lifetime_args =
                     parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
@@ -852,6 +879,7 @@ impl syn::parse::Parse for MetaParam {
                 MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
+                    ref_kind,
                     types,
                     trait_lifetime_args,
                 }

@@ -842,6 +842,7 @@ fn generate_error_bridge(_meta: MetaError, _lib_crate: &TokenStream2) -> TokenSt
 struct ImplTraitParam {
     name: syn::Ident,
     dispatch: ffier_meta::DispatchMode,
+    ref_kind: ffier_meta::ImplTraitRefKind,
     trait_name: String,
     variants: Vec<(String, TokenStream2)>,
 }
@@ -872,25 +873,34 @@ fn convert_params(
     trait_map: &TraitMap,
     lib_crate: &TokenStream2,
 ) -> Result<ConvertedParams, TokenStream2> {
-    // Collect all impl Trait params with their dispatch info
+    // Collect all impl Trait params with their dispatch info.
+    // If a trait has no entry in trait_map (no concrete implementors),
+    // the param still needs vtable dispatch (empty variants list forces
+    // vtable mode since concrete dispatch with 0 variants makes no sense).
     let impl_trait_params: Vec<_> = params
         .iter()
         .filter_map(|p| {
             if let MetaParamKind::ImplTrait {
                 trait_name,
                 dispatch,
+                ref_kind,
                 ..
             } = &p.kind
             {
-                trait_map.get(trait_name).map(|info| ImplTraitParam {
+                let info = trait_map.get(trait_name);
+                Some(ImplTraitParam {
                     name: p.name.clone(),
                     dispatch: *dispatch,
+                    ref_kind: *ref_kind,
                     trait_name: trait_name.clone(),
                     variants: info
-                        .variants
-                        .iter()
-                        .map(|v| (v.name.clone(), v.bridge_type.clone()))
-                        .collect(),
+                        .map(|i| {
+                            i.variants
+                                .iter()
+                                .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 })
             } else {
                 None
@@ -965,9 +975,12 @@ fn convert_params(
         .collect();
 
     // Determine effective dispatch mode for each param.
-    let all_concrete = impl_trait_params
-        .iter()
-        .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+    // When total_branches == 0 (no concrete implementors), force vtable
+    // dispatch — there's nothing to dispatch concretely against.
+    let all_concrete = total_branches > 0
+        && impl_trait_params
+            .iter()
+            .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
         && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
             || impl_trait_params
                 .iter()
@@ -993,14 +1006,15 @@ fn convert_params(
             .collect()
     };
 
-    // Dynamic dispatch: wrap each vtable-mode param into a Box<dyn Trait>
+    // Dynamic dispatch: wrap each vtable-mode param into a dyn Trait reference.
+    // For by-value params, consume the handle into Box<dyn Trait> and rebind as &mut.
+    // For &/&mut params, borrow the handle directly.
     let mut vtable_pre_bindings: Vec<TokenStream2> = Vec::new();
     for (i, p) in impl_trait_params.iter().enumerate() {
         if !effective_dispatch[i] {
             continue;
         }
         let dyn_id = &p.name;
-        let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
         let info = trait_map.get(&p.trait_name).unwrap();
 
         let trait_ident = if let Some(imp) = &info.implementable {
@@ -1010,29 +1024,76 @@ fn convert_params(
             quote! { #ident }
         };
 
-        let mut branches = Vec::new();
-        for v in &info.variants {
-            let ty = &v.bridge_type;
-            branches.push(quote! {
-                if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
-                    let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
-                    Box::new(__val) as Box<dyn #trait_ident>
-                }
-            });
-        }
-
         let expected_msg = format!("impl {}", p.trait_name);
         let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
-        vtable_pre_bindings.push(quote! {
-            let mut #dyn_box_id: Box<dyn #trait_ident> = {
-                let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                #(#branches else)* {
-                    __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+        use ffier_meta::ImplTraitRefKind;
+        match p.ref_kind {
+            ImplTraitRefKind::Value => {
+                let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
+                let mut branches = Vec::new();
+                for v in &info.variants {
+                    let ty = &v.bridge_type;
+                    branches.push(quote! {
+                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                            let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
+                            Box::new(__val) as Box<dyn #trait_ident>
+                        }
+                    });
                 }
-            };
-            let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
-        });
+                vtable_pre_bindings.push(quote! {
+                    let mut #dyn_box_id: Box<dyn #trait_ident> = {
+                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        #(#branches else)* {
+                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+                        }
+                    };
+                    let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
+                });
+            }
+            ImplTraitRefKind::Mut => {
+                let borrow_id = format_ident!("__borrow_mut_{}", p.name);
+                let mut branches = Vec::new();
+                for v in &info.variants {
+                    let ty = &v.bridge_type;
+                    branches.push(quote! {
+                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                            unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id) as &mut dyn #trait_ident }
+                        }
+                    });
+                }
+                vtable_pre_bindings.push(quote! {
+                    let #borrow_id: &mut dyn #trait_ident = {
+                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        #(#branches else)* {
+                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+                        }
+                    };
+                    let #dyn_id: &mut dyn #trait_ident = #borrow_id;
+                });
+            }
+            ImplTraitRefKind::Ref => {
+                let borrow_id = format_ident!("__borrow_{}", p.name);
+                let mut branches = Vec::new();
+                for v in &info.variants {
+                    let ty = &v.bridge_type;
+                    branches.push(quote! {
+                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                            unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id) as &dyn #trait_ident }
+                        }
+                    });
+                }
+                vtable_pre_bindings.push(quote! {
+                    let #borrow_id: &dyn #trait_ident = {
+                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        #(#branches else)* {
+                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
+                        }
+                    };
+                    let #dyn_id: &dyn #trait_ident = #borrow_id;
+                });
+            }
+        }
     }
 
     // Collect concrete dispatch params (effective_dispatch = false)
@@ -1065,12 +1126,24 @@ fn wrap_concrete_dispatch(
         .fold(base_call, |inner, p| {
             let dyn_id = &p.name;
             let variants = &p.variants;
+            use ffier_meta::ImplTraitRefKind;
             let if_branches: Vec<_> = variants
                 .iter()
                 .map(|(_, ty_tokens)| {
+                    let binding = match p.ref_kind {
+                        ImplTraitRefKind::Value => quote! {
+                            let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
+                        },
+                        ImplTraitRefKind::Mut => quote! {
+                            let #dyn_id = unsafe { ffier::ffier_handle_borrow_mut::<#ty_tokens>(#dyn_id) };
+                        },
+                        ImplTraitRefKind::Ref => quote! {
+                            let #dyn_id = unsafe { ffier::ffier_handle_borrow::<#ty_tokens>(#dyn_id) };
+                        },
+                    };
                     quote! {
                         if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
-                            let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
+                            #binding
                             #inner
                         }
                     }
@@ -1596,35 +1669,14 @@ fn generate_self_dispatch_bridge(
         let sig_types: Vec<_> = all_params.iter().map(|(_, t)| *t).collect();
         let sig_ret = &c_sig.ret;
 
-        // Build call args from method params (converting C types to Rust).
-        let mut call_args = Vec::new();
-        let mut impl_trait_borrows = Vec::new();
-
-        for p in &m.params {
-            let param_name = &p.name;
-            if let Some(trait_name) = p.impl_trait_name() {
-                let wrapper_path = trait_map
-                    .get(trait_name)
-                    .and_then(|info| info.implementable.as_ref())
-                    .map(|imp| &imp.wrapper_path)
-                    .unwrap_or_else(|| panic!(
-                        "impl Trait param `{}` references trait `{}` which has no #[implementable] entry in the library",
-                        param_name, trait_name,
-                    ));
-
-                let borrow_name = format_ident!("__impl_trait_{param_name}");
-                impl_trait_borrows.push(quote! {
-                    let #borrow_name = unsafe {
-                        ffier::ffier_handle_borrow_mut::<#wrapper_path>(#param_name)
-                    };
-                });
-                call_args.push(quote! { #borrow_name });
-            } else {
-                let bt = p.bridge_type();
-                call_args
-                    .push(quote! { unsafe { <#bt as #lib_crate::FfiType>::from_c(#param_name) } });
-            }
-        }
+        // Shared param conversion (same as exportable methods / free functions).
+        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+            Ok(cp) => cp,
+            Err(err) => return err,
+        };
+        let converted_args = &cp.converted_args;
+        let pre_bindings = &cp.pre_bindings;
+        let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
         let wrapper_path = &imp.wrapper_path;
         let method_index_u32 = m.index() as u32;
@@ -1651,7 +1703,13 @@ fn generate_self_dispatch_bridge(
             let metadata_guard = if is_vtable_variant && m.has_default() && !m.raw_handle() {
                 if let Some(helper) = &default_helper_path {
                     let obj_for_default = borrow_from_handle(ty, m.is_mut());
-                    let default_call_expr = quote! { #helper(obj #(, #call_args)*) };
+                    let default_base_call = quote! { #helper(obj #(, #converted_args)*) };
+                    let default_call_expr = wrap_concrete_dispatch(
+                        default_base_call,
+                        &cp.concrete_dispatch_params,
+                        &ffi_name_str,
+                        lib_crate,
+                    );
                     let default_body = wrap_return(
                         default_call_expr, &m.ret, &m.rust_ret, handle_types,
                         error_map, None, lib_crate,
@@ -1670,17 +1728,23 @@ fn generate_self_dispatch_bridge(
                 quote! {}
             };
 
-            let (call_expr, pre_binding) = if m.raw_handle() {
+            let (base_call, pre_binding) = if m.raw_handle() {
                 (quote! {
                     <#ty as #trait_path>::#method_name(
-                        handle as *const ffier::FfierHandle<#ty> #(, #call_args)*)
+                        handle as *const ffier::FfierHandle<#ty> #(, #converted_args)*)
                 }, quote! {})
             } else {
                 let obj_binding = borrow_from_handle(ty, m.is_mut());
                 (quote! {
-                    <#ty as #trait_path>::#method_name(obj #(, #call_args)*)
+                    <#ty as #trait_path>::#method_name(obj #(, #converted_args)*)
                 }, obj_binding)
             };
+            let call_expr = wrap_concrete_dispatch(
+                base_call,
+                &cp.concrete_dispatch_params,
+                &ffi_name_str,
+                lib_crate,
+            );
 
             let ret_body = wrap_return(
                 call_expr, &m.ret, &m.rust_ret, handle_types,
@@ -1700,7 +1764,8 @@ fn generate_self_dispatch_bridge(
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
-                #(#impl_trait_borrows)*
+                #(#vtable_pre_bindings)*
+                #(#pre_bindings)*
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
                 #(#dispatch_branches else)* {
                     __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
@@ -1783,44 +1848,28 @@ fn generate_trait_impl_bridge(
         let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
         let sig_ret = &c_sig.ret;
 
-        // Build call args from method params
-        let mut call_args = Vec::new();
-        let mut impl_trait_borrows = Vec::new();
+        // Shared param conversion
+        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+            Ok(cp) => cp,
+            Err(err) => return err,
+        };
+        let converted_args = &cp.converted_args;
 
-        for p in &m.params {
-            let param_name = &p.name;
-            if let Some(impl_trait_name) = p.impl_trait_name() {
-                let wrapper_path = trait_map
-                    .get(impl_trait_name)
-                    .and_then(|info| info.implementable.as_ref())
-                    .map(|imp| &imp.wrapper_path)
-                    .unwrap_or_else(|| panic!(
-                        "impl Trait param `{}` references trait `{}` which has no #[implementable] entry",
-                        param_name, impl_trait_name,
-                    ));
-                let borrow_name = format_ident!("__impl_trait_{param_name}");
-                impl_trait_borrows.push(quote! {
-                    let #borrow_name = unsafe {
-                        ffier::ffier_handle_borrow_mut::<#wrapper_path>(#param_name)
-                    };
-                });
-                call_args.push(quote! { #borrow_name });
-            } else {
-                let bt = p.bridge_type();
-                call_args
-                    .push(quote! { unsafe { <#bt as #lib_crate::FfiType>::from_c(#param_name) } });
-            }
-        }
-
-        let call_expr = if m.raw_handle() {
+        let base_call = if m.raw_handle() {
             quote! {
                 <#struct_path as #trait_path>::#method_name(
-                    handle as *const ffier::FfierHandle<#struct_path> #(, #call_args)*)
+                    handle as *const ffier::FfierHandle<#struct_path> #(, #converted_args)*)
             }
         } else {
             let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut());
-            quote! { { #borrow <#struct_path as #trait_path>::#method_name(obj, #(#call_args),*) } }
+            quote! { { #borrow <#struct_path as #trait_path>::#method_name(obj, #(#converted_args),*) } }
         };
+        let call_expr = wrap_concrete_dispatch(
+            base_call,
+            &cp.concrete_dispatch_params,
+            &ffi_name_str,
+            lib_crate,
+        );
 
         let return_body = wrap_return(
             call_expr,
@@ -1832,10 +1881,13 @@ fn generate_trait_impl_bridge(
             lib_crate,
         );
 
+        let pre_bindings = &cp.pre_bindings;
+        let vtable_pre_bindings = &cp.vtable_pre_bindings;
         bridge_fns.push(quote! {
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
-                #(#impl_trait_borrows)*
+                #(#vtable_pre_bindings)*
+                #(#pre_bindings)*
                 #return_body
             }
         });
