@@ -612,6 +612,10 @@ fn format_return_and_out_params(
                 },
             }
         }
+        Return::ObjectArray { .. } => {
+            let object_array_c = blessed_c_type(lib, ffier_schema::Blessing::ObjectArray);
+            (object_array_c.to_string(), vec![])
+        }
     }
 }
 
