@@ -243,8 +243,9 @@ impl VtableHandle {
 /// `#[repr(C)]` slice of opaque handles returned from methods that produce
 /// `&[&T]`. The caller receives a heap-allocated array of handle pointers
 /// plus a length, and must call the library's `free_slice` function to
-/// deallocate the array (the individual handles are borrowed and must NOT
-/// be destroyed separately).
+/// deallocate the array. Each handle carries metadata that controls
+/// destroy behavior — borrowed handles skip the inner destructor, so
+/// calling destroy on them is safe (it just frees the handle shell).
 #[derive(Clone, Copy)]
 #[repr(C)]
 pub struct FfierHandleSlice {
@@ -263,8 +264,9 @@ impl FfierHandleSlice {
 
 /// Free the backing array of a `FfierHandleSlice`.
 ///
-/// This deallocates the pointer array itself — it does NOT destroy the
-/// individual handles (they are borrowed from the parent object).
+/// This deallocates the pointer array itself. Individual handles should
+/// be destroyed separately if needed (borrowed handles will skip the
+/// inner destructor based on their metadata).
 ///
 /// # Safety
 /// - `slice.items` must have been allocated by `Vec::into_raw_parts` (or be null).

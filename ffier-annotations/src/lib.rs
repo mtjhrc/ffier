@@ -3588,10 +3588,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 quote! { -> <#bt as FfiType>::CRepr }
             }
             ffier_meta::MetaReturn::HandleSlice(_) => {
-                // HandleSlice returns through out-params (void return)
-                param_types.push(quote! { *mut *const *mut core::ffi::c_void });
-                param_types.push(quote! { *mut usize });
-                quote! {}
+                // HandleSlice returns FfierHandleSlice by value
+                quote! { -> ffier::FfierHandleSlice }
             }
             ffier_meta::MetaReturn::Result { ok, .. } => {
                 let ok_is_handle = ok.as_ref().is_some_and(|tp| {
@@ -3681,9 +3679,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     quote! { -> <#bt as FfiType>::CRepr }
                 }
                 ffier_meta::MetaReturn::HandleSlice(_) => {
-                    fn_ptr_param_types.push(quote! { *mut *const *mut core::ffi::c_void });
-                    fn_ptr_param_types.push(quote! { *mut usize });
-                    quote! {}
+                    // HandleSlice returns FfierHandleSlice by value
+                    quote! { -> ffier::FfierHandleSlice }
                 }
                 ffier_meta::MetaReturn::Result { ok, .. } => {
                     if ok_is_handle {
@@ -3768,23 +3765,23 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
                     }
                     ffier_meta::MetaReturn::HandleSlice(tp) => {
-                        // HandleSlice vtable dispatch: call __f with out-params,
-                        // reconstruct Vec<&T> from the returned handle array.
+                        // HandleSlice vtable dispatch: call __f which returns
+                        // FfierHandleSlice, reconstruct Vec<&T> from the handle array.
                         let bt = &tp.bridge_type;
                         quote! {{
-                            let mut __out_ptr: *const *mut core::ffi::c_void = core::ptr::null();
-                            let mut __out_len: usize = 0;
-                            unsafe { __f(
-                                self.value.user_data as *mut core::ffi::c_void,
-                                #(#vtable_args,)*
-                                &mut __out_ptr,
-                                &mut __out_len,
-                            ) };
-                            let __handles = unsafe { core::slice::from_raw_parts(__out_ptr, __out_len) };
-                            let __refs: Vec<&#bt> = __handles.iter()
-                                .map(|h| unsafe { ffier::ffier_handle_borrow::<#bt>(*h) })
-                                .collect();
-                            __refs
+                            let __slice = #raw_call;
+                            if __slice.items.is_null() || __slice.len == 0 {
+                                Vec::new()
+                            } else {
+                                let __handles = unsafe {
+                                    core::slice::from_raw_parts(__slice.items, __slice.len)
+                                };
+                                let __refs: Vec<&#bt> = __handles.iter()
+                                    .map(|h| unsafe { ffier::ffier_handle_borrow::<#bt>(*h) })
+                                    .collect();
+                                unsafe { ffier::ffier_handle_slice_free(__slice) };
+                                __refs
+                            }
                         }}
                     }
                     ffier_meta::MetaReturn::Result { ok, err_ident, .. } => {

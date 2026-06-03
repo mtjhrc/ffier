@@ -505,6 +505,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate str_free function for dropping owned strings (Box<str>)
     let str_free_fn = generate_str_free(&first_prefix);
 
+    // Generate free_slice function for dropping handle slice arrays
+    let free_slice_fn = generate_free_slice(&first_prefix);
+
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
     emit_json(
         &first_prefix,
@@ -530,6 +533,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         #error_getters
 
         #str_free_fn
+
+        #free_slice_fn
     }
 }
 
@@ -609,6 +614,24 @@ fn generate_str_free(prefix: &str) -> TokenStream2 {
                     drop(Box::from_raw(core::str::from_utf8_unchecked_mut(slice)));
                 }
             }
+        }
+    }
+}
+
+// ===========================================================================
+// free_slice — free the backing array of a FfierHandleSlice
+// ===========================================================================
+
+/// Generate `{prefix}_free_slice(FfierHandleSlice s)` that frees the
+/// heap-allocated array of handle pointers returned by handle-slice methods.
+fn generate_free_slice(prefix: &str) -> TokenStream2 {
+    let fn_pfx = format!("{prefix}_");
+    let free_slice_fn = format_ident!("{fn_pfx}free_slice");
+
+    quote! {
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #free_slice_fn(s: ffier::FfierHandleSlice) {
+            unsafe { ffier::ffier_handle_slice_free(s) };
         }
     }
 }
@@ -1396,20 +1419,17 @@ fn wrap_return(
         }
         MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
             // &[&T] → convert each &T element to its handle pointer (borrowed),
-            // write pointer+length through out-params.
-            // Each &T is inside a FfierHandle, so as_handle()/borrow_as_c() works.
-            // We leak the Vec so the pointer stays valid — the caller must use the
-            // data before the parent handle is destroyed (the handles are borrowed).
+            // return as FfierHandleSlice { items, len }.
+            // The Vec backing store is leaked — the caller must call free_slice.
             quote! {
                 let __slice = #call_expr;
                 let __handles: Vec<*mut core::ffi::c_void> = __slice.iter()
                     .map(|item| <&#bridge_type as #lib_crate::FfiType>::borrow_as_c(item))
                     .collect();
-                unsafe {
-                    *out_ptr = __handles.as_ptr();
-                    *out_len = __handles.len();
-                }
+                let __len = __handles.len();
+                let __ptr = __handles.as_ptr();
                 core::mem::forget(__handles);
+                ffier::FfierHandleSlice { items: __ptr, len: __len }
             }
         }
         MetaReturn::Result { ok, err_ident } => {
@@ -1598,18 +1618,8 @@ fn c_signature_for_method(
             quote! { -> #ty }
         }
         MetaReturn::HandleSlice(_) => {
-            // &[T] where T is a handle — return through out-params:
-            // *mut *const *mut c_void (pointer to output array pointer)
-            // *mut usize (pointer to output length)
-            params.push(CExternParam {
-                name: format_ident!("out_ptr"),
-                c_type: quote! { *mut *const *mut core::ffi::c_void },
-            });
-            params.push(CExternParam {
-                name: format_ident!("out_len"),
-                c_type: quote! { *mut usize },
-            });
-            quote! {}
+            // &[&T] where T is a handle — return FfierHandleSlice by value.
+            quote! { -> ffier::FfierHandleSlice }
         }
         MetaReturn::Result { ok, .. } => {
             let ok_is_handle = ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types);
@@ -2406,6 +2416,17 @@ fn build_schema(
             lifetime_params: vec![],
         },
     );
+    type_registry.insert(
+        "FfierHandleSlice".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: format!("{prim_type_pfx}HandleSlice"),
+            },
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::HandleSlice),
+            lifetime_params: vec![],
+        },
+    );
 
     // Std type aliases
     type_registry.insert(
@@ -2918,14 +2939,11 @@ fn convert_return(
             let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
         }
-        MetaReturn::HandleSlice(tp) => {
-            // &[&T] → void return with out-params. The schema represents it
-            // as a Slice return (analogous to param Slice but for returns).
-            let rt = tp.rust_type.to_string();
-            let elem_ref = r.to_type_ref(&rt);
+        MetaReturn::HandleSlice(_) => {
+            // &[&T] → returns FfierHandleSlice by value.
             ffier_schema::Return::Value(ffier_schema::TypeRef {
-                type_name: elem_ref.type_name,
-                ref_kind: ffier_schema::RefKind::Shared,
+                type_name: "FfierHandleSlice".to_string(),
+                ref_kind: ffier_schema::RefKind::None,
                 ref_lifetime: None,
                 type_args: vec![],
                 optional: false,
