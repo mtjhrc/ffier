@@ -49,6 +49,11 @@ pub const METADATA_OWNED: u32 = 1;
 /// stack-allocated vtable handles or owned handles.
 pub const METADATA_BORROWED: u32 = 2;
 
+/// Metadata bit 2: the handle is an element of a contiguous
+/// `FfierHandleArray` allocation. Individual destroy is invalid —
+/// the whole array must be freed via the array's destroy function.
+pub const METADATA_ARRAY_ELEMENT: u32 = 4;
+
 // ---------------------------------------------------------------------------
 // Handle introspection
 // ---------------------------------------------------------------------------
@@ -229,6 +234,10 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
         "dropping uninitialized handle"
     );
     let meta = unsafe { handle_metadata(handle) };
+    assert!(
+        meta & METADATA_ARRAY_ELEMENT == 0,
+        "cannot destroy an individual array element — free the whole array instead"
+    );
     if meta & METADATA_BORROWED != 0 {
         // Borrowed: dealloc the 16-byte pointer shell only.
         drop(unsafe { Box::from_raw(handle as *mut FfierBorrowedHandle) });
@@ -280,44 +289,88 @@ impl VtableHandle {
 }
 
 // ---------------------------------------------------------------------------
-// FfierHandleSlice --- returned array of opaque handles
+// FfierHandleArray --- contiguous array of borrowed handles
 // ---------------------------------------------------------------------------
 
-/// `#[repr(C)]` slice of opaque handles returned from methods that produce
-/// `&[&T]`. The caller receives a heap-allocated array of handle pointers
-/// plus a length, and must call the library's `free_slice` function to
-/// deallocate the array. Each handle carries metadata that controls
-/// destroy behavior — borrowed handles skip the inner destructor, so
-/// calling destroy on them is safe (it just frees the handle shell).
+/// `#[repr(C)]` array of borrowed handles returned from methods that
+/// produce `&[&T]` or `&[T]`. The backing storage is a single contiguous
+/// `Box<[FfierBorrowedHandle]>` allocation, leaked to C as a thin pointer
+/// plus length.
+///
+/// Individual elements must NOT be passed to `destroy` — the whole array
+/// is freed in one call via the array's destroy function, which
+/// reconstructs and drops the `Box<[FfierBorrowedHandle]>`.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct FfierHandleSlice {
-    /// Pointer to a heap-allocated array of `*mut c_void` handle pointers.
+pub struct FfierHandleArray {
+    /// Thin pointer to the first `FfierBorrowedHandle` element.
     /// Null when `len == 0`.
-    pub items: *const *mut c_void,
+    pub items: *const FfierBorrowedHandle,
     pub len: usize,
 }
 
-impl FfierHandleSlice {
+impl FfierHandleArray {
     pub const EMPTY: Self = Self {
         items: core::ptr::null(),
         len: 0,
     };
 }
 
-/// Free the backing array of a `FfierHandleSlice`.
+/// Build a `FfierHandleArray` from a slice of raw pointers to T values.
 ///
-/// This deallocates the pointer array itself. Individual handles should
-/// be destroyed separately if needed (borrowed handles will skip the
-/// inner destructor based on their metadata).
+/// Allocates a contiguous `Box<[FfierBorrowedHandle]>`, fills each element
+/// with `{ type_tag, METADATA_BORROWED | METADATA_ARRAY_ELEMENT, ptr }`,
+/// leaks the box, and returns the thin pointer + length.
 ///
 /// # Safety
-/// - `slice.items` must have been allocated by `Vec::into_raw_parts` (or be null).
-/// - Must only be called once per slice.
+/// - Each pointer in `ptrs` must point to a valid, aligned `T`.
+/// - The source values must outlive all uses of this array.
+pub unsafe fn ffier_handle_array_new(tag: u32, ptrs: &[*const c_void]) -> FfierHandleArray {
+    debug_assert!(tag != 0, "type tag must be nonzero");
+    if ptrs.is_empty() {
+        return FfierHandleArray::EMPTY;
+    }
+    let metadata = METADATA_BORROWED | METADATA_ARRAY_ELEMENT;
+    let boxed: Box<[FfierBorrowedHandle]> = ptrs
+        .iter()
+        .map(|&ptr| FfierBorrowedHandle {
+            type_tag: tag,
+            metadata,
+            ptr,
+        })
+        .collect();
+    let len = boxed.len();
+    let raw = Box::into_raw(boxed) as *const FfierBorrowedHandle;
+    FfierHandleArray { items: raw, len }
+}
+
+/// Get a handle pointer to the i-th element of a `FfierHandleArray`.
+///
+/// Returns a `*mut c_void` pointing to the `FfierBorrowedHandle` at
+/// index `i`. The handle has valid RTTI headers and can be passed to
+/// methods that type-check the handle.
+///
+/// # Safety
+/// - `arr` must be a valid `FfierHandleArray`.
+/// - `i` must be `< arr.len`.
 #[inline]
-pub unsafe fn ffier_handle_slice_free(slice: FfierHandleSlice) {
-    if !slice.items.is_null() && slice.len > 0 {
-        drop(unsafe { Vec::from_raw_parts(slice.items as *mut *mut c_void, slice.len, slice.len) });
+pub unsafe fn ffier_handle_array_get(arr: FfierHandleArray, i: usize) -> *mut c_void {
+    debug_assert!(i < arr.len, "index out of bounds");
+    unsafe { arr.items.add(i) as *mut c_void }
+}
+
+/// Free a `FfierHandleArray` by reconstructing and dropping the
+/// `Box<[FfierBorrowedHandle]>`.
+///
+/// # Safety
+/// - `arr` must have been created by `ffier_handle_array_new` (or be EMPTY).
+/// - Must only be called once per array.
+#[inline]
+pub unsafe fn ffier_handle_array_free(arr: FfierHandleArray) {
+    if !arr.items.is_null() && arr.len > 0 {
+        let raw_slice =
+            core::ptr::slice_from_raw_parts(arr.items, arr.len) as *mut [FfierBorrowedHandle];
+        drop(unsafe { Box::from_raw(raw_slice) });
     }
 }
 

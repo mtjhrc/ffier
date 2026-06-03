@@ -76,8 +76,8 @@ pub enum Blessing {
     ReplacesSelf,
     /// Streaming string writer trait (PushStr).
     PushStr,
-    /// Handle slice (items ptr + len struct).
-    HandleSlice,
+    /// Handle array (contiguous borrowed-handle array + len struct).
+    HandleArray,
 }
 
 /// An entry in the type registry.
