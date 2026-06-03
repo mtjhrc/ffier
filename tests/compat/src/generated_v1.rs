@@ -215,23 +215,32 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
 /// Dropping this type frees the backing array.
 pub struct ForeignSlice<T> {
     raw: ffier::FfierObjectArray,
-    _marker: core::marker::PhantomData<T>,
-}
-
-impl<T> ForeignSlice<T> {
-    pub fn len(&self) -> usize {
-        self.raw.len
-    }
-    pub fn is_empty(&self) -> bool {
-        self.raw.len == 0
-    }
+    elements: Box<[core::mem::ManuallyDrop<T>]>,
 }
 
 impl<T: FfiHandle> ForeignSlice<T> {
-    pub fn get(&self, index: usize) -> T {
-        assert!(index < self.raw.len, "index out of bounds");
-        let handle = unsafe { ffier::ffier_object_array_get(self.raw, index) };
-        T::__from_raw(handle)
+    fn from_raw(raw: ffier::FfierObjectArray) -> Self {
+        let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)
+            .map(|i| {
+                core::mem::ManuallyDrop::new(T::__from_raw(unsafe {
+                    ffier::ffier_object_array_get(raw, i)
+                }))
+            })
+            .collect();
+        Self { raw, elements }
+    }
+    pub fn len(&self) -> usize {
+        self.elements.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.elements.is_empty()
+    }
+}
+
+impl<T: FfiHandle> core::ops::Index<usize> for ForeignSlice<T> {
+    type Output = T;
+    fn index(&self, i: usize) -> &T {
+        &*self.elements[i]
     }
 }
 
@@ -797,10 +806,7 @@ impl Widget {
     }
     #[doc = " Return a borrowed slice of the widget's gadgets (&[T] pattern)."]
     pub fn gadgets(&self) -> ForeignSlice<Gadget> {
-        ForeignSlice {
-            raw: unsafe { ft_widget_gadgets(self.0) },
-            _marker: core::marker::PhantomData,
-        }
+        ForeignSlice::from_raw(unsafe { ft_widget_gadgets(self.0) })
     }
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
