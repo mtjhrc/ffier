@@ -109,6 +109,7 @@ impl TextBuffer {
 
 ffier::library_definition!(
     "mylib",
+    library_tag = 1,
     Calculator = 1,
     CalcError = 2,
     TextBuffer = 3,

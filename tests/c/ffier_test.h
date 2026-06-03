@@ -99,9 +99,9 @@ typedef struct {
 
 /* TestError --------------------------------------------------------- */
 
-#define FT_ERROR_TEST_NOT_FOUND ((uint64_t)1 << 32 | 1)
-#define FT_ERROR_TEST_CUSTOM_MESSAGE ((uint64_t)1 << 32 | 2)
-#define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)1 << 32 | 3)
+#define FT_ERROR_TEST_NOT_FOUND ((uint64_t)16777217 << 32 | 1)
+#define FT_ERROR_TEST_CUSTOM_MESSAGE ((uint64_t)16777217 << 32 | 2)
+#define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -171,6 +171,8 @@ void ft_widget_set_name(FtWidget handle, FtStr name);
 FtStr ft_widget_owned_name(FtWidget handle);
 /** Add a permission flag to the widget's permissions and return the result. */
 uint32_t ft_widget_add_permission(FtWidget handle, uint32_t base, uint32_t flag);
+/** Sum the values of a slice of gadgets. */
+int32_t ft_widget_sum_gadgets(FtWidget handle, const FtGadget* gadgets, size_t gadgets_len);
 /** Consume the widget (by-value self, void return). */
 void ft_widget_consume(FtWidget handle);
 /** Get the raw fd number from a borrowed fd. */
@@ -340,7 +342,7 @@ void ft_sprocket_destroy(FtSprocket handle);
 
 /* FtProcessorVtable ------------------------------------------------- */
 
-#define FT_PROCESSOR_TYPE_TAG 10
+#define FT_PROCESSOR_TYPE_TAG 16777226
 
 typedef struct {
     void (*drop)(void* self_data);
@@ -356,7 +358,7 @@ void ft_processor_destroy(FtProcessor handle);
 
 /* FtFruitVtable ----------------------------------------------------- */
 
-#define FT_FRUIT_TYPE_TAG 20
+#define FT_FRUIT_TYPE_TAG 16777236
 
 typedef struct {
     void (*drop)(void* self_data);
@@ -376,7 +378,7 @@ void ft_fruit_destroy(FtFruit handle);
 
 /* FtWeighableVtable ------------------------------------------------- */
 
-#define FT_WEIGHABLE_TYPE_TAG 23
+#define FT_WEIGHABLE_TYPE_TAG 16777239
 
 typedef struct {
     void (*drop)(void* self_data);
@@ -390,7 +392,7 @@ void ft_weighable_destroy(FtWeighable handle);
 
 /* FtPushStrVtable --------------------------------------------------- */
 
-#define FT_PUSH_STR_TYPE_TAG 24
+#define FT_PUSH_STR_TYPE_TAG 16777240
 
 typedef struct {
     void (*drop)(void* self_data);
@@ -404,7 +406,7 @@ void ft_push_str_destroy(FtPushStr handle);
 
 /* FtErrorVtable ----------------------------------------------------- */
 
-#define FT_ERROR_TYPE_TAG 25
+#define FT_ERROR_TYPE_TAG 16777241
 
 typedef struct {
     void (*drop)(void* self_data);
@@ -462,6 +464,8 @@ FtStr ft_log_level_name(uint32_t level);
 bool ft_log_level_is_enabled(uint32_t level);
 /** Duplicate a file descriptor. */
 FtResult ft_clone_fd(int fd, int* result, FtError* err_out);
+/** Count the number of gadgets in a slice and return the sum of their values. */
+int32_t ft_sum_gadget_values(const FtGadget* gadgets, size_t gadgets_len);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

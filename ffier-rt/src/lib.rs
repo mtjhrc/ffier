@@ -303,6 +303,46 @@ pub trait FfiError: std::error::Error + Sized {
 // FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Library tag + type tag composition
+// ---------------------------------------------------------------------------
+
+/// Number of bits reserved for the library tag in the upper part of `type_tag`.
+pub const LIBRARY_TAG_BITS: u32 = 8;
+
+/// Number of bits available for the per-type tag.
+pub const TYPE_TAG_BITS: u32 = 32 - LIBRARY_TAG_BITS; // 24
+
+/// Maximum valid library tag value (2^8 - 1 = 255).
+pub const MAX_LIBRARY_TAG: u32 = (1 << LIBRARY_TAG_BITS) - 1;
+
+/// Maximum valid per-type tag value (2^24 - 1 = 16_777_215).
+pub const MAX_TYPE_TAG: u32 = (1 << TYPE_TAG_BITS) - 1;
+
+/// Compose a full `type_tag` from a library tag and a per-type tag.
+///
+/// Layout: `[library_tag: 8 bits | type_tag: 24 bits]`
+#[inline]
+pub const fn compose_tag(library_tag: u32, type_tag: u32) -> u32 {
+    (library_tag << TYPE_TAG_BITS) | type_tag
+}
+
+/// Extract the library tag (upper 8 bits) from a composed type tag.
+#[inline]
+pub const fn extract_library_tag(tag: u32) -> u32 {
+    tag >> TYPE_TAG_BITS
+}
+
+/// Extract the per-type tag (lower 24 bits) from a composed type tag.
+#[inline]
+pub const fn extract_type_tag(tag: u32) -> u32 {
+    tag & MAX_TYPE_TAG
+}
+
+// ---------------------------------------------------------------------------
+// FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
+// ---------------------------------------------------------------------------
+
 /// Packed error result: `0` = success, nonzero = `(type_tag << 32) | code`.
 ///
 /// Users compare against generated constants (`FT_ERROR_CALC_OVERFLOW` etc.).
