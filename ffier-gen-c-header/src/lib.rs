@@ -19,7 +19,6 @@ use ffier_schema::{
 /// Generate a C header string from a library schema.
 pub fn generate(lib: &Library, guard: &str) -> String {
     let mut out = String::new();
-    let upper_pfx = format!("{}_", lib.prefix.to_ascii_uppercase());
     let fn_pfx = format!("{}_", lib.prefix);
 
     // Header guard + includes
@@ -44,8 +43,10 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     emit_trait_typedefs(&mut out, lib);
     out.push('\n');
 
-    // Shared types
-    emit_shared_types(&mut out, &upper_pfx, lib);
+    // Shared types — use primitives_prefix for type names and guards
+    let prim_pfx = lib.primitives_prefix();
+    let prim_upper_pfx = format!("{}_", prim_pfx.to_ascii_uppercase());
+    emit_shared_types(&mut out, &prim_upper_pfx, &fn_pfx, lib);
 
     // Enum constant sections
     for en in &lib.enum_constants {
@@ -105,16 +106,31 @@ pub fn generate_from_file(
 // Shared types
 // ---------------------------------------------------------------------------
 
-fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
+/// Emit shared primitive type definitions.
+///
+/// `prim_upper_pfx` is derived from `primitives_prefix` (e.g. `"KRUN_"`).
+/// `fn_pfx` is derived from the library prefix (e.g. `"krun_init_"`) and
+/// is used for `str_free` — that function routes through a library-specific
+/// allocator and must NOT share the primitives prefix.
+///
+/// Each primitive type definition is guarded by `#ifndef` so that when
+/// multiple headers share the same `primitives_prefix`, whichever is
+/// included first defines the types.
+fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: &Library) {
     use ffier_schema::Blessing;
     let result_c = blessed_c_type(lib, Blessing::Result);
     let str_c = blessed_c_type(lib, Blessing::Str);
     let bytes_c = blessed_c_type(lib, Blessing::Bytes);
     let path_c = try_blessed_c_type(lib, Blessing::Path);
     let vtable_handle_c = blessed_c_type(lib, Blessing::VtableHandle);
-    let result_success = format!("{upper_pfx}RESULT_SUCCESS");
-    let str_macro = format!("{upper_pfx}STR");
-    let bytes_macro = format!("{upper_pfx}BYTES");
+    let result_success = format!("{prim_upper_pfx}RESULT_SUCCESS");
+    let str_macro = format!("{prim_upper_pfx}STR");
+    let bytes_macro = format!("{prim_upper_pfx}BYTES");
+
+    // Guard: all primitive typedefs share one guard keyed to the primitives prefix
+    let prim_guard = format!("{prim_upper_pfx}PRIMITIVES_DEFINED");
+    out.push_str(&format!("#ifndef {prim_guard}\n"));
+    out.push_str(&format!("#define {prim_guard}\n\n"));
 
     // FIXME: The struct layouts are still hardcoded. The type registry
     // carries the C type names but not field layouts. These should be
@@ -156,23 +172,11 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
     ));
     out.push_str("#endif\n\n");
 
-    // str_free — free an owned string returned from Rust
-    let fn_pfx = lib.prefix.to_lowercase();
-    let str_free_fn = format!("{fn_pfx}_str_free");
-    out.push_str(&format!(
-        "/* Free an owned string returned by the library */\n"
-    ));
-    out.push_str(&format!("void {str_free_fn}({str_c} s);\n\n"));
-
     // FIXME: This struct layout is hardcoded — should come from the schema.
-    let vtable_handle_macro = format!("{upper_pfx}VTABLE_HANDLE");
+    let vtable_handle_macro = format!("{prim_upper_pfx}VTABLE_HANDLE");
     out.push_str("/**\n");
-    out.push_str(&format!(
-        " * Stack-allocated temporary handle for passing vtable-based objects.\n"
-    ));
-    out.push_str(&format!(
-        " * Only valid for the duration of the call — the callee borrows, not owns.\n"
-    ));
+    out.push_str(" * Stack-allocated temporary handle for passing vtable-based objects.\n");
+    out.push_str(" * Only valid for the duration of the call — the callee borrows, not owns.\n");
     out.push_str(" */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    uint32_t type_tag;\n");
@@ -189,6 +193,14 @@ fn emit_shared_types(out: &mut String, upper_pfx: &str, lib: &Library) {
     ));
     out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
     out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
+
+    out.push_str(&format!("#endif /* {prim_guard} */\n\n"));
+
+    // str_free — uses the library prefix, NOT the primitives prefix.
+    // Each library has its own allocator so str_free must be library-specific.
+    let str_free_fn = format!("{fn_pfx}str_free");
+    out.push_str("/* Free an owned string returned by the library */\n");
+    out.push_str(&format!("void {str_free_fn}({str_c} s);\n\n"));
 }
 
 // ---------------------------------------------------------------------------

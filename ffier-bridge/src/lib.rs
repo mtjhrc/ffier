@@ -164,7 +164,7 @@ fn generate_one(
 /// Sorts into errors → exportables → implementables → trait_impls, generates
 /// bridge code for each.
 pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
-    // Parse @lib_crate = path; prefix from chain macro
+    // Parse @lib_crate = path; @primitives_prefix = "..."; from chain macro
     let mut iter = input.into_iter().peekable();
     let lib_crate: TokenStream2 = {
         let mut path_tokens = Vec::new();
@@ -189,6 +189,27 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             return quote! { compile_error!("missing @lib_crate prefix in bridge metadata"); };
         }
         path_tokens.into_iter().collect()
+    };
+    // Parse @primitives_prefix = "...";
+    let primitives_prefix: Option<String> = {
+        if let Some(proc_macro2::TokenTree::Punct(p)) = iter.peek()
+            && p.as_char() == '@'
+        {
+            iter.next(); // @
+            iter.next(); // primitives_prefix
+            iter.next(); // =
+            let value = if let Some(proc_macro2::TokenTree::Literal(lit)) = iter.next() {
+                let s = lit.to_string();
+                // Strip surrounding quotes
+                Some(s.trim_matches('"').to_string())
+            } else {
+                None
+            };
+            iter.next(); // ;
+            value
+        } else {
+            None
+        }
     };
 
     let mut items: Vec<TokenStream2> = Vec::new();
@@ -487,6 +508,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
     emit_json(
         &first_prefix,
+        primitives_prefix.as_deref(),
         &errors,
         &exportables,
         &implementables,
@@ -1952,6 +1974,7 @@ fn generate_trait_impl_bridge(
 /// `target/ffier-{prefix}.json` relative to the workspace root.
 fn emit_json(
     prefix: &str,
+    primitives_prefix: Option<&str>,
     errors: &[TokenStream2],
     exportables: &[TokenStream2],
     implementables: &[TokenStream2],
@@ -1985,6 +2008,7 @@ fn emit_json(
 
     let library = build_schema(
         prefix,
+        primitives_prefix,
         errors,
         exportables,
         implementables,
@@ -2142,6 +2166,7 @@ impl CTypeResolver {
 
 fn build_schema(
     prefix: &str,
+    primitives_prefix: Option<&str>,
     errors: &[TokenStream2],
     exportables: &[TokenStream2],
     implementables: &[TokenStream2],
@@ -2199,6 +2224,7 @@ fn build_schema(
         .collect();
 
     let resolver = CTypeResolver::new(prefix);
+    let prim_type_pfx = ffier_meta::snake_to_pascal(primitives_prefix.unwrap_or(prefix));
 
     // Build handle_types set for Result convention detection.
     let handle_types: HashSet<String> = {
@@ -2244,12 +2270,12 @@ fn build_schema(
         );
     }
 
-    // Builtins
+    // Builtins — use primitives prefix for C names
     type_registry.insert(
         "str".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::String {
-                c_name: format!("{}Str", resolver.type_pfx),
+                c_name: format!("{prim_type_pfx}Str"),
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Str),
@@ -2260,7 +2286,7 @@ fn build_schema(
         "[u8]".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Bytes {
-                c_name: format!("{}Bytes", resolver.type_pfx),
+                c_name: format!("{prim_type_pfx}Bytes"),
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Bytes),
@@ -2273,7 +2299,7 @@ fn build_schema(
         "FfierResult".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
-                c_type: format!("{}Result", resolver.type_pfx),
+                c_type: format!("{prim_type_pfx}Result"),
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Result),
@@ -2284,7 +2310,7 @@ fn build_schema(
         "FfierPath".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Bytes {
-                c_name: format!("{}Path", resolver.type_pfx),
+                c_name: format!("{prim_type_pfx}Path"),
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::Path),
@@ -2295,7 +2321,7 @@ fn build_schema(
         "FfierVtableHandle".to_string(),
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
-                c_type: format!("{}VtableHandle", resolver.type_pfx),
+                c_type: format!("{prim_type_pfx}VtableHandle"),
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::VtableHandle),
@@ -2460,6 +2486,7 @@ fn build_schema(
 
     let mut library = ffier_schema::Library {
         prefix: prefix.to_string(),
+        primitives_prefix: primitives_prefix.map(|s| s.to_string()),
         type_registry,
         exported_types: exportables_parsed
             .iter()
