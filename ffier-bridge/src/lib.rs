@@ -1418,18 +1418,25 @@ fn wrap_return(
             }
         }
         MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
-            // &[&T] → build a contiguous FfierHandleArray with one
-            // FfierBorrowedHandle per element pointing to the source T.
+            // &[&T] → build a contiguous Box<[FfierBorrowedHandle]> directly
+            // from the iterator, leak it, return as FfierHandleArray.
             quote! {
                 let __slice = #call_expr;
-                let __ptrs: Vec<*const core::ffi::c_void> = __slice.iter()
-                    .map(|item| *item as *const #bridge_type as *const core::ffi::c_void)
-                    .collect();
-                unsafe {
-                    ffier::ffier_handle_array_new(
-                        <#bridge_type as #lib_crate::FfiHandle>::TYPE_TAG,
-                        &__ptrs,
-                    )
+                if __slice.is_empty() {
+                    ffier::FfierHandleArray::EMPTY
+                } else {
+                    let __tag = <#bridge_type as #lib_crate::FfiHandle>::TYPE_TAG;
+                    let __meta = ffier::METADATA_BORROWED | ffier::METADATA_ARRAY_ELEMENT;
+                    let __boxed: Box<[ffier::FfierBorrowedHandle]> = __slice.iter()
+                        .map(|item| ffier::FfierBorrowedHandle {
+                            type_tag: __tag,
+                            metadata: __meta,
+                            ptr: *item as *const #bridge_type as *const core::ffi::c_void,
+                        })
+                        .collect();
+                    let __len = __boxed.len();
+                    let __raw = Box::into_raw(__boxed) as *const ffier::FfierBorrowedHandle;
+                    ffier::FfierHandleArray { items: __raw, len: __len }
                 }
             }
         }
