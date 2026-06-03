@@ -266,6 +266,14 @@ impl FfiType for Permissions {
     }
 }
 
+unsafe extern "C" {
+    fn ft_error_payload(
+        handle: *const core::ffi::c_void,
+        out_buf: *mut core::ffi::c_void,
+        buf_size: usize,
+    );
+}
+
 pub struct TestErrorErrorHandle(*mut core::ffi::c_void);
 impl TestErrorErrorHandle {
     fn handle(&self) -> *mut core::ffi::c_void {
@@ -364,13 +372,77 @@ impl std::fmt::Display for TestError {
 
 impl std::error::Error for TestError {}
 
-unsafe extern "C" {
-    fn ft_error_payload(
-        handle: *const core::ffi::c_void,
-        out_buf: *mut core::ffi::c_void,
-        buf_size: usize,
-    );
+pub struct ErrorErrorHandle(*mut core::ffi::c_void);
+impl ErrorErrorHandle {
+    fn handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
 }
+impl Drop for ErrorErrorHandle {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ft_error_destroy(self.0) }
+        }
+    }
+}
+impl std::fmt::Debug for ErrorErrorHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ErrorHandle({:?})", self.0)
+    }
+}
+
+#[derive(Debug)]
+pub enum Error {
+    Failed(ErrorErrorHandle),
+}
+
+impl Error {
+    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+        let code = ffier::ffier_result_code(r);
+        let handle = ErrorErrorHandle(err_handle);
+        match code {
+            1u32 => Self::Failed(handle),
+            other => panic!("unknown {} error code {}", "Error", other),
+        }
+    }
+    fn handle_ptr(&self) -> *mut core::ffi::c_void {
+        match self {
+            Self::Failed(h) => h.handle(),
+        }
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        struct FmtWriter(*mut core::ffi::c_void);
+        impl PushStr for FmtWriter {
+            fn push(&mut self, s: &str) -> bool {
+                unsafe {
+                    (&mut *(self.0 as *mut std::fmt::Formatter<'_>))
+                        .write_str(s)
+                        .is_ok()
+                }
+            }
+        }
+        let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
+        let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777240u32,
+            metadata: 0,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
+                user_data: &mut __writer as *mut FmtWriter as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<PushStrVtable>() as u16,
+            },
+        };
+        let __writer_handle =
+            &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void;
+        unsafe { ft_error_message(self.handle_ptr(), __writer_handle) };
+        Ok(())
+    }
+}
+
+impl std::error::Error for Error {}
 
 unsafe extern "C" {
     pub fn ft_widget_destroy(handle: *mut core::ffi::c_void);
@@ -2051,6 +2123,10 @@ impl Drop for Mixer {
 unsafe extern "C" {
     pub fn ft_sprocket_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_sprocket_new(name: <&'static str as FfiType>::CRepr) -> <Sprocket as FfiType>::CRepr;
+    pub fn ft_sprocket_try_spin(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
 }
 
 pub struct Sprocket(*mut core::ffi::c_void);
@@ -2099,6 +2175,17 @@ impl Sprocket {
     pub fn new(name: &str) -> Sprocket {
         let __raw = unsafe { ft_sprocket_new(<&str as FfiType>::into_c(name)) };
         unsafe { <Sprocket as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Returns `Err(Error::Failed())` when name is \"broken\"."]
+    pub fn try_spin(&self) -> Result<(), Error> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r =
+            unsafe { ft_sprocket_try_spin(self.0, &mut __err as *mut *mut core::ffi::c_void) };
+        if __r == 0 {
+            Ok(())
+        } else {
+            Err(Error::from_ffi(__r, __err))
+        }
     }
 }
 

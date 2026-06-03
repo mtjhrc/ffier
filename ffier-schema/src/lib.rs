@@ -826,8 +826,7 @@ impl Library {
             .map(|s| s.to_string())
             .collect();
         self.type_registry.retain(|name, entry| {
-            refs.contains(name.as_str())
-                || entry.bless == Some(Blessing::Object)
+            refs.contains(name.as_str()) || entry.bless == Some(Blessing::Object)
         });
     }
 

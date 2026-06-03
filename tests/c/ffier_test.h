@@ -7,6 +7,7 @@
 #include <string.h>
 
 typedef void* FtTestError;
+typedef void* FtError;
 typedef void* FtWidget;
 typedef void* FtGadget;
 typedef void* FtConfig;
@@ -26,7 +27,7 @@ typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtSprocket;
 typedef void* FtAttachment; /* FtSprocket */
-typedef void* FtError; /* FtTestError | FtVtableError */
+typedef void* FtError; /* FtTestError | FtError | FtVtableError */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
@@ -36,7 +37,7 @@ typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -109,6 +110,10 @@ void ft_str_free(FtStr s);
 #define FT_ERROR_TEST_NOT_FOUND ((uint64_t)16777217 << 32 | 1)
 #define FT_ERROR_TEST_CUSTOM_MESSAGE ((uint64_t)16777217 << 32 | 2)
 #define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
+
+/* Error ------------------------------------------------------------- */
+
+#define FT_ERROR__FAILED ((uint64_t)16777241 << 32 | 1)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -347,6 +352,8 @@ void ft_mixer_destroy(FtMixer handle);
 /* Sprocket ---------------------------------------------------------- */
 
 FtSprocket ft_sprocket_new(FtStr name);
+/** Returns `Err(Error::Failed())` when name is "broken". */
+FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
 /* FtProcessorVtable ------------------------------------------------- */
@@ -464,6 +471,8 @@ int32_t ft_gadget_snap_source_count(FtGadget handle);
 int32_t ft_apple_weight_grams(FtApple handle);
 uint32_t ft_test_error_code(FtTestError handle);
 void ft_test_error_message(FtTestError handle, FtPushStr writer);
+uint32_t ft_error_code(FtError handle);
+void ft_error_message(FtError handle, FtPushStr writer);
 
 /* Free functions ---------------------------------------------------- */
 
