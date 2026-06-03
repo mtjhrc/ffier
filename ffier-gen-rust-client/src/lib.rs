@@ -518,6 +518,22 @@ fn find_error_message_fn(lib: &Library) -> String {
         .expect("error trait has no 'message' method")
 }
 
+/// Check if a Return is a borrowed handle: `&HandleType` or `Result<&HandleType, E>`.
+/// Returns the bare type name (e.g. "Gadget") if so.
+fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a str> {
+    let tr = match ret {
+        Return::Value(tr) => tr,
+        Return::Result { ok: Some(tr), .. } => tr,
+        _ => return None,
+    };
+    if tr.ref_kind != ffier_schema::RefKind::Shared && tr.ref_kind != ffier_schema::RefKind::Mut {
+        return None;
+    }
+    lib.type_entry(&tr.type_name)
+        .filter(|e| matches!(e.kind, TypeKind::Handle { .. }))
+        .map(|_| tr.type_name.as_str())
+}
+
 /// Map an owned field type to its borrowed equivalent for error payload getters.
 /// The getter borrows from the handle, so it can't return owned types.
 fn borrowed_type_for(type_ref: &ffier_schema::TypeRef) -> String {
@@ -819,6 +835,17 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
         };
     }
 
+    // Borrowed handle returns (&HandleType) → return owned wrapper in client.
+    // The wrapper's Drop calls destroy, which deallocates the borrowed shell
+    // without dropping the inner value.
+    if let Some(bare_name) = borrowed_handle_return_type(&m.ret, lib) {
+        return match &m.ret {
+            Return::Value(_) => format!(" -> {bare_name}"),
+            Return::Result { err_type, .. } => format!(" -> Result<{bare_name}, {err_type}>"),
+            _ => unreachable!(),
+        };
+    }
+
     match &m.ret {
         Return::Void => String::new(),
         Return::Value(_) | Return::Result { .. } => {
@@ -909,13 +936,26 @@ fn emit_method_body(
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
         Return::Value(tr) => {
-            let ty = tr.to_rust_type();
-            writeln!(
-                out,
-                "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
-            )
-            .unwrap();
-            writeln!(out, "        unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
+            if borrowed_handle_return_type(&m.ret, lib).is_some() {
+                // Borrowed handle: the FFI returns a *mut c_void handle.
+                // Wrap in the owned struct — its Drop calls destroy, which
+                // for borrowed handles just deallocates the shell.
+                let bare_name = &tr.type_name;
+                writeln!(
+                    out,
+                    "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
+                )
+                .unwrap();
+                writeln!(out, "        {bare_name}(__raw)").unwrap();
+            } else {
+                let ty = tr.to_rust_type();
+                writeln!(
+                    out,
+                    "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
+                )
+                .unwrap();
+                writeln!(out, "        unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
+            }
         }
         Return::Result {
             ok: Some(_),
@@ -974,7 +1014,7 @@ fn emit_method_body(
             ..
         } if is_ok_handle => {
             // GLib-style: returns handle, null on error
-            let ty = ok_tr.to_rust_type();
+            let is_borrowed = borrowed_handle_return_type(&m.ret, lib).is_some();
             writeln!(
                 out,
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -983,11 +1023,18 @@ fn emit_method_body(
             writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
-            writeln!(
-                out,
-                "            Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
-            )
-            .unwrap();
+            if is_borrowed {
+                // Borrowed handle: wrap raw pointer in owned struct directly.
+                let bare_name = &ok_tr.type_name;
+                writeln!(out, "            Ok({bare_name}(__raw))").unwrap();
+            } else {
+                let ty = ok_tr.to_rust_type();
+                writeln!(
+                    out,
+                    "            Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
+                )
+                .unwrap();
+            }
             writeln!(out, "        }} else {{").unwrap();
             writeln!(
                 out,
@@ -1099,7 +1146,7 @@ fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Lib
         if *has_default {
             // Default impl via self-dispatch
             writeln!(out, "    {method_sig} where Self: Sized {{").unwrap();
-            emit_default_dispatch_body(out, m, lib, type_tag, &vtable_name, *index);
+            emit_default_dispatch_body(out, m, lib, type_tag, vtable_name, *index);
             writeln!(out, "    }}").unwrap();
         } else {
             writeln!(out, "    {method_sig};").unwrap();
@@ -1157,7 +1204,7 @@ fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Lib
     writeln!(out).unwrap();
 
     // Vtable struct
-    emit_vtable_struct(out, tr, lib, &vtable_name);
+    emit_vtable_struct(out, tr, lib, vtable_name);
 
     // Self-dispatch externs for defaulted methods
     let has_defaults = tr.methods.iter().any(|m| {
@@ -1281,7 +1328,7 @@ fn emit_default_dispatch_body(
     call_args.extend(build_ffi_param_args(&m.params, lib));
     let args_str = call_args.join(", ");
 
-    emit_ffi_call_return(out, &dispatch_fn, &args_str, &m.ret, "        ");
+    emit_ffi_call_return(out, dispatch_fn, &args_str, &m.ret, "        ");
 }
 
 fn emit_vtable_struct(
@@ -1629,7 +1676,7 @@ fn emit_trait_impl(
             ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
 
-            emit_ffi_call_return(out, &dispatch_fn, &args_str, &dm.ret, "        ");
+            emit_ffi_call_return(out, dispatch_fn, &args_str, &dm.ret, "        ");
             writeln!(out, "    }}").unwrap();
         }
     }

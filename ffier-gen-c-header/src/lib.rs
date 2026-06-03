@@ -278,10 +278,10 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     emit_section_header(out, vtable_name);
 
     // Type tag constant for constructing vtable handles from C.
-    if let Some(entry) = lib.type_entry(&tr.name) {
-        if let Some(tag) = entry.type_tag {
-            out.push_str(&format!("#define {} {}\n\n", tr.type_tag_constant, tag));
-        }
+    if let Some(entry) = lib.type_entry(&tr.name)
+        && let Some(tag) = entry.type_tag
+    {
+        out.push_str(&format!("#define {} {}\n\n", tr.type_tag_constant, tag));
     }
 
     out.push_str("typedef struct {\n");

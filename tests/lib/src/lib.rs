@@ -28,6 +28,7 @@ pub struct Widget {
     name: String,
     active: bool,
     tags: String,
+    gadget: Gadget,
 }
 
 #[ffier::exportable]
@@ -39,6 +40,7 @@ impl Widget {
             name: String::from("widget"),
             active: true,
             tags: String::new(),
+            gadget: Gadget { value: 42 },
         }
     }
 
@@ -49,6 +51,7 @@ impl Widget {
             name: name.to_owned(),
             active: true,
             tags: String::new(),
+            gadget: Gadget { value: 42 },
         }
     }
 
@@ -160,6 +163,11 @@ impl Widget {
     /// Create a new gadget with the widget's count as initial value.
     pub fn create_gadget(&self) -> Gadget {
         Gadget { value: self.count }
+    }
+
+    /// Return a borrowed reference to the widget's internal gadget.
+    pub fn gadget(&self) -> &Gadget {
+        &self.gadget
     }
 
     /// Try to create a gadget; fails if ok is false.

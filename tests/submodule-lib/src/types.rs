@@ -3,6 +3,12 @@ pub struct Counter {
     value: i32,
 }
 
+impl Default for Counter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[ffier::exportable]
 impl Counter {
     pub fn new() -> Self {
@@ -20,6 +26,12 @@ impl Counter {
 
 /// A second type that takes a Counter parameter (tests cross-type aliases).
 pub struct Doubler;
+
+impl Default for Doubler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[ffier::exportable]
 impl Doubler {

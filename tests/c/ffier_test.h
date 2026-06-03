@@ -164,6 +164,8 @@ void ft_widget_set_tags(FtWidget handle, const FtStr* tags, size_t tags_len);
 FtStr ft_widget_tags_joined(FtWidget handle);
 /** Create a new gadget with the widget's count as initial value. */
 FtGadget ft_widget_create_gadget(FtWidget handle);
+/** Return a borrowed reference to the widget's internal gadget. */
+FtGadget ft_widget_gadget(FtWidget handle);
 /** Try to create a gadget; fails if ok is false. */
 FtGadget ft_widget_try_create_gadget(FtWidget handle, bool ok, FtError* err_out);
 /** Read a gadget's value. */

@@ -430,6 +430,7 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
     ) -> <&'static str as FfiType>::CRepr;
     pub fn ft_widget_create_gadget(handle: *mut core::ffi::c_void) -> <Gadget as FfiType>::CRepr;
+    pub fn ft_widget_gadget(handle: *mut core::ffi::c_void) -> <&'static Gadget as FfiType>::CRepr;
     pub fn ft_widget_try_create_gadget(
         handle: *mut core::ffi::c_void,
         ok: <bool as FfiType>::CRepr,
@@ -680,6 +681,11 @@ impl Widget {
     pub fn create_gadget(&self) -> Gadget {
         let __raw = unsafe { ft_widget_create_gadget(self.0) };
         unsafe { <Gadget as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Return a borrowed reference to the widget's internal gadget."]
+    pub fn gadget(&self) -> Gadget {
+        let __raw = unsafe { ft_widget_gadget(self.0) };
+        Gadget(__raw)
     }
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {

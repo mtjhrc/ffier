@@ -800,15 +800,13 @@ impl Library {
             changed = false;
             let snapshot: Vec<&str> = refs.iter().copied().collect();
             for name in snapshot {
-                if let Some(entry) = self.type_registry.get(name) {
-                    if let TypeKind::Alias { alias_of }
+                if let Some(entry) = self.type_registry.get(name)
+                    && let TypeKind::Alias { alias_of }
                     | TypeKind::Enum { alias_of }
                     | TypeKind::Bitflags { alias_of } = &entry.kind
-                    {
-                        if refs.insert(alias_of) {
-                            changed = true;
-                        }
-                    }
+                    && refs.insert(alias_of)
+                {
+                    changed = true;
                 }
             }
         }

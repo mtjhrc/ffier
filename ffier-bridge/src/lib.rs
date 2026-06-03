@@ -1282,6 +1282,19 @@ fn type_name(ty: &syn::Type) -> Option<String> {
     }
 }
 
+/// Check if a type (parsed from rust_ret tokens) is `&T` or `&mut T` where
+/// `T` is a handle type. Used to emit `ffier_handle_new_borrowed` for
+/// borrowed handle returns.
+fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
+    if let syn::Type::Reference(ref_ty) = ty {
+        type_name(&ref_ty.elem)
+            .map(|name| name == "Self" || handle_types.contains(&name))
+            .unwrap_or(false)
+    } else {
+        false
+    }
+}
+
 /// Check if a Result<T, E> Ok type is a handle, using the original Rust
 /// return type tokens (e.g. `Result<Gadget, TestError>`) rather than the
 /// bridge_type alias (which may be an opaque `_TypeN`).
@@ -1349,9 +1362,36 @@ fn wrap_return(
             }
         }
         MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
-            quote! {
-                let result = #call_expr;
-                <#bridge_type as #lib_crate::FfiType>::into_c(result)
+            let rust_ty = syn::parse2::<syn::Type>(rust_ret.clone()).ok();
+            if rust_ty
+                .as_ref()
+                .is_some_and(|ty| is_borrowed_handle(ty, handle_types))
+            {
+                // &T where T is a handle — shallow-copy into a borrowed handle.
+                // Strip the reference to get the inner bridge_type for the
+                // FfiHandle::TYPE_TAG lookup.
+                let inner_bridge = if let Ok(syn::Type::Reference(ref_ty)) =
+                    syn::parse2::<syn::Type>(bridge_type.clone())
+                {
+                    let elem = &ref_ty.elem;
+                    quote! { #elem }
+                } else {
+                    bridge_type.clone()
+                };
+                quote! {
+                    let result = #call_expr;
+                    unsafe {
+                        ffier::ffier_handle_new_borrowed::<#inner_bridge>(
+                            <#inner_bridge as #lib_crate::FfiHandle>::TYPE_TAG,
+                            result as *const #inner_bridge,
+                        )
+                    }
+                }
+            } else {
+                quote! {
+                    let result = #call_expr;
+                    <#bridge_type as #lib_crate::FfiType>::into_c(result)
+                }
             }
         }
         MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
@@ -1389,11 +1429,41 @@ fn wrap_return(
                 quote! {}
             };
 
-            if ok_is_handle {
-                // GLib-style: return handle directly, NULL on error.
+            // Check if the Ok type is a borrowed handle (&HandleType).
+            let ok_is_borrowed_handle = ok.is_some() && {
+                let ok_tokens = extract_result_ok_type(rust_ret);
+                syn::parse2::<syn::Type>(ok_tokens)
+                    .ok()
+                    .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
+            };
+
+            if ok_is_handle && !ok_is_borrowed_handle {
+                // GLib-style: return owned handle directly, NULL on error.
                 quote! {
                     match #call_expr {
                         Ok(ok_val) => <_ as #lib_crate::FfiType>::into_c(ok_val),
+                        Err(e) => { #box_expr core::ptr::null_mut() }
+                    }
+                }
+            } else if ok_is_borrowed_handle {
+                // GLib-style but borrowed: Result<&Handle, E> → new_borrowed, NULL on error.
+                let ok_pair = ok.as_ref().unwrap();
+                let inner_bridge = if let Ok(syn::Type::Reference(ref_ty)) =
+                    syn::parse2::<syn::Type>(ok_pair.bridge_type.clone())
+                {
+                    let elem = &ref_ty.elem;
+                    quote! { #elem }
+                } else {
+                    ok_pair.bridge_type.clone()
+                };
+                quote! {
+                    match #call_expr {
+                        Ok(ok_val) => unsafe {
+                            ffier::ffier_handle_new_borrowed::<#inner_bridge>(
+                                <#inner_bridge as #lib_crate::FfiHandle>::TYPE_TAG,
+                                ok_val as *const #inner_bridge,
+                            )
+                        },
                         Err(e) => { #box_expr core::ptr::null_mut() }
                     }
                 }
@@ -1543,6 +1613,12 @@ fn c_signature_for_method(
         }
         MetaReturn::Result { ok, .. } => {
             let ok_is_handle = ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types);
+            let ok_is_borrowed_handle = ok.is_some() && {
+                let ok_tokens = extract_result_ok_type(&method.rust_ret);
+                syn::parse2::<syn::Type>(ok_tokens)
+                    .ok()
+                    .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
+            };
 
             // Builder by-value Result<Self, E>: the ok value is written back
             // through the double-pointer handle param, not returned. Use
@@ -1550,7 +1626,7 @@ fn c_signature_for_method(
             let is_builder_self_result =
                 method.is_builder() && method.receiver == MetaReceiver::Value;
 
-            if ok_is_handle && !is_builder_self_result {
+            if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
                 // GLib-style: return handle directly (NULL on error).
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
@@ -1562,13 +1638,11 @@ fn c_signature_for_method(
                 // FtResult style: return packed error code.
                 // Builder-self-result writes ok back through the handle
                 // double-pointer, so no separate result out-param.
-                if !is_builder_self_result {
-                    if let Some(vk) = ok {
-                        params.push(CExternParam {
-                            name: format_ident!("result"),
-                            c_type: c_out_param_type(vk, lib_crate),
-                        });
-                    }
+                if !is_builder_self_result && let Some(vk) = ok {
+                    params.push(CExternParam {
+                        name: format_ident!("result"),
+                        c_type: c_out_param_type(vk, lib_crate),
+                    });
                 }
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
@@ -1972,6 +2046,7 @@ fn generate_trait_impl_bridge(
 
 /// Convert parsed metadata to `ffier_schema::Library` and write to
 /// `target/ffier-{prefix}.json` relative to the workspace root.
+#[allow(clippy::too_many_arguments)]
 fn emit_json(
     prefix: &str,
     primitives_prefix: Option<&str>,
@@ -2026,18 +2101,21 @@ fn emit_json(
 
 /// Context for C type resolution during schema conversion.
 struct CTypeResolver {
-    type_pfx: String,  // e.g. "Ft"
-    upper_pfx: String, // e.g. "FT_"
-    fn_pfx: String,    // e.g. "ft_"
+    type_pfx: String,      // e.g. "Ft"
+    prim_type_pfx: String, // e.g. "Ft" (or "Krun" when primitives_prefix differs)
+    upper_pfx: String,     // e.g. "FT_"
+    fn_pfx: String,        // e.g. "ft_"
 }
 
 impl CTypeResolver {
-    fn new(prefix: &str) -> Self {
+    fn new(prefix: &str, primitives_prefix: Option<&str>) -> Self {
         let type_pfx = ffier_meta::snake_to_pascal(prefix);
+        let prim_type_pfx = ffier_meta::snake_to_pascal(primitives_prefix.unwrap_or(prefix));
         let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
         let fn_pfx = format!("{prefix}_");
         CTypeResolver {
             type_pfx,
+            prim_type_pfx,
             upper_pfx,
             fn_pfx,
         }
@@ -2107,8 +2185,7 @@ impl CTypeResolver {
                 (false, rest)
             };
             // Check for lifetime: `'a`
-            let (lifetime, rest) = if rest.starts_with('\'') {
-                let after_tick = &rest[1..];
+            let (lifetime, rest) = if let Some(after_tick) = rest.strip_prefix('\'') {
                 let lt_len = after_tick
                     .find(|c: char| !c.is_alphanumeric() && c != '_')
                     .unwrap_or(after_tick.len());
@@ -2164,6 +2241,7 @@ impl CTypeResolver {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_schema(
     prefix: &str,
     primitives_prefix: Option<&str>,
@@ -2223,8 +2301,8 @@ fn build_schema(
         })
         .collect();
 
-    let resolver = CTypeResolver::new(prefix);
-    let prim_type_pfx = ffier_meta::snake_to_pascal(primitives_prefix.unwrap_or(prefix));
+    let resolver = CTypeResolver::new(prefix, primitives_prefix);
+    let prim_type_pfx = &resolver.prim_type_pfx;
 
     // Build handle_types set for Result convention detection.
     let handle_types: HashSet<String> = {
@@ -2714,7 +2792,7 @@ fn convert_method(
 
     ffier_schema::Method {
         name: meta.name.to_string(),
-        doc: meta.doc().iter().cloned().collect(),
+        doc: meta.doc().to_vec(),
         receiver: convert_receiver(meta.receiver),
         method_lifetimes: meta
             .method_lifetimes
@@ -2746,7 +2824,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
         MetaParamKind::StrSlice => {
             // &[&str] → two C params: pointer to FfierBytes array + length.
             // The element type is &str (a reference to str).
-            let str_c = format!("{}Str", r.type_pfx);
+            let str_c = format!("{}Str", r.prim_type_pfx);
             ffier_schema::ParamType::Slice {
                 element: ffier_schema::TypeRef {
                     type_name: "str".to_string(),
@@ -2881,10 +2959,16 @@ fn convert_return(
                 r.to_type_ref(&rt)
             });
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
+            let ok_is_borrowed_handle = ok.is_some() && {
+                let ok_tokens = extract_result_ok_type(rust_ret);
+                syn::parse2::<syn::Type>(ok_tokens)
+                    .ok()
+                    .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
+            };
             ffier_schema::Return::Result {
                 ok: ok_ref,
                 err_type: err_ident.clone(),
-                c_convention: if ok_is_handle {
+                c_convention: if ok_is_handle || ok_is_borrowed_handle {
                     ffier_schema::CResultConvention::HandleOrNull
                 } else {
                     ffier_schema::CResultConvention::OutParam

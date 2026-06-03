@@ -1150,8 +1150,6 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
     ))
 }
 
-/// Check if an attribute is `#[ffier(skip)]`.
-
 /// Parse `#[ffier(dispatch = concrete|vtable)]` from a parameter's attributes.
 /// Only `dispatch` is recognized; unknown keys are rejected.
 fn parse_ffier_param_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
@@ -1959,11 +1957,12 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     }
     impl VisitMut for SelfReplacer {
         fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
-            if let syn::Expr::Path(ep) = expr {
-                if ep.qself.is_none() && ep.path.is_ident("self") {
-                    *expr = syn::parse_quote! { __self };
-                    return;
-                }
+            if let syn::Expr::Path(ep) = expr
+                && ep.qself.is_none()
+                && ep.path.is_ident("self")
+            {
+                *expr = syn::parse_quote! { __self };
+                return;
             }
             syn::visit_mut::visit_expr_mut(self, expr);
         }
@@ -2059,10 +2058,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
             .inputs
             .iter()
             .filter_map(|arg| {
-                if let syn::FnArg::Typed(pat_type) = arg {
-                    if let syn::Pat::Ident(pi) = &*pat_type.pat {
-                        return Some(pi.ident.clone());
-                    }
+                if let syn::FnArg::Typed(pat_type) = arg
+                    && let syn::Pat::Ident(pi) = &*pat_type.pat
+                {
+                    return Some(pi.ident.clone());
                 }
                 None
             })
@@ -2529,10 +2528,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         .filter_map(|e| {
             if let LibraryEntry::TaggedTrait(path, _) = e {
                 let is_external = path.segments.len() > 1
-                    && path
-                        .segments
-                        .first()
-                        .map_or(true, |seg| seg.ident != "crate");
+                    && path.segments.first().is_none_or(|seg| seg.ident != "crate");
                 if is_external {
                     return Some(path_last_ident(path).to_string());
                 }
@@ -2645,10 +2641,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 let is_external = path.segments.len() > 1
-                    && path
-                        .segments
-                        .first()
-                        .map_or(true, |seg| seg.ident != "crate");
+                    && path.segments.first().is_none_or(|seg| seg.ident != "crate");
                 let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
 
                 if is_external {
@@ -2813,7 +2806,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         && trait_path
                             .segments
                             .first()
-                            .map_or(true, |seg| seg.ident != "crate"));
+                            .is_none_or(|seg| seg.ident != "crate"));
                 let resolved_trait_path = if is_external {
                     let reexport = format_ident!("__ffier_reexport_trait_{trait_name}");
                     quote! { $crate::#reexport }
@@ -3248,7 +3241,7 @@ impl Parse for LibraryInput {
             let fork = input.fork();
             if fork
                 .parse::<syn::Ident>()
-                .map_or(false, |id| id == "primitives_prefix")
+                .is_ok_and(|id| id == "primitives_prefix")
             {
                 let _: syn::Ident = input.parse()?; // consume "primitives_prefix"
                 input.parse::<Token![=]>()?;
@@ -3279,7 +3272,7 @@ impl Parse for LibraryInput {
                 && input
                     .fork()
                     .parse::<syn::Ident>()
-                    .map_or(false, |id| id == "bitflags")
+                    .is_ok_and(|id| id == "bitflags")
             {
                 // `bitflags Path`
                 let _: syn::Ident = input.parse()?;
@@ -3324,14 +3317,6 @@ impl Parse for LibraryInput {
 // #[ffier::reexport] — re-export ffier metadata alongside types
 // ===========================================================================
 
-/// Attribute for `pub use` statements that re-export ffier-annotated types.
-///
-/// When you re-export a type from another crate (or from a private submodule),
-/// the ffier metadata macro alias needs to travel with it. This attribute
-/// automatically generates the corresponding `pub use` for the metadata.
-///
-/// ```ignore
-/// #[ffier::reexport]
 // ===========================================================================
 // __generate_vtable — proc macro for vtable struct + VtableFoo trait impl
 // ===========================================================================
@@ -3352,11 +3337,9 @@ impl Parse for LibraryInput {
 /// trait_generics = (token tokens);  // e.g. <'static> or empty
 /// crate_path = (token tokens);      // typically $crate
 /// handles = [Ident, Ident, ...];
-
 /// reserved = [N, N, ...];
 /// methods = [ {method_meta}, ... ];
 /// default_helpers = [ method_name => (path tokens), ... ];
-
 /// ```
 struct GenerateVtableInput {
     vtable_struct: syn::Ident,
@@ -3611,7 +3594,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 quote! {}
             }
             ffier_meta::MetaReturn::Result { ok, .. } => {
-                let ok_is_handle = ok.as_ref().map_or(false, |tp| {
+                let ok_is_handle = ok.as_ref().is_some_and(|tp| {
                     let name = tp.bridge_type.to_string();
                     handle_names.contains(&name)
                 });
