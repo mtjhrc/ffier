@@ -538,7 +538,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -597,21 +597,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -1056,9 +1050,57 @@ mod tests {
     }
 
     #[test]
-    fn self_dispatch_fruit_destroy_null() {
+    fn manual_object_array_borrow_chain() {
         unsafe {
-            ft_fruit_destroy(ptr::null_mut());
+            // Create a widget that owns gadgets, get the array via FFI
+            let w = ft_widget_new();
+            let arr = ft_widget_gadgets(w);
+            assert_eq!(arr.len, 2);
+
+            // Get element handles from the array
+            let h0 = ffier::ffier_object_array_get(arr, 0);
+            let h1 = ffier::ffier_object_array_get(arr, 1);
+
+            // Verify the borrow chain: h0/h1 are FfierBorrowedHandle
+            // with METADATA_BORROWED | METADATA_ARRAY_ELEMENT. Reading
+            // through them does ptr hop: FfierBorrowedHandle.ptr → &Gadget.
+            assert_eq!(ft_gadget_get(h0), 10);
+            assert_eq!(ft_gadget_get(h1), 20);
+
+            // Now manually construct a SECOND array reusing the same
+            // borrowed handle pointers but in reverse order — verifies
+            // the ptr hop works on manually constructed arrays too.
+            let tag = ffier::handle_type_tag(h0);
+            let meta = ffier::METADATA_BORROWED | ffier::METADATA_ARRAY_ELEMENT;
+            let ptr0 = (*(h0 as *const ffier::FfierBorrowedHandle)).ptr;
+            let ptr1 = (*(h1 as *const ffier::FfierBorrowedHandle)).ptr;
+
+            let reversed: Box<[ffier::FfierBorrowedHandle]> = vec![
+                ffier::FfierBorrowedHandle {
+                    type_tag: tag,
+                    metadata: meta,
+                    ptr: ptr1,
+                },
+                ffier::FfierBorrowedHandle {
+                    type_tag: tag,
+                    metadata: meta,
+                    ptr: ptr0,
+                },
+            ]
+            .into_boxed_slice();
+            let len = reversed.len();
+            let raw = Box::into_raw(reversed) as *const ffier::FfierBorrowedHandle;
+            let arr2 = ffier::FfierObjectArray::from_raw(raw, len);
+
+            // Read reversed array — ptr hop should give 20, 10
+            let r0 = ffier::ffier_object_array_get(arr2, 0);
+            let r1 = ffier::ffier_object_array_get(arr2, 1);
+            assert_eq!(ft_gadget_get(r0), 20);
+            assert_eq!(ft_gadget_get(r1), 10);
+
+            ffier::ffier_object_array_free(arr2);
+            ffier::ffier_object_array_free(arr);
+            ft_widget_destroy(w);
         }
     }
 
