@@ -29,6 +29,7 @@ pub struct Widget {
     active: bool,
     tags: String,
     gadget: Gadget,
+    gadgets: Vec<Gadget>,
 }
 
 #[ffier::exportable]
@@ -41,6 +42,7 @@ impl Widget {
             active: true,
             tags: String::new(),
             gadget: Gadget { value: 42 },
+            gadgets: vec![Gadget { value: 10 }, Gadget { value: 20 }],
         }
     }
 
@@ -49,6 +51,7 @@ impl Widget {
         Widget {
             count: 0,
             name: name.to_owned(),
+            gadgets: vec![Gadget { value: 10 }, Gadget { value: 20 }],
             active: true,
             tags: String::new(),
             gadget: Gadget { value: 42 },
@@ -168,6 +171,11 @@ impl Widget {
     /// Return a borrowed reference to the widget's internal gadget.
     pub fn gadget(&self) -> &Gadget {
         &self.gadget
+    }
+
+    /// Return a borrowed slice of the widget's gadgets (&[T] pattern).
+    pub fn gadgets(&self) -> &[Gadget] {
+        &self.gadgets
     }
 
     /// Try to create a gadget; fails if ok is false.

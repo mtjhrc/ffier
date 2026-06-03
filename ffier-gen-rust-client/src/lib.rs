@@ -855,6 +855,9 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
 
     match &m.ret {
         Return::Void => String::new(),
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
+            " -> ffier::FfierObjectArray".to_string()
+        }
         Return::Value(_) | Return::Result { .. } => {
             format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
         }
@@ -940,6 +943,10 @@ fn emit_method_body(
             }
         }
         Return::Void => {
+            writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        }
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
+            // Object array: the FFI returns ffier::FfierObjectArray directly.
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
         Return::Value(tr) => {
@@ -1901,6 +1908,9 @@ fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder
     match ret {
         Return::Void => String::new(),
         Return::Value(_) if is_builder => String::new(),
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
+            " -> ffier::FfierObjectArray".to_string()
+        }
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -1950,6 +1960,9 @@ fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> Strin
     use ffier_schema::CResultConvention;
     match ret {
         Return::Void => String::new(),
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
+            " -> ffier::FfierObjectArray".to_string()
+        }
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -2300,6 +2313,9 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: b
 
     let ret_type = match &f.ret {
         Return::Void => String::new(),
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
+            " -> ffier::FfierObjectArray".to_string()
+        }
         Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
         Return::Result { ok, err_type, .. } => {
             let ok_str = match ok {
@@ -2319,6 +2335,9 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: b
 
     match &f.ret {
         Return::Void => {
+            writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
+        }
+        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
         }
         Return::Value(tr) => {

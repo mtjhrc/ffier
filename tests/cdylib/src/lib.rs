@@ -538,7 +538,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -597,21 +597,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -1413,6 +1407,29 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // &[T] direct handle slice return
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn direct_handle_slice_return() {
+        unsafe {
+            let w = ft_widget_new();
+            let arr = ft_widget_gadgets(w);
+            assert_eq!(arr.len, 2);
+
+            // Access each element via object_array_get and read its value
+            let g0 = ffier::ffier_object_array_get(arr, 0);
+            let g1 = ffier::ffier_object_array_get(arr, 1);
+            assert_eq!(ft_gadget_get(g0), 10);
+            assert_eq!(ft_gadget_get(g1), 20);
+
+            // Free the array (does NOT destroy the gadgets — they're borrowed)
+            ffier::ffier_object_array_free(arr);
+            ft_widget_destroy(w);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Error-named error type (regression: name collides with std::error::Error)
