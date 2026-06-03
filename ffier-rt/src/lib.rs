@@ -316,34 +316,6 @@ impl FfierHandleArray {
     };
 }
 
-/// Build a `FfierHandleArray` from a slice of raw pointers to T values.
-///
-/// Allocates a contiguous `Box<[FfierBorrowedHandle]>`, fills each element
-/// with `{ type_tag, METADATA_BORROWED | METADATA_ARRAY_ELEMENT, ptr }`,
-/// leaks the box, and returns the thin pointer + length.
-///
-/// # Safety
-/// - Each pointer in `ptrs` must point to a valid, aligned `T`.
-/// - The source values must outlive all uses of this array.
-pub unsafe fn ffier_handle_array_new(tag: u32, ptrs: &[*const c_void]) -> FfierHandleArray {
-    debug_assert!(tag != 0, "type tag must be nonzero");
-    if ptrs.is_empty() {
-        return FfierHandleArray::EMPTY;
-    }
-    let metadata = METADATA_BORROWED | METADATA_ARRAY_ELEMENT;
-    let boxed: Box<[FfierBorrowedHandle]> = ptrs
-        .iter()
-        .map(|&ptr| FfierBorrowedHandle {
-            type_tag: tag,
-            metadata,
-            ptr,
-        })
-        .collect();
-    let len = boxed.len();
-    let raw = Box::into_raw(boxed) as *const FfierBorrowedHandle;
-    FfierHandleArray { items: raw, len }
-}
-
 /// Get a handle pointer to the i-th element of a `FfierHandleArray`.
 ///
 /// Returns a `*mut c_void` pointing to the `FfierBorrowedHandle` at
