@@ -50,7 +50,7 @@ pub const METADATA_OWNED: u32 = 1;
 pub const METADATA_BORROWED: u32 = 2;
 
 /// Metadata bit 2: the handle is an element of a contiguous
-/// `FfierHandleArray` allocation. Individual destroy is invalid —
+/// `FfierObjectArray` allocation. Individual destroy is invalid —
 /// the whole array must be freed via the array's destroy function.
 pub const METADATA_ARRAY_ELEMENT: u32 = 4;
 
@@ -289,59 +289,67 @@ impl VtableHandle {
 }
 
 // ---------------------------------------------------------------------------
-// FfierHandleArray --- contiguous array of borrowed handles
+// FfierObjectArray --- contiguous array of borrowed handles
 // ---------------------------------------------------------------------------
 
 /// `#[repr(C)]` array of borrowed handles returned from methods that
 /// produce `&[&T]` or `&[T]`. The backing storage is a single contiguous
-/// `Box<[FfierBorrowedHandle]>` allocation, leaked to C as a thin pointer
-/// plus length.
+/// `Box<[FfierBorrowedHandle]>` allocation, leaked to C as an opaque
+/// pointer plus length.
 ///
 /// Individual elements must NOT be passed to `destroy` — the whole array
 /// is freed in one call via the array's destroy function, which
 /// reconstructs and drops the `Box<[FfierBorrowedHandle]>`.
+///
+/// Access elements via `ffier_object_array_get()`, not direct indexing.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct FfierHandleArray {
-    /// Thin pointer to the first `FfierBorrowedHandle` element.
-    /// Null when `len == 0`.
-    pub items: *const FfierBorrowedHandle,
+pub struct FfierObjectArray {
+    /// Opaque pointer to the first `FfierBorrowedHandle` element.
+    /// Null when `len == 0`. NOT directly indexable from C —
+    /// use `ffier_object_array_get()`.
+    _opaque: *const FfierBorrowedHandle,
     pub len: usize,
 }
 
-impl FfierHandleArray {
+impl FfierObjectArray {
     pub const EMPTY: Self = Self {
-        items: core::ptr::null(),
+        _opaque: core::ptr::null(),
         len: 0,
     };
+
+    /// Create from a leaked `Box<[FfierBorrowedHandle]>`.
+    pub fn from_raw(ptr: *const FfierBorrowedHandle, len: usize) -> Self {
+        Self { _opaque: ptr, len }
+    }
 }
 
-/// Get a handle pointer to the i-th element of a `FfierHandleArray`.
+/// Get a handle pointer to the i-th element of a `FfierObjectArray`.
 ///
 /// Returns a `*mut c_void` pointing to the `FfierBorrowedHandle` at
 /// index `i`. The handle has valid RTTI headers and can be passed to
 /// methods that type-check the handle.
 ///
 /// # Safety
-/// - `arr` must be a valid `FfierHandleArray`.
+/// - `arr` must be a valid `FfierObjectArray`.
 /// - `i` must be `< arr.len`.
 #[inline]
-pub unsafe fn ffier_handle_array_get(arr: FfierHandleArray, i: usize) -> *mut c_void {
+pub unsafe fn ffier_object_array_get(arr: FfierObjectArray, i: usize) -> *mut c_void {
     debug_assert!(i < arr.len, "index out of bounds");
-    unsafe { arr.items.add(i) as *mut c_void }
+    unsafe { arr._opaque.add(i) as *mut c_void }
 }
 
-/// Free a `FfierHandleArray` by reconstructing and dropping the
+/// Free a `FfierObjectArray` by reconstructing and dropping the
 /// `Box<[FfierBorrowedHandle]>`.
 ///
 /// # Safety
-/// - `arr` must have been created by `ffier_handle_array_new` (or be EMPTY).
+/// - `arr` must have been created via `FfierObjectArray::from_raw` (or be EMPTY).
 /// - Must only be called once per array.
 #[inline]
-pub unsafe fn ffier_handle_array_free(arr: FfierHandleArray) {
-    if !arr.items.is_null() && arr.len > 0 {
+pub unsafe fn ffier_object_array_free(arr: FfierObjectArray) {
+    if !arr._opaque.is_null() && arr.len > 0 {
         let raw_slice =
-            core::ptr::slice_from_raw_parts(arr.items, arr.len) as *mut [FfierBorrowedHandle];
+            core::ptr::slice_from_raw_parts(arr._opaque, arr.len) as *mut [FfierBorrowedHandle];
         drop(unsafe { Box::from_raw(raw_slice) });
     }
 }
