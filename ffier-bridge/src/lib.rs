@@ -1418,13 +1418,18 @@ fn wrap_return(
             }
         }
         MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
-            // &[&T] → convert each &T element to its handle pointer (borrowed),
-            // return as FfierHandleSlice { items, len }.
+            // &[&T] → wrap each &T element in a new borrowed handle shell
+            // (with correct type_tag + metadata=0), return as FfierHandleSlice.
             // The Vec backing store is leaked — the caller must call free_slice.
             quote! {
                 let __slice = #call_expr;
                 let __handles: Vec<*mut core::ffi::c_void> = __slice.iter()
-                    .map(|item| <&#bridge_type as #lib_crate::FfiType>::borrow_as_c(item))
+                    .map(|item| unsafe {
+                        ffier::ffier_handle_new_borrowed::<#bridge_type>(
+                            <#bridge_type as #lib_crate::FfiHandle>::TYPE_TAG,
+                            *item as *const #bridge_type,
+                        )
+                    })
                     .collect();
                 let __len = __handles.len();
                 let __ptr = __handles.as_ptr();
