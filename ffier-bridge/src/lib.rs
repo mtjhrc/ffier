@@ -505,7 +505,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate str_free function for dropping owned strings (Box<str>)
     let str_free_fn = generate_str_free(&first_prefix);
 
-    // Generate free_object_array function for dropping object arrays
+    // Generate free_object_array function
     let free_object_array_fn = generate_free_object_array(&first_prefix);
 
     // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
@@ -1417,7 +1417,10 @@ fn wrap_return(
                 }
             }
         }
-        MetaReturn::HandleSlice { types: MetaTypePair { bridge_type, .. }, direct } => {
+        MetaReturn::HandleSlice {
+            types: MetaTypePair { bridge_type, .. },
+            direct,
+        } => {
             // &[&T] or &[T] → build a contiguous Box<[FfierBorrowedHandle]>
             // from the iterator, leak it, return as FfierObjectArray.
             // For &[&T], item is &&T so we deref once; for &[T], item is &T directly.

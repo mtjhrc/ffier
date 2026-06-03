@@ -84,16 +84,29 @@ typedef struct {
       .vtable_size = sizeof(vtable) })
 
 /**
+ * Opaque 16-byte handle entry in an object array.
+ * Do not access fields directly — pass &entry to typed methods.
+ * Do NOT pass individual entries to destroy.
+ */
+typedef struct {
+    uint32_t _tag;
+    uint32_t _meta;
+    const void* _ptr;
+} FtObjectArrayEntry;
+
+/**
  * Contiguous array of borrowed handles.
  * Returned by methods that produce slices of handles.
- * Access elements via the _get() accessor, not direct indexing.
  * Individual elements must NOT be passed to destroy —
  * call free_object_array() to free the entire array.
  */
 typedef struct {
-    const void* _opaque;
+    const FtObjectArrayEntry* items;
     size_t len;
 } FtObjectArray;
+
+#define FT_OBJECT_ARRAY_GET(arr, i) \
+    (assert((size_t)(i) < (arr).len), (FtObject)(void*)&(arr).items[(i)])
 
 #endif /* FT_PRIMITIVES_DEFINED */
 
