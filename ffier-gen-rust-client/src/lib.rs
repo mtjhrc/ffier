@@ -209,32 +209,56 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "/// Dropping this type frees the backing array.").unwrap();
     writeln!(out, "pub struct ForeignSlice<T> {{").unwrap();
     writeln!(out, "    raw: ffier::FfierObjectArray,").unwrap();
-    writeln!(out, "    _marker: core::marker::PhantomData<T>,").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "impl<T> ForeignSlice<T> {{").unwrap();
-    writeln!(out, "    pub fn len(&self) -> usize {{ self.raw.len }}").unwrap();
-    writeln!(
-        out,
-        "    pub fn is_empty(&self) -> bool {{ self.raw.len == 0 }}"
-    )
-    .unwrap();
+    writeln!(out, "    elements: Box<[core::mem::ManuallyDrop<T>]>,").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "impl<T: FfiHandle> ForeignSlice<T> {{").unwrap();
-    writeln!(out, "    pub fn get(&self, index: usize) -> T {{").unwrap();
     writeln!(
         out,
-        "        assert!(index < self.raw.len, \"index out of bounds\");"
+        "    fn from_raw(raw: ffier::FfierObjectArray) -> Self {{"
     )
     .unwrap();
     writeln!(
         out,
-        "        let handle = unsafe {{ ffier::ffier_object_array_get(self.raw, index) }};"
+        "        let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)"
     )
     .unwrap();
-    writeln!(out, "        T::__from_raw(handle)").unwrap();
+    writeln!(
+        out,
+        "            .map(|i| core::mem::ManuallyDrop::new(T::__from_raw("
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                unsafe {{ ffier::ffier_object_array_get(raw, i) }})))"
+    )
+    .unwrap();
+    writeln!(out, "            .collect();").unwrap();
+    writeln!(out, "        Self {{ raw, elements }}").unwrap();
     writeln!(out, "    }}").unwrap();
+    writeln!(
+        out,
+        "    pub fn len(&self) -> usize {{ self.elements.len() }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    pub fn is_empty(&self) -> bool {{ self.elements.is_empty() }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(
+        out,
+        "impl<T: FfiHandle> core::ops::Index<usize> for ForeignSlice<T> {{"
+    )
+    .unwrap();
+    writeln!(out, "    type Output = T;").unwrap();
+    writeln!(
+        out,
+        "    fn index(&self, i: usize) -> &T {{ &*self.elements[i] }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
@@ -1018,7 +1042,11 @@ fn emit_method_body(
         }
         Return::ObjectArray { .. } => {
             // Object array: wrap raw FfierObjectArray in ForeignSlice.
-            writeln!(out, "        ForeignSlice {{ raw: unsafe {{ {ffi_name}({args_str}) }}, _marker: core::marker::PhantomData }}").unwrap();
+            writeln!(
+                out,
+                "        ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
+            )
+            .unwrap();
         }
         Return::Value(tr) => {
             if borrowed_handle_return_type(&m.ret, lib).is_some() {
@@ -2131,7 +2159,11 @@ fn emit_ffi_call_return(
             writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
         Return::ObjectArray { .. } => {
-            writeln!(out, "{indent}ForeignSlice {{ raw: unsafe {{ {ffi_name}({args_str}) }}, _marker: core::marker::PhantomData }}").unwrap();
+            writeln!(
+                out,
+                "{indent}ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
+            )
+            .unwrap();
         }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
@@ -2412,7 +2444,12 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: b
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
         }
         Return::ObjectArray { .. } => {
-            writeln!(out, "    ForeignSlice {{ raw: unsafe {{ {}({args_str}) }}, _marker: core::marker::PhantomData }}", f.ffi_name).unwrap();
+            writeln!(
+                out,
+                "    ForeignSlice::from_raw(unsafe {{ {}({args_str}) }})",
+                f.ffi_name
+            )
+            .unwrap();
         }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
