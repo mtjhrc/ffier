@@ -1408,6 +1408,35 @@ mod tests {
 
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // Error-named error type (regression: name collides with std::error::Error)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn error_named_error_type_ok() {
+        unsafe {
+            let s = ft_sprocket_new(ffier::FfierBytes::from_str("ok"));
+            let mut err: *mut core::ffi::c_void = core::ptr::null_mut();
+            let r = ft_sprocket_try_spin(s, &mut err);
+            assert_eq!(r, 0);
+            assert!(err.is_null());
+            ft_sprocket_destroy(s);
+        }
+    }
+
+    #[test]
+    fn error_named_error_type_err() {
+        unsafe {
+            let s = ft_sprocket_new(ffier::FfierBytes::from_str("broken"));
+            let mut err: *mut core::ffi::c_void = core::ptr::null_mut();
+            let r = ft_sprocket_try_spin(s, &mut err);
+            assert_ne!(r, 0);
+            assert!(!err.is_null());
+            ft_error_destroy(err);
+            ft_sprocket_destroy(s);
+        }
+    }
+
     #[test]
     fn foreign_trait_vtable_dispatch() {
         // Implement Weighable via vtable from C side

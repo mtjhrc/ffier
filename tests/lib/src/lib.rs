@@ -868,6 +868,15 @@ impl Sprocket {
             name: name.to_owned(),
         }
     }
+
+    /// Returns `Err(Error::Failed())` when name is "broken".
+    pub fn try_spin(&self) -> Result<(), Error> {
+        if self.name == "broken" {
+            Err(Error::Failed())
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[ffier::trait_impl]
@@ -1023,6 +1032,18 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 }
 
 // ---------------------------------------------------------------------------
+// Error — deliberately named `Error` to catch collisions with std::error::Error
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
+#[non_exhaustive]
+pub enum Error {
+    #[error("generic failure")]
+    #[ffier(code = 1)]
+    Failed(),
+}
+
+// ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
@@ -1055,6 +1076,8 @@ ffier::library_definition!("ft", library_tag = 1,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
+    Error = 26,
+    Error for Error,
     enum LogLevel,
     bitflags Permissions,
     fn log_level_name,

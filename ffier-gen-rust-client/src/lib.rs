@@ -203,8 +203,25 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     let weak = opts.weak;
 
     // 1. Error enums
+    // Emit ft_error_payload extern once (shared by all error types).
+    if !lib.errors.is_empty() {
+        let payload_fn = format!("{}_error_payload", lib.prefix);
+        emit_extern_fns(
+            &mut out,
+            &[extern_fn_private(
+                &payload_fn,
+                vec![
+                    "handle: *const core::ffi::c_void".to_string(),
+                    "out_buf: *mut core::ffi::c_void".to_string(),
+                    "buf_size: usize".to_string(),
+                ],
+                String::new(),
+            )],
+            weak,
+        );
+    }
     for err in &lib.errors {
-        emit_error(&mut out, err, lib, weak);
+        emit_error(&mut out, err, lib);
     }
 
     // 2. Exported types
@@ -297,7 +314,7 @@ pub fn generate_from_file_with_options(
 // Error generation
 // ===========================================================================
 
-fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
+fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
     let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
@@ -513,21 +530,6 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
     // std::error::Error
     writeln!(out, "impl std::error::Error for {} {{}}", err.name).unwrap();
     writeln!(out).unwrap();
-
-    // Extern declaration for payload getter
-    emit_extern_fns(
-        out,
-        &[extern_fn_private(
-            &payload_fn,
-            vec![
-                "handle: *const core::ffi::c_void".to_string(),
-                "out_buf: *mut core::ffi::c_void".to_string(),
-                "buf_size: usize".to_string(),
-            ],
-            String::new(),
-        )],
-        weak,
-    );
 }
 
 struct PushStrTraitInfo {
