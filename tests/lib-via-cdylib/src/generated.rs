@@ -212,6 +212,7 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
 
 /// Borrowed slice of handles returned from FFI methods.
 /// Elements are borrowed — do NOT destroy them individually.
+/// Derefs to `&[T]`, so indexing, iteration, `len()`, etc. all work.
 /// Dropping this type frees the backing array.
 pub struct ForeignSlice<T> {
     raw: ffier::FfierObjectArray,
@@ -229,18 +230,13 @@ impl<T: FfiHandle> ForeignSlice<T> {
             .collect();
         Self { raw, elements }
     }
-    pub fn len(&self) -> usize {
-        self.elements.len()
-    }
-    pub fn is_empty(&self) -> bool {
-        self.elements.is_empty()
-    }
 }
 
-impl<T: FfiHandle> core::ops::Index<usize> for ForeignSlice<T> {
-    type Output = T;
-    fn index(&self, i: usize) -> &T {
-        &*self.elements[i]
+impl<T> core::ops::Deref for ForeignSlice<T> {
+    type Target = [T];
+    fn deref(&self) -> &[T] {
+        // SAFETY: ManuallyDrop<T> is #[repr(transparent)] over T.
+        unsafe { core::mem::transmute::<&[core::mem::ManuallyDrop<T>], &[T]>(&self.elements) }
     }
 }
 

@@ -206,6 +206,11 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         "/// Elements are borrowed — do NOT destroy them individually."
     )
     .unwrap();
+    writeln!(
+        out,
+        "/// Derefs to `&[T]`, so indexing, iteration, `len()`, etc. all work."
+    )
+    .unwrap();
     writeln!(out, "/// Dropping this type frees the backing array.").unwrap();
     writeln!(out, "pub struct ForeignSlice<T> {{").unwrap();
     writeln!(out, "    raw: ffier::FfierObjectArray,").unwrap();
@@ -236,29 +241,18 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "            .collect();").unwrap();
     writeln!(out, "        Self {{ raw, elements }}").unwrap();
     writeln!(out, "    }}").unwrap();
-    writeln!(
-        out,
-        "    pub fn len(&self) -> usize {{ self.elements.len() }}"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    pub fn is_empty(&self) -> bool {{ self.elements.is_empty() }}"
-    )
-    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+    writeln!(out, "impl<T> core::ops::Deref for ForeignSlice<T> {{").unwrap();
+    writeln!(out, "    type Target = [T];").unwrap();
+    writeln!(out, "    fn deref(&self) -> &[T] {{").unwrap();
     writeln!(
         out,
-        "impl<T: FfiHandle> core::ops::Index<usize> for ForeignSlice<T> {{"
+        "        // SAFETY: ManuallyDrop<T> is #[repr(transparent)] over T."
     )
     .unwrap();
-    writeln!(out, "    type Output = T;").unwrap();
-    writeln!(
-        out,
-        "    fn index(&self, i: usize) -> &T {{ &*self.elements[i] }}"
-    )
-    .unwrap();
+    writeln!(out, "        unsafe {{ core::mem::transmute::<&[core::mem::ManuallyDrop<T>], &[T]>(&self.elements) }}").unwrap();
+    writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
