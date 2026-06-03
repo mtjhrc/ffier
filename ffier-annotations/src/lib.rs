@@ -427,6 +427,8 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
                             ),
                         }
                     }
+                }
+                impl FfiBorrow for #name {
                     fn borrow_as_c(&self) -> #repr_ident { *self as #repr_ident }
                 }
             };
@@ -531,6 +533,8 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
                     const IS_HANDLE: bool = false;
                     fn into_c(self) -> #repr_ident { self.bits() }
                     unsafe fn from_c(repr: #repr_ident) -> Self { Self::from_bits_retain(repr) }
+                }
+                impl FfiBorrow for #name {
                     fn borrow_as_c(&self) -> #repr_ident { self.bits() }
                 }
             };
@@ -1020,7 +1024,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                             "error payload buffer too small: got {} bytes, need {}",
                             buf_size, expected,
                         );
-                        let c_val = <#field_ty as FfiType>::borrow_as_c(val);
+                        let c_val = <#field_ty as FfiBorrow>::borrow_as_c(val);
                         unsafe {
                             core::ptr::write(
                                 out_buf as *mut <#field_ty as FfiType>::CRepr,
@@ -2238,11 +2242,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                 impl FfiHandle for #wrapper_name {
                     const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
                     const TYPE_TAG: u32 = $type_tag;
-                    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-                        let ptr = (self as *const Self as *const u8)
-                            .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
-                        ptr as *mut core::ffi::c_void
-                    }
                 }
 
                 impl FfiType for #wrapper_name {
@@ -2257,9 +2256,6 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
                     }
                     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
                         unsafe { ffier::ffier_handle_consume::<Self>(repr) }
-                    }
-                    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-                        unsafe { self.as_handle() }
                     }
                 }
 
@@ -2597,11 +2593,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     impl FfiHandle for #path {
                         const C_HANDLE_NAME: &'static str = #last_ident_str;
                         const TYPE_TAG: u32 = #full_tag;
-                        unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-                            let ptr = (self as *const Self as *const u8)
-                                .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
-                            ptr as *mut core::ffi::c_void
-                        }
                     }
                     impl FfiType for #path {
                         type CRepr = *mut core::ffi::c_void;
@@ -2612,9 +2603,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         }
                         unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
                             unsafe { ffier::ffier_handle_consume::<Self>(repr) }
-                        }
-                        fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-                            unsafe { self.as_handle() }
                         }
                     }
                 });
@@ -2871,7 +2859,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         pub trait FfiHandle {
             const C_HANDLE_NAME: &'static str;
             const TYPE_TAG: u32;
-            unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
         }
 
         #[doc(hidden)]
@@ -2885,9 +2872,14 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             /// # Safety
             /// For handle types, `repr` must be a valid handle pointer.
             unsafe fn from_c(repr: Self::CRepr) -> Self;
-            /// Produce a CRepr that borrows from `&self` without consuming.
-            /// Used by error payload getters to let callers borrow data
-            /// from an error handle without taking ownership.
+        }
+
+        /// Produce a CRepr from `&self` without consuming.
+        /// Used by error payload getters to borrow data from an error handle.
+        /// Only implemented for types that appear as error payload fields
+        /// (primitives, enums, bitflags, strings, byte slices, paths).
+        #[doc(hidden)]
+        pub trait FfiBorrow: FfiType {
             fn borrow_as_c(&self) -> Self::CRepr;
         }
 
@@ -2902,6 +2894,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     const IS_HANDLE: bool = false;
                     fn into_c(self) -> Self { self }
                     unsafe fn from_c(repr: Self) -> Self { repr }
+                }
+                impl FfiBorrow for $rust_ty {
                     fn borrow_as_c(&self) -> Self { *self }
                 })*
             };
@@ -2923,6 +2917,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     core::str::from_utf8_unchecked(bytes)
                 }
             }
+        }
+        impl FfiBorrow for &str {
             fn borrow_as_c(&self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_str(self) } }
         }
 
@@ -2946,12 +2942,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 }
             }
-            fn borrow_as_c(&self) -> ffier::FfierBytes {
-                match self {
-                    Some(s) => unsafe { ffier::FfierBytes::from_str(s) },
-                    None => ffier::FfierBytes::EMPTY,
-                }
-            }
         }
 
         impl FfiType for Box<str> {
@@ -2968,6 +2958,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     Box::from_raw(core::str::from_utf8_unchecked_mut(slice))
                 }
             }
+        }
+        impl FfiBorrow for Box<str> {
             fn borrow_as_c(&self) -> ffier::FfierBytes {
                 ffier::FfierBytes { data: self.as_ptr(), len: self.len() }
             }
@@ -2984,7 +2976,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     else { core::slice::from_raw_parts(repr.data, repr.len) }
                 }
             }
-            fn borrow_as_c(&self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_bytes(self) } }
         }
 
         #[cfg(unix)]
@@ -3000,7 +2991,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
                 }
             }
-            fn borrow_as_c(&self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_path(self) } }
         }
 
         #[cfg(unix)]
@@ -3012,7 +3002,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 const IS_HANDLE: bool = false;
                 fn into_c(self) -> i32 { self.into_raw_fd() }
                 unsafe fn from_c(fd: i32) -> Self { unsafe { OwnedFd::from_raw_fd(fd) } }
-                fn borrow_as_c(&self) -> i32 { self.as_raw_fd() }
             }
             impl<'a> FfiType for BorrowedFd<'a> {
                 type CRepr = i32;
@@ -3020,7 +3009,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 const IS_HANDLE: bool = false;
                 fn into_c(self) -> i32 { self.as_raw_fd() }
                 unsafe fn from_c(fd: i32) -> Self { unsafe { BorrowedFd::borrow_raw(fd) } }
-                fn borrow_as_c(&self) -> i32 { self.as_raw_fd() }
             }
             impl<'a> FfiType for Option<BorrowedFd<'a>> {
                 type CRepr = i32;
@@ -3035,12 +3023,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 unsafe fn from_c(fd: i32) -> Self {
                     if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd) }) }
                 }
-                fn borrow_as_c(&self) -> i32 {
-                    match self {
-                        Some(fd) => fd.as_raw_fd(),
-                        None => -1,
-                    }
-                }
             }
         };
 
@@ -3048,18 +3030,16 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
             const IS_HANDLE: bool = true;
-            fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
+            fn into_c(self) -> *mut core::ffi::c_void { unimplemented!("&T into_c") }
             unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow::<T>(repr) } }
-            fn borrow_as_c(&self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
         }
 
         impl<T: FfiHandle + 'static> FfiType for &mut T {
             type CRepr = *mut core::ffi::c_void;
             const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
             const IS_HANDLE: bool = true;
-            fn into_c(self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
+            fn into_c(self) -> *mut core::ffi::c_void { unimplemented!("&mut T into_c") }
             unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow_mut::<T>(repr) } }
-            fn borrow_as_c(&self) -> *mut core::ffi::c_void { unsafe { self.as_handle() } }
         }
 
         #(#handle_impls)*
