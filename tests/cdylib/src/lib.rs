@@ -538,7 +538,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -597,21 +597,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -808,7 +802,7 @@ mod tests {
     // ================================================================
 
     unsafe extern "C" fn fruit_value(self_data: *mut core::ffi::c_void) -> i32 {
-        self_data as i32
+        unsafe { *(self_data as *const i32) }
     }
 
     unsafe extern "C" fn fruit_count_tags(
@@ -1001,9 +995,10 @@ mod tests {
     fn self_dispatch_fruit_value_on_vtable_fruit() {
         unsafe {
             // Create a VtableFruit via the vtable mechanism.
-            // fruit_value (defined above) reads self_data as i32.
+            // fruit_value dereferences self_data as *const i32.
+            let val: i32 = 77;
             let handle = make_fruit_handle(
-                77 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &FRUIT_VT_DROP_VALUE,
                 core::mem::size_of_val(&FRUIT_VT_DROP_VALUE),
             );
@@ -1031,7 +1026,7 @@ mod tests {
     fn vtable_count_tags() {
         unsafe {
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                ptr::null_mut(),
                 &FRUIT_VT_WITH_COUNT_TAGS,
                 core::mem::size_of_val(&FRUIT_VT_WITH_COUNT_TAGS),
             );
@@ -1089,7 +1084,7 @@ mod tests {
         unsafe {
             // VtableFruit with label = None → should use the default "fruit"
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                ptr::null_mut(),
                 &FRUIT_VT_DROP_VALUE,
                 core::mem::size_of_val(&FRUIT_VT_DROP_VALUE),
             );
@@ -1115,7 +1110,7 @@ mod tests {
         unsafe {
             // VtableFruit with label = Some(custom) → should use the custom impl
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                ptr::null_mut(),
                 &FRUIT_VT_CUSTOM_LABEL,
                 core::mem::size_of_val(&FRUIT_VT_CUSTOM_LABEL),
             );
@@ -1144,9 +1139,10 @@ mod tests {
             // Simulate an older client whose vtable only has `drop` + `value`
             // (no `label` field). Pass a truncated vtable_size so the library
             // treats `label` as absent → default dispatch.
+            let val: i32 = 42;
             let truncated_size = core::mem::offset_of!(ffier_test_lib::FruitVtable, label);
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &FRUIT_VT_CUSTOM_LABEL, // has label = Some(custom_label)
                 truncated_size,         // but we tell the library it's smaller
             );
@@ -1163,9 +1159,10 @@ mod tests {
         unsafe {
             // Simulate a newer client whose vtable is larger than the library
             // expects. Extra bytes beyond the library's struct size are ignored.
+            let val: i32 = 42;
             let oversized = core::mem::size_of::<ffier_test_lib::FruitVtable>() + 64;
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &FRUIT_VT_CUSTOM_LABEL,
                 oversized,
             );
@@ -1185,9 +1182,10 @@ mod tests {
             // For this test, just test that label defaults correctly.
             // We can't call value (it would panic), so use a handle with
             // a full vtable for value but truncated to only cover drop + value.
+            let val: i32 = 99;
             let size_for_drop_and_value = core::mem::offset_of!(ffier_test_lib::FruitVtable, label);
             let handle = make_fruit_handle(
-                99 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &FRUIT_VT_DROP_VALUE,
                 size_for_drop_and_value,
             );
@@ -1207,7 +1205,7 @@ mod tests {
     fn debug_handle_type_vtable_fruit() {
         unsafe {
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                ptr::null_mut(),
                 &FRUIT_VT_VALUE_ONLY,
                 core::mem::size_of_val(&FRUIT_VT_VALUE_ONLY),
             );
@@ -1242,8 +1240,9 @@ mod tests {
     #[test]
     fn debug_vtable_handle_roundtrip() {
         unsafe {
+            let val: i32 = 42;
             let handle = make_fruit_handle(
-                42 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &FRUIT_VT_VALUE_ONLY,
                 core::mem::size_of_val(&FRUIT_VT_VALUE_ONLY),
             );
@@ -1257,7 +1256,7 @@ mod tests {
             // Call ft_fruit_label — label is None, should use default
             assert_eq!(ft_fruit_label(handle).as_str_unchecked(), "fruit");
 
-            // Call ft_fruit_value — reads self_data as i32
+            // Call ft_fruit_value — dereferences self_data as *const i32
             assert_eq!(ft_fruit_value(handle), 42);
 
             ft_fruit_destroy(handle);
@@ -1413,7 +1412,7 @@ mod tests {
     fn foreign_trait_vtable_dispatch() {
         // Implement Weighable via vtable from C side
         unsafe extern "C" fn custom_weight(self_data: *mut core::ffi::c_void) -> i32 {
-            self_data as usize as i32
+            unsafe { *(self_data as *const i32) }
         }
 
         static WEIGHABLE_VT: ffier_test_lib::WeighableVtable = ffier_test_lib::WeighableVtable {
@@ -1422,8 +1421,9 @@ mod tests {
         };
 
         unsafe {
+            let val: i32 = 77;
             let handle = make_weighable_handle(
-                77 as *mut core::ffi::c_void,
+                &val as *const i32 as *mut core::ffi::c_void,
                 &WEIGHABLE_VT,
                 core::mem::size_of_val(&WEIGHABLE_VT),
             );
