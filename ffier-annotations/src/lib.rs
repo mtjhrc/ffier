@@ -72,7 +72,10 @@ enum ReturnKind {
     },
     /// `&[&T]` or `&[T]` where T is an exported handle type — returns a
     /// contiguous array of borrowed handles. `direct` is true for `&[T]`.
-    HandleSlice { types: TypePair, direct: bool },
+    HandleSlice {
+        types: TypePair,
+        direct: bool,
+    },
 }
 
 struct ParamInfo {
@@ -1595,12 +1598,16 @@ fn parse_method_sig(
             } else if let Some(inner_ty) = handle_slice_elem(&ty_bridge) {
                 // &[&T] or &[T] where T is an exported handle
                 let elem_bridge = ctx.bridge_tokens(inner_ty);
-                let inner_ty_rust = handle_slice_elem(&ty_rust)
-                    .expect("rust type should also be a handle slice");
+                let inner_ty_rust =
+                    handle_slice_elem(&ty_rust).expect("rust type should also be a handle slice");
                 // Detect &[T] (direct) vs &[&T] (indirect) by checking
                 // whether the slice element is a reference.
-                let Type::Reference(ref_ty) = &ty_bridge else { unreachable!() };
-                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
+                let Type::Reference(ref_ty) = &ty_bridge else {
+                    unreachable!()
+                };
+                let Type::Slice(sl) = &*ref_ty.elem else {
+                    unreachable!()
+                };
                 let direct = !matches!(&*sl.elem, Type::Reference(_));
                 ReturnKind::HandleSlice {
                     types: TypePair {

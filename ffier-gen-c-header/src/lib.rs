@@ -208,19 +208,41 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
     out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
 
-    // ObjectArray — only emitted if the type registry contains it
+    // ObjectArrayEntry — opaque 16-byte element matching FfierBorrowedHandle layout.
+    // ObjectArray — contiguous array of these entries.
     if let Some(object_array_c) = try_blessed_c_type(lib, Blessing::ObjectArray) {
+        // Derive PascalCase prefix from the ObjectArray c_type (e.g. "FtObjectArray" → "Ft")
+        let type_pfx = object_array_c.strip_suffix("ObjectArray").unwrap_or(&object_array_c);
+        let entry_c = format!("{type_pfx}ObjectArrayEntry");
+
+        out.push_str("/**\n");
+        out.push_str(" * Opaque 16-byte handle entry in an object array.\n");
+        out.push_str(" * Do not access fields directly — pass &entry to typed methods.\n");
+        out.push_str(" * Do NOT pass individual entries to destroy.\n");
+        out.push_str(" */\n");
+        out.push_str("typedef struct {\n");
+        out.push_str("    uint32_t _tag;\n");
+        out.push_str("    uint32_t _meta;\n");
+        out.push_str("    const void* _ptr;\n");
+        out.push_str(&format!("}} {entry_c};\n\n"));
+
         out.push_str("/**\n");
         out.push_str(" * Contiguous array of borrowed handles.\n");
         out.push_str(" * Returned by methods that produce slices of handles.\n");
-        out.push_str(" * Access elements via the _get() accessor, not direct indexing.\n");
         out.push_str(" * Individual elements must NOT be passed to destroy —\n");
         out.push_str(" * call free_object_array() to free the entire array.\n");
         out.push_str(" */\n");
         out.push_str("typedef struct {\n");
-        out.push_str("    const void* _opaque;\n");
+        out.push_str(&format!("    const {entry_c}* items;\n"));
         out.push_str("    size_t len;\n");
         out.push_str(&format!("}} {object_array_c};\n\n"));
+
+        // FT_OBJECT_ARRAY_GET macro — inline element access, returns FtObject.
+        // Bounds-checked via assert (compiled out in release with NDEBUG).
+        let get_macro = format!("{}_OBJECT_ARRAY_GET", prim_upper_pfx.trim_end_matches('_'));
+        out.push_str(&format!(
+            "#define {get_macro}(arr, i) \\\n    (assert((size_t)(i) < (arr).len), ({object_c})(void*)&(arr).items[(i)])\n\n"
+        ));
     }
 
     out.push_str(&format!("#endif /* {prim_guard} */\n\n"));
