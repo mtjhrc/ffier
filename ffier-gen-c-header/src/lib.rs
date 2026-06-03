@@ -194,19 +194,20 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
     out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
 
-    // HandleSlice — only emitted if the type registry contains it
-    if let Some(handle_slice_c) = try_blessed_c_type(lib, Blessing::HandleSlice) {
+    // HandleArray — only emitted if the type registry contains it
+    if let Some(handle_array_c) = try_blessed_c_type(lib, Blessing::HandleArray) {
         out.push_str("/**\n");
-        out.push_str(" * Heap-allocated array of handle pointers.\n");
+        out.push_str(" * Contiguous array of borrowed handles.\n");
         out.push_str(" * Returned by methods that produce slices of handles.\n");
-        out.push_str(" * Each handle carries metadata that controls destroy\n");
-        out.push_str(" * behavior (borrowed handles skip the inner destructor).\n");
-        out.push_str(" * Call free_slice() to deallocate the array itself.\n");
+        out.push_str(" * Individual elements must NOT be passed to destroy —\n");
+        out.push_str(" * call free_handle_array() to free the entire array.\n");
+        out.push_str(" * Use the items pointer + index * sizeof(void*) * 2 + 8\n");
+        out.push_str(" * or the typed _get() accessor to read individual handles.\n");
         out.push_str(" */\n");
         out.push_str("typedef struct {\n");
-        out.push_str("    const void* const* items;\n");
+        out.push_str("    const void* items;\n");
         out.push_str("    size_t len;\n");
-        out.push_str(&format!("}} {handle_slice_c};\n\n"));
+        out.push_str(&format!("}} {handle_array_c};\n\n"));
     }
 
     out.push_str(&format!("#endif /* {prim_guard} */\n\n"));
@@ -217,11 +218,11 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     out.push_str("/* Free an owned string returned by the library */\n");
     out.push_str(&format!("void {str_free_fn}({str_c} s);\n\n"));
 
-    // free_slice — uses the library prefix (each library has its own allocator).
-    if let Some(handle_slice_c) = try_blessed_c_type(lib, Blessing::HandleSlice) {
-        let free_slice_fn = format!("{fn_pfx}free_slice");
-        out.push_str("/* Free a handle slice returned by the library */\n");
-        out.push_str(&format!("void {free_slice_fn}({handle_slice_c} s);\n\n"));
+    // free_handle_array — uses the library prefix (each library has its own allocator).
+    if let Some(handle_array_c) = try_blessed_c_type(lib, Blessing::HandleArray) {
+        let free_fn = format!("{fn_pfx}free_handle_array");
+        out.push_str("/* Free a handle array returned by the library */\n");
+        out.push_str(&format!("void {free_fn}({handle_array_c} a);\n\n"));
     }
 }
 
