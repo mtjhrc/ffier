@@ -513,7 +513,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-                                                        // After error with by-value self, handle is consumed
+            // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -572,15 +572,21 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
-        assert!(codes
-            .iter()
-            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
+        );
+        assert!(
+            codes
+                .iter()
+                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
+        );
     }
 
     #[test]
@@ -612,8 +618,9 @@ mod tests {
             let w = ft_widget_new();
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_widget_fail_always(w, &mut err as *mut *mut core::ffi::c_void);
-            // TestError has type_tag=1, CustomMessage has code=2
-            assert_eq!(ffier::ffier_result_type_tag(r), 1);
+            // TestError has type_tag=1, library_tag=1 → composed tag
+            let expected_tag = <ffier_test_lib::TestError as ffier_test_lib::FfiHandle>::TYPE_TAG;
+            assert_eq!(ffier::ffier_result_type_tag(r), expected_tag);
             assert_eq!(ffier::ffier_result_code(r), 2);
             ft_error_destroy(err);
             ft_widget_destroy(w);
@@ -664,8 +671,9 @@ mod tests {
             assert_ne!(r, 0);
             // The error handle is a proper FfierHandleBox — type tag is readable
             let tag = ffier::handle_type_tag(err as *const core::ffi::c_void);
-            // TestError has type_tag=1
-            assert_eq!(tag, 1);
+            // TestError has type_tag=1, library_tag=1 → composed tag
+            let expected_tag = <ffier_test_lib::TestError as ffier_test_lib::FfiHandle>::TYPE_TAG;
+            assert_eq!(tag, expected_tag);
             ft_error_destroy(err);
             ft_widget_destroy(w);
         }

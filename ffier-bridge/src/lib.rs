@@ -375,15 +375,24 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 actual_tag: u32,
             ) -> ! {
                 let actual_name = __ffier_type_name(actual_tag);
+                let actual_lib = ffier::extract_library_tag(actual_tag);
+                // Detect cross-library handle confusion: if the library_tag
+                // doesn't match any known type in this library, the handle
+                // likely belongs to a different ffier library.
+                let cross_lib_hint = if actual_name == "unknown" && actual_lib != 0 {
+                    " (handle appears to belong to a different ffier library)"
+                } else {
+                    ""
+                };
                 if accepted.is_empty() {
                     panic!(
-                        "{}(): expected {}, got {} (type_tag={})",
-                        fn_name, expected, actual_name, actual_tag,
+                        "{}(): expected {}, got {} (type_tag=0x{:08x}){}",
+                        fn_name, expected, actual_name, actual_tag, cross_lib_hint,
                     );
                 } else {
                     panic!(
-                        "{}(): expected {} ({}), got {} (type_tag={})",
-                        fn_name, expected, accepted, actual_name, actual_tag,
+                        "{}(): expected {} ({}), got {} (type_tag=0x{:08x}){}",
+                        fn_name, expected, accepted, actual_name, actual_tag, cross_lib_hint,
                     );
                 }
             }
@@ -1467,7 +1476,10 @@ fn c_signature_for_method(
 
     // Regular params
     for p in &method.params {
-        if matches!(p.kind, MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_)) {
+        if matches!(
+            p.kind,
+            MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_)
+        ) {
             params.push(CExternParam {
                 name: p.name.clone(),
                 c_type: c_param_type(&p.kind, lib_crate),

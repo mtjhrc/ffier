@@ -1018,7 +1018,7 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
-ffier::library_definition!("ft",
+ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,

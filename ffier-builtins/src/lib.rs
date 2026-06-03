@@ -5,7 +5,7 @@
 //! so downstream crates can register them in `library_definition!`:
 //!
 //! ```ignore
-//! ffier::library_definition!("mylib",
+//! ffier::library_definition!("mylib", library_tag = 1,
 //!     trait ffier::builtins::PushStr = 10,
 //! );
 //! ```

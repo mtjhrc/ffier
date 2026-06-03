@@ -15,6 +15,7 @@ pub use types::{Counter, Doubler};
 // Previously this would have required manual `pub use types::_ffier_counter;` etc.
 ffier::library_definition!(
     "subtest",
+    library_tag = 2,
     crate::errors::SubError = 1,
     crate::types::Counter = 2,
     crate::types::Doubler = 3,

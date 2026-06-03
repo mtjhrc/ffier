@@ -402,7 +402,7 @@ static void error_message_to_buf(FtError err, struct push_str_buf* buf) {
         const void* user_data;
         uint16_t vtable_size;
     } handle = {
-        .type_tag = 24, /* PushStr tag from library_definition */
+        .type_tag = FT_PUSH_STR_TYPE_TAG,
         .metadata = 0,
         .vtable_ptr = &vtable,
         .user_data = buf,
@@ -469,7 +469,7 @@ static void* make_processor_handle(void* user_data) {
         const void* user_data;
         uint16_t vtable_size;
     } *handle = malloc(sizeof(*handle));
-    handle->type_tag = 10; /* Processor vtable tag from library_definition */
+    handle->type_tag = FT_PROCESSOR_TYPE_TAG;
     handle->metadata = 0;
     handle->vtable_ptr = &g_test_vtable;
     handle->user_data = user_data;

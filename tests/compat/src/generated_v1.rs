@@ -347,7 +347,7 @@ impl std::fmt::Display for TestError {
         let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
         let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
         let mut __temp = ffier::FfierHandle {
-            type_tag: 24u32,
+            type_tag: 16777240u32,
             metadata: 0,
             value: ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
@@ -454,6 +454,11 @@ unsafe extern "C" {
         base: <Permissions as FfiType>::CRepr,
         flag: <Permissions as FfiType>::CRepr,
     ) -> <Permissions as FfiType>::CRepr;
+    pub fn ft_widget_sum_gadgets(
+        handle: *mut core::ffi::c_void,
+        gadgets: *const ffier::FfierBytes,
+        gadgets_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
     pub fn ft_widget_consume(handle: *mut core::ffi::c_void);
     pub fn ft_widget_fd_number(
         handle: *mut core::ffi::c_void,
@@ -491,7 +496,7 @@ impl Widget {
 
 impl FfiHandle for Widget {
     const C_HANDLE_NAME: &'static str = "Widget";
-    const TYPE_TAG: u32 = 2u32;
+    const TYPE_TAG: u32 = 16777218u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -724,6 +729,16 @@ impl Widget {
         };
         unsafe { <Permissions as FfiType>::from_c(__raw) }
     }
+    #[doc = " Sum the values of a slice of gadgets."]
+    pub fn sum_gadgets(&self, gadgets: &[&str]) -> i32 {
+        let __ffi_gadgets: Vec<ffier::FfierBytes> = gadgets
+            .iter()
+            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .collect();
+        let __raw =
+            unsafe { ft_widget_sum_gadgets(self.0, __ffi_gadgets.as_ptr(), __ffi_gadgets.len()) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
     #[doc = " Consume the widget (by-value self, void return)."]
     pub fn consume(self) {
         let __handle = {
@@ -797,7 +812,7 @@ impl Gadget {
 
 impl FfiHandle for Gadget {
     const C_HANDLE_NAME: &'static str = "Gadget";
-    const TYPE_TAG: u32 = 3u32;
+    const TYPE_TAG: u32 = 16777219u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -869,7 +884,7 @@ impl Config {
 
 impl FfiHandle for Config {
     const C_HANDLE_NAME: &'static str = "Config";
-    const TYPE_TAG: u32 = 4u32;
+    const TYPE_TAG: u32 = 16777220u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -988,7 +1003,7 @@ impl Gizmo {
 
 impl FfiHandle for Gizmo {
     const C_HANDLE_NAME: &'static str = "Gizmo";
-    const TYPE_TAG: u32 = 5u32;
+    const TYPE_TAG: u32 = 16777221u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1064,7 +1079,7 @@ impl GizmoBuilder {
 
 impl FfiHandle for GizmoBuilder {
     const C_HANDLE_NAME: &'static str = "GizmoBuilder";
-    const TYPE_TAG: u32 = 6u32;
+    const TYPE_TAG: u32 = 16777222u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1172,7 +1187,7 @@ impl<'a> View<'a> {
 
 impl<'a> FfiHandle for View<'a> {
     const C_HANDLE_NAME: &'static str = "View";
-    const TYPE_TAG: u32 = 7u32;
+    const TYPE_TAG: u32 = 16777223u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1268,7 +1283,7 @@ impl ViewFactory {
 
 impl FfiHandle for ViewFactory {
     const C_HANDLE_NAME: &'static str = "ViewFactory";
-    const TYPE_TAG: u32 = 8u32;
+    const TYPE_TAG: u32 = 16777224u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1352,7 +1367,7 @@ impl Pipeline {
 
 impl FfiHandle for Pipeline {
     const C_HANDLE_NAME: &'static str = "Pipeline";
-    const TYPE_TAG: u32 = 9u32;
+    const TYPE_TAG: u32 = 16777225u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1445,7 +1460,7 @@ impl Apple {
 
 impl FfiHandle for Apple {
     const C_HANDLE_NAME: &'static str = "Apple";
-    const TYPE_TAG: u32 = 11u32;
+    const TYPE_TAG: u32 = 16777227u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1505,7 +1520,7 @@ impl Orange {
 
 impl FfiHandle for Orange {
     const C_HANDLE_NAME: &'static str = "Orange";
-    const TYPE_TAG: u32 = 12u32;
+    const TYPE_TAG: u32 = 16777228u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1565,7 +1580,7 @@ impl Banana {
 
 impl FfiHandle for Banana {
     const C_HANDLE_NAME: &'static str = "Banana";
-    const TYPE_TAG: u32 = 13u32;
+    const TYPE_TAG: u32 = 16777229u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1625,7 +1640,7 @@ impl Mango {
 
 impl FfiHandle for Mango {
     const C_HANDLE_NAME: &'static str = "Mango";
-    const TYPE_TAG: u32 = 14u32;
+    const TYPE_TAG: u32 = 16777230u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1685,7 +1700,7 @@ impl Peach {
 
 impl FfiHandle for Peach {
     const C_HANDLE_NAME: &'static str = "Peach";
-    const TYPE_TAG: u32 = 15u32;
+    const TYPE_TAG: u32 = 16777231u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1745,7 +1760,7 @@ impl Plum {
 
 impl FfiHandle for Plum {
     const C_HANDLE_NAME: &'static str = "Plum";
-    const TYPE_TAG: u32 = 16u32;
+    const TYPE_TAG: u32 = 16777232u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1805,7 +1820,7 @@ impl Grape {
 
 impl FfiHandle for Grape {
     const C_HANDLE_NAME: &'static str = "Grape";
-    const TYPE_TAG: u32 = 17u32;
+    const TYPE_TAG: u32 = 16777233u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1865,7 +1880,7 @@ impl Lemon {
 
 impl FfiHandle for Lemon {
     const C_HANDLE_NAME: &'static str = "Lemon";
-    const TYPE_TAG: u32 = 18u32;
+    const TYPE_TAG: u32 = 16777234u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -1946,7 +1961,7 @@ impl Mixer {
 
 impl FfiHandle for Mixer {
     const C_HANDLE_NAME: &'static str = "Mixer";
-    const TYPE_TAG: u32 = 21u32;
+    const TYPE_TAG: u32 = 16777237u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -2048,7 +2063,7 @@ impl Sprocket {
 
 impl FfiHandle for Sprocket {
     const C_HANDLE_NAME: &'static str = "Sprocket";
-    const TYPE_TAG: u32 = 22u32;
+    const TYPE_TAG: u32 = 16777238u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
@@ -2136,7 +2151,7 @@ pub trait Processor {
             .try_into()
             .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
-            10u32,
+            16777226u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
@@ -2183,7 +2198,7 @@ pub trait Fruit {
         let __vtable: &'static FruitVtable = Self::__ffier_vtable();
         let __metadata: u32 = 2 | (1u32 << 2);
         let mut __temp = ffier::FfierHandle {
-            type_tag: 20u32,
+            type_tag: 16777236u32,
             metadata: __metadata,
             value: ffier::VtableHandle {
                 vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
@@ -2251,7 +2266,7 @@ pub trait Fruit {
                             unsafe {
                                 *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void
                             };
-                            ffier::ffier_result(1, 1)
+                            ffier::ffier_result(16777217, 1)
                         }
                     }
                 }
@@ -2287,7 +2302,7 @@ pub trait Fruit {
             .try_into()
             .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
-            20u32,
+            16777236u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
@@ -2376,7 +2391,7 @@ pub trait Weighable {
             .try_into()
             .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
-            23u32,
+            16777239u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const WeighableVtable as *const core::ffi::c_void,
@@ -2446,7 +2461,7 @@ pub trait PushStr {
             .try_into()
             .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
-            24u32,
+            16777240u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
@@ -3089,4 +3104,21 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     } else {
         Err(TestError::from_ffi(__r, __err))
     }
+}
+
+unsafe extern "C" {
+    pub fn ft_sum_gadget_values(
+        gadgets: *const ffier::FfierBytes,
+        gadgets_len: usize,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+#[doc = " Count the number of gadgets in a slice and return the sum of their values."]
+pub fn sum_gadget_values(gadgets: &[&str]) -> i32 {
+    let __ffi_gadgets: Vec<ffier::FfierBytes> = gadgets
+        .iter()
+        .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+        .collect();
+    let __raw = unsafe { ft_sum_gadget_values(__ffi_gadgets.as_ptr(), __ffi_gadgets.len()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
 }

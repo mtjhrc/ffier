@@ -147,7 +147,12 @@ fn is_handle_slice(ty: &Type) -> bool {
     let Type::Path(tp) = &*inner_ref.elem else {
         return false;
     };
-    let name = tp.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+    let name = tp
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .unwrap_or_default();
     !PRIMITIVES.contains(&name.as_str())
 }
 
@@ -1500,9 +1505,15 @@ fn parse_method_sig(
 
             if is_handle_slice(&param_ty_bridge) {
                 // Extract the inner type T from &[&T] for bridge resolution
-                let Type::Reference(ref_ty) = &param_ty_bridge else { unreachable!() };
-                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
-                let Type::Reference(inner_ref) = &*sl.elem else { unreachable!() };
+                let Type::Reference(ref_ty) = &param_ty_bridge else {
+                    unreachable!()
+                };
+                let Type::Slice(sl) = &*ref_ty.elem else {
+                    unreachable!()
+                };
+                let Type::Reference(inner_ref) = &*sl.elem else {
+                    unreachable!()
+                };
                 let inner_ty = &*inner_ref.elem;
                 let elem_bridge = ctx.bridge_tokens(inner_ty);
                 let elem_rust = match self_ty {
@@ -1574,14 +1585,26 @@ fn parse_method_sig(
                 ReturnKind::Void
             } else if is_handle_slice(&ty_bridge) {
                 // &[&T] where T is an exported handle → out-params
-                let Type::Reference(ref_ty) = &ty_bridge else { unreachable!() };
-                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
-                let Type::Reference(inner_ref) = &*sl.elem else { unreachable!() };
+                let Type::Reference(ref_ty) = &ty_bridge else {
+                    unreachable!()
+                };
+                let Type::Slice(sl) = &*ref_ty.elem else {
+                    unreachable!()
+                };
+                let Type::Reference(inner_ref) = &*sl.elem else {
+                    unreachable!()
+                };
                 let inner_ty = &*inner_ref.elem;
                 let elem_bridge = ctx.bridge_tokens(inner_ty);
-                let Type::Reference(ref_ty_rust) = &ty_rust else { unreachable!() };
-                let Type::Slice(sl_rust) = &*ref_ty_rust.elem else { unreachable!() };
-                let Type::Reference(inner_ref_rust) = &*sl_rust.elem else { unreachable!() };
+                let Type::Reference(ref_ty_rust) = &ty_rust else {
+                    unreachable!()
+                };
+                let Type::Slice(sl_rust) = &*ref_ty_rust.elem else {
+                    unreachable!()
+                };
+                let Type::Reference(inner_ref_rust) = &*sl_rust.elem else {
+                    unreachable!()
+                };
                 let inner_ty_rust = &*inner_ref_rust.elem;
                 ReturnKind::HandleSlice(TypePair {
                     bridge: elem_bridge,
@@ -2430,12 +2453,18 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Define the list of exported types for a library.
 ///
+/// The `library_tag` (1–255) uniquely identifies this library. It is
+/// composed into the upper 8 bits of every type's tag, leaving 24 bits
+/// for the per-type tag. This ensures that handles from different
+/// ffier libraries are never accidentally interchangeable — a type tag
+/// mismatch will trigger a panic with a clear diagnostic.
+///
 /// Every entry (except `TraitName for StructName`) must have an explicit
 /// type tag: `Name = N`. Tags must be nonzero and unique across the library.
 /// Entries can be bare paths or qualified paths (e.g. `crate::submod::Foo`).
 ///
 /// ```ignore
-/// ffier::library_definition!("mylib",
+/// ffier::library_definition!("mylib", library_tag = 1,
 ///     CalcError = 1,
 ///     Calculator = 2,
 ///     crate::submod::TextBuffer = 3,
@@ -2462,6 +2491,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as LibraryInput);
     let prefix_lit = &parsed.prefix;
     let prefix_str = parsed.prefix.value();
+    let library_tag = parsed.library_tag;
 
     // For each entry, compute:
     // 1. shim_macros: shim macros that inject the tag into the metadata macro call
@@ -2513,6 +2543,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         match entry {
             LibraryEntry::Tagged(path, tag) => {
                 let last_ident = path_last_ident(path);
+                let full_tag = (library_tag << 24) | tag;
 
                 // Shim macro that injects the tag into the metadata macro call
                 let alias = meta_alias_for_type(path);
@@ -2523,7 +2554,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     #[macro_export]
                     macro_rules! #shim_name {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, #tag, $callback $(, $($rest)*)? }
+                            #alias_chain! { $prefix, #full_tag, $callback $(, $($rest)*)? }
                         };
                     }
                 });
@@ -2538,7 +2569,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 handle_impls.push(quote! {
                     impl FfiHandle for #path {
                         const C_HANDLE_NAME: &'static str = #last_ident_str;
-                        const TYPE_TAG: u32 = #tag;
+                        const TYPE_TAG: u32 = #full_tag;
                         unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
                             let ptr = (self as *const Self as *const u8)
                                 .wrapping_sub(ffier::HANDLE_VALUE_OFFSET);
@@ -2550,7 +2581,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         const C_TYPE_NAME: &'static str = #last_ident_str;
                         const IS_HANDLE: bool = true;
                         fn into_c(self) -> *mut core::ffi::c_void {
-                            ffier::ffier_handle_new(#tag, self)
+                            ffier::ffier_handle_new(#full_tag, self)
                         }
                         unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
                             unsafe { ffier::ffier_handle_consume::<Self>(repr) }
@@ -2574,6 +2605,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             }
             LibraryEntry::TaggedTrait(path, tag) => {
                 let last_ident = path_last_ident(path);
+                let full_tag = (library_tag << 24) | tag;
 
                 // The upstream metadata macro generates the wrapper type
                 // via @reexport. The shim passes path overrides (wrapper,
@@ -2631,7 +2663,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     #[macro_export]
                     macro_rules! #shim_name {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            $crate::#upstream_alias! { $prefix, #tag,
+                            $crate::#upstream_alias! { $prefix, #full_tag,
                                 (#shim_wrapper),
                                 (#shim_vtable),
                                 (#shim_trait),
@@ -2642,7 +2674,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 // @reexport with type_tag + handle names generates the vtable struct + wrapper type + impls.
                 reexport_invocations
-                    .push(quote! { #alias!(@reexport, #tag, [#(#handle_type_idents),*]); });
+                    .push(quote! { #alias!(@reexport, #full_tag, [#(#handle_type_idents),*]); });
                 chain_paths.push(quote! { $crate::#shim_name });
             }
             LibraryEntry::Enum(path) => {
@@ -3110,6 +3142,7 @@ fn replace_last_segment(path: &syn::Path, new_last: &syn::Ident) -> syn::Path {
 
 struct LibraryInput {
     prefix: LitStr,
+    library_tag: u32,
     entries: Vec<LibraryEntry>,
 }
 
@@ -3132,7 +3165,8 @@ enum LibraryEntry {
 }
 
 /// Parse a `= N` type tag after an identifier. Returns the tag value.
-/// Rejects tag 0 (reserved for success / no-type).
+/// Rejects tag 0 (reserved for success / no-type) and tags that don't fit
+/// in 24 bits (the upper 8 bits are reserved for the library tag).
 fn parse_type_tag(input: syn::parse::ParseStream) -> syn::Result<u32> {
     input.parse::<Token![=]>()?;
     let tag_lit: syn::LitInt = input.parse()?;
@@ -3143,12 +3177,45 @@ fn parse_type_tag(input: syn::parse::ParseStream) -> syn::Result<u32> {
             "type tag must be nonzero (0 is reserved)",
         ));
     }
+    if tag > 0x00FF_FFFF {
+        return Err(syn::Error::new(
+            tag_lit.span(),
+            "type tag must fit in 24 bits (max 16777215); \
+             the upper 8 bits are reserved for library_tag",
+        ));
+    }
     Ok(tag)
 }
 
 impl Parse for LibraryInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let prefix: LitStr = input.parse()?;
+        input.parse::<Token![,]>()?;
+
+        // Parse required `library_tag = N`
+        let lt_ident: syn::Ident = input.parse()?;
+        if lt_ident != "library_tag" {
+            return Err(syn::Error::new(
+                lt_ident.span(),
+                "expected `library_tag = N` (required, 1..=255)",
+            ));
+        }
+        input.parse::<Token![=]>()?;
+        let lt_lit: syn::LitInt = input.parse()?;
+        let library_tag = lt_lit.base10_parse::<u32>()?;
+        if library_tag == 0 {
+            return Err(syn::Error::new(
+                lt_lit.span(),
+                "library_tag must be nonzero (0 would make tags \
+                 indistinguishable from a library without a tag)",
+            ));
+        }
+        if library_tag > 255 {
+            return Err(syn::Error::new(
+                lt_lit.span(),
+                "library_tag must fit in 8 bits (max 255)",
+            ));
+        }
         input.parse::<Token![,]>()?;
 
         let mut entries = Vec::new();
@@ -3200,7 +3267,11 @@ impl Parse for LibraryInput {
             }
         }
 
-        Ok(LibraryInput { prefix, entries })
+        Ok(LibraryInput {
+            prefix,
+            library_tag,
+            entries,
+        })
     }
 }
 
