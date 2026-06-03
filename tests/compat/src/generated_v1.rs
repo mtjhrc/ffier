@@ -5,6 +5,7 @@ pub trait FfiHandle {
     const C_HANDLE_NAME: &'static str;
     const TYPE_TAG: u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
 }
 
 /// Maps Rust types to C-compatible representations.
@@ -206,6 +207,37 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     }
     fn borrow_as_c(&self) -> *mut core::ffi::c_void {
         unsafe { self.as_handle() }
+    }
+}
+
+/// Borrowed slice of handles returned from FFI methods.
+/// Elements are borrowed — do NOT destroy them individually.
+/// Dropping this type frees the backing array.
+pub struct ForeignSlice<T> {
+    raw: ffier::FfierObjectArray,
+    _marker: core::marker::PhantomData<T>,
+}
+
+impl<T> ForeignSlice<T> {
+    pub fn len(&self) -> usize {
+        self.raw.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.raw.len == 0
+    }
+}
+
+impl<T: FfiHandle> ForeignSlice<T> {
+    pub fn get(&self, index: usize) -> T {
+        assert!(index < self.raw.len, "index out of bounds");
+        let handle = unsafe { ffier::ffier_object_array_get(self.raw, index) };
+        T::__from_raw(handle)
+    }
+}
+
+impl<T> Drop for ForeignSlice<T> {
+    fn drop(&mut self) {
+        unsafe { ffier::ffier_object_array_free(self.raw) };
     }
 }
 
@@ -574,6 +606,9 @@ impl FfiHandle for Widget {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Widget {
@@ -761,8 +796,11 @@ impl Widget {
         Gadget(__raw)
     }
     #[doc = " Return a borrowed slice of the widget's gadgets (&[T] pattern)."]
-    pub fn gadgets(&self) -> ffier::FfierObjectArray {
-        unsafe { ft_widget_gadgets(self.0) }
+    pub fn gadgets(&self) -> ForeignSlice<Gadget> {
+        ForeignSlice {
+            raw: unsafe { ft_widget_gadgets(self.0) },
+            _marker: core::marker::PhantomData,
+        }
     }
     #[doc = " Try to create a gadget; fails if ok is false."]
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
@@ -899,6 +937,9 @@ impl FfiHandle for Gadget {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Gadget {
@@ -970,6 +1011,9 @@ impl FfiHandle for Config {
     const TYPE_TAG: u32 = 16777220u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1090,6 +1134,9 @@ impl FfiHandle for Gizmo {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Gizmo {
@@ -1165,6 +1212,9 @@ impl FfiHandle for GizmoBuilder {
     const TYPE_TAG: u32 = 16777222u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1274,6 +1324,9 @@ impl<'a> FfiHandle for View<'a> {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle, std::marker::PhantomData)
+    }
 }
 
 impl<'a> FfiType for View<'a> {
@@ -1370,6 +1423,9 @@ impl FfiHandle for ViewFactory {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for ViewFactory {
@@ -1453,6 +1509,9 @@ impl FfiHandle for Pipeline {
     const TYPE_TAG: u32 = 16777225u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1547,6 +1606,9 @@ impl FfiHandle for Apple {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Apple {
@@ -1606,6 +1668,9 @@ impl FfiHandle for Orange {
     const TYPE_TAG: u32 = 16777228u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1667,6 +1732,9 @@ impl FfiHandle for Banana {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Banana {
@@ -1726,6 +1794,9 @@ impl FfiHandle for Mango {
     const TYPE_TAG: u32 = 16777230u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1787,6 +1858,9 @@ impl FfiHandle for Peach {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Peach {
@@ -1846,6 +1920,9 @@ impl FfiHandle for Plum {
     const TYPE_TAG: u32 = 16777232u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -1907,6 +1984,9 @@ impl FfiHandle for Grape {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
 }
 
 impl FfiType for Grape {
@@ -1966,6 +2046,9 @@ impl FfiHandle for Lemon {
     const TYPE_TAG: u32 = 16777234u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -2047,6 +2130,9 @@ impl FfiHandle for Mixer {
     const TYPE_TAG: u32 = 16777237u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 
@@ -2153,6 +2239,9 @@ impl FfiHandle for Sprocket {
     const TYPE_TAG: u32 = 16777238u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
     }
 }
 

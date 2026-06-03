@@ -2967,16 +2967,12 @@ fn convert_return(
             let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
         }
-        MetaReturn::HandleSlice { .. } => {
-            // &[&T] or &[T] → returns FfierObjectArray by value.
-            ffier_schema::Return::Value(ffier_schema::TypeRef {
-                type_name: "FfierObjectArray".to_string(),
-                ref_kind: ffier_schema::RefKind::None,
-                ref_lifetime: None,
-                type_args: vec![],
-                optional: false,
-                owned: false,
-            })
+        MetaReturn::HandleSlice { types, .. } => {
+            // &[&T] or &[T] → returns FfierObjectArray with element type info.
+            let rt = types.rust_type.to_string();
+            ffier_schema::Return::ObjectArray {
+                element: r.to_type_ref(&rt),
+            }
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
             // Builder `-> Result<Self, E>`: ok was suppressed to None by

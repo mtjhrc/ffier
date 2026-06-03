@@ -75,6 +75,11 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void;"
     )
     .unwrap();
+    writeln!(
+        out,
+        "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self;"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "/// Maps Rust types to C-compatible representations.").unwrap();
@@ -187,6 +192,59 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ unsafe {{ self.as_handle() }} }}"
     )
     .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // ForeignSlice — typed wrapper around FfierObjectArray
+    writeln!(
+        out,
+        "/// Borrowed slice of handles returned from FFI methods."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "/// Elements are borrowed — do NOT destroy them individually."
+    )
+    .unwrap();
+    writeln!(out, "/// Dropping this type frees the backing array.").unwrap();
+    writeln!(out, "pub struct ForeignSlice<T> {{").unwrap();
+    writeln!(out, "    raw: ffier::FfierObjectArray,").unwrap();
+    writeln!(out, "    _marker: core::marker::PhantomData<T>,").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "impl<T> ForeignSlice<T> {{").unwrap();
+    writeln!(out, "    pub fn len(&self) -> usize {{ self.raw.len }}").unwrap();
+    writeln!(
+        out,
+        "    pub fn is_empty(&self) -> bool {{ self.raw.len == 0 }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "impl<T: FfiHandle> ForeignSlice<T> {{").unwrap();
+    writeln!(out, "    pub fn get(&self, index: usize) -> T {{").unwrap();
+    writeln!(
+        out,
+        "        assert!(index < self.raw.len, \"index out of bounds\");"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        let handle = unsafe {{ ffier::ffier_object_array_get(self.raw, index) }};"
+    )
+    .unwrap();
+    writeln!(out, "        T::__from_raw(handle)").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
+    writeln!(out, "    fn drop(&mut self) {{").unwrap();
+    writeln!(
+        out,
+        "        unsafe {{ ffier::ffier_object_array_free(self.raw) }};"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -702,6 +760,19 @@ fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library, weak: 
         "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
     )
     .unwrap();
+    if has_lifetimes {
+        writeln!(
+            out,
+            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}"
+        )
+        .unwrap();
+    } else {
+        writeln!(
+            out,
+            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
+        )
+        .unwrap();
+    }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -855,8 +926,8 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
 
     match &m.ret {
         Return::Void => String::new(),
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            " -> ffier::FfierObjectArray".to_string()
+        Return::ObjectArray { element } => {
+            format!(" -> ForeignSlice<{}>", element.type_name)
         }
         Return::Value(_) | Return::Result { .. } => {
             format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
@@ -945,9 +1016,9 @@ fn emit_method_body(
         Return::Void => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            // Object array: the FFI returns ffier::FfierObjectArray directly.
-            writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        Return::ObjectArray { .. } => {
+            // Object array: wrap raw FfierObjectArray in ForeignSlice.
+            writeln!(out, "        ForeignSlice {{ raw: unsafe {{ {ffi_name}({args_str}) }}, _marker: core::marker::PhantomData }}").unwrap();
         }
         Return::Value(tr) => {
             if borrowed_handle_return_type(&m.ret, lib).is_some() {
@@ -1473,6 +1544,10 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                 Return::Void => {
                     // Nothing to convert
                 }
+                Return::ObjectArray { .. } => {
+                    // ObjectArray returns from vtable methods: pass through raw
+                    writeln!(out, "                    __result.raw").unwrap();
+                }
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type();
                     writeln!(
@@ -1908,9 +1983,7 @@ fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder
     match ret {
         Return::Void => String::new(),
         Return::Value(_) if is_builder => String::new(),
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            " -> ffier::FfierObjectArray".to_string()
-        }
+        Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -1960,9 +2033,7 @@ fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> Strin
     use ffier_schema::CResultConvention;
     match ret {
         Return::Void => String::new(),
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            " -> ffier::FfierObjectArray".to_string()
-        }
+        Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -2058,6 +2129,9 @@ fn emit_ffi_call_return(
     match ret {
         Return::Void => {
             writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        }
+        Return::ObjectArray { .. } => {
+            writeln!(out, "{indent}ForeignSlice {{ raw: unsafe {{ {ffi_name}({args_str}) }}, _marker: core::marker::PhantomData }}").unwrap();
         }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
@@ -2313,8 +2387,8 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: b
 
     let ret_type = match &f.ret {
         Return::Void => String::new(),
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            " -> ffier::FfierObjectArray".to_string()
+        Return::ObjectArray { element } => {
+            format!(" -> ForeignSlice<{}>", element.type_name)
         }
         Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
         Return::Result { ok, err_type, .. } => {
@@ -2337,8 +2411,8 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: b
         Return::Void => {
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
         }
-        Return::Value(tr) if tr.type_name == "FfierObjectArray" => {
-            writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
+        Return::ObjectArray { .. } => {
+            writeln!(out, "    ForeignSlice {{ raw: unsafe {{ {}({args_str}) }}, _marker: core::marker::PhantomData }}", f.ffi_name).unwrap();
         }
         Return::Value(tr) => {
             let ty = tr.to_rust_type();
