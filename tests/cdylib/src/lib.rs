@@ -17,22 +17,24 @@ ffier_test_lib::__ffier_ft_library!(ffier_bridge_macros::generate);
 pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     handle: *mut core::ffi::c_void,
 ) -> ffier::FfierBytes {
-    use ffier_test_lib::{FfiHandle, FfiType};
-    let tag = unsafe { ffier::handle_type_tag(handle) };
-    let name = if tag == ffier_test_lib::VtableFruit::TYPE_TAG {
-        drop(<ffier_test_lib::VtableFruit as FfiType>::from_c(handle));
-        "VtableFruit"
-    } else if tag == ffier_test_lib::Apple::TYPE_TAG {
-        drop(<ffier_test_lib::Apple as FfiType>::from_c(handle));
-        "Apple"
-    } else if tag == ffier_test_lib::Orange::TYPE_TAG {
-        drop(<ffier_test_lib::Orange as FfiType>::from_c(handle));
-        "Orange"
-    } else {
-        "unknown"
-    };
-    // SAFETY: returned FfierBytes points to a static string literal — outlives the call.
-    unsafe { ffier::FfierBytes::from_str(name) }
+    unsafe {
+        use ffier_test_lib::{FfiHandle, FfiType};
+        let tag = ffier::handle_type_tag(handle);
+        let name = if tag == ffier_test_lib::VtableFruit::TYPE_TAG {
+            drop(<ffier_test_lib::VtableFruit as FfiType>::from_c(handle));
+            "VtableFruit"
+        } else if tag == ffier_test_lib::Apple::TYPE_TAG {
+            drop(<ffier_test_lib::Apple as FfiType>::from_c(handle));
+            "Apple"
+        } else if tag == ffier_test_lib::Orange::TYPE_TAG {
+            drop(<ffier_test_lib::Orange as FfiType>::from_c(handle));
+            "Orange"
+        } else {
+            "unknown"
+        };
+        // SAFETY: returned FfierBytes points to a static string literal — outlives the call.
+        ffier::FfierBytes::from_str(name)
+    }
 }
 
 #[cfg(test)]
@@ -41,7 +43,7 @@ mod tests {
     use ffier_test_lib::FfiHandle;
     use std::ffi::CStr;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Helper: stream ft_error_message into a String via a stack-local PushStr handle.
     unsafe fn error_message_to_string(err: *mut core::ffi::c_void) -> String {
@@ -460,6 +462,29 @@ mod tests {
         }
     }
 
+    #[test]
+    fn method_returning_borrowed_handle() {
+        unsafe {
+            let w = ft_widget_new();
+            // The widget has an internal gadget with value 42.
+            let g = ft_widget_gadget(w);
+            assert!(!g.is_null());
+
+            // The returned handle has a valid type tag — we can call methods on it.
+            assert_eq!(ft_gadget_get(g), 42);
+
+            // Destroying a borrowed handle is safe (deallocates the shell,
+            // does NOT drop the inner Gadget which still lives in Widget).
+            ft_gadget_destroy(g);
+
+            // The widget is still fully alive after destroying the borrowed handle.
+            ft_widget_set_count(w, 7);
+            assert_eq!(ft_widget_get_count(w), 7);
+
+            ft_widget_destroy(w);
+        }
+    }
+
     // ================================================================
     // Builder pattern (by-value self -> Self)
     // ================================================================
@@ -788,7 +813,7 @@ mod tests {
 
     unsafe extern "C" fn fruit_count_tags(
         _self_data: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        _tags: *const ffier::FfierBytes,
         tags_len: usize,
     ) -> i32 {
         // Just return the count of tags passed

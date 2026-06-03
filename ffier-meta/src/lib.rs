@@ -66,6 +66,7 @@ pub fn peek_meta_tag(input: &TokenStream) -> String {
 /// Peek at the type/trait name from a metadata token stream.
 ///
 /// Looks for `name = IDENT` or `trait_name = IDENT` and returns the IDENT.
+#[allow(dead_code)]
 fn peek_meta_name(input: &TokenStream) -> String {
     let tokens: Vec<proc_macro2::TokenTree> = input.clone().into_iter().collect();
     for i in 0..tokens.len().saturating_sub(2) {
@@ -134,9 +135,6 @@ pub fn erase_lifetimes(ty: &syn::Type) -> syn::Type {
     Eraser.visit_type_mut(&mut ty);
     ty
 }
-
-/// Erase lifetimes from type tokens for extern fn signatures.
-///
 
 // ---------------------------------------------------------------------------
 // Shared prefix helpers

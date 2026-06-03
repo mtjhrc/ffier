@@ -202,6 +202,20 @@ mod tests {
         assert_eq!(g.get(), 33);
     }
 
+    #[test]
+    fn method_returning_borrowed_handle() {
+        let w = Widget::new();
+        // Widget has an internal gadget with value 42.
+        let g = w.gadget();
+        assert_eq!(g.get(), 42);
+        // g is an owned Gadget wrapper around a borrowed handle.
+        // Dropping g calls ft_gadget_destroy, which deallocates the
+        // shell without dropping the inner Gadget (still owned by w).
+        drop(g);
+        // Widget is still alive and usable.
+        assert_eq!(w.name(), "widget");
+    }
+
     // ================================================================
     // Builder pattern (by-value self -> Self)
     // ================================================================

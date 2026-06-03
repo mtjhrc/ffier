@@ -1,4 +1,5 @@
 use std::ffi::CStr;
+use std::mem::ManuallyDrop;
 
 use core::ffi::c_void;
 
@@ -21,6 +22,14 @@ pub struct FfierHandle<T> {
 
 /// Byte offset from handle start to the value field.
 pub const HANDLE_VALUE_OFFSET: usize = core::mem::offset_of!(FfierHandle<()>, value);
+
+/// Metadata bit 0: the handle was Box-allocated by ffier and ffier owns the
+/// inner value. When set, `ffier_handle_drop` runs `T::drop` and deallocates.
+/// When clear (default for C-side `FT_VTABLE_HANDLE` stack handles), ffier
+/// will NOT run the inner destructor — it only deallocates the Box shell
+/// (if the handle was heap-allocated by `ffier_handle_new_borrowed`), or
+/// does nothing at all (C stack handles should never reach destroy).
+pub const METADATA_OWNED: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Handle introspection
@@ -48,29 +57,55 @@ pub unsafe fn handle_metadata(handle: *const c_void) -> u32 {
 // Handle allocation
 // ---------------------------------------------------------------------------
 
-/// Allocate a new handle on the heap and return a raw pointer.
+/// Allocate a new owned handle on the heap and return a raw pointer.
 ///
-/// The returned pointer must eventually be passed to `ffier_handle_drop`
-/// or `ffier_handle_consume` to avoid leaking.
+/// Sets [`METADATA_OWNED`] — `ffier_handle_drop` will run `T::drop` and
+/// deallocate. The returned pointer must eventually be passed to
+/// `ffier_handle_drop` or `ffier_handle_consume` to avoid leaking.
 #[inline]
 pub fn ffier_handle_new<T>(tag: u32, value: T) -> *mut c_void {
     debug_assert!(tag != 0, "type tag must be nonzero");
     let handle = Box::new(FfierHandle {
         type_tag: tag,
-        metadata: 0,
+        metadata: METADATA_OWNED,
         value,
     });
     Box::into_raw(handle) as *mut c_void
 }
 
-/// Allocate a new handle with custom metadata (e.g. for vtable handles).
+/// Allocate a new owned handle with custom metadata (e.g. for vtable handles).
+///
+/// `METADATA_OWNED` is OR'd in automatically — callers should not include it.
 #[inline]
 pub fn ffier_handle_new_with_metadata<T>(tag: u32, metadata: u32, value: T) -> *mut c_void {
     debug_assert!(tag != 0, "type tag must be nonzero");
     let handle = Box::new(FfierHandle {
         type_tag: tag,
-        metadata,
+        metadata: metadata | METADATA_OWNED,
         value,
+    });
+    Box::into_raw(handle) as *mut c_void
+}
+
+/// Allocate a borrowed handle: shallow-copies the value via `ptr::read`
+/// into a new Box-allocated `FfierHandle` **without** setting
+/// [`METADATA_OWNED`].
+///
+/// The returned handle has a valid type_tag so it can be passed to methods
+/// that type-check the handle. On destroy, ffier deallocates the shell but
+/// does **not** run `T::drop` (the real owner is the parent struct).
+///
+/// # Safety
+/// - `value` must point to a valid, aligned `T`.
+/// - The returned handle borrows `value`'s data — the caller must ensure
+///   the source outlives all uses of this handle.
+#[inline]
+pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_void {
+    debug_assert!(tag != 0, "type tag must be nonzero");
+    let handle = Box::new(FfierHandle {
+        type_tag: tag,
+        metadata: 0, // no METADATA_OWNED
+        value: unsafe { core::ptr::read(value) },
     });
     Box::into_raw(handle) as *mut c_void
 }
@@ -116,8 +151,7 @@ pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T 
 /// Consume a handle: move the value out and free the allocation.
 ///
 /// # Safety
-/// - `handle` must point to a valid `FfierHandle<T>` created by
-///   `ffier_handle_new`.
+/// - `handle` must point to a valid, heap-allocated `FfierHandle<T>`.
 /// - After this call the handle pointer is dangling.
 #[inline]
 pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
@@ -136,9 +170,14 @@ pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
 
 /// Drop the value inside a handle and free the allocation.
 ///
+/// - **Owned** (`METADATA_OWNED` set): runs `T::drop` and frees the Box.
+/// - **Borrowed** (`METADATA_OWNED` clear): frees the Box shell without
+///   running `T::drop`. This is safe because the real value lives in the
+///   parent struct and the borrowed handle only holds a shallow copy.
+///
 /// # Safety
-/// - `handle` must point to a valid `FfierHandle<T>` created by
-///   `ffier_handle_new`, or be null (no-op).
+/// - `handle` must point to a valid, Box-allocated `FfierHandle<T>`,
+///   or be null (no-op).
 #[inline]
 pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
     if handle.is_null() {
@@ -148,7 +187,13 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
         unsafe { handle_type_tag(handle) } != 0,
         "dropping uninitialized handle"
     );
-    drop(unsafe { Box::from_raw(handle as *mut FfierHandle<T>) });
+    if unsafe { handle_metadata(handle) } & METADATA_OWNED != 0 {
+        // Owned: drop inner value + dealloc.
+        drop(unsafe { Box::from_raw(handle as *mut FfierHandle<T>) });
+    } else {
+        // Borrowed: dealloc the shell without running T's destructor.
+        drop(unsafe { Box::from_raw(handle as *mut FfierHandle<ManuallyDrop<T>>) });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +233,46 @@ impl VtableHandle {
         } else {
             unsafe { *(self.vtable_ptr.byte_add(field_offset) as *const Option<F>) }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FfierHandleSlice --- returned array of opaque handles
+// ---------------------------------------------------------------------------
+
+/// `#[repr(C)]` slice of opaque handles returned from methods that produce
+/// `&[&T]`. The caller receives a heap-allocated array of handle pointers
+/// plus a length, and must call the library's `free_slice` function to
+/// deallocate the array (the individual handles are borrowed and must NOT
+/// be destroyed separately).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfierHandleSlice {
+    /// Pointer to a heap-allocated array of `*mut c_void` handle pointers.
+    /// Null when `len == 0`.
+    pub items: *const *mut c_void,
+    pub len: usize,
+}
+
+impl FfierHandleSlice {
+    pub const EMPTY: Self = Self {
+        items: core::ptr::null(),
+        len: 0,
+    };
+}
+
+/// Free the backing array of a `FfierHandleSlice`.
+///
+/// This deallocates the pointer array itself — it does NOT destroy the
+/// individual handles (they are borrowed from the parent object).
+///
+/// # Safety
+/// - `slice.items` must have been allocated by `Vec::into_raw_parts` (or be null).
+/// - Must only be called once per slice.
+#[inline]
+pub unsafe fn ffier_handle_slice_free(slice: FfierHandleSlice) {
+    if !slice.items.is_null() && slice.len > 0 {
+        drop(unsafe { Vec::from_raw_parts(slice.items as *mut *mut c_void, slice.len, slice.len) });
     }
 }
 
