@@ -36,6 +36,8 @@ typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
+typedef void* FtObject; /* FtTestError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket */
+
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
 
