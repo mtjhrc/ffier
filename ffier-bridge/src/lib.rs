@@ -1417,9 +1417,15 @@ fn wrap_return(
                 }
             }
         }
-        MetaReturn::HandleSlice(MetaTypePair { bridge_type, .. }) => {
-            // &[&T] → build a contiguous Box<[FfierBorrowedHandle]> directly
+        MetaReturn::HandleSlice { types: MetaTypePair { bridge_type, .. }, direct } => {
+            // &[&T] or &[T] → build a contiguous Box<[FfierBorrowedHandle]>
             // from the iterator, leak it, return as FfierObjectArray.
+            // For &[&T], item is &&T so we deref once; for &[T], item is &T directly.
+            let ptr_expr = if *direct {
+                quote! { item as *const #bridge_type as *const core::ffi::c_void }
+            } else {
+                quote! { *item as *const #bridge_type as *const core::ffi::c_void }
+            };
             quote! {
                 let __slice = #call_expr;
                 if __slice.is_empty() {
@@ -1431,7 +1437,7 @@ fn wrap_return(
                         .map(|item| ffier::FfierBorrowedHandle {
                             type_tag: __tag,
                             metadata: __meta,
-                            ptr: *item as *const #bridge_type as *const core::ffi::c_void,
+                            ptr: #ptr_expr,
                         })
                         .collect();
                     let __len = __boxed.len();
@@ -1625,8 +1631,8 @@ fn c_signature_for_method(
             let ty = c_return_type(_vk, lib_crate);
             quote! { -> #ty }
         }
-        MetaReturn::HandleSlice(_) => {
-            // &[&T] where T is a handle — return FfierObjectArray by value.
+        MetaReturn::HandleSlice { .. } => {
+            // &[&T] or &[T] where T is a handle — return FfierObjectArray by value.
             quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
@@ -2958,8 +2964,8 @@ fn convert_return(
             let rt = tp.rust_type.to_string();
             ffier_schema::Return::Value(r.to_type_ref(&rt))
         }
-        MetaReturn::HandleSlice(_) => {
-            // &[&T] → returns FfierObjectArray by value.
+        MetaReturn::HandleSlice { .. } => {
+            // &[&T] or &[T] → returns FfierObjectArray by value.
             ffier_schema::Return::Value(ffier_schema::TypeRef {
                 type_name: "FfierObjectArray".to_string(),
                 ref_kind: ffier_schema::RefKind::None,

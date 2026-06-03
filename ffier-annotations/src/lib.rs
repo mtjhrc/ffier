@@ -70,9 +70,9 @@ enum ReturnKind {
         ok: Option<TypePair>,
         err_ident: String,
     },
-    /// `&[T]` where T is an exported handle type — returns a pointer+length
-    /// pair through out-params.
-    HandleSlice(TypePair),
+    /// `&[&T]` or `&[T]` where T is an exported handle type — returns a
+    /// contiguous array of borrowed handles. `direct` is true for `&[T]`.
+    HandleSlice { types: TypePair, direct: bool },
 }
 
 struct ParamInfo {
@@ -127,25 +127,28 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
-/// Detect `&[&T]` where T is a non-primitive named type (i.e. an exported handle type).
-/// Matches `&[&SomeStruct]` but not `&[&str]` (handled as StrSlice).
-fn is_handle_slice(ty: &Type) -> bool {
+/// Detect `&[&T]` or `&[T]` where T is a non-primitive named type
+/// (i.e. an exported handle type). Returns the element type T if matched.
+/// Excludes `&[&str]` (handled as StrSlice).
+fn handle_slice_elem(ty: &Type) -> Option<&Type> {
     let Type::Reference(ref_ty) = ty else {
-        return false;
+        return None;
     };
     let Type::Slice(sl) = &*ref_ty.elem else {
-        return false;
+        return None;
     };
-    let Type::Reference(inner_ref) = &*sl.elem else {
-        return false;
+    // Peel off inner & if present: &[&T] → T, &[T] → T
+    let elem = match &*sl.elem {
+        Type::Reference(inner_ref) => &*inner_ref.elem,
+        other => other,
     };
-    // Not &[&str] (already handled by is_str_slice)
-    if matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str")) {
-        return false;
+    // Not &[&str] / &[str] (already handled by is_str_slice)
+    if matches!(elem, Type::Path(tp) if tp.path.is_ident("str")) {
+        return None;
     }
     // Must be a named type that isn't a primitive
-    let Type::Path(tp) = &*inner_ref.elem else {
-        return false;
+    let Type::Path(tp) = elem else {
+        return None;
     };
     let name = tp
         .path
@@ -153,7 +156,15 @@ fn is_handle_slice(ty: &Type) -> bool {
         .last()
         .map(|s| s.ident.to_string())
         .unwrap_or_default();
-    !PRIMITIVES.contains(&name.as_str())
+    if PRIMITIVES.contains(&name.as_str()) {
+        return None;
+    }
+    Some(elem)
+}
+
+/// Compat wrapper — returns true for `&[&T]` or `&[T]` handle slices.
+fn is_handle_slice(ty: &Type) -> bool {
+    handle_slice_elem(ty).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -1581,33 +1592,23 @@ fn parse_method_sig(
             if is_builder && extract_result_types(&ty_bridge).is_none() {
                 // Builder returning Self → void in C
                 ReturnKind::Void
-            } else if is_handle_slice(&ty_bridge) {
-                // &[&T] where T is an exported handle → out-params
-                let Type::Reference(ref_ty) = &ty_bridge else {
-                    unreachable!()
-                };
-                let Type::Slice(sl) = &*ref_ty.elem else {
-                    unreachable!()
-                };
-                let Type::Reference(inner_ref) = &*sl.elem else {
-                    unreachable!()
-                };
-                let inner_ty = &*inner_ref.elem;
+            } else if let Some(inner_ty) = handle_slice_elem(&ty_bridge) {
+                // &[&T] or &[T] where T is an exported handle
                 let elem_bridge = ctx.bridge_tokens(inner_ty);
-                let Type::Reference(ref_ty_rust) = &ty_rust else {
-                    unreachable!()
-                };
-                let Type::Slice(sl_rust) = &*ref_ty_rust.elem else {
-                    unreachable!()
-                };
-                let Type::Reference(inner_ref_rust) = &*sl_rust.elem else {
-                    unreachable!()
-                };
-                let inner_ty_rust = &*inner_ref_rust.elem;
-                ReturnKind::HandleSlice(TypePair {
-                    bridge: elem_bridge,
-                    rust: quote! { #inner_ty_rust },
-                })
+                let inner_ty_rust = handle_slice_elem(&ty_rust)
+                    .expect("rust type should also be a handle slice");
+                // Detect &[T] (direct) vs &[&T] (indirect) by checking
+                // whether the slice element is a reference.
+                let Type::Reference(ref_ty) = &ty_bridge else { unreachable!() };
+                let Type::Slice(sl) = &*ref_ty.elem else { unreachable!() };
+                let direct = !matches!(&*sl.elem, Type::Reference(_));
+                ReturnKind::HandleSlice {
+                    types: TypePair {
+                        bridge: elem_bridge,
+                        rust: quote! { #inner_ty_rust },
+                    },
+                    direct,
+                }
             } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
@@ -1759,10 +1760,14 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
         }
-        ReturnKind::HandleSlice(tp) => {
+        ReturnKind::HandleSlice { types: tp, direct } => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
-            quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
+            if *direct {
+                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
+            } else {
+                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
+            }
         }
     };
 
@@ -3587,9 +3592,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 let bt = &tp.bridge_type;
                 quote! { -> <#bt as FfiType>::CRepr }
             }
-            ffier_meta::MetaReturn::HandleSlice(_) => {
-                // HandleSlice returns FfierHandleSlice by value
-                quote! { -> ffier::FfierHandleSlice }
+            ffier_meta::MetaReturn::HandleSlice { .. } => {
+                // HandleSlice returns FfierObjectArray by value
+                quote! { -> ffier::FfierObjectArray }
             }
             ffier_meta::MetaReturn::Result { ok, .. } => {
                 let ok_is_handle = ok.as_ref().is_some_and(|tp| {
@@ -3678,9 +3683,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     let bt = &tp.bridge_type;
                     quote! { -> <#bt as FfiType>::CRepr }
                 }
-                ffier_meta::MetaReturn::HandleSlice(_) => {
-                    // HandleSlice returns FfierHandleSlice by value
-                    quote! { -> ffier::FfierHandleSlice }
+                ffier_meta::MetaReturn::HandleSlice { .. } => {
+                    // HandleSlice returns FfierObjectArray by value
+                    quote! { -> ffier::FfierObjectArray }
                 }
                 ffier_meta::MetaReturn::Result { ok, .. } => {
                     if ok_is_handle {
@@ -3764,22 +3769,22 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         let bt = &tp.bridge_type;
                         quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
                     }
-                    ffier_meta::MetaReturn::HandleSlice(tp) => {
+                    ffier_meta::MetaReturn::HandleSlice { types: tp, .. } => {
                         // HandleSlice vtable dispatch: call __f which returns
-                        // FfierHandleSlice, reconstruct Vec<&T> from the handle array.
+                        // FfierObjectArray, reconstruct Vec<&T> from the handle array.
                         let bt = &tp.bridge_type;
                         quote! {{
-                            let __slice = #raw_call;
-                            if __slice.items.is_null() || __slice.len == 0 {
+                            let __arr = #raw_call;
+                            if __arr.len == 0 {
                                 Vec::new()
                             } else {
-                                let __handles = unsafe {
-                                    core::slice::from_raw_parts(__slice.items, __slice.len)
-                                };
-                                let __refs: Vec<&#bt> = __handles.iter()
-                                    .map(|h| unsafe { ffier::ffier_handle_borrow::<#bt>(*h) })
+                                let __refs: Vec<&#bt> = (0..__arr.len)
+                                    .map(|i| unsafe {
+                                        let h = ffier::ffier_object_array_get(__arr, i);
+                                        ffier::ffier_handle_borrow::<#bt>(h)
+                                    })
                                     .collect();
-                                unsafe { ffier::ffier_handle_slice_free(__slice) };
+                                unsafe { ffier::ffier_object_array_free(__arr) };
                                 __refs
                             }
                         }}

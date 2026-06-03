@@ -83,10 +83,25 @@ typedef struct {
       .vtable_ptr = &(vtable), .user_data = (self_data), \
       .vtable_size = sizeof(vtable) })
 
+/**
+ * Contiguous array of borrowed handles.
+ * Returned by methods that produce slices of handles.
+ * Access elements via the _get() accessor, not direct indexing.
+ * Individual elements must NOT be passed to destroy —
+ * call free_object_array() to free the entire array.
+ */
+typedef struct {
+    const void* _opaque;
+    size_t len;
+} FtObjectArray;
+
 #endif /* FT_PRIMITIVES_DEFINED */
 
 /* Free an owned string returned by the library */
 void ft_str_free(FtStr s);
+
+/* Free an object array returned by the library */
+void ft_free_object_array(FtObjectArray a);
 
 
 /* LogLevel ---------------------------------------------------------- */
@@ -173,6 +188,8 @@ FtStr ft_widget_tags_joined(FtWidget handle);
 FtGadget ft_widget_create_gadget(FtWidget handle);
 /** Return a borrowed reference to the widget's internal gadget. */
 FtGadget ft_widget_gadget(FtWidget handle);
+/** Return a borrowed slice of the widget's gadgets (&[T] pattern). */
+FtObjectArray ft_widget_gadgets(FtWidget handle);
 /** Try to create a gadget; fails if ok is false. */
 FtGadget ft_widget_try_create_gadget(FtWidget handle, bool ok, FtError* err_out);
 /** Read a gadget's value. */

@@ -348,9 +348,14 @@ pub enum MetaReturn {
         ok: Option<MetaTypePair>,
         err_ident: String,
     },
-    /// `&[T]` where T is an exported handle type — returns a pointer+length
-    /// pair through out-params. The `MetaTypePair` contains the element type T.
-    HandleSlice(MetaTypePair),
+    /// `&[&T]` or `&[T]` where T is an exported handle type — returns a
+    /// contiguous array of borrowed handles. The `MetaTypePair` contains
+    /// the element type T. `direct` is true for `&[T]` (elements are inline),
+    /// false for `&[&T]` (elements are references).
+    HandleSlice {
+        types: MetaTypePair,
+        direct: bool,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -857,11 +862,12 @@ impl syn::parse::Parse for MetaReturn {
 
                 Ok(MetaReturn::Result { ok, err_ident })
             }
-            "handle_slice" => {
+            "handle_slice" | "direct_handle_slice" => {
+                let direct = kind == "direct_handle_slice";
                 let content;
                 syn::parenthesized!(content in input);
                 let tp = parse_type_pair(&content)?;
-                Ok(MetaReturn::HandleSlice(tp))
+                Ok(MetaReturn::HandleSlice { types: tp, direct })
             }
             other => Err(syn::Error::new(
                 kind.span(),
