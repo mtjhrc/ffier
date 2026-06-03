@@ -2478,6 +2478,24 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// mylib::__ffier_mylib_library!(ffier_bridge_macros::generate);
 /// ```
 ///
+/// ## Shared primitives prefix
+///
+/// When multiple ffier libraries share the same primitive types (Str, Bytes,
+/// Result, VtableHandle), set `primitives_prefix` to a common prefix:
+///
+/// ```ignore
+/// // krun_init uses "krun" primitives → KrunStr, KrunResult, etc.
+/// ffier::library_definition!("krun_init", library_tag = 2,
+///     primitives_prefix = "krun",
+///     InitError = 1,
+///     Config = 2,
+/// );
+/// ```
+///
+/// The C header wraps primitive type definitions in `#ifndef` guards so
+/// whichever header is included first defines them. Functions like
+/// `str_free` always use the library prefix (`krun_init_str_free`).
+///
 /// Supports three entry kinds:
 /// - `Path = N` — exportable struct or error enum with type tag
 /// - `trait Path = N` — implementable trait with type tag
@@ -2492,6 +2510,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let prefix_lit = &parsed.prefix;
     let prefix_str = parsed.prefix.value();
     let library_tag = parsed.library_tag;
+    let primitives_prefix_lit = parsed.primitives_prefix.as_ref().unwrap_or(&parsed.prefix);
 
     // For each entry, compute:
     // 1. shim_macros: shim macros that inject the tag into the metadata macro call
@@ -3069,7 +3088,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             // Base case: call the final callback with everything
             ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
              [$($acc:tt)*], []) => {
-                $final_cb! { @lib_crate = $crate; $($acc)* { $($meta)* } }
+                $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; $($acc)* { $($meta)* } }
             };
         }
 
@@ -3143,6 +3162,11 @@ fn replace_last_segment(path: &syn::Path, new_last: &syn::Ident) -> syn::Path {
 struct LibraryInput {
     prefix: LitStr,
     library_tag: u32,
+    /// Optional override for primitive type names (Str, Bytes, Result, etc.).
+    /// When set, primitive C types use this prefix instead of the library prefix.
+    /// For example, `primitives_prefix = "krun"` produces `KrunStr` even if the
+    /// library prefix is `"krun_init"`.
+    primitives_prefix: Option<LitStr>,
     entries: Vec<LibraryEntry>,
 }
 
@@ -3218,6 +3242,26 @@ impl Parse for LibraryInput {
         }
         input.parse::<Token![,]>()?;
 
+        // Parse optional `primitives_prefix = "..."`.
+        // Must appear immediately after library_tag if present.
+        let primitives_prefix = if input.peek(syn::Ident) {
+            let fork = input.fork();
+            if fork
+                .parse::<syn::Ident>()
+                .map_or(false, |id| id == "primitives_prefix")
+            {
+                let _: syn::Ident = input.parse()?; // consume "primitives_prefix"
+                input.parse::<Token![=]>()?;
+                let pp: LitStr = input.parse()?;
+                input.parse::<Token![,]>()?;
+                Some(pp)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         let mut entries = Vec::new();
         while !input.is_empty() {
             if input.peek(Token![trait]) {
@@ -3270,6 +3314,7 @@ impl Parse for LibraryInput {
         Ok(LibraryInput {
             prefix,
             library_tag,
+            primitives_prefix,
             entries,
         })
     }

@@ -21,6 +21,12 @@ use std::collections::BTreeMap;
 pub struct Library {
     /// FFI prefix (e.g. "ft" → functions are `ft_widget_new`, C types are `FtWidget`).
     pub prefix: String,
+    /// Override prefix for primitive types (Str, Bytes, Result, VtableHandle).
+    /// When set, these use a different prefix from the library's own
+    /// (e.g. `"krun"` for a library with prefix `"krun_init"`).
+    /// When `None`, defaults to `prefix`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primitives_prefix: Option<String>,
     /// All types used in the library, keyed by Rust name.
     /// Includes primitives (`"i32"`), builtins (`"str"`), handles (`"Widget"`),
     /// errors (`"TestError"`), and traits (`"Fruit"`).
@@ -617,6 +623,12 @@ fn is_ref_none(v: &RefKind) -> bool {
 }
 
 impl Library {
+    /// The effective prefix for primitive types (Str, Bytes, Result, etc.).
+    /// Falls back to the library prefix if not explicitly set.
+    pub fn primitives_prefix(&self) -> &str {
+        self.primitives_prefix.as_deref().unwrap_or(&self.prefix)
+    }
+
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).expect("failed to serialize library metadata")
     }

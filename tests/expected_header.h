@@ -33,6 +33,9 @@ typedef void* FtPushStr; /* FtVtablePushStr */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 
+#ifndef FT_PRIMITIVES_DEFINED
+#define FT_PRIMITIVES_DEFINED
+
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
 
@@ -60,9 +63,6 @@ typedef struct {
     ((FtBytes){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })
 #endif
 
-/* Free an owned string returned by the library */
-void ft_str_free(FtStr s);
-
 /**
  * Stack-allocated temporary handle for passing vtable-based objects.
  * Only valid for the duration of the call — the callee borrows, not owns.
@@ -79,6 +79,11 @@ typedef struct {
     ((FtVtableHandle){ .type_tag = (tag), .metadata = 0, \
       .vtable_ptr = &(vtable), .user_data = (self_data), \
       .vtable_size = sizeof(vtable) })
+
+#endif /* FT_PRIMITIVES_DEFINED */
+
+/* Free an owned string returned by the library */
+void ft_str_free(FtStr s);
 
 
 /* LogLevel ---------------------------------------------------------- */
