@@ -78,6 +78,8 @@ pub enum Blessing {
     PushStr,
     /// Handle array (contiguous borrowed-handle array + len struct).
     HandleArray,
+    /// Generic handle type (any concrete handle).
+    Object,
 }
 
 /// An entry in the type registry.
@@ -823,8 +825,10 @@ impl Library {
             .into_iter()
             .map(|s| s.to_string())
             .collect();
-        self.type_registry
-            .retain(|name, _| refs.contains(name.as_str()));
+        self.type_registry.retain(|name, entry| {
+            refs.contains(name.as_str())
+                || entry.bless == Some(Blessing::Object)
+        });
     }
 
     /// Find the unique type with the given blessing.

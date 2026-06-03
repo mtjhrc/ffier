@@ -136,6 +136,20 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     // carries the C type names but not field layouts. These should be
     // driven by the schema — e.g. TypeKind::Struct { fields: [...] }
     // — so generators don't need to hardcode ABI details.
+    // Object — generic handle type, any concrete handle can be used where
+    // FtObject is expected.
+    let object_c = blessed_c_type(lib, Blessing::Object);
+    let all_handles: Vec<&str> = lib
+        .errors
+        .iter()
+        .map(|e| lib.c_type_of(&e.name))
+        .chain(lib.exported_types.iter().map(|t| lib.c_type_of(&t.name)))
+        .collect();
+    let handles_list = all_handles.join(" | ");
+    out.push_str(&format!(
+        "typedef void* {object_c}; /* {handles_list} */\n\n"
+    ));
+
     out.push_str(&format!("typedef uint64_t {result_c};\n"));
     out.push_str(&format!("#define {result_success} 0\n\n"));
     out.push_str("/* Caller must ensure data is valid UTF-8 */\n");
@@ -201,11 +215,9 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
         out.push_str(" * Returned by methods that produce slices of handles.\n");
         out.push_str(" * Individual elements must NOT be passed to destroy —\n");
         out.push_str(" * call free_handle_array() to free the entire array.\n");
-        out.push_str(" * Use the items pointer + index * sizeof(void*) * 2 + 8\n");
-        out.push_str(" * or the typed _get() accessor to read individual handles.\n");
         out.push_str(" */\n");
         out.push_str("typedef struct {\n");
-        out.push_str("    const void* items;\n");
+        out.push_str(&format!("    const {object_c}* items;\n"));
         out.push_str("    size_t len;\n");
         out.push_str(&format!("}} {handle_array_c};\n\n"));
     }

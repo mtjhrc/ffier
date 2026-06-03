@@ -2428,6 +2428,17 @@ fn build_schema(
             lifetime_params: vec![],
         },
     );
+    type_registry.insert(
+        "FfierObject".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: format!("{prim_type_pfx}Object"),
+            },
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::Object),
+            lifetime_params: vec![],
+        },
+    );
 
     // Std type aliases
     type_registry.insert(
