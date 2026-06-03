@@ -337,4 +337,43 @@ mod tests {
             api::TestError::InvalidInput(..)
         ));
     }
+
+    // -----------------------------------------------------------------------
+    // ForeignSlice / &[T] handle array returns
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_gadgets_slice_len() {
+        let w = make_widget();
+        let gadgets = w.gadgets();
+        assert_eq!(gadgets.len(), 2);
+        assert!(!gadgets.is_empty());
+    }
+
+    #[test]
+    fn test_gadgets_slice_index() {
+        let w = make_widget();
+        let gadgets = w.gadgets();
+        assert_eq!(gadgets[0].get(), 10);
+        assert_eq!(gadgets[1].get(), 20);
+    }
+
+    #[test]
+    fn test_gadgets_slice_iter() {
+        let w = make_widget();
+        let gadgets = w.gadgets();
+        let sum: i32 = gadgets.iter().map(|g| g.get()).sum();
+        assert_eq!(sum, 30);
+    }
+
+    #[test]
+    fn test_gadgets_slice_for_loop() {
+        let w = make_widget();
+        let gadgets = w.gadgets();
+        let mut values = Vec::new();
+        for g in gadgets.iter() {
+            values.push(g.get());
+        }
+        assert_eq!(values, vec![10, 20]);
+    }
 }
