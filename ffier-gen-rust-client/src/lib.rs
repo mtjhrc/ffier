@@ -14,8 +14,23 @@ use ffier_schema::{
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+/// Options for the Rust client generator.
+#[derive(Debug, Clone, Default)]
+pub struct Options {
+    /// When true, generate weak (dlsym-based) bindings instead of
+    /// `unsafe extern "C"` declarations. Each symbol gets a `OnceLock`-backed
+    /// shim function with the same name, plus `require_<sym>()` and
+    /// `is_loaded_<sym>()` helpers.
+    pub weak: bool,
+}
+
 /// Generate complete Rust client source from a library schema.
 pub fn generate(lib: &Library) -> String {
+    generate_with_options(lib, &Options::default())
+}
+
+/// Generate complete Rust client source from a library schema with options.
+pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     let mut out = String::new();
 
     // Emit imports for blessed types that need special std imports.
@@ -185,14 +200,16 @@ pub fn generate(lib: &Library) -> String {
         emit_bitflags_type(&mut out, bf, lib);
     }
 
+    let weak = opts.weak;
+
     // 1. Error enums
     for err in &lib.errors {
-        emit_error(&mut out, err, lib);
+        emit_error(&mut out, err, lib, weak);
     }
 
     // 2. Exported types
     for ty in &lib.exported_types {
-        emit_exported_type(&mut out, ty, lib);
+        emit_exported_type(&mut out, ty, lib, weak);
     }
 
     // 3. Implementable traits
@@ -226,11 +243,11 @@ pub fn generate(lib: &Library) -> String {
             // a trait definition (it would collide with the error enum).
             // Only emit extern declarations so the GLib-style Result wrapper
             // can call error_result / error_destroy.
-            emit_error_trait_externs(&mut out, tr, lib);
+            emit_error_trait_externs(&mut out, tr, lib, weak);
             defined_traits.insert(tr.name.clone());
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib);
+        emit_implementable_trait(&mut out, tr, lib, weak);
         defined_traits.insert(tr.name.clone());
     }
 
@@ -243,12 +260,19 @@ pub fn generate(lib: &Library) -> String {
         if !is_handle {
             continue;
         }
-        emit_trait_impl(&mut out, ti, lib, &mut defined_traits, &trait_defaults);
+        emit_trait_impl(
+            &mut out,
+            ti,
+            lib,
+            &mut defined_traits,
+            &trait_defaults,
+            weak,
+        );
     }
 
     // 5. Free functions
     for f in &lib.free_functions {
-        emit_free_function(&mut out, f, lib);
+        emit_free_function(&mut out, f, lib, weak);
     }
 
     out
@@ -256,16 +280,24 @@ pub fn generate(lib: &Library) -> String {
 
 /// Generate from a JSON file path.
 pub fn generate_from_file(json_path: &str) -> Result<String, Box<dyn std::error::Error>> {
+    generate_from_file_with_options(json_path, &Options::default())
+}
+
+/// Generate from a JSON file path with options.
+pub fn generate_from_file_with_options(
+    json_path: &str,
+    opts: &Options,
+) -> Result<String, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(json_path)?;
     let lib = Library::from_json(&json)?;
-    Ok(generate(&lib))
+    Ok(generate_with_options(&lib, opts))
 }
 
 // ===========================================================================
 // Error generation
 // ===========================================================================
 
-fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
+fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
     let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
@@ -483,14 +515,19 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out).unwrap();
 
     // Extern declaration for payload getter
-    writeln!(out, "unsafe extern \"C\" {{").unwrap();
-    writeln!(
+    emit_extern_fns(
         out,
-        "    fn {payload_fn}(handle: *const core::ffi::c_void, out_buf: *mut core::ffi::c_void, buf_size: usize);"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+        &[extern_fn_private(
+            &payload_fn,
+            vec![
+                "handle: *const core::ffi::c_void".to_string(),
+                "out_buf: *mut core::ffi::c_void".to_string(),
+                "buf_size: usize".to_string(),
+            ],
+            String::new(),
+        )],
+        weak,
+    );
 }
 
 struct PushStrTraitInfo {
@@ -569,7 +606,7 @@ fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
 // Exported type generation
 // ===========================================================================
 
-fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library) {
+fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library, weak: bool) {
     let entry = lib.type_entry(&ty.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let lifetimes = &entry.lifetime_params;
@@ -589,22 +626,18 @@ fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library) {
     };
 
     // Extern block: destroy + all methods
-    writeln!(out, "unsafe extern \"C\" {{").unwrap();
-    writeln!(
-        out,
-        "    pub fn {}(handle: *mut core::ffi::c_void);",
-        ty.destroy_ffi_name
-    )
-    .unwrap();
+    let mut fns = vec![extern_fn(
+        &ty.destroy_ffi_name,
+        vec!["handle: *mut core::ffi::c_void".to_string()],
+        String::new(),
+    )];
     for m in &ty.methods {
         let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
         };
-        let sig = build_extern_signature(ffi_name, m, lib);
-        writeln!(out, "    pub fn {sig};").unwrap();
+        fns.push(extern_fn_from_method(ffi_name, m, lib));
     }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    emit_extern_fns(out, &fns, weak);
 
     // Struct definition
     if has_lifetimes {
@@ -737,34 +770,6 @@ fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library) {
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
-}
-
-// ===========================================================================
-// Extern signature building
-// ===========================================================================
-
-fn build_extern_signature(ffi_name: &str, m: &Method, lib: &Library) -> String {
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    let mut params = Vec::new();
-
-    // Self param — always *mut c_void in extern declarations.
-    // Builder by-value self methods receive a single pointer; the caller
-    // casts &mut handle_ptr to *mut *mut c_void → *mut c_void at the call site.
-    match m.receiver {
-        Receiver::None => {}
-        _ => {
-            params.push("handle: *mut core::ffi::c_void".to_string());
-        }
-    }
-
-    // Method params
-    push_extern_params(&m.params, &mut params);
-
-    // Return type + extra out-params
-    let ret_str = push_return_and_out_params(&m.ret, &mut params, is_builder);
-
-    let params_str = params.join(", ");
-    format!("{ffi_name}({params_str}){ret_str}")
 }
 
 // ===========================================================================
@@ -1079,24 +1084,21 @@ fn emit_method_body(
 /// This avoids emitting a `pub trait Error { ... }` that would collide with
 /// the user's error enum, while still making the symbols available for
 /// GLib-style Result wrappers.
-fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, _lib: &Library) {
-    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, _lib: &Library, weak: bool) {
+    let mut fns = Vec::new();
     for m in &tr.methods {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
             continue;
         };
-        let sig = build_dispatch_extern_sig(ffi_name, m);
-        writeln!(out, "    pub fn {sig};").unwrap();
+        fns.push(extern_fn_from_dispatch(ffi_name, m));
     }
     // Destroy
-    writeln!(
-        out,
-        "    pub fn {}(handle: *mut core::ffi::c_void);",
-        tr.destroy_ffi_name
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    fns.push(extern_fn(
+        &tr.destroy_ffi_name,
+        vec!["handle: *mut core::ffi::c_void".to_string()],
+        String::new(),
+    ));
+    emit_extern_fns(out, &fns, weak);
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
@@ -1126,7 +1128,7 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
 // Implementable trait generation
 // ===========================================================================
 
-fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library, weak: bool) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
@@ -1207,34 +1209,26 @@ fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Lib
     emit_vtable_struct(out, tr, lib, vtable_name);
 
     // Self-dispatch externs for defaulted methods
-    let has_defaults = tr.methods.iter().any(|m| {
-        matches!(
-            &m.context,
-            MethodContext::Trait {
-                has_default: true,
-                ..
-            }
-        )
-    });
-    if has_defaults {
-        writeln!(out, "unsafe extern \"C\" {{").unwrap();
-        for m in &tr.methods {
+    let default_fns: Vec<ExternFn> = tr
+        .methods
+        .iter()
+        .filter_map(|m| {
             let MethodContext::Trait {
                 ffi_name,
                 has_default,
                 ..
             } = &m.context
             else {
-                continue;
+                return None;
             };
             if !*has_default {
-                continue;
+                return None;
             }
-            let sig = build_dispatch_extern_sig(ffi_name, m);
-            writeln!(out, "    pub fn {sig};").unwrap();
-        }
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
+            Some(extern_fn_from_dispatch(ffi_name, m))
+        })
+        .collect();
+    if !default_fns.is_empty() {
+        emit_extern_fns(out, &default_fns, weak);
     }
 
     // Wrapper struct
@@ -1555,14 +1549,6 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
     writeln!(out, "        }}").unwrap();
 }
 
-fn build_dispatch_extern_sig(extern_name: &str, m: &Method) -> String {
-    let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
-    push_extern_params(&m.params, &mut params);
-    let ret = push_return_and_out_params(&m.ret, &mut params, false);
-    let params_str = params.join(", ");
-    format!("{extern_name}({params_str}){ret}")
-}
-
 // ===========================================================================
 // Trait impl generation
 // ===========================================================================
@@ -1573,6 +1559,7 @@ fn emit_trait_impl(
     lib: &Library,
     defined_traits: &mut HashSet<String>,
     trait_defaults: &HashMap<String, Vec<&Method>>,
+    weak: bool,
 ) {
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
@@ -1581,16 +1568,17 @@ fn emit_trait_impl(
     }
 
     // Extern block
-    writeln!(out, "unsafe extern \"C\" {{").unwrap();
-    for m in &ti.methods {
-        let MethodContext::Trait { ffi_name, .. } = &m.context else {
-            continue;
-        };
-        let sig = build_dispatch_extern_sig(ffi_name, m);
-        writeln!(out, "    pub fn {sig};").unwrap();
-    }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    let fns: Vec<ExternFn> = ti
+        .methods
+        .iter()
+        .filter_map(|m| {
+            let MethodContext::Trait { ffi_name, .. } = &m.context else {
+                return None;
+            };
+            Some(extern_fn_from_dispatch(ffi_name, m))
+        })
+        .collect();
+    emit_extern_fns(out, &fns, weak);
 
     // Build impl header with lifetimes
     let impl_generics = if !ti.lifetimes.is_empty() {
@@ -1721,6 +1709,175 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
     )
     .unwrap();
     writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+// ===========================================================================
+// Extern / weak-shim emission
+// ===========================================================================
+
+/// A single extern "C" function declaration to emit.
+struct ExternFn {
+    /// Function name (e.g. `"ft_widget_new"`).
+    name: String,
+    /// Typed parameters (e.g. `["handle: *mut core::ffi::c_void", "x: i32"]`).
+    params: Vec<String>,
+    /// Return type string including ` -> ...`, or empty for void.
+    ret: String,
+    /// Whether to emit as `pub fn` (true) or `fn` (false) in extern blocks.
+    public: bool,
+}
+
+/// Build a `pub` `ExternFn` from a name, param list, and return string.
+fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
+    ExternFn {
+        name: name.to_string(),
+        params,
+        ret,
+        public: true,
+    }
+}
+
+/// Build a non-`pub` `ExternFn`.
+fn extern_fn_private(name: &str, params: Vec<String>, ret: String) -> ExternFn {
+    ExternFn {
+        name: name.to_string(),
+        params,
+        ret,
+        public: false,
+    }
+}
+
+/// Build an `ExternFn` from a method using the same logic as `build_extern_signature`.
+fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn {
+    let is_builder = m.ret.is_builder_self(&lib.type_registry);
+    let mut params = Vec::new();
+    match m.receiver {
+        Receiver::None => {}
+        _ => {
+            params.push("handle: *mut core::ffi::c_void".to_string());
+        }
+    }
+    push_extern_params(&m.params, &mut params);
+    let ret = push_return_and_out_params(&m.ret, &mut params, is_builder);
+    extern_fn(ffi_name, params, ret)
+}
+
+/// Build an `ExternFn` from a dispatch method signature.
+fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
+    let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
+    push_extern_params(&m.params, &mut params);
+    let ret = push_return_and_out_params(&m.ret, &mut params, false);
+    extern_fn(ffi_name, params, ret)
+}
+
+/// Build an `ExternFn` from a free function.
+fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
+    let mut params = Vec::new();
+    push_extern_params(&f.params, &mut params);
+    let ret = push_return_and_out_params(&f.ret, &mut params, false);
+    extern_fn(&f.ffi_name, params, ret)
+}
+
+/// Emit one or more extern "C" functions — either as a traditional
+/// `unsafe extern "C" { ... }` block (strong) or as `OnceLock`-backed
+/// shim functions (weak).
+fn emit_extern_fns(out: &mut String, fns: &[ExternFn], weak: bool) {
+    if fns.is_empty() {
+        return;
+    }
+    if weak {
+        for f in fns {
+            emit_weak_shim(out, f);
+        }
+    } else {
+        writeln!(out, "unsafe extern \"C\" {{").unwrap();
+        for f in fns {
+            let vis = if f.public { "pub " } else { "" };
+            let params_str = f.params.join(", ");
+            writeln!(out, "    {vis}fn {}({params_str}){};", f.name, f.ret).unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+}
+
+/// Emit a single weak-binding shim: OnceLock + shim fn + require + is_loaded.
+fn emit_weak_shim(out: &mut String, f: &ExternFn) {
+    let name = &f.name;
+    let upper = name.to_ascii_uppercase();
+    let params_str = f.params.join(", ");
+    let ret = &f.ret;
+
+    // Build the fn-pointer type
+    let param_types: Vec<&str> = f
+        .params
+        .iter()
+        .map(|p| {
+            // "name: Type" → "Type"
+            p.split_once(": ").map(|(_, ty)| ty).unwrap_or(p)
+        })
+        .collect();
+    let fn_ptr_params = param_types.join(", ");
+    let fn_ptr_type = format!("unsafe extern \"C\" fn({fn_ptr_params}){ret}");
+
+    // Build the argument-forwarding list (just names)
+    let arg_names: Vec<&str> = f
+        .params
+        .iter()
+        .map(|p| p.split_once(": ").map(|(n, _)| n).unwrap_or(p))
+        .collect();
+    let args_str = arg_names.join(", ");
+
+    // OnceLock
+    writeln!(
+        out,
+        "static {upper}: std::sync::OnceLock<{fn_ptr_type}> = std::sync::OnceLock::new();"
+    )
+    .unwrap();
+
+    // Shim function — match visibility from the extern declaration
+    let vis = if f.public { "pub " } else { "" };
+    writeln!(out, "#[allow(non_snake_case)]").unwrap();
+    writeln!(out, "{vis}unsafe fn {name}({params_str}){ret} {{").unwrap();
+    writeln!(out, "    unsafe {{ ({upper}.get().expect(\"symbol `{name}` not loaded; call require_{name}() first\"))({args_str}) }}").unwrap();
+    writeln!(out, "}}").unwrap();
+
+    // require
+    writeln!(
+        out,
+        "/// Load the `{name}` symbol via dlsym. Returns `Ok(())` if already loaded."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub fn require_{name}() -> Result<(), libloading::Error> {{"
+    )
+    .unwrap();
+    writeln!(out, "    if {upper}.get().is_some() {{ return Ok(()); }}").unwrap();
+    writeln!(out, "    let sym = unsafe {{").unwrap();
+    writeln!(
+        out,
+        "        let lib = libloading::os::unix::Library::this();"
+    )
+    .unwrap();
+    writeln!(out, "        *lib.get::<{fn_ptr_type}>(b\"{name}\\0\")?").unwrap();
+    writeln!(out, "    }};").unwrap();
+    writeln!(out, "    let _ = {upper}.set(sym);").unwrap();
+    writeln!(out, "    Ok(())").unwrap();
+    writeln!(out, "}}").unwrap();
+
+    // is_loaded
+    writeln!(
+        out,
+        "/// Check whether the `{name}` symbol has been loaded."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub fn is_loaded_{name}() -> bool {{ {upper}.get().is_some() }}"
+    )
+    .unwrap();
     writeln!(out).unwrap();
 }
 
@@ -2126,13 +2283,9 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
 // Free function generation
 // ===========================================================================
 
-fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library) {
+fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: bool) {
     // Extern declaration
-    writeln!(out, "unsafe extern \"C\" {{").unwrap();
-    let sig = build_free_fn_extern_sig(&f.ffi_name, f);
-    writeln!(out, "    pub fn {sig};").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    emit_extern_fns(out, &[extern_fn_from_free(f)], weak);
 
     // Safe wrapper
     for doc in &f.doc {
@@ -2257,14 +2410,6 @@ fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library) {
 
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
-}
-
-fn build_free_fn_extern_sig(ffi_name: &str, f: &FreeFunction) -> String {
-    let mut params = Vec::new();
-    push_extern_params(&f.params, &mut params);
-    let ret_str = push_return_and_out_params(&f.ret, &mut params, false);
-    let params_str = params.join(", ");
-    format!("{ffi_name}({params_str}){ret_str}")
 }
 
 fn format_param_sig(p: &ffier_schema::Param, _lib: &Library) -> String {
