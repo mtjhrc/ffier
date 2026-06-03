@@ -35,9 +35,6 @@ pub struct FfierBorrowedHandle {
     pub ptr: *const c_void,
 }
 
-/// Byte offset from handle start to the value field.
-pub const HANDLE_VALUE_OFFSET: usize = core::mem::offset_of!(FfierHandle<()>, value);
-
 /// Metadata bit 0: the handle was Box-allocated by ffier and ffier owns the
 /// inner value. When set, `ffier_handle_drop` runs `T::drop` and deallocates.
 /// When clear, ffier will NOT run the inner destructor.
