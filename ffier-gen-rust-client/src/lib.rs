@@ -726,8 +726,130 @@ fn emit_exported_type(
     }
     emit_extern_fns(out, &fns, weak, symbols);
 
-    // Impl block: methods
-    let mut impl_block = String::new();
+    // Struct definition
+    if has_lifetimes {
+        let phantom = if lifetimes.len() == 1 {
+            format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
+        } else {
+            format!(
+                "std::marker::PhantomData<({})>",
+                lifetimes
+                    .iter()
+                    .map(|lt| format!("&'{lt} ()"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        writeln!(
+            out,
+            "pub struct {}{lt_params}(*mut core::ffi::c_void, {phantom});",
+            ty.name
+        )
+        .unwrap();
+    } else {
+        writeln!(out, "pub struct {}(*mut core::ffi::c_void);", ty.name).unwrap();
+    }
+    writeln!(out).unwrap();
+
+    // __from_raw, __into_raw
+    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    if has_lifetimes {
+        writeln!(out, "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
+    } else {
+        writeln!(
+            out,
+            "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
+        )
+        .unwrap();
+    }
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiHandle
+    writeln!(
+        out,
+        "impl{lt_params} FfiHandle for {}{lt_params} {{",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    const C_HANDLE_NAME: &'static str = \"{}\";",
+        ty.name
+    )
+    .unwrap();
+    writeln!(out, "    const TYPE_TAG: u32 = {type_tag}u32;").unwrap();
+    writeln!(
+        out,
+        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
+    )
+    .unwrap();
+    if has_lifetimes {
+        writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}").unwrap();
+    } else {
+        writeln!(
+            out,
+            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
+        )
+        .unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // FfiType
+    writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
+    writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
+    writeln!(
+        out,
+        "    const C_TYPE_NAME: &'static str = \"{}\";",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn into_c(self) -> *mut core::ffi::c_void {{ self.__into_raw() }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ self.0 }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Debug
+    writeln!(
+        out,
+        "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
+        ty.name
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        f.debug_tuple(\"{}\").field(&self.0).finish()",
+        ty.name
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Methods
+    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
         let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
