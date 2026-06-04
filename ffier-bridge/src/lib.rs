@@ -1452,18 +1452,20 @@ fn wrap_return(
         MetaReturn::Result { ok, err_ident } => {
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
 
-            let err_info = error_map.get(err_ident);
-            let err_type_tag = err_info.map(|i| i.type_tag).unwrap_or(0);
-            let err_path = err_info.map(|i| &i.path);
+            let Some(err_info) = error_map.get(err_ident) else {
+                let msg = format!(
+                    "method returns Result<_, {err_ident}> but `{err_ident}` is not registered \
+                     as an error type. Add `#[derive(ffier::FfiError)]` to `{err_ident}`, or wrap \
+                     the error in a type that derives it."
+                );
+                return quote! { compile_error!(#msg); };
+            };
+            let err_type_tag = err_info.type_tag;
 
-            let box_expr = if err_path.is_some() {
-                quote! {
-                    if !err_out.is_null() {
-                        unsafe { *err_out = <_ as #lib_crate::FfiType>::into_c(e); }
-                    }
+            let box_expr = quote! {
+                if !err_out.is_null() {
+                    unsafe { *err_out = <_ as #lib_crate::FfiType>::into_c(e); }
                 }
-            } else {
-                quote! {}
             };
 
             // Check if the Ok type is a borrowed handle (&HandleType).

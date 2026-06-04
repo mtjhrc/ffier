@@ -334,8 +334,8 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         {
             // The error trait is an internal dispatch mechanism — don't emit
             // a trait definition (it would collide with the error enum).
-            // Only emit extern declarations so the GLib-style Result wrapper
-            // can call error_result / error_destroy.
+            // Emit extern declarations so the Result wrapper can call
+            // error_result / error_destroy / error_message.
             emit_error_trait_externs(&mut out, tr, lib, weak);
             defined_traits.insert(tr.name.clone());
             continue;
