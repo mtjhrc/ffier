@@ -130,6 +130,35 @@ fn is_str_slice(ty: &Type) -> bool {
     matches!(&*inner_ref.elem, Type::Path(tp) if tp.path.is_ident("str"))
 }
 
+/// Check for types that should not be used across FFI and return a
+/// compile error message if found. Returns `None` if the type is fine.
+fn check_forbidden_ffi_type(ty: &Type) -> Option<&'static str> {
+    // Peel through references
+    let inner = match ty {
+        Type::Reference(r) => &*r.elem,
+        _ => ty,
+    };
+    let Type::Path(tp) = inner else { return None };
+    let last = tp.path.segments.last()?;
+    let name = last.ident.to_string();
+    match name.as_str() {
+        "String" => return Some("String cannot be used in FFI — use `Box<str>` (owned) or `&str` (borrowed) instead"),
+        "Vec" => return Some("Vec<T> cannot be used in FFI — use `&[T]` (borrowed slice) or `Box<[T]>` instead"),
+        _ => {}
+    }
+    // Recurse into generic args (Result<String, E>, Option<Vec<T>>, etc.)
+    if let syn::PathArguments::AngleBracketed(args) = &last.arguments {
+        for arg in &args.args {
+            if let syn::GenericArgument::Type(inner_ty) = arg
+                && let Some(msg) = check_forbidden_ffi_type(inner_ty)
+            {
+                return Some(msg);
+            }
+        }
+    }
+    None
+}
+
 /// Detect `&[&T]` or `&[T]` where T is a non-primitive named type
 /// (i.e. an exported handle type). Returns the element type T if matched.
 /// Excludes `&[&str]` (handled as StrSlice).
@@ -228,6 +257,24 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     for item in &input.items {
         let ImplItem::Fn(method) = item else { continue };
+
+        // Check for forbidden FFI types in params and return
+        for arg in &method.sig.inputs {
+            if let FnArg::Typed(pat_ty) = arg
+                && let Some(msg) = check_forbidden_ffi_type(&pat_ty.ty)
+            {
+                return syn::Error::new_spanned(&pat_ty.ty, msg)
+                    .to_compile_error()
+                    .into();
+            }
+        }
+        if let ReturnType::Type(_, ty) = &method.sig.output
+            && let Some(msg) = check_forbidden_ffi_type(ty)
+        {
+            return syn::Error::new_spanned(ty, msg)
+                .to_compile_error()
+                .into();
+        }
 
         // Skip non-public methods in inherent impls (bridge crate can't call them)
         if is_inherent && !matches!(method.vis, syn::Visibility::Public(_)) {
