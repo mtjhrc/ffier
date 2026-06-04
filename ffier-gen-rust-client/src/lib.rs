@@ -277,6 +277,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     }
 
     let weak = opts.weak;
+    let mut symbols = Vec::new();
 
     // 1. Error enums
     // Emit ft_error_payload extern once (shared by all error types).
@@ -294,6 +295,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                 String::new(),
             )],
             weak,
+            &mut symbols,
         );
     }
     for err in &lib.errors {
@@ -302,7 +304,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
 
     // 2. Exported types
     for ty in &lib.exported_types {
-        emit_exported_type(&mut out, ty, lib, weak);
+        emit_exported_type(&mut out, ty, lib, weak, &mut symbols);
     }
 
     // 3. Implementable traits
@@ -332,20 +334,15 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         if lib.type_entry(&tr.name).and_then(|e| e.bless)
             == Some(ffier_schema::Blessing::ErrorTrait)
         {
-            // The error trait is an internal dispatch mechanism — don't emit
-            // a trait definition (it would collide with the error enum).
-            // Emit extern declarations so the Result wrapper can call
-            // error_result / error_destroy / error_message.
-            emit_error_trait_externs(&mut out, tr, lib, weak);
+            emit_error_trait_externs(&mut out, tr, lib, weak, &mut symbols);
             defined_traits.insert(tr.name.clone());
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib, weak);
+        emit_implementable_trait(&mut out, tr, lib, weak, &mut symbols);
         defined_traits.insert(tr.name.clone());
     }
 
-    // 4. Trait impls — only emit for structs that exist as handle types
-    // in the client (exported types + vtable wrappers).
+    // 4. Trait impls
     for ti in &lib.trait_impls {
         let is_handle = lib
             .type_entry(&ti.struct_name)
@@ -360,12 +357,18 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             &mut defined_traits,
             &trait_defaults,
             weak,
+            &mut symbols,
         );
     }
 
     // 5. Free functions
     for f in &lib.free_functions {
-        emit_free_function(&mut out, f, lib, weak);
+        emit_free_function(&mut out, f, lib, weak, &mut symbols);
+    }
+
+    // 6. Weak symbol API (Symbol enum + require + is_available)
+    if weak && !symbols.is_empty() {
+        emit_weak_symbol_api(&mut out, &symbols);
     }
 
     out
@@ -684,7 +687,13 @@ fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
 // Exported type generation
 // ===========================================================================
 
-fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library, weak: bool) {
+fn emit_exported_type(
+    out: &mut String,
+    ty: &ExportedType,
+    lib: &Library,
+    weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
+) {
     let entry = lib.type_entry(&ty.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let lifetimes = &entry.lifetime_params;
@@ -715,136 +724,10 @@ fn emit_exported_type(out: &mut String, ty: &ExportedType, lib: &Library, weak: 
         };
         fns.push(extern_fn_from_method(ffi_name, m, lib));
     }
-    emit_extern_fns(out, &fns, weak);
+    emit_extern_fns(out, &fns, weak, symbols);
 
-    // Struct definition
-    if has_lifetimes {
-        let phantom = if lifetimes.len() == 1 {
-            format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
-        } else {
-            format!(
-                "std::marker::PhantomData<({})>",
-                lifetimes
-                    .iter()
-                    .map(|lt| format!("&'{lt} ()"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
-        writeln!(
-            out,
-            "pub struct {}{lt_params}(*mut core::ffi::c_void, {phantom});",
-            ty.name
-        )
-        .unwrap();
-    } else {
-        writeln!(out, "pub struct {}(*mut core::ffi::c_void);", ty.name).unwrap();
-    }
-    writeln!(out).unwrap();
-
-    // __from_raw, __into_raw
-    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
-    writeln!(out, "    #[doc(hidden)]").unwrap();
-    if has_lifetimes {
-        writeln!(out, "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
-    } else {
-        writeln!(
-            out,
-            "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
-        )
-        .unwrap();
-    }
-    writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // FfiHandle
-    writeln!(
-        out,
-        "impl{lt_params} FfiHandle for {}{lt_params} {{",
-        ty.name
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    const C_HANDLE_NAME: &'static str = \"{}\";",
-        ty.name
-    )
-    .unwrap();
-    writeln!(out, "    const TYPE_TAG: u32 = {type_tag}u32;").unwrap();
-    writeln!(
-        out,
-        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
-    )
-    .unwrap();
-    if has_lifetimes {
-        writeln!(
-            out,
-            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}"
-        )
-        .unwrap();
-    } else {
-        writeln!(
-            out,
-            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
-        )
-        .unwrap();
-    }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // FfiType
-    writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
-    writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
-    writeln!(
-        out,
-        "    const C_TYPE_NAME: &'static str = \"{}\";",
-        ty.name
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    fn into_c(self) -> *mut core::ffi::c_void {{ self.__into_raw() }}"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    fn borrow_as_c(&self) -> *mut core::ffi::c_void {{ self.0 }}"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Debug
-    writeln!(
-        out,
-        "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
-        ty.name
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {{"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        f.debug_tuple(\"{}\").field(&self.0).finish()",
-        ty.name
-    )
-    .unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Methods
-    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
+    // Impl block: methods
+    let mut impl_block = String::new();
     for m in &ty.methods {
         let MethodContext::Exportable { ffi_name } = &m.context else {
             continue;
@@ -1186,7 +1069,13 @@ fn emit_method_body(
 /// This avoids emitting a `pub trait Error { ... }` that would collide with
 /// the user's error enum, while still making the symbols available for
 /// GLib-style Result wrappers.
-fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, _lib: &Library, weak: bool) {
+fn emit_error_trait_externs(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    _lib: &Library,
+    weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
+) {
     let mut fns = Vec::new();
     for m in &tr.methods {
         let MethodContext::Trait { ffi_name, .. } = &m.context else {
@@ -1200,7 +1089,7 @@ fn emit_error_trait_externs(out: &mut String, tr: &ImplementableTrait, _lib: &Li
         vec!["handle: *mut core::ffi::c_void".to_string()],
         String::new(),
     ));
-    emit_extern_fns(out, &fns, weak);
+    emit_extern_fns(out, &fns, weak, symbols);
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
@@ -1230,7 +1119,13 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
 // Implementable trait generation
 // ===========================================================================
 
-fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Library, weak: bool) {
+fn emit_implementable_trait(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
+) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
@@ -1330,7 +1225,7 @@ fn emit_implementable_trait(out: &mut String, tr: &ImplementableTrait, lib: &Lib
         })
         .collect();
     if !default_fns.is_empty() {
-        emit_extern_fns(out, &default_fns, weak);
+        emit_extern_fns(out, &default_fns, weak, symbols);
     }
 
     // Wrapper struct
@@ -1666,6 +1561,7 @@ fn emit_trait_impl(
     defined_traits: &mut HashSet<String>,
     trait_defaults: &HashMap<String, Vec<&Method>>,
     weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
 ) {
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
@@ -1684,7 +1580,7 @@ fn emit_trait_impl(
             Some(extern_fn_from_dispatch(ffi_name, m))
         })
         .collect();
-    emit_extern_fns(out, &fns, weak);
+    emit_extern_fns(out, &fns, weak, symbols);
 
     // Build impl header with lifetimes
     let impl_generics = if !ti.lifetimes.is_empty() {
@@ -1888,13 +1784,18 @@ fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
 /// Emit one or more extern "C" functions — either as a traditional
 /// `unsafe extern "C" { ... }` block (strong) or as `OnceLock`-backed
 /// shim functions (weak).
-fn emit_extern_fns(out: &mut String, fns: &[ExternFn], weak: bool) {
+fn emit_extern_fns(
+    out: &mut String,
+    fns: &[ExternFn],
+    weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
+) {
     if fns.is_empty() {
         return;
     }
     if weak {
         for f in fns {
-            emit_weak_shim(out, f);
+            emit_weak_shim(out, f, symbols);
         }
     } else {
         writeln!(out, "unsafe extern \"C\" {{").unwrap();
@@ -1908,8 +1809,140 @@ fn emit_extern_fns(out: &mut String, fns: &[ExternFn], weak: bool) {
     }
 }
 
-/// Emit a single weak-binding shim: OnceLock + shim fn + require + is_loaded.
-fn emit_weak_shim(out: &mut String, f: &ExternFn) {
+/// Convert a C symbol name like `ft_widget_new` to a PascalCase enum variant
+/// like `FtWidgetNew`.
+fn symbol_to_variant(c_name: &str) -> String {
+    c_name
+        .split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => {
+                    let mut s = c.to_uppercase().to_string();
+                    s.extend(chars);
+                    s
+                }
+            }
+        })
+        .collect()
+}
+
+/// Emit the `Symbol` enum, `require(&[Symbol])`, and `Symbol::is_available()`.
+fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
+    // Symbol enum
+    writeln!(out, "/// FFI symbols that can be loaded at runtime.").unwrap();
+    writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]").unwrap();
+    writeln!(out, "pub enum Symbol {{").unwrap();
+    for s in symbols {
+        let variant = symbol_to_variant(&s.c_name);
+        writeln!(out, "    /// `{}`", s.c_name).unwrap();
+        writeln!(out, "    {variant},").unwrap();
+    }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Symbol::c_name()
+    writeln!(out, "impl Symbol {{").unwrap();
+    writeln!(out, "    /// The C symbol name for dlsym lookup.").unwrap();
+    writeln!(out, "    pub fn c_name(self) -> &'static str {{").unwrap();
+    writeln!(out, "        match self {{").unwrap();
+    for s in symbols {
+        let variant = symbol_to_variant(&s.c_name);
+        writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
+    }
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+
+    // Symbol::is_available() — probe via dlsym without loading
+    writeln!(
+        out,
+        "    /// Check whether this symbol is available in the current process"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    /// (i.e. the library version is new enough). Does NOT load the symbol."
+    )
+    .unwrap();
+    writeln!(out, "    pub fn is_available(self) -> bool {{").unwrap();
+    writeln!(out, "        unsafe {{").unwrap();
+    writeln!(
+        out,
+        "            let lib = libloading::os::unix::Library::this();"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            lib.get::<*const ()>(self.c_name().as_bytes()).is_ok()"
+    )
+    .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // require(&[Symbol]) — load symbols into OnceLocks
+    writeln!(
+        out,
+        "/// Load the given symbols via dlsym. Returns `Ok(())` if all symbols"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "/// are loaded successfully. Already-loaded symbols are skipped."
+    )
+    .unwrap();
+    writeln!(out, "/// Fails on the first symbol that cannot be found.").unwrap();
+    writeln!(
+        out,
+        "pub fn require(symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+    )
+    .unwrap();
+    writeln!(out, "    for &sym in symbols {{").unwrap();
+    writeln!(out, "        match sym {{").unwrap();
+    for s in symbols {
+        let variant = symbol_to_variant(&s.c_name);
+        let upper = &s.upper;
+        let fn_ptr_type = &s.fn_ptr_type;
+        writeln!(out, "            Symbol::{variant} => {{").unwrap();
+        writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
+        writeln!(
+            out,
+            "                    let f = unsafe {{ *lib.get::<{fn_ptr_type}>(b\"{}\\0\")? }};",
+            s.c_name
+        )
+        .unwrap();
+        writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
+        writeln!(out, "                }}").unwrap();
+        writeln!(out, "            }}").unwrap();
+    }
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    Ok(())").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
+/// Info collected for each weak symbol, used to generate the Symbol enum.
+struct WeakSymbolInfo {
+    /// C symbol name (e.g. `"ft_widget_new"`)
+    c_name: String,
+    /// Rust OnceLock static name (e.g. `"FT_WIDGET_NEW"`)
+    upper: String,
+    /// fn pointer type string (e.g. `"unsafe extern \"C\" fn() -> *mut c_void"`)
+    fn_ptr_type: String,
+}
+
+/// Emit a single weak-binding shim: OnceLock + shim fn.
+/// Pushes symbol info into `symbols` for the enum/require generation.
+fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolInfo>) {
     let name = &f.name;
     let upper = name.to_ascii_uppercase();
     let params_str = f.params.join(", ");
@@ -1919,10 +1952,7 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn) {
     let param_types: Vec<&str> = f
         .params
         .iter()
-        .map(|p| {
-            // "name: Type" → "Type"
-            p.split_once(": ").map(|(_, ty)| ty).unwrap_or(p)
-        })
+        .map(|p| p.split_once(": ").map(|(_, ty)| ty).unwrap_or(p))
         .collect();
     let fn_ptr_params = param_types.join(", ");
     let fn_ptr_type = format!("unsafe extern \"C\" fn({fn_ptr_params}){ret}");
@@ -1942,6 +1972,19 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn) {
     )
     .unwrap();
 
+    // Shim function
+    let vis = if f.public { "pub " } else { "" };
+    writeln!(out, "#[allow(non_snake_case)]").unwrap();
+    writeln!(out, "{vis}unsafe fn {name}({params_str}){ret} {{").unwrap();
+    writeln!(out, "    unsafe {{ ({upper}.get().expect(\"symbol `{name}` not loaded; call require() first\"))({args_str}) }}").unwrap();
+    writeln!(out, "}}").unwrap();
+
+    symbols.push(WeakSymbolInfo {
+        c_name: name.clone(),
+        upper: upper.clone(),
+        fn_ptr_type,
+    });
+
     // Shim function — match visibility from the extern declaration
     let vis = if f.public { "pub " } else { "" };
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
@@ -1949,41 +1992,6 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn) {
     writeln!(out, "    unsafe {{ ({upper}.get().expect(\"symbol `{name}` not loaded; call require_{name}() first\"))({args_str}) }}").unwrap();
     writeln!(out, "}}").unwrap();
 
-    // require
-    writeln!(
-        out,
-        "/// Load the `{name}` symbol via dlsym. Returns `Ok(())` if already loaded."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "pub fn require_{name}() -> Result<(), libloading::Error> {{"
-    )
-    .unwrap();
-    writeln!(out, "    if {upper}.get().is_some() {{ return Ok(()); }}").unwrap();
-    writeln!(out, "    let sym = unsafe {{").unwrap();
-    writeln!(
-        out,
-        "        let lib = libloading::os::unix::Library::this();"
-    )
-    .unwrap();
-    writeln!(out, "        *lib.get::<{fn_ptr_type}>(b\"{name}\\0\")?").unwrap();
-    writeln!(out, "    }};").unwrap();
-    writeln!(out, "    let _ = {upper}.set(sym);").unwrap();
-    writeln!(out, "    Ok(())").unwrap();
-    writeln!(out, "}}").unwrap();
-
-    // is_loaded
-    writeln!(
-        out,
-        "/// Check whether the `{name}` symbol has been loaded."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "pub fn is_loaded_{name}() -> bool {{ {upper}.get().is_some() }}"
-    )
-    .unwrap();
     writeln!(out).unwrap();
 }
 
@@ -2398,9 +2406,15 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
 // Free function generation
 // ===========================================================================
 
-fn emit_free_function(out: &mut String, f: &FreeFunction, lib: &Library, weak: bool) {
+fn emit_free_function(
+    out: &mut String,
+    f: &FreeFunction,
+    lib: &Library,
+    weak: bool,
+    symbols: &mut Vec<WeakSymbolInfo>,
+) {
     // Extern declaration
-    emit_extern_fns(out, &[extern_fn_from_free(f)], weak);
+    emit_extern_fns(out, &[extern_fn_from_free(f)], weak, symbols);
 
     // Safe wrapper
     for doc in &f.doc {
