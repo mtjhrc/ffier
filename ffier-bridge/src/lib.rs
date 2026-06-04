@@ -26,7 +26,6 @@ type ErrorMap = HashMap<String, ErrorInfo>;
 
 struct ErrorInfo {
     pub type_tag: u32,
-    pub path: TokenStream2,
 }
 
 struct TraitDispatchInfo {
@@ -259,7 +258,6 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                     meta.name.to_string(),
                     ErrorInfo {
                         type_tag: meta.type_tag,
-                        path: meta.path.clone(),
                     },
                 );
             }
