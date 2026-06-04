@@ -2107,13 +2107,6 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolIn
         fn_ptr_type,
     });
 
-    // Shim function — match visibility from the extern declaration
-    let vis = if f.public { "pub " } else { "" };
-    writeln!(out, "#[allow(non_snake_case)]").unwrap();
-    writeln!(out, "{vis}unsafe fn {name}({params_str}){ret} {{").unwrap();
-    writeln!(out, "    unsafe {{ ({upper}.get().expect(\"symbol `{name}` not loaded; call require_{name}() first\"))({args_str}) }}").unwrap();
-    writeln!(out, "}}").unwrap();
-
     writeln!(out).unwrap();
 }
 
