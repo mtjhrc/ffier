@@ -15,14 +15,13 @@ pub trait FfiType {
     const IS_HANDLE: bool = false;
     fn into_c(self) -> Self::CRepr;
     unsafe fn from_c(repr: Self::CRepr) -> Self;
-    fn borrow_as_c(&self) -> Self::CRepr;
 }
 
 macro_rules! impl_ffi_identity {
     ($($t:ty => $n:expr),* $(,)?) => { $(
         impl FfiType for $t {
             type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;
-            fn into_c(self) -> Self { self } unsafe fn from_c(r: Self) -> Self { r } fn borrow_as_c(&self) -> Self { *self }
+            fn into_c(self) -> Self { self } unsafe fn from_c(r: Self) -> Self { r }
         }
     )* };
 }
@@ -44,9 +43,6 @@ impl FfiType for &str {
             let b = core::slice::from_raw_parts(repr.data, repr.len);
             core::str::from_utf8_unchecked(b)
         }
-    }
-    fn borrow_as_c(&self) -> ffier::FfierBytes {
-        unsafe { ffier::FfierBytes::from_str(self) }
     }
 }
 
@@ -71,12 +67,6 @@ impl<'a> FfiType for Option<&'a str> {
             }
         }
     }
-    fn borrow_as_c(&self) -> ffier::FfierBytes {
-        match self {
-            Some(s) => unsafe { ffier::FfierBytes::from_str(s) },
-            None => ffier::FfierBytes::EMPTY,
-        }
-    }
 }
 
 impl FfiType for Box<str> {
@@ -94,12 +84,6 @@ impl FfiType for Box<str> {
         unsafe {
             let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len);
             Box::from_raw(core::str::from_utf8_unchecked_mut(slice))
-        }
-    }
-    fn borrow_as_c(&self) -> ffier::FfierBytes {
-        ffier::FfierBytes {
-            data: self.as_ptr(),
-            len: self.len(),
         }
     }
 }
@@ -120,9 +104,6 @@ impl FfiType for &[u8] {
             }
         }
     }
-    fn borrow_as_c(&self) -> ffier::FfierBytes {
-        unsafe { ffier::FfierBytes::from_bytes(self) }
-    }
 }
 
 impl FfiType for OwnedFd {
@@ -136,9 +117,6 @@ impl FfiType for OwnedFd {
     unsafe fn from_c(fd: RawFd) -> Self {
         unsafe { OwnedFd::from_raw_fd(fd as _) }
     }
-    fn borrow_as_c(&self) -> RawFd {
-        self.as_raw_fd() as RawFd
-    }
 }
 
 impl<'fd> FfiType for BorrowedFd<'fd> {
@@ -150,9 +128,6 @@ impl<'fd> FfiType for BorrowedFd<'fd> {
     }
     unsafe fn from_c(fd: RawFd) -> Self {
         unsafe { BorrowedFd::borrow_raw(fd as _) }
-    }
-    fn borrow_as_c(&self) -> RawFd {
-        self.as_raw_fd() as RawFd
     }
 }
 
@@ -173,12 +148,6 @@ impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
             Some(unsafe { BorrowedFd::borrow_raw(fd as _) })
         }
     }
-    fn borrow_as_c(&self) -> RawFd {
-        match self {
-            Some(fd) => fd.as_raw_fd() as RawFd,
-            None => -1,
-        }
-    }
 }
 
 impl<T: FfiHandle + 'static> FfiType for &T {
@@ -191,9 +160,6 @@ impl<T: FfiHandle + 'static> FfiType for &T {
     unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("client-side &T from_c")
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        unsafe { self.as_handle() }
-    }
 }
 impl<T: FfiHandle + 'static> FfiType for &mut T {
     type CRepr = *mut core::ffi::c_void;
@@ -204,9 +170,6 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     }
     unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("client-side &mut T from_c")
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        unsafe { self.as_handle() }
     }
 }
 
@@ -274,9 +237,6 @@ impl FfiType for LogLevel {
             unknown => panic!("invalid LogLevel discriminant: {}", unknown),
         }
     }
-    fn borrow_as_c(&self) -> u32 {
-        *self as u32
-    }
 }
 
 bitflags::bitflags! {
@@ -297,9 +257,6 @@ impl FfiType for Permissions {
     }
     unsafe fn from_c(repr: u32) -> Self {
         Self::from_bits_retain(repr)
-    }
-    fn borrow_as_c(&self) -> u32 {
-        self.bits()
     }
 }
 
@@ -624,9 +581,6 @@ impl FfiType for Widget {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -953,9 +907,6 @@ impl FfiType for Gadget {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Gadget {
@@ -1027,9 +978,6 @@ impl FfiType for Config {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -1150,9 +1098,6 @@ impl FfiType for Gizmo {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Gizmo {
@@ -1228,9 +1173,6 @@ impl FfiType for GizmoBuilder {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -1340,9 +1282,6 @@ impl<'a> FfiType for View<'a> {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl<'a> std::fmt::Debug for View<'a> {
@@ -1439,9 +1378,6 @@ impl FfiType for ViewFactory {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for ViewFactory {
@@ -1525,9 +1461,6 @@ impl FfiType for Pipeline {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -1622,9 +1555,6 @@ impl FfiType for Apple {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Apple {
@@ -1684,9 +1614,6 @@ impl FfiType for Orange {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -1748,9 +1675,6 @@ impl FfiType for Banana {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Banana {
@@ -1810,9 +1734,6 @@ impl FfiType for Mango {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -1874,9 +1795,6 @@ impl FfiType for Peach {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Peach {
@@ -1936,9 +1854,6 @@ impl FfiType for Plum {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -2000,9 +1915,6 @@ impl FfiType for Grape {
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
     }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
-    }
 }
 
 impl std::fmt::Debug for Grape {
@@ -2062,9 +1974,6 @@ impl FfiType for Lemon {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -2146,9 +2055,6 @@ impl FfiType for Mixer {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
@@ -2255,9 +2161,6 @@ impl FfiType for Sprocket {
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
         Self::__from_raw(repr)
-    }
-    fn borrow_as_c(&self) -> *mut core::ffi::c_void {
-        self.0
     }
 }
 
