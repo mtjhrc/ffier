@@ -212,7 +212,9 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     // ObjectArray — contiguous array of these entries.
     if let Some(object_array_c) = try_blessed_c_type(lib, Blessing::ObjectArray) {
         // Derive PascalCase prefix from the ObjectArray c_type (e.g. "FtObjectArray" → "Ft")
-        let type_pfx = object_array_c.strip_suffix("ObjectArray").unwrap_or(&object_array_c);
+        let type_pfx = object_array_c
+            .strip_suffix("ObjectArray")
+            .unwrap_or(&object_array_c);
         let entry_c = format!("{type_pfx}ObjectArrayEntry");
 
         out.push_str("/**\n");
