@@ -142,8 +142,16 @@ fn check_forbidden_ffi_type(ty: &Type) -> Option<&'static str> {
     let last = tp.path.segments.last()?;
     let name = last.ident.to_string();
     match name.as_str() {
-        "String" => return Some("String cannot be used in FFI — use `Box<str>` (owned) or `&str` (borrowed) instead"),
-        "Vec" => return Some("Vec<T> cannot be used in FFI — use `&[T]` (borrowed slice) or `Box<[T]>` instead"),
+        "String" => {
+            return Some(
+                "String cannot be used in FFI — use `Box<str>` (owned) or `&str` (borrowed) instead",
+            );
+        }
+        "Vec" => {
+            return Some(
+                "Vec<T> cannot be used in FFI — use `&[T]` (borrowed slice) or `Box<[T]>` instead",
+            );
+        }
         _ => {}
     }
     // Recurse into generic args (Result<String, E>, Option<Vec<T>>, etc.)
@@ -271,9 +279,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
         if let ReturnType::Type(_, ty) = &method.sig.output
             && let Some(msg) = check_forbidden_ffi_type(ty)
         {
-            return syn::Error::new_spanned(ty, msg)
-                .to_compile_error()
-                .into();
+            return syn::Error::new_spanned(ty, msg).to_compile_error().into();
         }
 
         // Skip non-public methods in inherent impls (bridge crate can't call them)
