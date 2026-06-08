@@ -72,6 +72,11 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "    const TYPE_TAG: u32;").unwrap();
     writeln!(
         out,
+        "    /// # Safety\n    /// The caller must ensure the handle is not used after the object is dropped."
+    )
+    .unwrap();
+    writeln!(
+        out,
         "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void;"
     )
     .unwrap();
@@ -88,6 +93,11 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "    const C_TYPE_NAME: &'static str;").unwrap();
     writeln!(out, "    const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> Self::CRepr;").unwrap();
+    writeln!(
+        out,
+        "    /// # Safety\n    /// The C representation must be valid for this type."
+    )
+    .unwrap();
     writeln!(out, "    unsafe fn from_c(repr: Self::CRepr) -> Self;").unwrap();
 
     writeln!(out, "}}").unwrap();
@@ -134,7 +144,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out).unwrap();
 
     // Option<&str> FfiType impl
-    writeln!(out, "impl<'a> FfiType for Option<&'a str> {{").unwrap();
+    writeln!(out, "impl FfiType for Option<&str> {{").unwrap();
     writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
     writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
@@ -871,6 +881,24 @@ fn emit_exported_type(
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+
+    // Default — emit if there's a zero-param `new()` static constructor returning Self
+    let has_default_new = !has_lifetimes
+        && ty.methods.iter().any(|m| {
+            m.name == "new"
+                && m.receiver == Receiver::None
+                && m.params.is_empty()
+                && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
+        });
+    if has_default_new {
+        writeln!(
+            out,
+            "impl Default for {} {{ fn default() -> Self {{ Self::new() }} }}",
+            ty.name
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+    }
 
     // Drop
     writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
@@ -2001,24 +2029,38 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
         "    /// (i.e. the library version is new enough). Does NOT load the symbol."
     )
     .unwrap();
-    writeln!(out, "    pub fn is_available(self) -> bool {{").unwrap();
-    writeln!(out, "        unsafe {{").unwrap();
+    writeln!(out, "    pub fn is_available(self, lib_handle: Option<core::ptr::NonNull<core::ffi::c_void>>) -> bool {{").unwrap();
+    writeln!(out, "        match lib_handle {{").unwrap();
+    writeln!(out, "            Some(h) => {{").unwrap();
     writeln!(
         out,
-        "            let lib = libloading::os::unix::Library::this();"
+        "                let lib = std::mem::ManuallyDrop::new(unsafe {{ libloading::os::unix::Library::from_raw(h.as_ptr()) }});"
     )
     .unwrap();
     writeln!(
         out,
-        "            lib.get::<*const ()>(self.c_name().as_bytes()).is_ok()"
+        "                unsafe {{ lib.get::<*const ()>(self.c_name().as_bytes()).is_ok() }}"
     )
     .unwrap();
+    writeln!(out, "            }}").unwrap();
+    writeln!(out, "            None => {{").unwrap();
+    writeln!(
+        out,
+        "                let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                unsafe {{ lib.get::<*const ()>(self.c_name().as_bytes()).is_ok() }}"
+    )
+    .unwrap();
+    writeln!(out, "            }}").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // require(&[Symbol]) — load symbols into OnceLocks
+    // require(Option<handle>, &[Symbol]) — load symbols into OnceLocks
     writeln!(
         out,
         "/// Load the given symbols via dlsym. Returns `Ok(())` if all symbols"
@@ -2030,18 +2072,37 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
     )
     .unwrap();
     writeln!(out, "/// Fails on the first symbol that cannot be found.").unwrap();
+    writeln!(out, "///").unwrap();
     writeln!(
         out,
-        "pub fn require(symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
+        "/// If `lib_handle` is `Some(h)`, symbols are looked up in that specific"
     )
     .unwrap();
     writeln!(
         out,
-        "    let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+        "/// library handle (e.g. from `dlopen` without `RTLD_GLOBAL`). If `None`,"
     )
     .unwrap();
-    writeln!(out, "    for &sym in symbols {{").unwrap();
-    writeln!(out, "        match sym {{").unwrap();
+    writeln!(
+        out,
+        "/// symbols are looked up in the global namespace (`RTLD_DEFAULT`)."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "pub fn require(lib_handle: Option<core::ptr::NonNull<core::ffi::c_void>>, symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
+    )
+    .unwrap();
+    // For Some(h): ManuallyDrop prevents dlclose — the caller owns the handle.
+    // For None: Library::this() is allowed to drop normally (decrements dlopen(NULL) refcount).
+    writeln!(out, "    // Helper: dlsym from a Library reference.").unwrap();
+    writeln!(
+        out,
+        "    fn load_all(lib: &libloading::os::unix::Library, symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
+    )
+    .unwrap();
+    writeln!(out, "        for &sym in symbols {{").unwrap();
+    writeln!(out, "            match sym {{").unwrap();
     for s in symbols {
         let variant = symbol_to_variant(&s.c_name);
         let upper = &s.upper;
@@ -2058,9 +2119,28 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
         writeln!(out, "                }}").unwrap();
         writeln!(out, "            }}").unwrap();
     }
+    writeln!(out, "            }}").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        Ok(())").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    match lib_handle {{").unwrap();
+    writeln!(out, "        Some(h) => {{").unwrap();
+    writeln!(
+        out,
+        "            let lib = std::mem::ManuallyDrop::new(unsafe {{ libloading::os::unix::Library::from_raw(h.as_ptr()) }});"
+    )
+    .unwrap();
+    writeln!(out, "            load_all(&lib, symbols)").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        None => {{").unwrap();
+    writeln!(
+        out,
+        "            let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+    )
+    .unwrap();
+    writeln!(out, "            load_all(&lib, symbols)").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
-    writeln!(out, "    Ok(())").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }

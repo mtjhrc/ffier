@@ -7,7 +7,7 @@ fmt:
 
 # Run clippy
 clippy:
-    cargo clippy --workspace
+    cargo clippy --workspace -- -D warnings
 
 # Run all tests
 test:
