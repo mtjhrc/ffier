@@ -4,6 +4,8 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 pub trait FfiHandle {
     const C_HANDLE_NAME: &'static str;
     const TYPE_TAG: u32;
+    /// # Safety
+    /// The caller must ensure the handle is not used after the object is dropped.
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
     fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
 }
@@ -14,6 +16,8 @@ pub trait FfiType {
     const C_TYPE_NAME: &'static str;
     const IS_HANDLE: bool = false;
     fn into_c(self) -> Self::CRepr;
+    /// # Safety
+    /// The C representation must be valid for this type.
     unsafe fn from_c(repr: Self::CRepr) -> Self;
 }
 
@@ -46,7 +50,7 @@ impl FfiType for &str {
     }
 }
 
-impl<'a> FfiType for Option<&'a str> {
+impl FfiType for Option<&str> {
     type CRepr = ffier::FfierBytes;
     const C_TYPE_NAME: &'static str = "FfierStr";
     const IS_HANDLE: bool = false;
@@ -862,6 +866,12 @@ impl Widget {
     }
 }
 
+impl Default for Widget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for Widget {
     fn drop(&mut self) {
         unsafe { ft_widget_destroy(self.0) }
@@ -1052,6 +1062,12 @@ impl Config {
     }
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for Config {
     fn drop(&mut self) {
         unsafe { ft_config_destroy(self.0) }
@@ -1221,6 +1237,12 @@ impl GizmoBuilder {
             let __r = unsafe { ft_error_result(__err) };
             Err(TestError::from_ffi(__r, __err))
         }
+    }
+}
+
+impl Default for GizmoBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -1406,6 +1428,12 @@ impl ViewFactory {
     }
 }
 
+impl Default for ViewFactory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Drop for ViewFactory {
     fn drop(&mut self) {
         unsafe { ft_view_factory_destroy(self.0) }
@@ -1507,6 +1535,12 @@ impl Pipeline {
         } else {
             Err(TestError::from_ffi(__r, __err))
         }
+    }
+}
+
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -2110,6 +2144,12 @@ impl Mixer {
     pub fn total(&self) -> i32 {
         let __raw = unsafe { ft_mixer_total(self.0) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl Default for Mixer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

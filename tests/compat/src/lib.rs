@@ -8,7 +8,7 @@
 // The test verifies that when the library calls `label()` on a handle created
 // by this v1 client, it sees the vtable field as out of bounds (smaller
 // vtable_size), treats it as None, and uses the library's default.
-#![allow(clippy::all)]
+#![allow(clippy::should_implement_trait)]
 
 include!("generated_v1.rs");
 
