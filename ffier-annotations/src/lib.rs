@@ -893,6 +893,16 @@ impl AliasContext {
                     quote! { &'static #inner }
                 }
             }
+            // Raw pointers (*mut T, *const T) — recurse into the pointee.
+            // The user must write fully qualified paths (e.g. `*mut core::ffi::c_void`).
+            Type::Ptr(ptr_ty) => {
+                let inner = self.bridge_tokens(&ptr_ty.elem);
+                if ptr_ty.mutability.is_some() {
+                    quote! { *mut #inner }
+                } else {
+                    quote! { *const #inner }
+                }
+            }
             Type::Slice(sl) => {
                 let elem = self.bridge_tokens(&sl.elem);
                 quote! { [#elem] }
@@ -3040,6 +3050,23 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             i8 => "int8_t", i16 => "int16_t", i32 => "int32_t", i64 => "int64_t",
             u8 => "uint8_t", u16 => "uint16_t", u32 => "uint32_t", u64 => "uint64_t",
             isize => "ssize_t", usize => "size_t", bool => "bool",
+        }
+
+        // Opaque raw pointers — passed through without transformation.
+        impl FfiType for *mut core::ffi::c_void {
+            type CRepr = *mut core::ffi::c_void;
+            const C_TYPE_NAME: &'static str = "void*";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> Self { self }
+            unsafe fn from_c(repr: Self) -> Self { repr }
+        }
+
+        impl FfiType for *const core::ffi::c_void {
+            type CRepr = *const core::ffi::c_void;
+            const C_TYPE_NAME: &'static str = "const void*";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> Self { self }
+            unsafe fn from_c(repr: Self) -> Self { repr }
         }
 
         impl FfiType for &str {

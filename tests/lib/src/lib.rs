@@ -1083,6 +1083,25 @@ pub fn create_foreign_config_checked(
 }
 
 // ---------------------------------------------------------------------------
+// Opaque raw pointer tests — *mut c_void passed through without transformation
+// ---------------------------------------------------------------------------
+
+use core::ffi::c_void;
+
+/// Accept an opaque pointer and return it unchanged (round-trip test).
+/// Uses bare `c_void` (via `use`) to verify the macro emits fully qualified paths.
+#[ffier::exportable]
+pub fn opaque_round_trip(ptr: *mut c_void) -> *mut c_void {
+    ptr
+}
+
+/// Accept an opaque const pointer and return its address as an integer.
+#[ffier::exportable]
+pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
+    ptr as usize
+}
+
+// ---------------------------------------------------------------------------
 // Error — deliberately named `Error` to catch collisions with std::error::Error
 // ---------------------------------------------------------------------------
 
@@ -1135,8 +1154,4 @@ ffier::library_definition!("ft", library_tag = 1,
     fn log_level_is_enabled,
     fn clone_fd,
     fn sum_gadget_values,
-    fn apply_foreign_config,
-    fn read_foreign_item_score,
-    fn create_foreign_item,
-    fn create_foreign_config_checked,
 );
