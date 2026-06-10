@@ -1382,11 +1382,16 @@ fn wrap_return(
                 quote! { #call_expr; }
             }
         }
-        MetaReturn::Value(MetaTypePair { bridge_type, .. }) => {
+        MetaReturn::Value(tp) => {
+            let bridge_type = &tp.bridge_type;
+            let tc = resolve_trait_crate(tp, lib_crate);
             let rust_ty = syn::parse2::<syn::Type>(rust_ret.clone()).ok();
-            if rust_ty
-                .as_ref()
-                .is_some_and(|ty| is_borrowed_handle(ty, handle_types))
+            // Foreign types are always handles.
+            let is_foreign = tp.foreign_crate.is_some();
+            if !is_foreign
+                && rust_ty
+                    .as_ref()
+                    .is_some_and(|ty| is_borrowed_handle(ty, handle_types))
             {
                 // &T where T is a handle — shallow-copy into a borrowed handle.
                 // Strip the reference to get the inner bridge_type for the
@@ -1403,7 +1408,7 @@ fn wrap_return(
                     let result = #call_expr;
                     unsafe {
                         ffier::ffier_handle_new_borrowed::<#inner_bridge>(
-                            <#inner_bridge as #lib_crate::FfiHandle>::TYPE_TAG,
+                            <#inner_bridge as #tc::FfiHandle>::TYPE_TAG,
                             result as *const #inner_bridge,
                         )
                     }
@@ -1411,14 +1416,16 @@ fn wrap_return(
             } else {
                 quote! {
                     let result = #call_expr;
-                    <#bridge_type as #lib_crate::FfiType>::into_c(result)
+                    <#bridge_type as #tc::FfiType>::into_c(result)
                 }
             }
         }
         MetaReturn::HandleSlice {
-            types: MetaTypePair { bridge_type, .. },
+            types: tp,
             direct,
         } => {
+            let bridge_type = &tp.bridge_type;
+            let tc = resolve_trait_crate(tp, lib_crate);
             // &[&T] or &[T] → build a contiguous Box<[FfierBorrowedHandle]>
             // from the iterator, leak it, return as FfierObjectArray.
             // For &[&T], item is &&T so we deref once; for &[T], item is &T directly.
@@ -1432,7 +1439,7 @@ fn wrap_return(
                 if __slice.is_empty() {
                     ffier::FfierObjectArray::EMPTY
                 } else {
-                    let __tag = <#bridge_type as #lib_crate::FfiHandle>::TYPE_TAG;
+                    let __tag = <#bridge_type as #tc::FfiHandle>::TYPE_TAG;
                     let __meta = ffier::METADATA_BORROWED | ffier::METADATA_ARRAY_ELEMENT;
                     let __boxed: Box<[ffier::FfierBorrowedHandle]> = __slice.iter()
                         .map(|item| ffier::FfierBorrowedHandle {
@@ -1448,7 +1455,10 @@ fn wrap_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
-            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
+            // A foreign ok type is always a handle (GLib-style return).
+            let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
+            let ok_is_handle =
+                ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
 
             let Some(err_info) = error_map.get(err_ident) else {
                 let msg = format!(
@@ -1467,18 +1477,24 @@ fn wrap_return(
             };
 
             // Check if the Ok type is a borrowed handle (&HandleType).
-            let ok_is_borrowed_handle = ok.is_some() && {
+            let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
                 let ok_tokens = extract_result_ok_type(rust_ret);
                 syn::parse2::<syn::Type>(ok_tokens)
                     .ok()
                     .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
             };
 
+            // Resolve the trait crate for the ok type (foreign or local).
+            let ok_tc = ok
+                .as_ref()
+                .map(|tp| resolve_trait_crate(tp, lib_crate))
+                .unwrap_or(lib_crate);
+
             if ok_is_handle && !ok_is_borrowed_handle {
                 // GLib-style: return owned handle directly, NULL on error.
                 quote! {
                     match #call_expr {
-                        Ok(ok_val) => <_ as #lib_crate::FfiType>::into_c(ok_val),
+                        Ok(ok_val) => <_ as #ok_tc::FfiType>::into_c(ok_val),
                         Err(e) => { #box_expr core::ptr::null_mut() }
                     }
                 }
@@ -1497,7 +1513,7 @@ fn wrap_return(
                     match #call_expr {
                         Ok(ok_val) => unsafe {
                             ffier::ffier_handle_new_borrowed::<#inner_bridge>(
-                                <#inner_bridge as #lib_crate::FfiHandle>::TYPE_TAG,
+                                <#inner_bridge as #ok_tc::FfiHandle>::TYPE_TAG,
                                 ok_val as *const #inner_bridge,
                             )
                         },
@@ -1506,12 +1522,15 @@ fn wrap_return(
                 }
             } else {
                 let ok_branch = match ok {
-                    Some(MetaTypePair { bridge_type, .. }) => quote! {
-                        Ok(ok_val) => {
-                            unsafe { result.write(<#bridge_type as #lib_crate::FfiType>::into_c(ok_val)) };
-                            ffier::FFIER_RESULT_SUCCESS
+                    Some(tp) => {
+                        let bridge_type = &tp.bridge_type;
+                        quote! {
+                            Ok(ok_val) => {
+                                unsafe { result.write(<#bridge_type as #ok_tc::FfiType>::into_c(ok_val)) };
+                                ffier::FFIER_RESULT_SUCCESS
+                            }
                         }
-                    },
+                    }
                     None if builder.is_some_and(|b| b.is_by_value) => {
                         let struct_path = builder.unwrap().struct_path;
                         quote! {
@@ -1639,8 +1658,11 @@ fn c_signature_for_method(
             quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
-            let ok_is_handle = ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types);
-            let ok_is_borrowed_handle = ok.is_some() && {
+            // Foreign ok types are always handles (GLib-style).
+            let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
+            let ok_is_handle = ok_is_foreign
+                || (ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types));
+            let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
                 let ok_tokens = extract_result_ok_type(&method.rust_ret);
                 syn::parse2::<syn::Type>(ok_tokens)
                     .ok()
@@ -1688,11 +1710,19 @@ fn c_signature_for_method(
     }
 }
 
+/// Resolve the crate whose `FfiType`/`FfiHandle` traits to use for a type pair.
+/// Returns `foreign_crate` if set, otherwise falls back to `lib_crate`.
+fn resolve_trait_crate<'a>(tp: &'a MetaTypePair, lib_crate: &'a TokenStream2) -> &'a TokenStream2 {
+    tp.foreign_crate.as_ref().unwrap_or(lib_crate)
+}
+
 /// Produce the C type tokens for a parameter kind.
 fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { <#bridge_type as #lib_crate::FfiType>::CRepr }
+        MetaParamKind::Regular(tp) => {
+            let bridge_type = &tp.bridge_type;
+            let tc = resolve_trait_crate(tp, lib_crate);
+            quote! { <#bridge_type as #tc::FfiType>::CRepr }
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
@@ -1703,7 +1733,8 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
 /// Produce the C return type tokens for a value kind.
 fn c_return_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
     let bridge_type = &kind.bridge_type;
-    quote! { <#bridge_type as #lib_crate::FfiType>::CRepr }
+    let tc = resolve_trait_crate(kind, lib_crate);
+    quote! { <#bridge_type as #tc::FfiType>::CRepr }
 }
 
 /// Produce the C type for a Result ok-value out-parameter.
@@ -1719,8 +1750,10 @@ fn meta_param_conversion(
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match kind {
-        MetaParamKind::Regular(MetaTypePair { bridge_type, .. }) => {
-            quote! { unsafe { <#bridge_type as #lib_crate::FfiType>::from_c(#id) } }
+        MetaParamKind::Regular(tp) => {
+            let bridge_type = &tp.bridge_type;
+            let tc = resolve_trait_crate(tp, lib_crate);
+            quote! { unsafe { <#bridge_type as #tc::FfiType>::from_c(#id) } }
         }
         MetaParamKind::StrSlice => {
             let len_id = len_ident.expect("StrSlice conversion needs len_ident");

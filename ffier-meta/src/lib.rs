@@ -199,6 +199,10 @@ pub enum DispatchMode {
 pub struct MetaTypePair {
     pub bridge_type: TokenStream,
     pub rust_type: TokenStream,
+    /// When set, the type comes from a foreign ffier library.
+    /// The tokens are the crate path (e.g. `other_lib`) whose `FfiType`
+    /// and `FfiHandle` traits should be used instead of the local library's.
+    pub foreign_crate: Option<TokenStream>,
 }
 
 pub struct MetaMethod {
@@ -729,7 +733,7 @@ impl syn::parse::Parse for MetaMethod {
     }
 }
 
-/// Parse optional `bridge_type = (...), rust_type = (...),` pair.
+/// Parse `bridge_type = (...), rust_type = (...), [foreign_crate = (...),]` type pair.
 fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
     expect_key(input, "bridge_type")?;
     let bridge_type = parse_parenthesized_tokens(input)?;
@@ -737,9 +741,24 @@ fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
     expect_key(input, "rust_type")?;
     let rust_type = parse_parenthesized_tokens(input)?;
     parse_comma(input)?;
+    // Optional: foreign_crate = (tokens),
+    let foreign_crate = if input.peek(Ident)
+        && input
+            .fork()
+            .parse::<Ident>()
+            .is_ok_and(|id| id == "foreign_crate")
+    {
+        expect_key(input, "foreign_crate")?;
+        let fc = parse_parenthesized_tokens(input)?;
+        parse_comma(input)?;
+        Some(fc)
+    } else {
+        None
+    };
     Ok(MetaTypePair {
         bridge_type,
         rust_type,
+        foreign_crate,
     })
 }
 
