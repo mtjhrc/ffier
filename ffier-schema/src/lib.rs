@@ -281,6 +281,17 @@ impl TypeRef {
         }
         s
     }
+
+    /// Convert an owned type to its borrowed equivalent.
+    /// `Box<str>` → `&str`. Non-owned types are returned unchanged.
+    pub fn as_borrowed(&self) -> TypeRef {
+        let mut tr = self.clone();
+        if tr.owned {
+            tr.owned = false;
+            tr.ref_kind = RefKind::Shared;
+        }
+        tr
+    }
 }
 
 // ---------------------------------------------------------------------------

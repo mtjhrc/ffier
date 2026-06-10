@@ -348,6 +348,28 @@ mod tests {
     }
 
     #[test]
+    fn error_payload_i32() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut err: *mut core::ffi::c_void = ptr::null_mut();
+            let r = ft_widget_fail_with_number(w, 42, &mut err as *mut *mut core::ffi::c_void);
+            assert_ne!(r, 0);
+            assert_eq!(ffier::ffier_result_code(r), 4); // NumericError
+            assert!(!err.is_null());
+            // Test error_payload with i32-sized buffer
+            let mut payload_buf = core::mem::MaybeUninit::<i32>::uninit();
+            ft_error_payload(
+                err as *const core::ffi::c_void,
+                payload_buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<i32>(),
+            );
+            assert_eq!(payload_buf.assume_init(), 42);
+            ft_error_destroy(err);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
     fn method_returning_result_handle_ok() {
         unsafe {
             let w = ft_widget_new();
