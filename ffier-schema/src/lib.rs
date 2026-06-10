@@ -456,6 +456,12 @@ pub enum CResultConvention {
 /// Well-known type name for builder methods that return `Self`.
 pub const SELF_TYPE: &str = "Self";
 
+/// Well-known type name for `*mut core::ffi::c_void` (opaque mutable pointer).
+pub const C_VOID_PTR: &str = "*mut core::ffi::c_void";
+
+/// Well-known type name for `*const core::ffi::c_void` (opaque const pointer).
+pub const C_VOID_CONST_PTR: &str = "*const core::ffi::c_void";
+
 /// Check whether a type name refers to a `ReplacesSelf` sentinel in the registry.
 fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> bool {
     registry

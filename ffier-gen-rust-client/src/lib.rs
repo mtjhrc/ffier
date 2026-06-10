@@ -132,6 +132,11 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         "    isize => \"ssize_t\", usize => \"size_t\", bool => \"bool\","
     )
     .unwrap();
+    writeln!(
+        out,
+        "    *mut core::ffi::c_void => \"void*\", *const core::ffi::c_void => \"const void*\","
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
