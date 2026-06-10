@@ -120,12 +120,11 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     use ffier_schema::Blessing;
     let result_c = blessed_c_type(lib, Blessing::Result);
     let str_c = blessed_c_type(lib, Blessing::Str);
-    let bytes_c = blessed_c_type(lib, Blessing::Bytes);
+    let bytes_c = try_blessed_c_type(lib, Blessing::Bytes);
     let path_c = try_blessed_c_type(lib, Blessing::Path);
     let vtable_handle_c = blessed_c_type(lib, Blessing::VtableHandle);
     let result_success = format!("{prim_upper_pfx}RESULT_SUCCESS");
     let str_macro = format!("{prim_upper_pfx}STR");
-    let bytes_macro = format!("{prim_upper_pfx}BYTES");
 
     // Guard: all primitive typedefs share one guard keyed to the primitives prefix
     let prim_guard = format!("{prim_upper_pfx}PRIMITIVES_DEFINED");
@@ -157,34 +156,47 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     out.push_str("    const char* data;\n");
     out.push_str("    size_t len;\n");
     out.push_str(&format!("}} {str_c};\n\n"));
-    out.push_str("typedef struct {\n");
-    out.push_str("    const uint8_t* data;\n");
-    out.push_str("    size_t len;\n");
-    out.push_str(&format!("}} {bytes_c};\n\n"));
-    if let Some(path_c) = &path_c {
+    if let Some(bytes_c) = &bytes_c {
+        out.push_str("typedef struct {\n");
+        out.push_str("    const uint8_t* data;\n");
+        out.push_str("    size_t len;\n");
+        out.push_str(&format!("}} {bytes_c};\n\n"));
+        if let Some(path_c) = &path_c {
+            out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
+            out.push_str(&format!("typedef {bytes_c} {path_c};\n\n"));
+        }
+    } else if let Some(path_c) = &path_c {
         out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
-        out.push_str(&format!("typedef {bytes_c} {path_c};\n\n"));
+        out.push_str("typedef struct {\n");
+        out.push_str("    const uint8_t* data;\n");
+        out.push_str("    size_t len;\n");
+        out.push_str(&format!("}} {path_c};\n\n"));
     }
     out.push_str(&format!(
         "#define {str_macro}(s) (({str_c}){{ .data = (s), .len = (s) ? strlen(s) : 0 }})\n"
     ));
-    out.push_str("#if defined(__GNUC__)\n");
-    out.push_str(&format!("#define {bytes_macro}(arr) ({{ \\\n"));
-    out.push_str("    _Static_assert( \\\n");
-    out.push_str("        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\\n");
-    out.push_str(&format!(
-        "        \"{bytes_macro}() requires an array, not a pointer\"); \\\n"
-    ));
-    out.push_str(&format!(
-        "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }}); \\\n"
-    ));
-    out.push_str("})\n");
-    out.push_str("#else\n");
-    out.push_str(&format!("#define {bytes_macro}(arr) \\\n"));
-    out.push_str(&format!(
-        "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }})\n"
-    ));
-    out.push_str("#endif\n\n");
+    if let Some(bytes_c) = &bytes_c {
+        let bytes_macro = format!("{prim_upper_pfx}BYTES");
+        out.push_str("#if defined(__GNUC__)\n");
+        out.push_str(&format!("#define {bytes_macro}(arr) ({{ \\\n"));
+        out.push_str("    _Static_assert( \\\n");
+        out.push_str(
+            "        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\\n",
+        );
+        out.push_str(&format!(
+            "        \"{bytes_macro}() requires an array, not a pointer\"); \\\n"
+        ));
+        out.push_str(&format!(
+            "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }}); \\\n"
+        ));
+        out.push_str("})\n");
+        out.push_str("#else\n");
+        out.push_str(&format!("#define {bytes_macro}(arr) \\\n"));
+        out.push_str(&format!(
+            "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }})\n"
+        ));
+        out.push_str("#endif\n\n");
+    }
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
     let vtable_handle_macro = format!("{prim_upper_pfx}VTABLE_HANDLE");
