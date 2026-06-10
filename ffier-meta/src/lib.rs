@@ -385,9 +385,9 @@ pub struct MetaErrorVariant {
     pub name: Ident,
     pub code: u32,
     pub message: String,
-    /// Type strings for data-carrying variant fields (e.g. ["Box < str >"]).
+    /// Type tokens for data-carrying variant fields (e.g. `Box<str>`).
     /// Empty for unit variants.
-    pub field_types: Vec<String>,
+    pub field_types: Vec<TokenStream>,
 }
 
 // ---------------------------------------------------------------------------
@@ -942,9 +942,9 @@ impl syn::parse::Parse for MetaError {
             parse_comma(&inner)?;
             expect_key(&inner, "fields")?;
             let field_types = parse_bracketed_list(&inner, |content| {
-                let s = parse_string(content)?;
+                let ts = parse_parenthesized_tokens(content)?;
                 parse_comma(content)?;
-                Ok(s)
+                Ok(ts)
             })?;
             parse_comma(&inner)?;
             Ok(MetaErrorVariant {

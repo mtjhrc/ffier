@@ -1087,7 +1087,9 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         });
 
-        // Collect field types for data-carrying variants
+        // Collect field types for data-carrying variants.
+        // Each type is emitted as a parenthesized token group `(Type)` so the
+        // meta crate can parse it back as a TokenStream without stringifying.
         let field_types: Vec<_> = match &variant.fields {
             syn::Fields::Unit => vec![],
             syn::Fields::Unnamed(fields) => fields
@@ -1095,8 +1097,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                 .iter()
                 .map(|f| {
                     let ty = &f.ty;
-                    let ty_str = quote!(#ty).to_string();
-                    quote! { #ty_str }
+                    quote! { (#ty) }
                 })
                 .collect(),
             syn::Fields::Named(_) => {

@@ -1534,4 +1534,36 @@ mod tests {
             ft_weighable_destroy(handle);
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Opaque raw pointer tests — *mut c_void / *const c_void passthrough
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn opaque_ptr_round_trip() {
+        unsafe {
+            let val: i32 = 0xDEAD;
+            let ptr = &val as *const i32 as *mut core::ffi::c_void;
+            let result = ft_opaque_round_trip(ptr);
+            assert_eq!(result, ptr);
+        }
+    }
+
+    #[test]
+    fn opaque_ptr_null_round_trip() {
+        unsafe {
+            let result = ft_opaque_round_trip(core::ptr::null_mut());
+            assert!(result.is_null());
+        }
+    }
+
+    #[test]
+    fn opaque_const_ptr_to_int() {
+        unsafe {
+            let val: i32 = 42;
+            let ptr = &val as *const i32 as *const core::ffi::c_void;
+            let addr = ft_opaque_ptr_to_int(ptr);
+            assert_eq!(addr, ptr as usize);
+        }
+    }
 }

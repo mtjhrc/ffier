@@ -4,7 +4,7 @@
 //! the corresponding `extern "C"` FFI functions.
 
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 
 use std::collections::{HashMap, HashSet};
 
@@ -2200,28 +2200,34 @@ impl CTypeResolver {
         format!("{}ERROR_{}_{}", self.upper_pfx, error_upper, variant_upper)
     }
 
-    /// Parse a Rust type token string (e.g. `"& 'a Widget"`, `"View < 'a >"`,
-    /// `"i32"`) into a `TypeRef`.
-    fn to_type_ref(&self, rust_type: &str) -> ffier_schema::TypeRef {
-        let s = rust_type.trim();
-
-        // Unwrap Option<_> wrapper: `Option < & 'static str >` → `& 'static str`
-        if let Some(rest) = s.strip_prefix("Option") {
-            let rest = rest.trim();
-            if let Some(inner) = rest.strip_prefix('<') {
-                let inner = inner.trim().trim_end_matches('>').trim();
-                let mut tr = self.to_type_ref(inner);
-                tr.optional = true;
-                return tr;
+    /// Build a `TypeRef` from a parsed `syn::Type`, extracting references,
+    /// lifetimes, `Option<_>`, `Box<str>`, qualified paths, and generic
+    /// lifetime arguments structurally — without stringifying and re-parsing.
+    fn type_ref_from_syn(&self, ty: &syn::Type) -> ffier_schema::TypeRef {
+        match ty {
+            // Option<T> → recurse into T and set optional = true.
+            syn::Type::Path(tp) if path_is_ident(&tp.path, "Option") => {
+                if let Some(inner) = single_angle_arg(&tp.path) {
+                    let mut tr = self.type_ref_from_syn(inner);
+                    tr.optional = true;
+                    return tr;
+                }
+                // Fallthrough: bare `Option` without angle brackets (shouldn't happen).
+                ffier_schema::TypeRef {
+                    type_name: "Option".to_string(),
+                    ref_kind: ffier_schema::RefKind::None,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                }
             }
-        }
 
-        // Box<str> → owned str (same C repr as &str)
-        if let Some(rest) = s.strip_prefix("Box") {
-            let rest = rest.trim();
-            if let Some(inner) = rest.strip_prefix('<') {
-                let inner = inner.trim().trim_end_matches('>').trim();
-                if inner == "str" {
+            // Box<str> → owned str.
+            syn::Type::Path(tp) if path_is_ident(&tp.path, "Box") => {
+                if let Some(inner) = single_angle_arg(&tp.path)
+                    && matches!(inner, syn::Type::Path(p) if p.path.is_ident("str"))
+                {
                     return ffier_schema::TypeRef {
                         type_name: "str".to_string(),
                         ref_kind: ffier_schema::RefKind::None,
@@ -2231,67 +2237,137 @@ impl CTypeResolver {
                         owned: true,
                     };
                 }
+                // Fallthrough: Box<SomethingElse> — treat like a regular path.
+                self.type_ref_from_path(&tp.path, ffier_schema::RefKind::None, None)
+            }
+
+            // &T or &mut T — extract reference kind, lifetime, then recurse.
+            syn::Type::Reference(ref_ty) => {
+                let ref_kind = if ref_ty.mutability.is_some() {
+                    ffier_schema::RefKind::Mut
+                } else {
+                    ffier_schema::RefKind::Shared
+                };
+                let ref_lifetime = ref_ty.lifetime.as_ref().map(|lt| lt.ident.to_string());
+                match ref_ty.elem.as_ref() {
+                    syn::Type::Path(tp) => {
+                        self.type_ref_from_path(&tp.path, ref_kind, ref_lifetime)
+                    }
+                    // &[u8] slice — type name is "[u8]".
+                    syn::Type::Slice(sl) => {
+                        let elem_str = sl.elem.to_token_stream().to_string().replace(' ', "");
+                        ffier_schema::TypeRef {
+                            type_name: format!("[{elem_str}]"),
+                            ref_kind,
+                            ref_lifetime,
+                            type_args: vec![],
+                            optional: false,
+                            owned: false,
+                        }
+                    }
+                    // &str — Path("str") should be handled above, but just in case.
+                    other => {
+                        let name = other.to_token_stream().to_string().replace(' ', "");
+                        ffier_schema::TypeRef {
+                            type_name: name,
+                            ref_kind,
+                            ref_lifetime,
+                            type_args: vec![],
+                            optional: false,
+                            owned: false,
+                        }
+                    }
+                }
+            }
+
+            // Bare path: i32, str, Widget, View<'a>,
+            // ffier_test_foreign_lib::ForeignConfig, etc.
+            syn::Type::Path(tp) => {
+                self.type_ref_from_path(&tp.path, ffier_schema::RefKind::None, None)
+            }
+
+            // *mut c_void / *const c_void → opaque pointer primitives.
+            syn::Type::Ptr(ptr) if is_c_void(&ptr.elem) => {
+                let type_name = if ptr.mutability.is_some() {
+                    ffier_schema::C_VOID_PTR
+                } else {
+                    ffier_schema::C_VOID_CONST_PTR
+                };
+                ffier_schema::TypeRef {
+                    type_name: type_name.to_string(),
+                    ref_kind: ffier_schema::RefKind::None,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                }
+            }
+
+            // Other raw pointers — stringify as last resort.
+            syn::Type::Ptr(ptr) => {
+                let name = ptr
+                    .elem
+                    .to_token_stream()
+                    .to_string()
+                    .replace(' ', "");
+                ffier_schema::TypeRef {
+                    type_name: name,
+                    ref_kind: ffier_schema::RefKind::None,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                }
+            }
+
+            // Anything else — stringify as last resort.
+            other => {
+                let name = other.to_token_stream().to_string().replace(' ', "");
+                ffier_schema::TypeRef {
+                    type_name: name,
+                    ref_kind: ffier_schema::RefKind::None,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                }
             }
         }
+    }
 
-        // Parse reference: & or &mut, with optional lifetime.
-        // TokenStream renders both `&mut 'a T` and `&'a mut T` forms.
-        let (ref_kind, ref_lifetime, after_ref) = if let Some(rest) = s.strip_prefix('&') {
-            let rest = rest.trim();
-            // Check for `mut` before lifetime: `& mut 'a T`
-            let (mut is_mut, rest) = if let Some(r) = rest.strip_prefix("mut ") {
-                (true, r.trim())
-            } else {
-                (false, rest)
-            };
-            // Check for lifetime: `'a`
-            let (lifetime, rest) = if let Some(after_tick) = rest.strip_prefix('\'') {
-                let lt_len = after_tick
-                    .find(|c: char| !c.is_alphanumeric() && c != '_')
-                    .unwrap_or(after_tick.len());
-                let lt = &rest[1..1 + lt_len];
-                (Some(lt.to_string()), rest[1 + lt_len..].trim())
-            } else {
-                (None, rest)
-            };
-            // Check for `mut` after lifetime: `& 'a mut T`
-            let rest = if !is_mut {
-                if let Some(r) = rest.strip_prefix("mut ") {
-                    is_mut = true;
-                    r.trim()
-                } else {
-                    rest
-                }
-            } else {
-                rest
-            };
-            let rk = if is_mut {
-                ffier_schema::RefKind::Mut
-            } else {
-                ffier_schema::RefKind::Shared
-            };
-            (rk, lifetime, rest)
-        } else {
-            (ffier_schema::RefKind::None, None, s)
-        };
+    /// Build a `TypeRef` from a `syn::Path`, extracting the last segment
+    /// as the type name and any lifetime arguments from angle brackets.
+    ///
+    /// For qualified paths like `ffier_test_foreign_lib::ForeignConfig`,
+    /// this uses the **last segment** (`ForeignConfig`) as the type name —
+    /// no spaces-around-`::` nonsense.
+    fn type_ref_from_path(
+        &self,
+        path: &syn::Path,
+        ref_kind: ffier_schema::RefKind,
+        ref_lifetime: Option<String>,
+    ) -> ffier_schema::TypeRef {
+        let last = path.segments.last().expect("empty path");
+        let type_name = last.ident.to_string();
 
-        // Parse type name and generic lifetime args: `View < 'a >` → name="View", args=["a"]
-        let (type_name, type_args) = if let Some(angle_pos) = after_ref.find('<') {
-            let name = after_ref[..angle_pos].trim();
-            let args_str = &after_ref[angle_pos + 1..];
-            let args_str = args_str.trim().trim_end_matches('>').trim();
-            let type_args: Vec<String> = args_str
-                .split(',')
-                .map(|a| a.trim().trim_start_matches('\'').to_string())
-                .filter(|a| !a.is_empty())
-                .collect();
-            (name, type_args)
-        } else {
-            (after_ref, vec![])
+        // Extract lifetime arguments from angle brackets: View<'a> → ["a"].
+        let type_args = match &last.arguments {
+            syn::PathArguments::AngleBracketed(ab) => ab
+                .args
+                .iter()
+                .filter_map(|arg| {
+                    if let syn::GenericArgument::Lifetime(lt) = arg {
+                        Some(lt.ident.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => vec![],
         };
 
         ffier_schema::TypeRef {
-            type_name: type_name.to_string(),
+            type_name,
             ref_kind,
             ref_lifetime,
             type_args,
@@ -2299,6 +2375,44 @@ impl CTypeResolver {
             owned: false,
         }
     }
+
+    /// Build a `TypeRef` from a `proc_macro2::TokenStream` by parsing it
+    /// as a `syn::Type` first. This is the primary entry point for converting
+    /// metadata type tokens to schema type references.
+    fn type_ref_from_tokens(&self, tokens: &proc_macro2::TokenStream) -> ffier_schema::TypeRef {
+        let ty: syn::Type = syn::parse2(tokens.clone())
+            .unwrap_or_else(|e| panic!("failed to parse type tokens `{tokens}`: {e}"));
+        self.type_ref_from_syn(&ty)
+    }
+}
+
+/// Check if a `syn::Path` has a single segment matching `name`
+/// (e.g. `Option`, `Box`). Ignores leading `::` and multi-segment paths.
+fn path_is_ident(path: &syn::Path, name: &str) -> bool {
+    path.segments.len() == 1 && path.segments[0].ident == name
+}
+
+/// Check if a `syn::Type` is `c_void` or `core::ffi::c_void` (any qualification).
+fn is_c_void(ty: &syn::Type) -> bool {
+    if let syn::Type::Path(tp) = ty {
+        let last = tp.path.segments.last();
+        last.is_some_and(|seg| seg.ident == "c_void" && seg.arguments.is_none())
+    } else {
+        false
+    }
+}
+
+/// Extract the single type argument from `Path<T>` (e.g. `Option<&str>` → `&str`).
+/// Returns `None` if there isn't exactly one type argument.
+fn single_angle_arg(path: &syn::Path) -> Option<&syn::Type> {
+    let last = path.segments.last()?;
+    if let syn::PathArguments::AngleBracketed(ab) = &last.arguments
+        && ab.args.len() == 1
+        && let syn::GenericArgument::Type(ty) = &ab.args[0]
+    {
+        return Some(ty);
+    }
+    None
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2394,6 +2508,8 @@ fn build_schema(
         ("isize", "ssize_t"),
         ("usize", "size_t"),
         ("bool", "bool"),
+        (ffier_schema::C_VOID_PTR, "void*"),
+        (ffier_schema::C_VOID_CONST_PTR, "const void*"),
     ] {
         type_registry.insert(
             name.to_string(),
@@ -2774,8 +2890,8 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
                 let fields = v
                     .field_types
                     .iter()
-                    .map(|ty_str| ffier_schema::ErrorField {
-                        type_ref: r.to_type_ref(ty_str),
+                    .map(|ty_tokens| ffier_schema::ErrorField {
+                        type_ref: r.type_ref_from_tokens(ty_tokens),
                     })
                     .collect();
                 ffier_schema::ErrorVariant {
@@ -2899,9 +3015,7 @@ fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
 fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
     let param_type = match &p.kind {
         MetaParamKind::Regular(tp) => {
-            let rt = tp.rust_type.to_string();
-            let type_ref = r.to_type_ref(&rt);
-            ffier_schema::ParamType::Regular(type_ref)
+            ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type))
         }
         MetaParamKind::StrSlice => {
             // &[&str] → two C params: pointer to FfierBytes array + length.
@@ -2930,8 +3044,7 @@ fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::
         }
         MetaParamKind::HandleSlice(tp) => {
             // &[&T] → two C params: pointer to handle array + length.
-            let rt = tp.rust_type.to_string();
-            let elem_ref = r.to_type_ref(&rt);
+            let elem_ref = r.type_ref_from_tokens(&tp.rust_type);
             let handle_c = r.handle_c_name(&elem_ref.type_name);
             ffier_schema::ParamType::Slice {
                 element: ffier_schema::TypeRef {
@@ -2997,14 +3110,12 @@ fn convert_return(
         }
         MetaReturn::Void => ffier_schema::Return::Void,
         MetaReturn::Value(tp) => {
-            let rt = tp.rust_type.to_string();
-            ffier_schema::Return::Value(r.to_type_ref(&rt))
+            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type))
         }
         MetaReturn::HandleSlice { types, .. } => {
             // &[&T] or &[T] → returns FfierObjectArray with element type info.
-            let rt = types.rust_type.to_string();
             ffier_schema::Return::ObjectArray {
-                element: r.to_type_ref(&rt),
+                element: r.type_ref_from_tokens(&types.rust_type),
             }
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
@@ -3012,10 +3123,7 @@ fn convert_return(
             // annotations; restore it as Self.
             let ok_ref = match ok {
                 None => Some(builder_self_type_ref()),
-                Some(tp) => {
-                    let rt = tp.rust_type.to_string();
-                    Some(r.to_type_ref(&rt))
-                }
+                Some(tp) => Some(r.type_ref_from_tokens(&tp.rust_type)),
             };
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             ffier_schema::Return::Result {
@@ -3029,10 +3137,9 @@ fn convert_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
-            let ok_ref = ok.as_ref().map(|tp| {
-                let rt = tp.rust_type.to_string();
-                r.to_type_ref(&rt)
-            });
+            let ok_ref = ok
+                .as_ref()
+                .map(|tp| r.type_ref_from_tokens(&tp.rust_type));
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             let ok_is_borrowed_handle = ok.is_some() && {
                 let ok_tokens = extract_result_ok_type(rust_ret);

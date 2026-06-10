@@ -1154,4 +1154,6 @@ ffier::library_definition!("ft", library_tag = 1,
     fn log_level_is_enabled,
     fn clone_fd,
     fn sum_gadget_values,
+    fn opaque_round_trip,
+    fn opaque_ptr_to_int,
 );
