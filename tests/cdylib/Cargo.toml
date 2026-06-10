@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 ffier-test-lib = { path = "../lib", default-features = false }
+ffier-test-foreign-lib = { path = "../foreign-lib" }
 ffier = { path = "../../ffier" }
 ffier-bridge = { path = "../../ffier-bridge" }
 ffier-bridge-macros = { path = "../../ffier-bridge-macros" }

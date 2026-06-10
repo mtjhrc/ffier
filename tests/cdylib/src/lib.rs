@@ -538,7 +538,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+                                                        // After error with by-value self, handle is consumed
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -597,21 +597,15 @@ mod tests {
     fn error_code_constants() {
         use ffier::FfiError;
         let codes = ffier_test_lib::TestError::codes();
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "NOT_FOUND" && val == 1)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2)
-        );
-        assert!(
-            codes
-                .iter()
-                .any(|&(name, val)| name == "INVALID_INPUT" && val == 3)
-        );
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "NOT_FOUND" && val == 1));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "CUSTOM_MESSAGE" && val == 2));
+        assert!(codes
+            .iter()
+            .any(|&(name, val)| name == "INVALID_INPUT" && val == 3));
     }
 
     #[test]
@@ -1538,6 +1532,108 @@ mod tests {
             assert_eq!(ft_weighable_weight_grams(handle), 77);
 
             ft_weighable_destroy(handle);
+        }
+    }
+
+    // ===================================================================
+    // Foreign ffier types — accept/return types from another ffier library
+    // ===================================================================
+
+    #[test]
+    fn foreign_param_borrow_ref() {
+        // Create a ForeignItem using the foreign lib's FfiType::into_c,
+        // then pass its handle to our library's bridge function.
+        unsafe {
+            let item = ffier_test_foreign_lib::ForeignItem::new("hello", 42);
+            let handle =
+                <ffier_test_foreign_lib::ForeignItem as ffier_test_foreign_lib::FfiType>::into_c(
+                    item,
+                );
+
+            let score = ft_read_foreign_item_score(handle);
+            assert_eq!(score, 42);
+
+            // Destroy the handle (we borrowed it, so the handle is still valid)
+            ffier::ffier_handle_consume::<ffier_test_foreign_lib::ForeignItem>(handle);
+        }
+    }
+
+    #[test]
+    fn foreign_param_mutate_widget() {
+        // Create a ForeignConfig and pass it to apply_foreign_config
+        // which sets the widget's name and count from the config.
+        unsafe {
+            let w = ft_widget_new();
+            let config = ffier_test_foreign_lib::ForeignConfig::new("configured", 99);
+            let config_handle =
+                <ffier_test_foreign_lib::ForeignConfig as ffier_test_foreign_lib::FfiType>::into_c(
+                    config,
+                );
+
+            ft_apply_foreign_config(w, config_handle);
+
+            // Verify the widget was mutated
+            let name = ft_widget_name(w);
+            assert_eq!(name.as_str_unchecked(), "configured");
+            assert_eq!(ft_widget_get_count(w), 99);
+
+            // Clean up
+            ffier::ffier_handle_consume::<ffier_test_foreign_lib::ForeignConfig>(config_handle);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn foreign_return_owned_handle() {
+        // create_foreign_item returns a ForeignItem handle
+        unsafe {
+            let label = ffier::FfierBytes::from_str("test-label");
+            let handle = ft_create_foreign_item(label, 77);
+
+            // Verify it's a valid ForeignItem handle by reading through the foreign lib
+            let item = ffier::ffier_handle_borrow::<ffier_test_foreign_lib::ForeignItem>(handle);
+            assert_eq!(item.label, "test-label");
+            assert_eq!(item.score, 77);
+
+            // Destroy via foreign lib's consume
+            ffier::ffier_handle_consume::<ffier_test_foreign_lib::ForeignItem>(handle);
+        }
+    }
+
+    #[test]
+    fn foreign_return_result_ok() {
+        // create_foreign_config_checked returns Result<ForeignConfig, TestError>
+        // in GLib-style: handle on success, NULL + err_out on failure.
+        unsafe {
+            let name = ffier::FfierBytes::from_str("my-config");
+            let mut err_out: *mut core::ffi::c_void = ptr::null_mut();
+            let handle = ft_create_foreign_config_checked(name, 42, &mut err_out);
+
+            assert!(!handle.is_null(), "should succeed with non-empty name");
+            assert!(err_out.is_null(), "err_out should be null on success");
+
+            let config =
+                ffier::ffier_handle_borrow::<ffier_test_foreign_lib::ForeignConfig>(handle);
+            assert_eq!(config.name, "my-config");
+            assert_eq!(config.value, 42);
+
+            ffier::ffier_handle_consume::<ffier_test_foreign_lib::ForeignConfig>(handle);
+        }
+    }
+
+    #[test]
+    fn foreign_return_result_err() {
+        // create_foreign_config_checked with empty name should fail.
+        unsafe {
+            let name = ffier::FfierBytes::from_str("");
+            let mut err_out: *mut core::ffi::c_void = ptr::null_mut();
+            let handle = ft_create_foreign_config_checked(name, 0, &mut err_out);
+
+            assert!(handle.is_null(), "should fail with empty name");
+            assert!(!err_out.is_null(), "err_out should be set on failure");
+
+            // Clean up the error handle
+            ft_error_destroy(err_out);
         }
     }
 }

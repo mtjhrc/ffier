@@ -1,0 +1,9 @@
+[package]
+name = "ffier-test-foreign-lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ffier = { path = "../../ffier" }
+ffier-builtins = { path = "../../ffier-builtins" }
+thiserror = "2"

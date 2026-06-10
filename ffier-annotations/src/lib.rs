@@ -28,6 +28,9 @@ static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 struct TypePair {
     bridge: proc_macro2::TokenStream,
     rust: proc_macro2::TokenStream,
+    /// When set, the type comes from a foreign ffier library and this
+    /// is the crate path whose `FfiType`/`FfiHandle` traits should be used.
+    foreign_crate: Option<proc_macro2::TokenStream>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -298,6 +301,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             continue;
         }
 
+        // Parse method-level #[ffier(...)] for foreign_return
+        let method_ffier = parse_ffier_method_attrs(&method.attrs).ok();
+        let foreign_ret = method_ffier.as_ref().and_then(|a| a.foreign_return.as_ref());
         if let Some(mut m) = parse_method_sig(
             &method.sig,
             &method.attrs,
@@ -305,6 +311,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
             Some(self_ty),
             false,
             false,
+            foreign_ret,
         ) {
             m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);
             methods.push(m);
@@ -674,7 +681,9 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Parse the function signature as a static method (no self)
-    let mut method = match parse_method_sig(&input.sig, &input.attrs, &mut ctx, None, false, false)
+    let method_ffier = parse_ffier_method_attrs(&input.attrs).ok();
+    let foreign_ret = method_ffier.as_ref().and_then(|a| a.foreign_return.as_ref());
+    let mut method = match parse_method_sig(&input.sig, &input.attrs, &mut ctx, None, false, false, foreign_ret)
     {
         Some(m) => m,
         None => {
@@ -697,8 +706,20 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
     let fn_path = quote! { $crate::#fn_name };
     let doc_lines = extract_doc_comments(&input.attrs);
 
+    // Strip #[ffier(...)] attributes from the function and its params
+    let clean_fn = {
+        let mut f = input.clone();
+        f.attrs.retain(|a| !a.path().is_ident("ffier"));
+        for arg in &mut f.sig.inputs {
+            if let FnArg::Typed(pat_ty) = arg {
+                pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
+            }
+        }
+        f
+    };
+
     let output = quote! {
-        #input
+        #clean_fn
 
         #[doc(hidden)]
         pub mod #helper_mod_name {
@@ -910,13 +931,21 @@ impl AliasContext {
 
     /// Emit `pub type _TypeN = super::Erased;` items for the helper module
     /// emitted at the definition site.
+    ///
+    /// Types that start with an external crate path (multi-segment, not
+    /// starting with `crate` or `self` or `super`) are emitted without
+    /// `super::` since they're already absolute paths.
     fn local_type_aliases(&self) -> Vec<proc_macro2::TokenStream> {
         self.types
             .iter()
             .zip(self.aliases.iter())
             .map(|(ty, alias)| {
                 let erased = erase_lifetimes(ty);
-                quote! { pub type #alias = super::#erased; }
+                if is_external_crate_path(&erased) {
+                    quote! { pub type #alias = #erased; }
+                } else {
+                    quote! { pub type #alias = super::#erased; }
+                }
             })
             .collect()
     }
@@ -926,6 +955,18 @@ fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
+}
+
+/// Check if a type starts with an external crate path (e.g. `other_crate::Foo`).
+/// Such types should NOT get `super::` prepended in helper module aliases.
+fn is_external_crate_path(ty: &Type) -> bool {
+    let Type::Path(tp) = ty else { return false };
+    if tp.path.segments.len() <= 1 {
+        return false;
+    }
+    let first = tp.path.segments.first().unwrap().ident.to_string();
+    // `crate::`, `self::`, `super::` are local paths, not external
+    !matches!(first.as_str(), "crate" | "self" | "super")
 }
 
 // ---------------------------------------------------------------------------
@@ -1223,8 +1264,18 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
 
 /// Parse `#[ffier(dispatch = concrete|vtable)]` from a parameter's attributes.
 /// Only `dispatch` is recognized; unknown keys are rejected.
-fn parse_ffier_param_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
-    let mut result = None;
+/// Recognized `#[ffier(...)]` attributes on a parameter.
+struct FfierParamAttrs {
+    dispatch: Option<String>,
+    /// Foreign ffier library crate path (e.g. `other_lib`).
+    foreign_crate: Option<syn::Path>,
+}
+
+fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
+    let mut result = FfierParamAttrs {
+        dispatch: None,
+        foreign_crate: None,
+    };
     for attr in attrs {
         if !attr.path().is_ident("ffier") {
             continue;
@@ -1233,7 +1284,11 @@ fn parse_ffier_param_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
             if meta.path.is_ident("dispatch") {
                 let value = meta.value()?;
                 let mode: syn::Ident = value.parse()?;
-                result = Some(mode.to_string());
+                result.dispatch = Some(mode.to_string());
+            } else if meta.path.is_ident("foreign") {
+                let value = meta.value()?;
+                let path: syn::Path = value.parse()?;
+                result.foreign_crate = Some(path);
             } else {
                 return Err(meta.error(format!(
                     "unknown #[ffier] key `{}` on parameter",
@@ -1246,12 +1301,15 @@ fn parse_ffier_param_dispatch(attrs: &[syn::Attribute]) -> Option<String> {
     result
 }
 
+
 /// All recognized keys from `#[ffier(...)]` on a trait/impl method.
 struct FfierMethodAttrs {
     index: Option<usize>,
     raw_handle: bool,
     dispatch: Option<String>,
     skip: bool,
+    /// Foreign ffier library crate path for the return type.
+    foreign_return: Option<syn::Path>,
 }
 
 /// Parse all `#[ffier(...)]` attributes on a method in one pass.
@@ -1262,6 +1320,7 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
         raw_handle: false,
         dispatch: None,
         skip: false,
+        foreign_return: None,
     };
 
     for attr in attrs {
@@ -1281,6 +1340,10 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
                 result.dispatch = Some(mode.to_string());
             } else if meta.path.is_ident("skip") {
                 result.skip = true;
+            } else if meta.path.is_ident("foreign_return") {
+                let value = meta.value()?;
+                let path: syn::Path = value.parse()?;
+                result.foreign_return = Some(path);
             } else {
                 return Err(meta.error(format!(
                     "unknown #[ffier] key `{}`",
@@ -1423,6 +1486,7 @@ fn extract_vtable_methods(
             None,
             has_default,
             mattrs.raw_handle,
+            mattrs.foreign_return.as_ref(),
         ) {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
@@ -1483,6 +1547,7 @@ fn parse_method_sig(
     self_ty: Option<&Type>,
     has_default: bool,
     raw_handle: bool,
+    foreign_return: Option<&syn::Path>,
 ) -> Option<MethodInfo> {
     // --- Determine receiver ---
     let receiver = if raw_handle {
@@ -1532,9 +1597,13 @@ fn parse_method_sig(
                 other => (other, "value"),
             };
 
+            // Parse #[ffier(...)] attrs on the parameter
+            let param_attrs = parse_ffier_param_attrs(&pt.attrs);
+            let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
+
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
                 let dispatch =
-                    parse_ffier_param_dispatch(&pt.attrs).unwrap_or_else(|| "auto".to_string());
+                    param_attrs.dispatch.unwrap_or_else(|| "auto".to_string());
                 return Some(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::ImplTrait {
@@ -1546,6 +1615,7 @@ fn parse_method_sig(
                     types: Some(TypePair {
                         bridge: quote! { *mut core::ffi::c_void },
                         rust: quote! { *mut core::ffi::c_void },
+                        foreign_crate: None,
                     }),
                 });
             }
@@ -1600,6 +1670,7 @@ fn parse_method_sig(
                     types: Some(TypePair {
                         bridge: elem_bridge,
                         rust: elem_rust,
+                        foreign_crate: foreign_crate_tokens.clone(),
                     }),
                 });
             }
@@ -1611,6 +1682,7 @@ fn parse_method_sig(
                 types: Some(TypePair {
                     bridge,
                     rust: quote! { #param_ty_rust },
+                    foreign_crate: foreign_crate_tokens,
                 }),
             })
         })
@@ -1618,6 +1690,7 @@ fn parse_method_sig(
 
     // --- Parse return type ---
     let self_ty_static = self_ty.map(erase_lifetimes);
+    let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
 
     // Builder detection: method returns Self (only for exportable, requires a receiver)
     let has_receiver = receiver != Receiver::None;
@@ -1670,6 +1743,7 @@ fn parse_method_sig(
                     types: TypePair {
                         bridge: elem_bridge,
                         rust: quote! { #inner_ty_rust },
+                        foreign_crate: foreign_return_tokens.clone(),
                     },
                     direct,
                 }
@@ -1689,6 +1763,7 @@ fn parse_method_sig(
                     Some(TypePair {
                         bridge: quote! { #erased },
                         rust: quote! { #rust },
+                        foreign_crate: foreign_return_tokens.clone(),
                     })
                 } else {
                     let bridge = ctx.bridge_tokens(&ok_bridge);
@@ -1696,6 +1771,7 @@ fn parse_method_sig(
                     Some(TypePair {
                         bridge,
                         rust: quote! { #rust },
+                        foreign_crate: foreign_return_tokens.clone(),
                     })
                 };
                 ReturnKind::Result {
@@ -1707,12 +1783,14 @@ fn parse_method_sig(
                 ReturnKind::Value(TypePair {
                     bridge: quote! { #erased },
                     rust: quote! { #ty_rust },
+                    foreign_crate: foreign_return_tokens.clone(),
                 })
             } else {
                 let bridge = ctx.bridge_tokens(&ty_bridge);
                 ReturnKind::Value(TypePair {
                     bridge,
                     rust: quote! { #ty_rust },
+                    foreign_crate: foreign_return_tokens,
                 })
             }
         }
@@ -1799,7 +1877,8 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
             Some(tp) => {
                 let bt = &tp.bridge;
                 let rt = &tp.rust;
-                quote! { bridge_type = (#bt), rust_type = (#rt), }
+                let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+                quote! { bridge_type = (#bt), rust_type = (#rt), #fc }
             }
             None => quote! {},
         };
@@ -1811,7 +1890,8 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         ReturnKind::Value(tp) => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
-            quote! { value(bridge_type = (#bt), rust_type = (#rt),) }
+            let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+            quote! { value(bridge_type = (#bt), rust_type = (#rt), #fc) }
         }
         ReturnKind::Result { ok, err_ident } => {
             let ok_tokens = match ok {
@@ -1819,7 +1899,8 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
                 Some(tp) => {
                     let bt = &tp.bridge;
                     let rt = &tp.rust;
-                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt),) }
+                    let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt), #fc) }
                 }
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
@@ -1827,10 +1908,11 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         ReturnKind::HandleSlice { types: tp, direct } => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
+            let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
             if *direct {
-                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
+                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc) }
             } else {
-                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt),) }
+                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc) }
             }
         }
     };
@@ -2447,6 +2529,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 None,
                 false,
                 mattrs.raw_handle,
+                mattrs.foreign_return.as_ref(),
             ) {
                 ms.push(m);
             }

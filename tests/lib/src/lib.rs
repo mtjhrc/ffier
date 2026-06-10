@@ -1040,6 +1040,49 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 }
 
 // ---------------------------------------------------------------------------
+// Foreign type tests — accept/return types from ffier-test-foreign-lib
+// ---------------------------------------------------------------------------
+
+/// Apply a foreign config: extract the name and value, set them on the widget.
+#[ffier::exportable]
+pub fn apply_foreign_config(
+    widget: &mut Widget,
+    #[ffier(foreign = ffier_test_foreign_lib)] config: &ffier_test_foreign_lib::ForeignConfig,
+) {
+    widget.name = config.name.clone();
+    widget.count = config.value;
+}
+
+/// Read a foreign item's score.
+#[ffier::exportable]
+pub fn read_foreign_item_score(
+    #[ffier(foreign = ffier_test_foreign_lib)] item: &ffier_test_foreign_lib::ForeignItem,
+) -> i32 {
+    item.score
+}
+
+/// Create a foreign item from our library's data (tests foreign return type).
+#[ffier::exportable]
+#[ffier(foreign_return = ffier_test_foreign_lib)]
+pub fn create_foreign_item(label: &str, score: i32) -> ffier_test_foreign_lib::ForeignItem {
+    ffier_test_foreign_lib::ForeignItem::new(label, score)
+}
+
+/// Create a foreign config, returning Result (tests foreign return in GLib-style Result).
+#[ffier::exportable]
+#[ffier(foreign_return = ffier_test_foreign_lib)]
+pub fn create_foreign_config_checked(
+    name: &str,
+    value: i32,
+) -> Result<ffier_test_foreign_lib::ForeignConfig, TestError> {
+    if name.is_empty() {
+        Err(TestError::NotFound("empty name".into()))
+    } else {
+        Ok(ffier_test_foreign_lib::ForeignConfig::new(name, value))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Error — deliberately named `Error` to catch collisions with std::error::Error
 // ---------------------------------------------------------------------------
 
@@ -1092,4 +1135,8 @@ ffier::library_definition!("ft", library_tag = 1,
     fn log_level_is_enabled,
     fn clone_fd,
     fn sum_gadget_values,
+    fn apply_foreign_config,
+    fn read_foreign_item_score,
+    fn create_foreign_item,
+    fn create_foreign_config_checked,
 );
