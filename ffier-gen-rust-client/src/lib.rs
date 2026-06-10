@@ -476,16 +476,18 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
             let getter_name = format!("field_{i}");
             // The field type in the schema is the owned type (e.g. Box<str>),
             // but the getter borrows — return &str for Box<str>, etc.
-            let borrow_ty = borrowed_type_for(&field.type_ref);
+            let borrow_ref = field.type_ref.as_borrowed();
+            let borrow_ty = borrow_ref.to_rust_type();
+            let borrow_ty_static = borrow_ref.to_rust_type_static();
             writeln!(out, "    pub fn {getter_name}(&self) -> {borrow_ty} {{").unwrap();
             writeln!(
                 out,
-                "        let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();"
+                "        let mut __buf = std::mem::MaybeUninit::<<{borrow_ty_static} as FfiType>::CRepr>::uninit();"
             )
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<ffier::FfierBytes>()) }};"
+                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{borrow_ty_static} as FfiType>::CRepr>()) }};"
             )
             .unwrap();
             writeln!(
@@ -683,20 +685,6 @@ fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a
     lib.type_entry(&tr.type_name)
         .filter(|e| matches!(e.kind, TypeKind::Handle { .. }))
         .map(|_| tr.type_name.as_str())
-}
-
-/// Map an owned field type to its borrowed equivalent for error payload getters.
-/// The getter borrows from the handle, so it can't return owned types.
-fn borrowed_type_for(type_ref: &ffier_schema::TypeRef) -> String {
-    if type_ref.owned {
-        // Owned type (e.g. Box<str>) → shared reference (e.g. &str)
-        let mut borrowed = type_ref.clone();
-        borrowed.owned = false;
-        borrowed.ref_kind = ffier_schema::RefKind::Shared;
-        borrowed.to_rust_type()
-    } else {
-        type_ref.to_rust_type()
-    }
 }
 
 fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {

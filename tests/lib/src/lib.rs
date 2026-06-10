@@ -17,6 +17,9 @@ pub enum TestError {
     #[error("invalid input")]
     #[ffier(code = 3)]
     InvalidInput(),
+    #[error("numeric error: {0}")]
+    #[ffier(code = 4)]
+    NumericError(i32),
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +154,11 @@ impl Widget {
     /// Always fails with an error (value variant).
     pub fn fail_with_value(&self) -> Result<i32, TestError> {
         Err(TestError::InvalidInput())
+    }
+
+    /// Always fails with a numeric error carrying an i32 payload.
+    pub fn fail_with_number(&self, n: i32) -> Result<(), TestError> {
+        Err(TestError::NumericError(n))
     }
 
     /// Set tags from a string slice.
