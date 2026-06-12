@@ -138,6 +138,8 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_ERROR_TEST_NOT_FOUND ((uint64_t)16777217 << 32 | 1)
 #define FT_ERROR_TEST_CUSTOM_MESSAGE ((uint64_t)16777217 << 32 | 2)
 #define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
+#define FT_ERROR_TEST_NUMERIC_ERROR ((uint64_t)16777217 << 32 | 4)
+#define FT_ERROR_TEST_FATAL ((uint64_t)16777217 << 32 | 5)
 
 /* Error ------------------------------------------------------------- */
 
@@ -193,6 +195,8 @@ FtResult ft_widget_describe(FtWidget handle, int32_t code, FtStr* result, FtErro
 FtResult ft_widget_fail_always(FtWidget handle, FtError* err_out);
 /** Always fails with an error (value variant). */
 FtResult ft_widget_fail_with_value(FtWidget handle, int32_t* result, FtError* err_out);
+/** Always fails with a numeric error carrying an i32 payload. */
+FtResult ft_widget_fail_with_number(FtWidget handle, int32_t n, FtError* err_out);
 /** Set tags from a string slice. */
 void ft_widget_set_tags(FtWidget handle, const FtStr* tags, size_t tags_len);
 /** Get joined tags. */
@@ -417,8 +421,14 @@ typedef struct {
 /* Fruit (dispatch) -------------------------------------------------- */
 
 int32_t ft_fruit_value(FtFruit handle);
+/**
+ * Default label — returns "fruit". C can override by providing the
+ * vtable field; if left NULL, this default runs.
+ */
 FtStr ft_fruit_label(FtFruit handle);
+/** Fallible count — returns error if input is negative. */
 FtResult ft_fruit_try_count(FtFruit handle, int32_t input, int32_t* result, FtError* err_out);
+/** Count how many of the given tags match the fruit's label. */
 int32_t ft_fruit_count_tags(FtFruit handle, const FtStr* tags, size_t tags_len);
 void ft_fruit_destroy(FtFruit handle);
 
@@ -514,6 +524,13 @@ bool ft_log_level_is_enabled(uint32_t level);
 FtResult ft_clone_fd(int fd, int* result, FtError* err_out);
 /** Count the number of gadgets in a slice and return the sum of their values. */
 int32_t ft_sum_gadget_values(const FtGadget* gadgets, size_t gadgets_len);
+/**
+ * Accept an opaque pointer and return it unchanged (round-trip test).
+ * Uses bare `c_void` (via `use`) to verify the macro emits fully qualified paths.
+ */
+void* ft_opaque_round_trip(void* ptr);
+/** Accept an opaque const pointer and return its address as an integer. */
+size_t ft_opaque_ptr_to_int(const void* ptr);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

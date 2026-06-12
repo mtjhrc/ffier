@@ -4,7 +4,7 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
+#[derive(Debug, thiserror::Error, ffier::FfiError)]
 #[non_exhaustive]
 pub enum TestError {
     #[error("not found: {0}")]
@@ -20,6 +20,11 @@ pub enum TestError {
     #[error("numeric error: {0}")]
     #[ffier(code = 4)]
     NumericError(i32),
+    /// An unrecoverable error carrying an arbitrary `anyhow` error chain.
+    /// The inner value is Rust-only and not marshalled across FFI (`opaque`).
+    #[error(transparent)]
+    #[ffier(code = 5, opaque)]
+    Fatal(anyhow::Error),
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,6 +1124,35 @@ pub enum Error {
     #[error("generic failure")]
     #[ffier(code = 1)]
     Failed(),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestError;
+    use anyhow::anyhow;
+    use ffier::FfiError as _;
+
+    #[test]
+    fn fatal_variant_display_forwards_to_inner_anyhow() {
+        let err = TestError::Fatal(anyhow!("disk is full"));
+        assert_eq!(err.to_string(), "disk is full");
+    }
+
+    #[test]
+    fn fatal_variant_ffi_code() {
+        let err = TestError::Fatal(anyhow!("boom"));
+        assert_eq!(err.code(), 5);
+    }
+
+    #[test]
+    fn fatal_variant_anyhow_chain_is_preserved() {
+        use anyhow::Context as _;
+        let root: anyhow::Result<()> = Err(anyhow!("connection refused"));
+        let chained = root.context("failed to open socket");
+        let err = TestError::Fatal(chained.unwrap_err());
+        // Display shows only the outermost context message
+        assert_eq!(err.to_string(), "failed to open socket");
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    MethodContext, ParamType, Receiver, Return, TraitImpl, TypeKind,
+    ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -316,15 +316,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         let defaults: Vec<_> = tr
             .methods
             .iter()
-            .filter(|m| {
-                matches!(
-                    &m.context,
-                    MethodContext::Trait {
-                        has_default: true,
-                        ..
-                    }
-                )
-            })
+            .filter(|m| m.trait_definition.as_ref().is_some_and(|td| td.has_default))
             .collect();
         if !defaults.is_empty() {
             trait_defaults.insert(tr.name.clone(), defaults);
@@ -664,10 +656,7 @@ fn find_error_message_fn(lib: &Library) -> String {
         .methods
         .iter()
         .find(|m| m.name == "message")
-        .and_then(|m| match &m.context {
-            MethodContext::Trait { ffi_name, .. } => Some(ffi_name.clone()),
-            _ => None,
-        })
+        .map(|m| m.ffi_name.clone())
         .expect("error trait has no 'message' method")
 }
 
@@ -740,10 +729,7 @@ fn emit_exported_type(
         String::new(),
     )];
     for m in &ty.methods {
-        let MethodContext::Exportable { ffi_name } = &m.context else {
-            continue;
-        };
-        fns.push(extern_fn_from_method(ffi_name, m, lib));
+        fns.push(extern_fn_from_method(&m.ffi_name, m, lib));
     }
     emit_extern_fns(out, &fns, weak, symbols);
 
@@ -867,10 +853,7 @@ fn emit_exported_type(
     // Methods
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        let MethodContext::Exportable { ffi_name } = &m.context else {
-            continue;
-        };
-        emit_method_wrapper(out, m, ffi_name, ty.is_builder_type, has_lifetimes, lib);
+        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -1234,10 +1217,7 @@ fn emit_error_trait_externs(
 ) {
     let mut fns = Vec::new();
     for m in &tr.methods {
-        let MethodContext::Trait { ffi_name, .. } = &m.context else {
-            continue;
-        };
-        fns.push(extern_fn_from_dispatch(ffi_name, m));
+        fns.push(extern_fn_from_dispatch(&m.ffi_name, m));
     }
     // Destroy
     fns.push(extern_fn(
@@ -1263,10 +1243,7 @@ fn find_error_dispatch_fns(lib: &Library) -> (&str, &str) {
         .methods
         .iter()
         .find(|m| m.name == "result")
-        .and_then(|m| match &m.context {
-            MethodContext::Trait { ffi_name, .. } => Some(ffi_name.as_str()),
-            _ => None,
-        })
+        .map(|m| m.ffi_name.as_str())
         .expect("error trait has no 'result' method");
     (result_fn, &error_trait.destroy_ffi_name)
 }
@@ -1289,19 +1266,16 @@ fn emit_implementable_trait(
     // Trait definition
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
-        let MethodContext::Trait {
-            has_default, index, ..
-        } = &m.context
-        else {
+        let Some(td) = &m.trait_definition else {
             continue;
         };
 
         let method_sig = build_trait_method_sig(m, lib);
 
-        if *has_default {
+        if td.has_default {
             // Default impl via self-dispatch
             writeln!(out, "    {method_sig} where Self: Sized {{").unwrap();
-            emit_default_dispatch_body(out, m, lib, type_tag, vtable_name, *index);
+            emit_default_dispatch_body(out, m, lib, type_tag, vtable_name, td.index);
             writeln!(out, "    }}").unwrap();
         } else {
             writeln!(out, "    {method_sig};").unwrap();
@@ -1366,18 +1340,11 @@ fn emit_implementable_trait(
         .methods
         .iter()
         .filter_map(|m| {
-            let MethodContext::Trait {
-                ffi_name,
-                has_default,
-                ..
-            } = &m.context
-            else {
-                return None;
-            };
-            if !*has_default {
+            let td = m.trait_definition.as_ref()?;
+            if !td.has_default {
                 return None;
             }
-            Some(extern_fn_from_dispatch(ffi_name, m))
+            Some(extern_fn_from_dispatch(&m.ffi_name, m))
         })
         .collect();
     if !default_fns.is_empty() {
@@ -1425,13 +1392,7 @@ fn emit_default_dispatch_body(
     vtable_name: &str,
     index: usize,
 ) {
-    let MethodContext::Trait {
-        ffi_name: dispatch_fn,
-        ..
-    } = &m.context
-    else {
-        panic!("emit_default_dispatch_body called on non-trait method");
-    };
+    let dispatch_fn = &m.ffi_name;
 
     writeln!(
         out,
@@ -1494,8 +1455,8 @@ fn emit_vtable_struct(
 
     let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
     for m in &tr.methods {
-        if let MethodContext::Trait { index, .. } = &m.context {
-            method_by_index.insert(*index, m);
+        if let Some(td) = &m.trait_definition {
+            method_by_index.insert(td.index, m);
         }
     }
 
@@ -1543,8 +1504,8 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
 
     let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
     for m in &tr.methods {
-        if let MethodContext::Trait { index, .. } = &m.context {
-            method_by_index.insert(*index, m);
+        if let Some(td) = &m.trait_definition {
+            method_by_index.insert(td.index, m);
         }
     }
 
@@ -1729,12 +1690,7 @@ fn emit_trait_impl(
     let fns: Vec<ExternFn> = ti
         .methods
         .iter()
-        .filter_map(|m| {
-            let MethodContext::Trait { ffi_name, .. } = &m.context else {
-                return None;
-            };
-            Some(extern_fn_from_dispatch(ffi_name, m))
-        })
+        .map(|m| extern_fn_from_dispatch(&m.ffi_name, m))
         .collect();
     emit_extern_fns(out, &fns, weak, symbols);
 
@@ -1785,9 +1741,6 @@ fn emit_trait_impl(
     let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
 
     for m in &ti.methods {
-        let MethodContext::Trait { ffi_name, .. } = &m.context else {
-            continue;
-        };
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
@@ -1796,7 +1749,7 @@ fn emit_trait_impl(
         ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
 
-        emit_ffi_call_return(out, ffi_name, &args_str, &m.ret, "        ", lib);
+        emit_ffi_call_return(out, &m.ffi_name, &args_str, &m.ret, "        ", lib);
         writeln!(out, "    }}").unwrap();
     }
 
@@ -1806,14 +1759,6 @@ fn emit_trait_impl(
             if impl_method_names.contains(dm.name.as_str()) {
                 continue;
             }
-
-            let MethodContext::Trait {
-                ffi_name: dispatch_fn,
-                ..
-            } = &dm.context
-            else {
-                continue;
-            };
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
@@ -1822,7 +1767,7 @@ fn emit_trait_impl(
             ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
 
-            emit_ffi_call_return(out, dispatch_fn, &args_str, &dm.ret, "        ", lib);
+            emit_ffi_call_return(out, &dm.ffi_name, &args_str, &dm.ret, "        ", lib);
             writeln!(out, "    }}").unwrap();
         }
     }

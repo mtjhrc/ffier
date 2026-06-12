@@ -12,8 +12,8 @@
 //! - Utility functions (result_name)
 
 use ffier_schema::{
-    EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    MethodContext, Param, ParamType, Receiver, Return, TraitImpl,
+    EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method, Param,
+    ParamType, Receiver, Return, TraitImpl,
 };
 
 /// Generate a C header string from a library schema.
@@ -180,9 +180,7 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
         out.push_str("#if defined(__GNUC__)\n");
         out.push_str(&format!("#define {bytes_macro}(arr) ({{ \\\n"));
         out.push_str("    _Static_assert( \\\n");
-        out.push_str(
-            "        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\\n",
-        );
+        out.push_str("        !__builtin_types_compatible_p(typeof(arr), typeof(&(arr)[0])), \\\n");
         out.push_str(&format!(
             "        \"{bytes_macro}() requires an array, not a pointer\"); \\\n"
         ));
@@ -365,8 +363,8 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     let mut method_by_index: std::collections::HashMap<usize, &Method> =
         std::collections::HashMap::new();
     for m in &tr.methods {
-        if let MethodContext::Trait { index, .. } = &m.context {
-            method_by_index.insert(*index, m);
+        if let Some(td) = &m.trait_definition {
+            method_by_index.insert(td.index, m);
         }
     }
 
@@ -404,11 +402,8 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library) {
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
-        let MethodContext::Exportable { ffi_name } = &m.context else {
-            continue;
-        };
         emit_doc_comment(out, &m.doc);
-        let decl = format_c_declaration(ffi_name, c_name, m, ty.is_builder_type, lib);
+        let decl = format_c_declaration(&m.ffi_name, c_name, m, ty.is_builder_type, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -428,10 +423,7 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        let MethodContext::Trait { ffi_name, .. } = &m.context else {
-            continue;
-        };
-        let decl = format_dispatch_declaration(ffi_name, &struct_c_name, m, lib);
+        let decl = format_dispatch_declaration(&m.ffi_name, &struct_c_name, m, lib);
         out.push_str(&decl);
         out.push('\n');
     }
@@ -448,11 +440,8 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Librar
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        let MethodContext::Trait { ffi_name, .. } = &m.context else {
-            continue;
-        };
         emit_doc_comment(out, &m.doc);
-        let decl = format_dispatch_declaration(ffi_name, handle_c_name, m, lib);
+        let decl = format_dispatch_declaration(&m.ffi_name, handle_c_name, m, lib);
         out.push_str(&decl);
         out.push('\n');
     }
