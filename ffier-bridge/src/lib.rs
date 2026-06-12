@@ -1420,10 +1420,7 @@ fn wrap_return(
                 }
             }
         }
-        MetaReturn::HandleSlice {
-            types: tp,
-            direct,
-        } => {
+        MetaReturn::HandleSlice { types: tp, direct } => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
             // &[&T] or &[T] → build a contiguous Box<[FfierBorrowedHandle]>
@@ -2305,11 +2302,7 @@ impl CTypeResolver {
 
             // Other raw pointers — stringify as last resort.
             syn::Type::Ptr(ptr) => {
-                let name = ptr
-                    .elem
-                    .to_token_stream()
-                    .to_string()
-                    .replace(' ', "");
+                let name = ptr.elem.to_token_stream().to_string().replace(' ', "");
                 ffier_schema::TypeRef {
                     type_name: name,
                     ref_kind: ffier_schema::RefKind::None,
@@ -2938,8 +2931,6 @@ fn convert_trait_impl(
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
 ) -> ffier_schema::TraitImpl {
-    let struct_snake = camel_to_snake(&meta.struct_name.to_string());
-    let ffi_prefix = format!("{struct_snake}_");
     ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
         struct_name: meta.struct_name.to_string(),
@@ -2949,34 +2940,33 @@ fn convert_trait_impl(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types))
+            .map(|m| convert_method(m, r, None, handle_types))
             .collect(),
     }
 }
 
 /// Convert a method to its schema representation.
 /// `parent_ffi_prefix` is the `"{type_snake}_"` prefix for the parent type/trait
-/// (e.g. `"fruit_"` for an implementable trait, `"apple_"` for a trait impl).
-/// Only needed for trait methods; exportable methods already carry their own ffi_name.
+/// (e.g. `"fruit_"` for an implementable trait).
+/// Only needed for trait definition methods; concrete methods already carry their own ffi_name.
 fn convert_method(
     meta: &MetaMethod,
     r: &CTypeResolver,
     parent_ffi_prefix: Option<&str>,
     handle_types: &HashSet<String>,
 ) -> ffier_schema::Method {
-    let context = match &meta.context {
-        MetaMethodContext::Exportable { ffi_name, .. } => ffier_schema::MethodContext::Exportable {
-            ffi_name: r.ffi_fn_name(ffi_name),
-        },
+    let (ffi_name, trait_definition) = match &meta.context {
+        MetaMethodContext::Exportable { ffi_name, .. } => (r.ffi_fn_name(ffi_name), None),
         MetaMethodContext::Trait {
             has_default, index, ..
         } => {
             let prefix = parent_ffi_prefix.expect("trait method requires parent_ffi_prefix");
-            ffier_schema::MethodContext::Trait {
-                ffi_name: r.ffi_fn_name(&format!("{prefix}{}", meta.name)),
+            let ffi_name = r.ffi_fn_name(&format!("{prefix}{}", meta.name));
+            let td = ffier_schema::TraitMethodDefinition {
                 index: *index,
                 has_default: *has_default,
-            }
+            };
+            (ffi_name, Some(td))
         }
     };
 
@@ -2999,7 +2989,8 @@ fn convert_method(
             .collect(),
         params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
         ret,
-        context,
+        ffi_name,
+        trait_definition,
     }
 }
 
@@ -3109,9 +3100,7 @@ fn convert_return(
             ffier_schema::Return::Value(builder_self_type_ref())
         }
         MetaReturn::Void => ffier_schema::Return::Void,
-        MetaReturn::Value(tp) => {
-            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type))
-        }
+        MetaReturn::Value(tp) => ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)),
         MetaReturn::HandleSlice { types, .. } => {
             // &[&T] or &[T] → returns FfierObjectArray with element type info.
             ffier_schema::Return::ObjectArray {
@@ -3137,9 +3126,7 @@ fn convert_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
-            let ok_ref = ok
-                .as_ref()
-                .map(|tp| r.type_ref_from_tokens(&tp.rust_type));
+            let ok_ref = ok.as_ref().map(|tp| r.type_ref_from_tokens(&tp.rust_type));
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             let ok_is_borrowed_handle = ok.is_some() && {
                 let ok_tokens = extract_result_ok_type(rust_ret);

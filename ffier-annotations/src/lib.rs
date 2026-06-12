@@ -303,7 +303,9 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
         // Parse method-level #[ffier(...)] for foreign_return
         let method_ffier = parse_ffier_method_attrs(&method.attrs).ok();
-        let foreign_ret = method_ffier.as_ref().and_then(|a| a.foreign_return.as_ref());
+        let foreign_ret = method_ffier
+            .as_ref()
+            .and_then(|a| a.foreign_return.as_ref());
         if let Some(mut m) = parse_method_sig(
             &method.sig,
             &method.attrs,
@@ -328,7 +330,7 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{struct_ident}");
 
-    let method_meta_tokens = emit_method_meta(&methods);
+    let method_meta_tokens = emit_method_meta(&methods, MethodMetaKind::Impl);
 
     // Lifetime idents (without the tick) for metadata
     let lifetime_idents: Vec<_> = input
@@ -682,9 +684,18 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
 
     // Parse the function signature as a static method (no self)
     let method_ffier = parse_ffier_method_attrs(&input.attrs).ok();
-    let foreign_ret = method_ffier.as_ref().and_then(|a| a.foreign_return.as_ref());
-    let mut method = match parse_method_sig(&input.sig, &input.attrs, &mut ctx, None, false, false, foreign_ret)
-    {
+    let foreign_ret = method_ffier
+        .as_ref()
+        .and_then(|a| a.foreign_return.as_ref());
+    let mut method = match parse_method_sig(
+        &input.sig,
+        &input.attrs,
+        &mut ctx,
+        None,
+        false,
+        false,
+        foreign_ret,
+    ) {
         Some(m) => m,
         None => {
             return syn::Error::new_spanned(
@@ -702,7 +713,7 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_fn_{fn_name_str}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{fn_name}");
 
-    let method_meta_tokens = emit_method_meta(&[method]);
+    let method_meta_tokens = emit_method_meta(&[method], MethodMetaKind::Impl);
     let fn_path = quote! { $crate::#fn_name };
     let doc_lines = extract_doc_comments(&input.attrs);
 
@@ -1090,56 +1101,69 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         // Collect field types for data-carrying variants.
         // Each type is emitted as a parenthesized token group `(Type)` so the
         // meta crate can parse it back as a TokenStream without stringifying.
-        let field_types: Vec<_> = match &variant.fields {
-            syn::Fields::Unit => vec![],
-            syn::Fields::Unnamed(fields) => fields
-                .unnamed
-                .iter()
-                .map(|f| {
-                    let ty = &f.ty;
-                    quote! { (#ty) }
-                })
-                .collect(),
-            syn::Fields::Named(_) => {
-                return syn::Error::new_spanned(
-                    variant,
-                    "FfiError: named fields in variants are not yet supported; \
-                     use tuple variants like Variant(Box<str>)",
-                )
-                .to_compile_error()
-                .into();
+        // Opaque variants have no marshallable fields: exclude them from metadata.
+        let field_types: Vec<_> = if attrs.opaque {
+            vec![]
+        } else {
+            match &variant.fields {
+                syn::Fields::Unit => vec![],
+                syn::Fields::Unnamed(fields) => fields
+                    .unnamed
+                    .iter()
+                    .map(|f| {
+                        let ty = &f.ty;
+                        quote! { (#ty) }
+                    })
+                    .collect(),
+                syn::Fields::Named(_) => {
+                    return syn::Error::new_spanned(
+                        variant,
+                        "FfiError: named fields in variants are not yet supported; \
+                         use tuple variants like Variant(Box<str>)",
+                    )
+                    .to_compile_error()
+                    .into();
+                }
             }
         };
 
-        // Build payload arm for this variant
-        match &variant.fields {
-            syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
-                // Empty-tuple variant — no payload to write
-                payload_arms.push(quote! {
-                    #name::#var_ident(..) => {}
-                });
-            }
-            syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                let field_ty = &fields.unnamed[0].ty;
-                payload_arms.push(quote! {
-                    #name::#var_ident(val, ..) => {
-                        let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
-                        assert!(
-                            buf_size >= expected,
-                            "error payload buffer too small: got {} bytes, need {}",
-                            buf_size, expected,
-                        );
-                        let c_val = <#field_ty as FfiBorrow>::borrow_as_c(val);
-                        unsafe {
-                            core::ptr::write(
-                                out_buf as *mut <#field_ty as FfiType>::CRepr,
-                                c_val,
+        // Build payload arm for this variant.
+        // Opaque variants suppress marshalling — the inner value is
+        // Rust-only and not transferable across the C boundary.
+        if attrs.opaque {
+            payload_arms.push(quote! {
+                #name::#var_ident(..) => {}
+            });
+        } else {
+            match &variant.fields {
+                syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
+                    // Empty-tuple variant — no payload to write
+                    payload_arms.push(quote! {
+                        #name::#var_ident(..) => {}
+                    });
+                }
+                syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                    let field_ty = &fields.unnamed[0].ty;
+                    payload_arms.push(quote! {
+                        #name::#var_ident(val, ..) => {
+                            let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
+                            assert!(
+                                buf_size >= expected,
+                                "error payload buffer too small: got {} bytes, need {}",
+                                buf_size, expected,
                             );
+                            let c_val = <#field_ty as FfiBorrow>::borrow_as_c(val);
+                            unsafe {
+                                core::ptr::write(
+                                    out_buf as *mut <#field_ty as FfiType>::CRepr,
+                                    c_val,
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+                }
+                _ => {} // already rejected above
             }
-            _ => {} // already rejected above
         }
 
         codes_entries.push(quote! { (#upper_name, #code) });
@@ -1234,6 +1258,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 struct FfierVariantAttrs {
     code: u32,
     message: Option<String>,
+    /// When true, the variant's field (if any) is not marshalled across FFI.
+    /// The payload arm becomes a no-op and the field is excluded from schema
+    /// metadata. Use this for fields whose types don't implement `FfiType`
+    /// (e.g. `anyhow::Error`).
+    opaque: bool,
 }
 
 fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVariantAttrs> {
@@ -1244,6 +1273,7 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
 
         let mut code = None;
         let mut message = None;
+        let mut opaque = false;
 
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("code") {
@@ -1256,15 +1286,22 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
                 let lit: LitStr = value.parse()?;
                 message = Some(lit.value());
                 Ok(())
+            } else if meta.path.is_ident("opaque") {
+                opaque = true;
+                Ok(())
             } else {
-                Err(meta.error("expected `code` or `message`"))
+                Err(meta.error("expected `code`, `message`, or `opaque`"))
             }
         })?;
 
         let code = code
             .ok_or_else(|| syn::Error::new_spanned(attr, "missing `code` in #[ffier(code = N)]"))?;
 
-        return Ok(FfierVariantAttrs { code, message });
+        return Ok(FfierVariantAttrs {
+            code,
+            message,
+            opaque,
+        });
     }
 
     Err(syn::Error::new(
@@ -1311,7 +1348,6 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
     }
     result
 }
-
 
 /// All recognized keys from `#[ffier(...)]` on a trait/impl method.
 struct FfierMethodAttrs {
@@ -1613,8 +1649,7 @@ fn parse_method_sig(
             let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
-                let dispatch =
-                    param_attrs.dispatch.unwrap_or_else(|| "auto".to_string());
+                let dispatch = param_attrs.dispatch.unwrap_or_else(|| "auto".to_string());
                 return Some(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::ImplTrait {
@@ -1839,14 +1874,25 @@ fn parse_method_sig(
     })
 }
 
-/// Emit metadata tokens for a method list (unified format for all annotation macros).
-fn emit_method_meta(methods: &[MethodInfo]) -> Vec<proc_macro2::TokenStream> {
-    methods.iter().map(emit_one_method_meta).collect()
+/// Whether the method is from a trait definition or a concrete impl.
+#[derive(Clone, Copy)]
+enum MethodMetaKind {
+    /// Trait definition method — carries index/has_default/raw_handle.
+    Definition,
+    /// Concrete method (exportable or trait_impl) — carries ffi_name/is_builder.
+    Impl,
 }
 
-fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
+/// Emit metadata tokens for a method list.
+fn emit_method_meta(methods: &[MethodInfo], ctx: MethodMetaKind) -> Vec<proc_macro2::TokenStream> {
+    methods
+        .iter()
+        .map(|m| emit_one_method_meta(m, ctx))
+        .collect()
+}
+
+fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::TokenStream {
     let mname = &m.name;
-    let ffi_name = &m.ffi_name;
     let doc_tokens: Vec<_> = m.doc_lines.iter().map(|d| quote! { #d }).collect();
 
     let receiver_ident = match m.receiver {
@@ -1855,11 +1901,6 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         Receiver::Mut => format_ident!("r#mut"),
         Receiver::Value => format_ident!("value"),
     };
-
-    let is_builder = m.is_builder;
-    let has_default = m.has_default;
-    let index = m.index;
-    let raw_handle = m.raw_handle;
 
     let method_lt_idents: Vec<_> = m
         .method_lifetimes
@@ -1901,7 +1942,10 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         ReturnKind::Value(tp) => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
-            let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+            let fc = tp
+                .foreign_crate
+                .as_ref()
+                .map(|fc| quote! { foreign_crate = (#fc), });
             quote! { value(bridge_type = (#bt), rust_type = (#rt), #fc) }
         }
         ReturnKind::Result { ok, err_ident } => {
@@ -1910,7 +1954,10 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
                 Some(tp) => {
                     let bt = &tp.bridge;
                     let rt = &tp.rust;
-                    let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+                    let fc = tp
+                        .foreign_crate
+                        .as_ref()
+                        .map(|fc| quote! { foreign_crate = (#fc), });
                     quote! { ok = some(bridge_type = (#bt), rust_type = (#rt), #fc) }
                 }
             };
@@ -1919,7 +1966,10 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         ReturnKind::HandleSlice { types: tp, direct } => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
-            let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+            let fc = tp
+                .foreign_crate
+                .as_ref()
+                .map(|fc| quote! { foreign_crate = (#fc), });
             if *direct {
                 quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc) }
             } else {
@@ -1933,16 +1983,35 @@ fn emit_one_method_meta(m: &MethodInfo) -> proc_macro2::TokenStream {
         None => quote! { rust_ret = (()), },
     };
 
+    let context_tokens = match ctx {
+        MethodMetaKind::Definition => {
+            let has_default = m.has_default;
+            let index = m.index;
+            let raw_handle = m.raw_handle;
+            quote! {
+                method_kind = definition,
+                has_default = #has_default,
+                index = #index,
+                raw_handle = #raw_handle,
+            }
+        }
+        MethodMetaKind::Impl => {
+            let ffi_name = &m.ffi_name;
+            let is_builder = m.is_builder;
+            quote! {
+                method_kind = r#impl,
+                ffi_name = #ffi_name,
+                is_builder = #is_builder,
+            }
+        }
+    };
+
     quote! {
         {
             name = #mname,
-            ffi_name = #ffi_name,
             doc = [#(#doc_tokens),*],
             receiver = #receiver_ident,
-            is_builder = #is_builder,
-            has_default = #has_default,
-            index = #index,
-            raw_handle = #raw_handle,
+            #context_tokens
             method_lifetimes = [#(#method_lt_idents),*],
             params = [#(#param_tokens),*],
             ret = #ret_tokens,
@@ -2253,7 +2322,7 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{trait_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}");
 
-    let vtable_method_meta = emit_method_meta(&vtable_methods);
+    let vtable_method_meta = emit_method_meta(&vtable_methods, MethodMetaKind::Definition);
 
     // Bake method signatures for the vtable proc macro. These are the
     // original trait method signatures (with lifetimes erased) that the
@@ -2533,7 +2602,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 continue;
             }
             // trait_impl methods are concrete overrides, not defaults
-            if let Some(m) = parse_method_sig(
+            if let Some(mut m) = parse_method_sig(
                 &method.sig,
                 &method.attrs,
                 &mut ctx,
@@ -2542,6 +2611,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 mattrs.raw_handle,
                 mattrs.foreign_return.as_ref(),
             ) {
+                m.ffi_name = format!("{}_{}", struct_snake, method.sig.ident);
                 ms.push(m);
             }
         }
@@ -2550,7 +2620,7 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let local_type_aliases = ctx.local_type_aliases();
 
-    let method_meta = emit_method_meta(&methods);
+    let method_meta = emit_method_meta(&methods, MethodMetaKind::Impl);
 
     let lifetime_idents: Vec<_> = input
         .generics

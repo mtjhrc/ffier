@@ -313,7 +313,7 @@ pub struct ExportedType {
 }
 
 // ---------------------------------------------------------------------------
-// Methods — unified for exportable, implementable, and trait_impl
+// Methods
 // ---------------------------------------------------------------------------
 
 /// A method. Used in exported types, implementable traits, and trait impls.
@@ -330,30 +330,21 @@ pub struct Method {
     pub method_lifetimes: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Return,
-    /// Context-specific fields depending on where this method appears.
-    #[serde(flatten)]
-    pub context: MethodContext,
+    /// C FFI function name (e.g. `"ft_widget_get_count"`, `"ft_fruit_eat"`).
+    pub ffi_name: String,
+    /// Present only for trait definition methods (from `#[implementable]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trait_definition: Option<TraitMethodDefinition>,
 }
 
-/// Context-specific fields for a method.
+/// Extra fields that only exist on trait *definition* methods
+/// (from `#[implementable]`), not on concrete impls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "method_context", rename_all = "snake_case")]
-pub enum MethodContext {
-    /// Method from an `#[exportable]` impl block.
-    Exportable {
-        /// C FFI function name (e.g. "ft_widget_get_count").
-        ffi_name: String,
-    },
-    /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
-    Trait {
-        /// C FFI function name (e.g. `"ft_fruit_eat"` for dispatch,
-        /// `"ft_apple_eat"` for a trait impl).
-        ffi_name: String,
-        /// Vtable slot index.
-        index: usize,
-        /// Whether this method has a default impl in the trait.
-        has_default: bool,
-    },
+pub struct TraitMethodDefinition {
+    /// Vtable slot index.
+    pub index: usize,
+    /// Whether this method has a default impl in the trait.
+    pub has_default: bool,
 }
 
 /// How the method receives `self`.

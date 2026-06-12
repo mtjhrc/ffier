@@ -33,6 +33,7 @@ impl_ffi_identity! {
     i8 => "int8_t", i16 => "int16_t", i32 => "int32_t", i64 => "int64_t",
     u8 => "uint8_t", u16 => "uint16_t", u32 => "uint32_t", u64 => "uint64_t",
     isize => "ssize_t", usize => "size_t", bool => "bool",
+    *mut core::ffi::c_void => "void*", *const core::ffi::c_void => "const void*",
 }
 
 impl FfiType for &str {
@@ -294,12 +295,12 @@ impl std::fmt::Debug for TestErrorErrorHandle {
 pub struct TestErrorNotFoundData(TestErrorErrorHandle);
 impl TestErrorNotFoundData {
     pub fn field_0(&self) -> &str {
-        let mut __buf = std::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
+        let mut __buf = std::mem::MaybeUninit::<<&'static str as FfiType>::CRepr>::uninit();
         unsafe {
             ft_error_payload(
                 self.0.handle() as *const core::ffi::c_void,
                 __buf.as_mut_ptr() as *mut core::ffi::c_void,
-                core::mem::size_of::<ffier::FfierBytes>(),
+                core::mem::size_of::<<&'static str as FfiType>::CRepr>(),
             )
         };
         unsafe { <&str as FfiType>::from_c(__buf.assume_init()) }
@@ -311,11 +312,33 @@ impl std::fmt::Debug for TestErrorNotFoundData {
     }
 }
 
+pub struct TestErrorNumericErrorData(TestErrorErrorHandle);
+impl TestErrorNumericErrorData {
+    pub fn field_0(&self) -> i32 {
+        let mut __buf = std::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_payload(
+                self.0.handle() as *const core::ffi::c_void,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<i32 as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <i32 as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl std::fmt::Debug for TestErrorNumericErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "NumericError(...)")
+    }
+}
+
 #[derive(Debug)]
 pub enum TestError {
     NotFound(TestErrorNotFoundData),
     CustomMessage(TestErrorErrorHandle),
     InvalidInput(TestErrorErrorHandle),
+    NumericError(TestErrorNumericErrorData),
+    Fatal(TestErrorErrorHandle),
 }
 
 impl TestError {
@@ -326,6 +349,8 @@ impl TestError {
             1u32 => Self::NotFound(TestErrorNotFoundData(handle)),
             2u32 => Self::CustomMessage(handle),
             3u32 => Self::InvalidInput(handle),
+            4u32 => Self::NumericError(TestErrorNumericErrorData(handle)),
+            5u32 => Self::Fatal(handle),
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
@@ -334,6 +359,8 @@ impl TestError {
             Self::NotFound(d) => d.0.handle(),
             Self::CustomMessage(h) => h.handle(),
             Self::InvalidInput(h) => h.handle(),
+            Self::NumericError(d) => d.0.handle(),
+            Self::Fatal(h) => h.handle(),
         }
     }
 }
@@ -489,6 +516,11 @@ unsafe extern "C" {
     pub fn ft_widget_fail_with_value(
         handle: *mut core::ffi::c_void,
         result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_with_number(
+        handle: *mut core::ffi::c_void,
+        n: <i32 as FfiType>::CRepr,
         err_out: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierResult;
     pub fn ft_widget_set_tags(
@@ -731,6 +763,22 @@ impl Widget {
         };
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__out.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    #[doc = " Always fails with a numeric error carrying an i32 payload."]
+    pub fn fail_with_number(&self, n: i32) -> Result<(), TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe {
+            ft_widget_fail_with_number(
+                self.0,
+                <i32 as FfiType>::into_c(n),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(())
         } else {
             Err(TestError::from_ffi(__r, __err))
         }
@@ -3253,4 +3301,29 @@ pub fn sum_gadget_values(gadgets: &[&str]) -> i32 {
         .collect();
     let __raw = unsafe { ft_sum_gadget_values(__ffi_gadgets.as_ptr(), __ffi_gadgets.len()) };
     unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_opaque_round_trip(
+        ptr: <*mut core::ffi::c_void as FfiType>::CRepr,
+    ) -> <*mut core::ffi::c_void as FfiType>::CRepr;
+}
+
+#[doc = " Accept an opaque pointer and return it unchanged (round-trip test)."]
+#[doc = " Uses bare `c_void` (via `use`) to verify the macro emits fully qualified paths."]
+pub fn opaque_round_trip(ptr: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+    let __raw = unsafe { ft_opaque_round_trip(<*mut core::ffi::c_void as FfiType>::into_c(ptr)) };
+    unsafe { <*mut core::ffi::c_void as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_opaque_ptr_to_int(
+        ptr: <*const core::ffi::c_void as FfiType>::CRepr,
+    ) -> <usize as FfiType>::CRepr;
+}
+
+#[doc = " Accept an opaque const pointer and return its address as an integer."]
+pub fn opaque_ptr_to_int(ptr: *const core::ffi::c_void) -> usize {
+    let __raw = unsafe { ft_opaque_ptr_to_int(<*const core::ffi::c_void as FfiType>::into_c(ptr)) };
+    unsafe { <usize as FfiType>::from_c(__raw) }
 }

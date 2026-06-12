@@ -208,6 +208,8 @@ pub struct MetaTypePair {
 pub struct MetaMethod {
     pub name: Ident,
     pub receiver: MetaReceiver,
+    /// Doc comment lines, verbatim.
+    pub doc: Vec<String>,
     /// Method-level lifetime params (e.g. `[a, b]` from `fn foo<'a, 'b>(...)`).
     pub method_lifetimes: Vec<Ident>,
     pub params: Vec<MetaParam>,
@@ -218,13 +220,9 @@ pub struct MetaMethod {
 
 /// Context-specific fields that are always present together.
 pub enum MetaMethodContext {
-    /// Method from an `#[exportable]` impl block.
-    Exportable {
-        ffi_name: String,
-        is_builder: bool,
-        doc: Vec<String>,
-    },
-    /// Method from an `#[implementable]` trait or `#[trait_impl]` impl.
+    /// Method from an `#[exportable]` or `#[trait_impl]` impl block.
+    Exportable { ffi_name: String, is_builder: bool },
+    /// Method from an `#[implementable]` trait definition.
     Trait {
         has_default: bool,
         index: usize,
@@ -261,10 +259,7 @@ impl MetaMethod {
     }
 
     pub fn doc(&self) -> &[String] {
-        match &self.context {
-            MetaMethodContext::Exportable { doc, .. } => doc,
-            MetaMethodContext::Trait { .. } => &[],
-        }
+        &self.doc
     }
 
     // --- Trait context accessors ---
@@ -646,10 +641,6 @@ impl syn::parse::Parse for MetaMethod {
         let name: Ident = input.parse()?;
         parse_comma(input)?;
 
-        expect_key(input, "ffi_name")?;
-        let ffi_name = parse_string(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "doc")?;
         let doc = parse_bracketed_list(input, parse_string)?;
         parse_comma(input)?;
@@ -672,22 +663,53 @@ impl syn::parse::Parse for MetaMethod {
         };
         parse_comma(input)?;
 
-        expect_key(input, "is_builder")?;
-        let is_builder = parse_bool(input)?;
+        // Parse kind-specific fields based on the explicit method_kind tag.
+        expect_key(input, "method_kind")?;
+        let kind_tag: Ident = input.parse()?;
         parse_comma(input)?;
 
-        expect_key(input, "has_default")?;
-        let has_default = parse_bool(input)?;
-        parse_comma(input)?;
+        let context = match kind_tag.to_string().as_str() {
+            "r#impl" | "impl" => {
+                expect_key(input, "ffi_name")?;
+                let ffi_name = parse_string(input)?;
+                parse_comma(input)?;
 
-        expect_key(input, "index")?;
-        let index: syn::LitInt = input.parse()?;
-        let index = index.base10_parse::<usize>()?;
-        parse_comma(input)?;
+                expect_key(input, "is_builder")?;
+                let is_builder = parse_bool(input)?;
+                parse_comma(input)?;
 
-        expect_key(input, "raw_handle")?;
-        let raw_handle = parse_bool(input)?;
-        parse_comma(input)?;
+                MetaMethodContext::Exportable {
+                    ffi_name,
+                    is_builder,
+                }
+            }
+            "definition" => {
+                expect_key(input, "has_default")?;
+                let has_default = parse_bool(input)?;
+                parse_comma(input)?;
+
+                expect_key(input, "index")?;
+                let index: syn::LitInt = input.parse()?;
+                let index = index.base10_parse::<usize>()?;
+                parse_comma(input)?;
+
+                expect_key(input, "raw_handle")?;
+                let raw_handle = parse_bool(input)?;
+                parse_comma(input)?;
+
+                MetaMethodContext::Trait {
+                    has_default,
+                    index,
+                    raw_handle,
+                }
+            }
+            other => {
+                return Err(syn::Error::new(
+                    kind_tag.span(),
+                    format!("unknown method_kind `{other}`, expected `impl` or `definition`"),
+                ));
+            }
+        };
 
         expect_key(input, "method_lifetimes")?;
         let method_lifetimes = parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
@@ -705,25 +727,10 @@ impl syn::parse::Parse for MetaMethod {
         let rust_ret = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
-        // Determine context from the fields: if ffi_name is non-empty, it's
-        // from an exportable; otherwise it's from a trait.
-        let context = if !ffi_name.is_empty() {
-            MetaMethodContext::Exportable {
-                ffi_name,
-                is_builder,
-                doc,
-            }
-        } else {
-            MetaMethodContext::Trait {
-                has_default,
-                index,
-                raw_handle,
-            }
-        };
-
         Ok(MetaMethod {
             name,
             receiver,
+            doc,
             method_lifetimes,
             params,
             ret,
