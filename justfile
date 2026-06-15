@@ -1,5 +1,9 @@
 # Format, lint, and test — run before committing
-check: fmt clippy test
+check: fmt-check clippy test
+
+# Check formatting (fails if files need formatting)
+fmt-check:
+    cargo fmt -- --check
 
 # Format all code
 fmt:
