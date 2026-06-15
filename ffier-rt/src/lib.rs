@@ -51,6 +51,39 @@ pub const METADATA_BORROWED: u32 = 2;
 /// the whole array must be freed via the array's destroy function.
 pub const METADATA_ARRAY_ELEMENT: u32 = 4;
 
+/// Metadata bit 3: the handle carries default-dispatch re-entry metadata
+/// for an `#[ffier::implementable]` trait method.
+///
+/// When set, the upper bits encode the trait method index. This is used by
+/// generated Rust client bindings to mark temporary vtable handles created
+/// for defaulted methods so the bridge can call the library default helper
+/// instead of recursing back through the vtable.
+pub const METADATA_DEFAULT_DISPATCH: u32 = 8;
+
+/// Bit shift for the method index encoded alongside
+/// [`METADATA_DEFAULT_DISPATCH`].
+pub const METADATA_DEFAULT_DISPATCH_SHIFT: u32 = 4;
+
+/// Encode metadata for a temporary handle used by default-method self-dispatch.
+#[inline]
+pub fn default_dispatch_metadata(method_index: usize) -> u32 {
+    let method_index = u32::try_from(method_index).expect("method index does not fit in u32");
+    METADATA_DEFAULT_DISPATCH | (method_index << METADATA_DEFAULT_DISPATCH_SHIFT)
+}
+
+/// Decode the method index from default-dispatch metadata.
+///
+/// Returns `None` when the handle metadata does not carry the
+/// [`METADATA_DEFAULT_DISPATCH`] flag.
+#[inline]
+pub fn default_dispatch_method_index(metadata: u32) -> Option<u32> {
+    if metadata & METADATA_DEFAULT_DISPATCH == 0 {
+        None
+    } else {
+        Some(metadata >> METADATA_DEFAULT_DISPATCH_SHIFT)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handle introspection
 // ---------------------------------------------------------------------------

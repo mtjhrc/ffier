@@ -2376,7 +2376,7 @@ pub trait Fruit {
         Self: Sized,
     {
         let __vtable: &'static FruitVtable = Self::__ffier_vtable();
-        let __metadata: u32 = 2 | (1u32 << 2);
+        let __metadata: u32 = ffier::default_dispatch_metadata(1);
         let mut __temp = ffier::FfierHandle {
             type_tag: 16777236u32,
             metadata: __metadata,

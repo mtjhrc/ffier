@@ -2147,10 +2147,11 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Helper: generate the vtable call expression for a method (unwrapping Option).
     // `fallback` is Some(tokens) for defaulted methods, None for required methods.
     //
-    // For defaulted methods, we first check the metadata field on the handle:
-    // if bit 0 is set and the method index matches, we skip vtable dispatch and
-    // call the library default directly. This prevents infinite re-entrancy when
-    // a client trait default calls through self-dispatch.
+    // For defaulted methods, we first check whether the handle metadata carries
+    // ffier's default-dispatch marker for this method index. If so, we skip
+    // vtable dispatch and call the library default directly. This prevents
+    // infinite re-entrancy when a client trait default calls through
+    // self-dispatch.
     // Helper: generate the vtable call expression for a method.
     // `vtable_struct_ref` is the token stream referencing the vtable struct
     // (e.g. `PushStrVtable` for direct output, or `$crate::PushStrVtable`

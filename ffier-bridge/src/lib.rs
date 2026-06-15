@@ -30,18 +30,24 @@ struct ErrorInfo {
 
 struct TraitDispatchInfo {
     pub variants: Vec<TraitVariant>,
-    /// If the trait is `#[implementable]`, the wrapper type path and vtable struct path.
+    /// If the trait is `#[implementable]`, trait-level dispatch metadata.
     pub implementable: Option<ImplementableInfo>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TraitVariantKind {
+    Concrete,
+    Wrapper,
 }
 
 struct TraitVariant {
     pub name: String,
     pub bridge_type: TokenStream2,
+    pub kind: TraitVariantKind,
 }
 
 struct ImplementableInfo {
     pub trait_path: TokenStream2,
-    pub wrapper_path: TokenStream2,
 
     pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
@@ -69,6 +75,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
                 .push(TraitVariant {
                     name: struct_name,
                     bridge_type: struct_path,
+                    kind: TraitVariantKind::Concrete,
                 });
         }
     }
@@ -89,10 +96,10 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             info.variants.push(TraitVariant {
                 name: wrapper_name,
                 bridge_type: wrapper_path.clone(),
+                kind: TraitVariantKind::Wrapper,
             });
             info.implementable = Some(ImplementableInfo {
                 trait_path: meta.trait_path,
-                wrapper_path,
                 methods,
                 own_method_count,
             });
@@ -1877,7 +1884,6 @@ fn generate_self_dispatch_bridge(
         let pre_bindings = &cp.pre_bindings;
         let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
-        let wrapper_path = &imp.wrapper_path;
         let method_index_u32 = m.index() as u32;
 
         // Default helper path for defaulted methods.
@@ -1892,72 +1898,94 @@ fn generate_self_dispatch_bridge(
             None
         };
 
-        let dispatch_branches: Vec<_> = info.variants.iter().map(|v| {
-            let ty = &v.bridge_type;
-            let is_vtable_variant = ty.to_string() == wrapper_path.to_string();
+        let dispatch_branches: Vec<_> = info
+            .variants
+            .iter()
+            .map(|v| {
+                let ty = &v.bridge_type;
 
-            // For the VtableFoo variant of defaulted methods, check metadata
-            // before calling through the vtable. Skip for raw_handle methods
-            // since #[implementable] doesn't generate default helpers for them.
-            let metadata_guard = if is_vtable_variant && m.has_default() && !m.raw_handle() {
-                if let Some(helper) = &default_helper_path {
-                    let obj_for_default = borrow_from_handle(ty, m.is_mut());
-                    let default_base_call = quote! { #helper(obj #(, #converted_args)*) };
-                    let default_call_expr = wrap_concrete_dispatch(
-                        default_base_call,
-                        &cp.concrete_dispatch_params,
-                        &ffi_name_str,
-                        lib_crate,
-                    );
-                    let default_body = wrap_return(
-                        default_call_expr, &m.ret, &m.rust_ret, handle_types,
-                        error_map, None, lib_crate,
-                    );
-                    quote! {
-                        let __metadata = unsafe { ffier::handle_metadata(handle) };
-                        if __metadata & 2 != 0 && (__metadata >> 2) & 0x7FFF == #method_index_u32 {
-                            #obj_for_default
-                            return { #default_body };
+                // For the VtableFoo variant of defaulted methods, check metadata
+                // before calling through the vtable. Skip for raw_handle methods
+                // since #[implementable] doesn't generate default helpers for them.
+                let metadata_guard =
+                    if v.kind == TraitVariantKind::Wrapper && m.has_default() && !m.raw_handle() {
+                        if let Some(helper) = &default_helper_path {
+                            let obj_for_default = borrow_from_handle(ty, m.is_mut());
+                            let default_base_call = quote! { #helper(obj #(, #converted_args)*) };
+                            let default_call_expr = wrap_concrete_dispatch(
+                                default_base_call,
+                                &cp.concrete_dispatch_params,
+                                &ffi_name_str,
+                                lib_crate,
+                            );
+                            let default_body = wrap_return(
+                                default_call_expr,
+                                &m.ret,
+                                &m.rust_ret,
+                                handle_types,
+                                error_map,
+                                None,
+                                lib_crate,
+                            );
+                            quote! {
+                                let __metadata = unsafe { ffier::handle_metadata(handle) };
+                                if ffier::default_dispatch_method_index(__metadata)
+                                    == Some(#method_index_u32)
+                                {
+                                    #obj_for_default
+                                    return { #default_body };
+                                }
+                            }
+                        } else {
+                            quote! {}
                         }
-                    }
+                    } else {
+                        quote! {}
+                    };
+
+                let (base_call, pre_binding) = if m.raw_handle() {
+                    (
+                        quote! {
+                            <#ty as #trait_path>::#method_name(
+                                handle as *const ffier::FfierHandle<#ty> #(, #converted_args)*)
+                        },
+                        quote! {},
+                    )
                 } else {
-                    quote! {}
+                    let obj_binding = borrow_from_handle(ty, m.is_mut());
+                    (
+                        quote! {
+                            <#ty as #trait_path>::#method_name(obj #(, #converted_args)*)
+                        },
+                        obj_binding,
+                    )
+                };
+                let call_expr = wrap_concrete_dispatch(
+                    base_call,
+                    &cp.concrete_dispatch_params,
+                    &ffi_name_str,
+                    lib_crate,
+                );
+
+                let ret_body = wrap_return(
+                    call_expr,
+                    &m.ret,
+                    &m.rust_ret,
+                    handle_types,
+                    error_map,
+                    None,
+                    lib_crate,
+                );
+
+                quote! {
+                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                        #metadata_guard
+                        #pre_binding
+                        return { #ret_body };
+                    }
                 }
-            } else {
-                quote! {}
-            };
-
-            let (base_call, pre_binding) = if m.raw_handle() {
-                (quote! {
-                    <#ty as #trait_path>::#method_name(
-                        handle as *const ffier::FfierHandle<#ty> #(, #converted_args)*)
-                }, quote! {})
-            } else {
-                let obj_binding = borrow_from_handle(ty, m.is_mut());
-                (quote! {
-                    <#ty as #trait_path>::#method_name(obj #(, #converted_args)*)
-                }, obj_binding)
-            };
-            let call_expr = wrap_concrete_dispatch(
-                base_call,
-                &cp.concrete_dispatch_params,
-                &ffi_name_str,
-                lib_crate,
-            );
-
-            let ret_body = wrap_return(
-                call_expr, &m.ret, &m.rust_ret, handle_types,
-                error_map, None, lib_crate,
-            );
-
-            quote! {
-                if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
-                    #metadata_guard
-                    #pre_binding
-                    return { #ret_body };
-                }
-            }
-        }).collect();
+            })
+            .collect();
 
         let expected_str = format!("{trait_name} implementor");
         bridge_fns.push(quote! {

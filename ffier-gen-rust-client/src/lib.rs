@@ -1401,7 +1401,7 @@ fn emit_default_dispatch_body(
     .unwrap();
     writeln!(
         out,
-        "        let __metadata: u32 = 2 | ({}u32 << 2);",
+        "        let __metadata: u32 = ffier::default_dispatch_metadata({});",
         index
     )
     .unwrap();
