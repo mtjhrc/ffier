@@ -16,7 +16,7 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 
 [[package]]
 name = "ffier"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-annotations",
  "ffier-builtins",
@@ -25,7 +25,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-annotations"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-meta",
  "proc-macro2",
@@ -35,7 +35,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-bridge"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-meta",
  "ffier-schema",
@@ -47,14 +47,14 @@ dependencies = [
 
 [[package]]
 name = "ffier-bridge-macros"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-bridge",
 ]
 
 [[package]]
 name = "ffier-builtins"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-annotations",
  "ffier-rt",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-gen-c-header"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-schema",
  "serde_json",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-gen-rust-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ffier-schema",
  "serde_json",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-meta"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -87,11 +87,11 @@ dependencies = [
 
 [[package]]
 name = "ffier-rt"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ffier-schema"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",

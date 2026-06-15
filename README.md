@@ -63,11 +63,12 @@ mylib::__ffier_mylib_library!(ffier_bridge_macros::generate);
 
 ### 3. Generate bindings
 
-The cdylib crate includes binaries for generating source artifacts:
+Building the cdylib writes `target/ffier-mylib.json`. Feed that to the
+standalone generators:
 
 ```bash
-cargo run --bin gen-header     # prints C header to stdout
-cargo run --bin gen-rust-client # prints Rust client bindings to stdout
+ffier-gen-c-header target/ffier-mylib.json > mylib.h
+ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 ```
 
 ### 4. Call from C
@@ -113,6 +114,36 @@ allocation, no copy, no ownership transfer.
 A convenience macro (`PREFIX_STR(s)`, e.g. `MYLIB_STR(s)`) is generated in
 the C header to construct these from string literals.
 
+## How it works
+
+The pipeline has two phases:
+
+**Compile time** -- proc macros (`ffier-annotations`) attach structured
+metadata to your types via token streams. When the cdylib crate is built,
+`ffier-bridge` (invoked through `ffier-bridge-macros`) parses those token
+streams, generates `extern "C"` bridge functions, and writes a JSON schema
+(`target/ffier-{name}.json`) describing the library's FFI surface.
+
+**Code generation** -- standalone tools (`ffier-gen-c-header`,
+`ffier-gen-rust-client`) read the JSON schema and produce a C header or Rust
+client bindings. The JSON schema is self-contained — bindings can be generated
+without access to the Rust source code. Third-party generators for other
+languages can depend on `ffier-schema` to consume the same JSON, or
+parse it directly.
+
+```
+your library          ffier-annotations       ffier-bridge
+(annotated Rust)  -->  (proc macros)      -->  (bridge codegen)
+                                                 |
+                                                 |-- extern "C" bridge functions
+                                                 |
+                                                 `-- target/ffier-{name}.json
+                                                              |
+                                    ffier-gen-c-header  <-----+
+                                 ffier-gen-rust-client  <-----+
+                      your generator (Go, Python, ...)  <-----'
+```
+
 ## Crate structure
 
 | Crate | Purpose |
@@ -121,12 +152,12 @@ the C header to construct these from string literals.
 | `ffier-rt` | Runtime types (`FfiType`, `FfierBytes`, etc.) |
 | `ffier-annotations` | Proc macros: `#[exportable]`, `#[implementable]`, `#[trait_impl]`, `#[derive(FfiError)]` |
 | `ffier-builtins` | Pre-annotated traits (`PushStr`, `Error`) for built-in FFI protocols |
-| `ffier-meta` | Metadata types + parsers -- the extensibility point for third-party generators |
-| `ffier-schema` | JSON schema types (`Library`, `Method`, etc.) |
-| `ffier-bridge` | Generates `extern "C"` bridge functions + JSON schema from metadata |
+| `ffier-meta` | Internal: parses proc-macro token streams into structured metadata for `ffier-bridge` |
+| `ffier-schema` | JSON schema types (`Library`, `Method`, etc.) -- depend on this to build third-party generators |
+| `ffier-bridge` | Generates `extern "C"` bridge functions + writes JSON schema from metadata |
 | `ffier-bridge-macros` | Proc macro entry point for bridge generation |
-| `ffier-gen-c-header` | Generates C headers from JSON schema |
-| `ffier-gen-rust-client` | Generates Rust client bindings from JSON schema |
+| `ffier-gen-c-header` | C header generator -- usable as a library (e.g. from `build.rs`) or as a standalone CLI |
+| `ffier-gen-rust-client` | Rust client bindings generator -- usable as a library (e.g. from `build.rs`) or as a standalone CLI |
 
 ## Running tests
 
