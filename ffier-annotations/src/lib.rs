@@ -2799,8 +2799,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                // @reexport invocation (now a no-op but kept for API compat)
-                reexport_invocations.push(quote! { #alias!(@reexport); });
                 // chain_path is the shim (which injects the tag)
                 chain_paths.push(quote! { $crate::#shim_name });
 
