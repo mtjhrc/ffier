@@ -408,7 +408,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@on_library_export, $type_tag:expr) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiHandle for #struct_with_lifetimes {
                     const C_HANDLE_NAME: &'static str = stringify!(#struct_ident);
                     const TYPE_TAG: u32 = $type_tag;
@@ -427,7 +427,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
             };
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @exportable,
+                    @exported_impl,
                     name = #struct_ident,
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
@@ -544,7 +544,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@on_library_export) => {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
                     const C_TYPE_NAME: &'static str = stringify!(#name);
@@ -566,7 +566,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
             };
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @enum_constants,
+                    @exported_enum,
                     name = #name,
                     path = (#enum_path),
                     prefix = $prefix,
@@ -658,7 +658,7 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@on_library_export) => {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
                     const C_TYPE_NAME: &'static str = stringify!(#name);
@@ -673,7 +673,7 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
             // Tagged invocation (from library_definition! shim): includes prefix
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @bitflags_constants,
+                    @exported_bitflags,
                     name = #name,
                     path = (#bf_path),
                     prefix = $prefix,
@@ -812,7 +812,7 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
         macro_rules! #internal_macro_name {
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @free_fn,
+                    @exported_fn,
                     name = #fn_name,
                     fn_path = (#fn_path),
                     prefix = $prefix,
@@ -1302,7 +1302,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
-            (@on_library_export, $type_tag:expr) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiHandle for #name {
                     const C_HANDLE_NAME: &'static str = stringify!(#name);
                     const TYPE_TAG: u32 = $type_tag;
@@ -1322,7 +1322,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             // Tagged invocation (from library_definition! shim): includes type_tag
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @error,
+                    @exported_error,
                     name = #name,
                     path = (#error_path),
                     prefix = $prefix,
@@ -2562,12 +2562,12 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             // vtable_struct, and trait_path as parenthesized groups so the
             // metadata blob uses the library crate's paths for cross-crate
             // traits. Downstream crates in the chain only need the library
-            // crate, not the upstream crate that defined #[implementable].
+             // crate, not the upstream crate that defined the trait.
             ($prefix:literal, $type_tag:expr,
              ($($wrapper:tt)*), ($($vstruct:tt)*), ($($tpath:tt)*),
              $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @implementable,
+                    @exported_trait,
                     trait_name = #trait_name,
                     trait_path = ($($tpath)*),
                     prefix = $prefix,
@@ -2728,7 +2728,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
             // avoid bare-name collisions at the library crate root.
             ($prefix:literal, ($($tpath:tt)*), $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
-                    @trait_impl,
+                    @exported_trait_impl,
                     trait_name = #trait_name,
                     struct_name = #struct_ident,
                     struct_path = (#struct_path_tokens),
@@ -2816,7 +2816,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
     // For each entry, compute:
     // 1. shim_macros: shim macros that inject the tag into the metadata macro call
-    // 2. reexport_invocations: `alias_path!(@on_library_export)` calls
+    // 2. reexport_invocations: `alias_path!(@on_library_export, ...)` calls
     // 3. chain_paths: the macro path used inside the generated library macro
     let mut shim_macros: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut reexport_invocations: Vec<proc_macro2::TokenStream> = Vec::new();
@@ -2880,7 +2880,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 chain_paths.push(quote! { $crate::#shim_name });
 
                 // @on_library_export generates FfiHandle + FfiType impls
-                reexport_invocations.push(quote! { #alias!(@on_library_export, #full_tag); });
+                reexport_invocations.push(
+                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
+                );
 
                 // Helper module re-export for qualified paths
                 let helper_mod_name =
@@ -2959,7 +2961,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                // @on_library_export with type_tag + handle names generates the vtable struct + wrapper type + impls.
+                // @on_library_export generates the vtable struct + wrapper type + impls.
                 reexport_invocations.push(
                     quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
                 );
@@ -2983,7 +2985,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 // @on_library_export generates the FfiType impl for the enum
-                reexport_invocations.push(quote! { #alias!(@on_library_export); });
+                reexport_invocations.push(
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                );
                 chain_paths.push(quote! { $crate::#shim_name });
 
                 // Helper module re-export for qualified paths
@@ -3015,7 +3019,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 });
 
                 // @on_library_export generates the FfiType impl for the bitflags type
-                reexport_invocations.push(quote! { #alias!(@on_library_export); });
+                reexport_invocations.push(
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                );
                 chain_paths.push(quote! { $crate::#shim_name });
 
                 // Helper module re-export for qualified paths

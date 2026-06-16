@@ -588,11 +588,11 @@ fn parse_parenthesized_list<T>(
 
 impl syn::parse::Parse for MetaExportable {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        // @exportable
+        // @exported_impl
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "exportable" {
-            return Err(syn::Error::new(tag.span(), "expected `exportable`"));
+        if tag != "exported_impl" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_impl`"));
         }
         parse_comma(input)?;
 
@@ -912,8 +912,8 @@ impl syn::parse::Parse for MetaError {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "error" {
-            return Err(syn::Error::new(tag.span(), "expected `error`"));
+        if tag != "exported_error" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_error`"));
         }
         parse_comma(input)?;
 
@@ -982,8 +982,8 @@ impl syn::parse::Parse for MetaEnum {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "enum_constants" {
-            return Err(syn::Error::new(tag.span(), "expected `enum_constants`"));
+        if tag != "exported_enum" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_enum`"));
         }
         parse_comma(input)?;
 
@@ -1036,8 +1036,8 @@ impl syn::parse::Parse for MetaBitflags {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "bitflags_constants" {
-            return Err(syn::Error::new(tag.span(), "expected `bitflags_constants`"));
+        if tag != "exported_bitflags" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_bitflags`"));
         }
         parse_comma(input)?;
 
@@ -1090,8 +1090,8 @@ impl syn::parse::Parse for MetaFreeFunction {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "free_fn" {
-            return Err(syn::Error::new(tag.span(), "expected `free_fn`"));
+        if tag != "exported_fn" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_fn`"));
         }
         parse_comma(input)?;
 
@@ -1138,8 +1138,8 @@ impl syn::parse::Parse for MetaImplementable {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "implementable" {
-            return Err(syn::Error::new(tag.span(), "expected `implementable`"));
+        if tag != "exported_trait" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_trait`"));
         }
         parse_comma(input)?;
 
@@ -1226,8 +1226,11 @@ impl syn::parse::Parse for MetaTraitImpl {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         input.parse::<Token![@]>()?;
         let tag: Ident = input.parse()?;
-        if tag != "trait_impl" {
-            return Err(syn::Error::new(tag.span(), "expected `trait_impl`"));
+        if tag != "exported_trait_impl" {
+            return Err(syn::Error::new(
+                tag.span(),
+                "expected `exported_trait_impl`",
+            ));
         }
         parse_comma(input)?;
 

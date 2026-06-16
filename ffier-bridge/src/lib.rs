@@ -118,39 +118,39 @@ fn generate_one(
 ) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
     match tag.as_str() {
-        "exportable" => {
+        "exported_impl" => {
             let meta: MetaExportable = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate)
         }
-        "error" => {
+        "exported_error" => {
             let meta: MetaError = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_error_bridge(meta, lib_crate)
         }
-        "implementable" => {
+        "exported_trait" => {
             let meta: MetaImplementable = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_implementable_bridge(meta, lib_crate)
         }
-        "trait_impl" => {
+        "exported_trait_impl" => {
             let meta: MetaTraitImpl = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
             generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate)
         }
-        "enum_constants" | "bitflags_constants" => {
+        "exported_enum" | "exported_bitflags" => {
             // No bridge code needed — enums/bitflags are value types passed by value.
             quote! {}
         }
-        "free_fn" => {
+        "exported_fn" => {
             let meta: MetaFreeFunction = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
@@ -238,13 +238,13 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     for item in &items {
         match peek_meta_tag(item).as_str() {
-            "error" => errors.push(item.clone()),
-            "exportable" => exportables.push(item.clone()),
-            "implementable" => implementables.push(item.clone()),
-            "trait_impl" => trait_impls.push(item.clone()),
-            "enum_constants" => enum_constants.push(item.clone()),
-            "bitflags_constants" => bitflags_constants.push(item.clone()),
-            "free_fn" => free_fns.push(item.clone()),
+            "exported_error" => errors.push(item.clone()),
+            "exported_impl" => exportables.push(item.clone()),
+            "exported_trait" => implementables.push(item.clone()),
+            "exported_trait_impl" => trait_impls.push(item.clone()),
+            "exported_enum" => enum_constants.push(item.clone()),
+            "exported_bitflags" => bitflags_constants.push(item.clone()),
+            "exported_fn" => free_fns.push(item.clone()),
             tag => {
                 let msg = format!("unknown metadata tag `@{tag}` in batch");
                 return quote! { compile_error!(#msg); };
@@ -2413,48 +2413,49 @@ fn build_schema(
     let errors_parsed: Vec<_> = errors
         .iter()
         .map(|item| {
-            syn::parse2::<MetaError>(item.clone()).expect("failed to parse @error metadata")
+            syn::parse2::<MetaError>(item.clone())
+                .expect("failed to parse @exported_error metadata")
         })
         .collect();
     let exportables_parsed: Vec<_> = exportables
         .iter()
         .map(|item| {
             syn::parse2::<MetaExportable>(item.clone())
-                .expect("failed to parse @exportable metadata")
+                .expect("failed to parse @exported_impl metadata")
         })
         .collect();
     let implementables_parsed: Vec<_> = implementables
         .iter()
         .map(|item| {
             syn::parse2::<MetaImplementable>(item.clone())
-                .expect("failed to parse @implementable metadata")
+                .expect("failed to parse @exported_trait metadata")
         })
         .collect();
     let trait_impls_parsed: Vec<_> = trait_impls
         .iter()
         .map(|item| {
             syn::parse2::<MetaTraitImpl>(item.clone())
-                .expect("failed to parse @trait_impl metadata")
+                .expect("failed to parse @exported_trait_impl metadata")
         })
         .collect();
     let enums_parsed: Vec<_> = enum_constants
         .iter()
         .map(|item| {
-            syn::parse2::<MetaEnum>(item.clone()).expect("failed to parse @enum_constants metadata")
+            syn::parse2::<MetaEnum>(item.clone()).expect("failed to parse @exported_enum metadata")
         })
         .collect();
     let bitflags_parsed: Vec<_> = bitflags_constants
         .iter()
         .map(|item| {
             syn::parse2::<MetaBitflags>(item.clone())
-                .expect("failed to parse @bitflags_constants metadata")
+                .expect("failed to parse @exported_bitflags metadata")
         })
         .collect();
     let free_fns_parsed: Vec<_> = free_fns
         .iter()
         .map(|item| {
             syn::parse2::<MetaFreeFunction>(item.clone())
-                .expect("failed to parse @free_fn metadata")
+                .expect("failed to parse @exported_fn metadata")
         })
         .collect();
 
