@@ -309,7 +309,7 @@ mod tests {
     }
 
     // ================================================================
-    // Lifetime-parameterized trait_impl
+    // Lifetime-parameterized trait impl
     // ================================================================
 
     #[test]
@@ -323,7 +323,7 @@ mod tests {
     }
 
     // ================================================================
-    // Vtable / implementable
+    // Vtable / exported traits
     // TODO: VtableProcessor needs `impl Processor` from the generator
     //       before these tests can work. See generated.rs.
     // ================================================================

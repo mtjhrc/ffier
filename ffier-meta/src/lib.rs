@@ -1,6 +1,6 @@
 //! Metadata types for ffier's reflection-based architecture.
 //!
-//! `#[ffier::exportable]` emits a metadata macro containing structured tokens.
+//! `#[ffier::export]` emits a metadata macro containing structured tokens.
 //! Generator proc macros (`generate`) parse
 //! these tokens back into the types defined here, then produce code.
 
@@ -191,7 +191,7 @@ pub enum DispatchMode {
     Auto,
     /// Force concrete dispatch, no branch limit.
     Concrete,
-    /// Force vtable dispatch (requires `#[ffier::implementable]` on the trait).
+    /// Force vtable dispatch (requires `#[ffier::export]` on the trait).
     Vtable,
 }
 
@@ -221,9 +221,9 @@ pub struct MetaMethod {
 
 /// Context-specific fields that are always present together.
 pub enum MetaMethodContext {
-    /// Method from an `#[exportable]` or `#[trait_impl]` impl block.
+    /// Method from an exported struct impl or trait impl block.
     Exportable { ffi_name: String, is_builder: bool },
-    /// Method from an `#[implementable]` trait definition.
+    /// Method from an exported trait definition.
     Trait {
         has_default: bool,
         index: usize,
@@ -329,7 +329,7 @@ pub enum MetaParamKind {
     /// The `MetaTypePair` contains the element type (T, not &[T]).
     HandleSlice(MetaTypePair),
     /// `impl Trait` parameter — the generator resolves concrete dispatch
-    /// types from the trait map built from `@trait_impl`/`@implementable` entries.
+    /// types from the trait map built from `@trait_impl`/`@implementable` metadata entries.
     ImplTrait {
         trait_name: String,
         dispatch: DispatchMode,

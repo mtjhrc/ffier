@@ -94,7 +94,7 @@ struct MethodInfo {
     receiver: Receiver,
     params: Vec<ParamInfo>,
     ret: ReturnKind,
-    // --- exportable-specific (defaults for trait methods) ---
+    // --- exported-impl-specific (defaults for trait methods) ---
     /// FFI function name suffix (e.g. `"widget_new"`). Empty for trait methods.
     ffi_name: String,
     /// True if this method returns Self (builder pattern).
@@ -104,7 +104,7 @@ struct MethodInfo {
     doc_lines: Vec<String>,
     /// Original Rust return type for client codegen.
     rust_ret: Option<proc_macro2::TokenStream>,
-    // --- trait-specific (defaults for exportable methods) ---
+    // --- trait-specific (defaults for exported impl methods) ---
     /// Whether this method has a default impl in the trait.
     has_default: bool,
     /// Vtable slot index.
@@ -211,23 +211,68 @@ fn is_handle_slice(ty: &Type) -> bool {
 }
 
 // ---------------------------------------------------------------------------
-// Main macro
+// Unified export macro
 // ---------------------------------------------------------------------------
 
+/// Export a Rust item for FFI consumption.
+///
+/// Dispatches automatically based on the annotated item:
+/// - **`impl Struct { ... }`** — export struct methods as C functions
+/// - **`impl Trait for Struct { ... }`** — bridge trait impl methods to C
+/// - **`trait Foo { ... }`** — declare a trait implementable from C via vtable
+/// - **`enum Foo { ... }`** — export enum variants as C constants
+/// - **`fn foo(...) { ... }`** — export a free function to C
+///
+/// Trait definitions accept optional arguments:
+/// ```ignore
+/// #[ffier::export(reserved(1, 3), foreign, bless = "error_trait")]
+/// trait Foo { ... }
+/// ```
 #[proc_macro_attribute]
-pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Dispatch based on the item kind: impl block, enum, or free function.
+pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item2: proc_macro2::TokenStream = item.clone().into();
+    let attr2: proc_macro2::TokenStream = attr.clone().into();
+
+    // 1. Trait definition → exported trait
+    if let Ok(trait_item) = syn::parse2::<ItemTrait>(item2.clone()) {
+        let args = match syn::parse2::<ImplementableArgs>(attr2) {
+            Ok(a) => a,
+            Err(e) => return e.to_compile_error().into(),
+        };
+        return implementable_inner(args, trait_item);
+    }
+
+    // Non-trait items must not have attribute arguments.
+    if !attr.is_empty() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[ffier::export] does not accept arguments on this item kind",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    // 2. Enum
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
         return exportable_enum(enum_item);
     }
+
+    // 3. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
         return exportable_free_fn(fn_item);
     }
-    let input = parse_macro_input!(item as ItemImpl);
 
+    // 4. Impl block — trait impl or inherent impl
+    let input = parse_macro_input!(item as ItemImpl);
+    if input.trait_.is_some() {
+        return trait_impl_inner(input);
+    }
+    exportable_struct_impl(input)
+}
+
+fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
@@ -401,10 +446,10 @@ pub fn exportable(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ---------------------------------------------------------------------------
-// #[ffier::exportable] on enums
+// #[ffier::export] on enums
 // ---------------------------------------------------------------------------
 
-/// Handle `#[ffier::exportable]` on a `#[repr(uN)]` enum.
+/// Handle `#[ffier::export]` on a `#[repr(uN)]` enum.
 ///
 /// Extracts the repr type and variant discriminants, emits a metadata macro
 /// that bridges to the schema generator. Also generates a `FfiType` impl
@@ -421,7 +466,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
         None => {
             return syn::Error::new_spanned(
                 &input,
-                "#[ffier::exportable] on enums requires #[repr(u8/u16/u32/u64/i8/i16/i32/i64)]",
+                "#[ffier::export] on enums requires #[repr(u8/u16/u32/u64/i8/i16/i32/i64)]",
             )
             .to_compile_error()
             .into();
@@ -437,7 +482,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
         if !variant.fields.is_empty() {
             return syn::Error::new_spanned(
                 variant,
-                "#[ffier::exportable] enums must have unit variants only (no fields)",
+                "#[ffier::export] enums must have unit variants only (no fields)",
             )
             .to_compile_error()
             .into();
@@ -696,10 +741,10 @@ impl Parse for BitflagsInput {
 }
 
 // ---------------------------------------------------------------------------
-// #[ffier::exportable] on free functions
+// #[ffier::export] on free functions
 // ---------------------------------------------------------------------------
 
-/// Handle `#[ffier::exportable]` on a free (non-method) function.
+/// Handle `#[ffier::export]` on a free (non-method) function.
 fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
     let fn_name = &input.sig.ident;
     let fn_name_str = fn_name.to_string();
@@ -1242,7 +1287,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         }
 
-        #[ffier::trait_impl]
+        #[ffier::export]
         impl ffier::Error for #name {
             fn code(&self) -> u32 {
                 ffier::FfiError::code(self)
@@ -1491,7 +1536,7 @@ fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
 }
 
 // ===========================================================================
-// #[ffier::implementable] — C users can implement a Rust trait via vtable
+// #[ffier::export] on trait definitions — C users can implement a Rust trait via vtable
 // ===========================================================================
 
 struct ImplementableArgs {
@@ -1549,7 +1594,7 @@ impl Parse for ImplementableArgs {
 }
 
 // ---------------------------------------------------------------------------
-// Unified method parsing — shared by #[exportable], #[implementable], #[trait_impl]
+// Unified method parsing — shared by all #[ffier::export] item kinds
 // ---------------------------------------------------------------------------
 
 fn extract_vtable_methods(
@@ -1622,8 +1667,8 @@ fn extract_vtable_methods(
 ///
 /// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
 /// - `self_ty`: if `Some`, `Self` in param/return types is replaced with this type
-///   and builder pattern is detected. Typically `Some` for `#[exportable]`, `None`
-///   for `#[implementable]`/`#[trait_impl]`.
+///   and builder pattern is detected. Typically `Some` for exported struct impls, `None`
+///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
 fn parse_method_sig(
@@ -1649,7 +1694,7 @@ fn parse_method_sig(
                     Receiver::Ref
                 }
             }
-            _ if self_ty.is_some() => Receiver::None, // static method in exportable
+            _ if self_ty.is_some() => Receiver::None, // static method in exported impl
             _ if self_ty.is_none() && !has_default => Receiver::None, // free function
             _ => return None,                         // trait method without receiver — skip
         }
@@ -1777,7 +1822,7 @@ fn parse_method_sig(
     let self_ty_static = self_ty.map(erase_lifetimes);
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
 
-    // Builder detection: method returns Self (only for exportable, requires a receiver)
+    // Builder detection: method returns Self (only for exported impls, requires a receiver)
     let has_receiver = receiver != Receiver::None;
     let is_builder = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
         match &sig.output {
@@ -1918,7 +1963,7 @@ fn parse_method_sig(
 enum MethodMetaKind {
     /// Trait definition method — carries index/has_default/raw_handle.
     Definition,
-    /// Concrete method (exportable or trait_impl) — carries ffi_name/is_builder.
+    /// Concrete method (exported struct impl or trait impl) — carries ffi_name/is_builder.
     Impl,
 }
 
@@ -2102,7 +2147,7 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
 
 /// Generate `impl Trait for &mut dyn Trait` for dynamic dispatch fallback.
 ///
-/// `#[ffier::implementable]` implies `#[ffier::dispatch]` — use this
+/// `#[ffier::export]` on traits implies `#[ffier::dispatch]` — use this
 /// annotation alone when you want dynamic dispatch fallback without
 /// exporting the trait's vtable to C.
 #[proc_macro_attribute]
@@ -2119,11 +2164,8 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
-#[proc_macro_attribute]
-pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(attr as ImplementableArgs);
+fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenStream {
     let is_foreign = args.foreign;
-    let trait_item = parse_macro_input!(item as ItemTrait);
     let original_trait = trait_item.clone();
 
     let trait_name = &trait_item.ident;
@@ -2549,13 +2591,10 @@ pub fn implementable(attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 // ===========================================================================
-// #[ffier::trait_impl] — export trait method impls as C functions
+// #[ffier::export] on trait impl blocks — export trait method impls as C functions
 // ===========================================================================
 
-#[proc_macro_attribute]
-pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(item as ItemImpl);
-
+fn trait_impl_inner(input: ItemImpl) -> TokenStream {
     // Build the output impl block with #[ffier(skip)] attributes stripped.
     let mut clean_impl = input.clone();
     for item in &mut clean_impl.items {
@@ -2760,8 +2799,8 @@ pub fn trait_impl(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// `str_free` always use the library prefix (`krun_init_str_free`).
 ///
 /// Supports three entry kinds:
-/// - `Path = N` — exportable struct or error enum with type tag
-/// - `trait Path = N` — implementable trait with type tag
+/// - `Path = N` — exported struct or error enum with type tag
+/// - `trait Path = N` — exported trait with type tag
 /// - `TraitPath for StructPath` — trait impl bridge (uses the struct's tag)
 ///
 /// Each annotated type generates a `__ffier_meta_*` alias macro next to the

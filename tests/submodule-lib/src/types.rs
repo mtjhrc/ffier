@@ -9,7 +9,7 @@ impl Default for Counter {
     }
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Counter {
     pub fn new() -> Self {
         Self { value: 0 }
@@ -33,7 +33,7 @@ impl Default for Doubler {
     }
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Doubler {
     pub fn new() -> Self {
         Self

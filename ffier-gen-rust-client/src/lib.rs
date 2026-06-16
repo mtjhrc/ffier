@@ -4,7 +4,7 @@
 //! - Error enums with `from_ffi`, `Display`, `Error` impls
 //! - Handle wrapper structs with extern "C" declarations
 //! - Safe method wrappers with lifetime-correct signatures
-//! - Trait definitions with vtable structs for implementable traits
+//! - Trait definitions with vtable structs for exported traits
 //! - Trait impl blocks for concrete types
 
 use ffier_schema::{

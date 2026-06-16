@@ -39,7 +39,7 @@ pub struct Library {
     /// Bitflags types exported as C `#define` constants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bitflags_constants: Vec<EnumType>,
-    /// Free (non-method) functions exported via `#[ffier::exportable]`.
+    /// Free (non-method) functions exported via `#[ffier::export]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub free_functions: Vec<FreeFunction>,
     pub traits: Vec<ImplementableTrait>,
@@ -88,7 +88,7 @@ pub struct TypeEntry {
     /// What kind of type this is.
     pub kind: TypeKind,
     /// Stable type tag from `library_definition!`. Only present for
-    /// handles, errors, and implementable traits.
+    /// handles, errors, and exported traits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub type_tag: Option<u32>,
     /// Optional blessing for well-known types.
@@ -124,7 +124,7 @@ pub enum TypeKind {
         /// The underlying type name this aliases.
         alias_of: std::string::String,
     },
-    /// Opaque handle type (a struct exported via `#[exportable]`).
+    /// Opaque handle type (a struct exported via `#[ffier::export]`).
     Handle {
         /// Library-prefixed C typedef name (e.g. `"FtWidget"`).
         c_name: std::string::String,
@@ -134,7 +134,7 @@ pub enum TypeKind {
         /// Library-prefixed C typedef name (e.g. `"FtTestError"`).
         c_name: std::string::String,
     },
-    /// Trait (from `#[implementable]` or discovered via `#[trait_impl]`).
+    /// Trait (from `#[ffier::export]` on a trait definition, or discovered via trait impls).
     Trait {
         /// Library-prefixed C typedef name (e.g. `"FtFruit"`).
         c_name: std::string::String,
@@ -295,10 +295,10 @@ impl TypeRef {
 }
 
 // ---------------------------------------------------------------------------
-// Exported types (structs with #[exportable] methods)
+// Exported types (structs with #[ffier::export] methods)
 // ---------------------------------------------------------------------------
 
-/// A struct exported via `#[ffier::exportable]`.
+/// A struct exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedType {
     /// Rust struct name — key into `type_registry`.
@@ -316,7 +316,7 @@ pub struct ExportedType {
 // Methods
 // ---------------------------------------------------------------------------
 
-/// A method. Used in exported types, implementable traits, and trait impls.
+/// A method. Used in exported types, exported traits, and trait impls.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Method {
     /// Rust method name (e.g. "get_count").
@@ -332,13 +332,13 @@ pub struct Method {
     pub ret: Return,
     /// C FFI function name (e.g. `"ft_widget_get_count"`, `"ft_fruit_eat"`).
     pub ffi_name: String,
-    /// Present only for trait definition methods (from `#[implementable]`).
+    /// Present only for trait definition methods (from `#[ffier::export]` on a trait).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_definition: Option<TraitMethodDefinition>,
 }
 
 /// Extra fields that only exist on trait *definition* methods
-/// (from `#[implementable]`), not on concrete impls.
+/// (from `#[ffier::export]` on a trait), not on concrete impls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitMethodDefinition {
     /// Vtable slot index.
@@ -568,7 +568,7 @@ pub struct EnumVariant {
 // Free functions
 // ---------------------------------------------------------------------------
 
-/// A free function exported via `#[ffier::exportable]`.
+/// A free function exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FreeFunction {
     /// Rust function name (e.g. "init_log").
@@ -583,10 +583,10 @@ pub struct FreeFunction {
 }
 
 // ---------------------------------------------------------------------------
-// Implementable traits
+// Exported traits
 // ---------------------------------------------------------------------------
 
-/// A trait exported via `#[ffier::implementable]`.
+/// A trait exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImplementableTrait {
     /// Trait name — key into `type_registry`.
@@ -616,7 +616,7 @@ pub struct ImplementableTrait {
 // Trait impls
 // ---------------------------------------------------------------------------
 
-/// An `impl Trait for Struct` exported via `#[ffier::trait_impl]`.
+/// An `impl Trait for Struct` exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitImpl {
     /// Trait name — key into `type_registry`.

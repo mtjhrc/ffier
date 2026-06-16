@@ -10,7 +10,7 @@ use core::ffi::c_void;
 ///
 /// Always heap-allocated via `Box<FfierHandle<T>>`. The FFI pointer is
 /// `*mut c_void` pointing to the `FfierHandle<T>`. All handle types —
-/// regular exportable types, error types, vtable types — share this
+/// regular exported types, error types, vtable types — share this
 /// exact layout, differing only in `T`.
 #[repr(C)]
 pub struct FfierHandle<T> {
@@ -52,7 +52,7 @@ pub const METADATA_BORROWED: u32 = 2;
 pub const METADATA_ARRAY_ELEMENT: u32 = 4;
 
 /// Metadata bit 3: the handle carries default-dispatch re-entry metadata
-/// for an `#[ffier::implementable]` trait method.
+/// for an exported trait method.
 ///
 /// When set, the upper bits encode the trait method index. This is used by
 /// generated Rust client bindings to mark temporary vtable handles created
@@ -279,11 +279,11 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
 }
 
 // ---------------------------------------------------------------------------
-// VtableHandle --- payload for #[ffier::implementable] trait handles
+// VtableHandle --- payload for exported trait handles
 // ---------------------------------------------------------------------------
 
 /// Vtable handle payload — stored inline in the handle's payload region
-/// for `#[ffier::implementable]` trait handles.
+/// for exported trait handles.
 #[repr(C)]
 pub struct VtableHandle {
     pub vtable_ptr: *const c_void,

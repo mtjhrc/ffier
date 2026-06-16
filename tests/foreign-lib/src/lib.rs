@@ -22,7 +22,7 @@ pub struct ForeignItem {
     pub score: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl ForeignItem {
     pub fn new(label: &str, score: i32) -> Self {
         ForeignItem {
@@ -49,7 +49,7 @@ pub struct ForeignConfig {
     pub value: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl ForeignConfig {
     pub fn new(name: &str, value: i32) -> Self {
         ForeignConfig {

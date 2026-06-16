@@ -759,7 +759,7 @@ mod tests {
     }
 
     // ================================================================
-    // Vtable / implementable
+    // Vtable / exported traits
     // ================================================================
 
     static DROP_CALLED: AtomicBool = AtomicBool::new(false);

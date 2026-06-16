@@ -7,7 +7,7 @@
 //! - Function declarations with doc comments
 //! - Destroy functions
 //! - Trait impl bridge functions
-//! - Self-dispatch functions for implementable traits
+//! - Self-dispatch functions for exported traits
 //! - Error handle functions
 //! - Utility functions (result_name)
 
@@ -63,7 +63,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
         emit_error_section(&mut out, err, lib);
     }
 
-    // Type sections (exportable methods + destroy)
+    // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
         emit_type_section(&mut out, ty, lib);
     }
@@ -318,7 +318,7 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
             .push(implementor_c);
     }
 
-    // For implementable traits, also add the VtableXxx wrapper as an implementor
+    // For exported traits, also add the VtableXxx wrapper as an implementor
     for tr in &lib.traits {
         trait_implementors
             .entry(tr.name.clone())
@@ -430,7 +430,7 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
 }
 
 // ---------------------------------------------------------------------------
-// Self-dispatch functions for implementable traits
+// Self-dispatch functions for exported traits
 // ---------------------------------------------------------------------------
 
 fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
@@ -521,7 +521,7 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
 // Declaration formatting
 // ---------------------------------------------------------------------------
 
-/// Format a C function declaration for an exportable method.
+/// Format a C function declaration for an exported method.
 fn format_c_declaration(
     ffi_name: &str,
     handle_c_name: &str,

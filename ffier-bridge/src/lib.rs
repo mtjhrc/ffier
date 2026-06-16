@@ -30,7 +30,7 @@ struct ErrorInfo {
 
 struct TraitDispatchInfo {
     pub variants: Vec<TraitVariant>,
-    /// If the trait is `#[implementable]`, trait-level dispatch metadata.
+    /// If the trait has an `@implementable` metadata entry, trait-level dispatch info.
     pub implementable: Option<ImplementableInfo>,
 }
 
@@ -56,7 +56,7 @@ struct ImplementableInfo {
     pub own_method_count: usize,
 }
 
-/// Build the trait-to-impls map from parsed implementable and trait_impl metadata.
+/// Build the trait-to-impls map from parsed `@implementable` and `@trait_impl` metadata.
 fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]) -> TraitMap {
     let mut map = TraitMap::new();
 
@@ -252,7 +252,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
     }
 
-    // Pass 1: Build trait-to-impls map from trait_impl and implementable entries.
+    // Pass 1: Build trait-to-impls map from @trait_impl and @implementable entries.
     // This allows resolving `impl Trait` params automatically.
     let trait_map = build_trait_map(&implementables, &trait_impls);
 
@@ -482,7 +482,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
     };
 
-    // Pass 3: Generate self-dispatch functions for implementable traits.
+    // Pass 3: Generate self-dispatch functions for exported traits.
     // For each trait with an @implementable entry, generate per-trait dispatching
     // C functions that read the type tag and dispatch to the concrete implementor.
     for (trait_name, info) in &trait_map {
@@ -986,7 +986,7 @@ fn convert_params(
         return Err(quote! { compile_error!(#msg); });
     }
 
-    // Check vtable dispatch is possible (trait must be #[implementable])
+    // Check vtable dispatch is possible (trait must be exported)
     for p in &impl_trait_params {
         if p.dispatch == ffier_meta::DispatchMode::Vtable
             && trait_map
@@ -996,7 +996,7 @@ fn convert_params(
         {
             let msg = format!(
                 "ffier: `#[ffier(dispatch = vtable)]` on param `{}` requires trait `{}` \
-                 to have `#[ffier::implementable]`",
+                 to have `#[ffier::export]`",
                 p.name, p.trait_name,
             );
             return Err(quote! { compile_error!(#msg); });
@@ -1290,7 +1290,7 @@ fn generate_implementable_bridge(
     _meta: MetaImplementable,
     _lib_crate: &TokenStream2,
 ) -> TokenStream2 {
-    // No per-type bridge functions needed for implementable traits.
+    // No per-type bridge functions needed for exported traits.
     // The vtable ABI is defined by the vtable struct layout, not by generated bridge code.
     quote! {}
 }
@@ -1327,7 +1327,7 @@ struct BuilderCtx<'a> {
 ///
 /// This is the single source of truth for "given an expression that evaluates
 /// to the Rust return type, produce tokens that convert it to the C return".
-/// Used by exportable methods, free functions, and trait dispatch.
+/// Used by exported methods, free functions, and trait dispatch.
 fn wrap_return(
     call_expr: TokenStream2,
     ret: &MetaReturn,
@@ -1771,7 +1771,7 @@ fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
     }
 }
 
-/// Generate per-trait dispatching C functions for an `#[ffier::implementable]` trait.
+/// Generate per-trait dispatching C functions for an exported trait.
 ///
 /// For each method on the trait, generates a single C function that reads the
 /// type tag from the handle and dispatches to the concrete implementor's method.
@@ -1796,7 +1796,7 @@ fn generate_self_dispatch_bridge(
     let imp = info
         .implementable
         .as_ref()
-        .expect("generate_self_dispatch_bridge called for non-implementable trait");
+        .expect("generate_self_dispatch_bridge called for non-exported trait");
     let trait_path = &imp.trait_path;
     let trait_snake = camel_to_snake(trait_name);
     let fn_pfx = format!("{prefix}_");
@@ -1807,9 +1807,9 @@ fn generate_self_dispatch_bridge(
 
     // Generate dispatching functions for each trait method (own methods only,
     // not supertrait methods — those need their own dispatch via their own trait).
-    // TODO: Reconsider the `supers(...)` syntax on #[ffier::implementable].
+    // TODO: Reconsider the `supers(...)` syntax on #[ffier::export] for traits.
     //       Perhaps supertrait methods should be exported by making the supertrait
-    //       itself #[ffier::implementable] (or at least having its own trait_impl
+    //       itself `#[ffier::export]` (or at least having its own trait_impl
     //       entries), rather than inlining them into the subtrait's vtable.
     let own_methods = &imp.methods[..imp.own_method_count];
     for m in own_methods.iter() {
@@ -1837,7 +1837,7 @@ fn generate_self_dispatch_bridge(
         let sig_types: Vec<_> = all_params.iter().map(|(_, t)| *t).collect();
         let sig_ret = &c_sig.ret;
 
-        // Shared param conversion (same as exportable methods / free functions).
+        // Shared param conversion (same as exported methods / free functions).
         let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
             Ok(cp) => cp,
             Err(err) => return err,
@@ -1868,7 +1868,7 @@ fn generate_self_dispatch_bridge(
 
                 // For the VtableFoo variant of defaulted methods, check metadata
                 // before calling through the vtable. Skip for raw_handle methods
-                // since #[implementable] doesn't generate default helpers for them.
+                // since exported trait macros don't generate default helpers for them.
                 let metadata_guard =
                     if v.kind == TraitVariantKind::Wrapper && m.has_default() && !m.raw_handle() {
                         if let Some(helper) = &default_helper_path {
@@ -2707,7 +2707,7 @@ fn build_schema(
         );
     }
 
-    // Traits discovered via trait_impls (no implementable annotation).
+    // Traits discovered via trait_impls (no @implementable metadata entry).
     // Infer lifetime params from the trait_lifetime_args of the impls
     // (filtering out 'static which is a concrete binding, not a param).
     for ti in &trait_impls_parsed {
@@ -2937,7 +2937,7 @@ fn convert_trait_impl(
 
 /// Convert a method to its schema representation.
 /// `parent_ffi_prefix` is the `"{type_snake}_"` prefix for the parent type/trait
-/// (e.g. `"fruit_"` for an implementable trait).
+/// (e.g. `"fruit_"` for an exported trait).
 /// Only needed for trait definition methods; concrete methods already carry their own ffi_name.
 fn convert_method(
     meta: &MetaMethod,

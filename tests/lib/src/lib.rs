@@ -40,7 +40,7 @@ pub struct Widget {
     gadgets: Vec<Gadget>,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Widget {
     /// Create a new widget with default values.
     pub fn new() -> Self {
@@ -278,7 +278,7 @@ pub struct Gadget {
     value: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Gadget {
     /// Get the gadget value.
     pub fn get(&self) -> i32 {
@@ -295,7 +295,7 @@ pub struct Config {
     size: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Config {
     /// Create a new config.
     pub fn new() -> Self {
@@ -352,7 +352,7 @@ pub struct Gizmo {
     size: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Gizmo {
     /// Get the gizmo name.
     pub fn name(&self) -> &str {
@@ -370,7 +370,7 @@ pub struct GizmoBuilder {
     size: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl GizmoBuilder {
     /// Create a new gizmo builder.
     pub fn new() -> Self {
@@ -426,7 +426,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -475,7 +475,7 @@ impl<'a> View<'a> {
 
 pub struct ViewFactory;
 
-#[ffier::exportable]
+#[ffier::export]
 impl ViewFactory {
     pub fn new() -> Self {
         ViewFactory
@@ -503,7 +503,7 @@ impl Default for ViewFactory {
 // Implementable trait: Processor
 // ---------------------------------------------------------------------------
 
-#[ffier::implementable]
+#[ffier::export]
 pub trait Processor {
     #[ffier(index = 0)]
     fn process(&self, input: i32) -> i32;
@@ -519,7 +519,7 @@ pub struct Pipeline {
     results: Vec<i32>,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Pipeline {
     /// Create a new pipeline.
     pub fn new() -> Self {
@@ -563,7 +563,7 @@ pub struct Apple {
     weight: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Apple {
     pub fn new(weight: i32) -> Self {
         Apple { weight }
@@ -574,7 +574,7 @@ pub struct Orange {
     juice: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Orange {
     pub fn new(juice: i32) -> Self {
         Orange { juice }
@@ -582,7 +582,7 @@ impl Orange {
 }
 
 #[cfg(feature = "fruit-label")]
-#[ffier::implementable]
+#[ffier::export]
 pub trait Fruit {
     #[ffier(index = 0)]
     fn value(&self) -> i32;
@@ -604,7 +604,7 @@ pub trait Fruit {
 }
 
 #[cfg(not(feature = "fruit-label"))]
-#[ffier::implementable]
+#[ffier::export]
 pub trait Fruit {
     #[ffier(index = 0)]
     fn value(&self) -> i32;
@@ -616,7 +616,7 @@ pub trait Fruit {
     fn count_tags(&self, tags: &[&str]) -> i32;
 }
 
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Apple {
     fn value(&self) -> i32 {
         self.weight
@@ -633,7 +633,7 @@ impl Fruit for Apple {
     }
 }
 
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         self.juice
@@ -653,13 +653,13 @@ impl Fruit for Orange {
 // Extra fruit types so that blend(a: impl Fruit, b: impl Fruit) has
 // 9 variants (8 concrete + VtableFruit). 9^2 = 81 > 64 dispatch limit.
 pub struct Banana(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Banana {
     pub fn new(v: i32) -> Self {
         Banana(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Banana {
     fn value(&self) -> i32 {
         self.0
@@ -677,13 +677,13 @@ impl Fruit for Banana {
 }
 
 pub struct Mango(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Mango {
     pub fn new(v: i32) -> Self {
         Mango(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Mango {
     fn value(&self) -> i32 {
         self.0
@@ -701,13 +701,13 @@ impl Fruit for Mango {
 }
 
 pub struct Peach(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Peach {
     pub fn new(v: i32) -> Self {
         Peach(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Peach {
     fn value(&self) -> i32 {
         self.0
@@ -725,13 +725,13 @@ impl Fruit for Peach {
 }
 
 pub struct Plum(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Plum {
     pub fn new(v: i32) -> Self {
         Plum(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Plum {
     fn value(&self) -> i32 {
         self.0
@@ -749,13 +749,13 @@ impl Fruit for Plum {
 }
 
 pub struct Grape(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Grape {
     pub fn new(v: i32) -> Self {
         Grape(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Grape {
     fn value(&self) -> i32 {
         self.0
@@ -773,13 +773,13 @@ impl Fruit for Grape {
 }
 
 pub struct Lemon(i32);
-#[ffier::exportable]
+#[ffier::export]
 impl Lemon {
     pub fn new(v: i32) -> Self {
         Lemon(v)
     }
 }
-#[ffier::trait_impl]
+#[ffier::export]
 impl Fruit for Lemon {
     fn value(&self) -> i32 {
         self.0
@@ -800,7 +800,7 @@ pub struct Mixer {
     total: i32,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 #[allow(clippy::should_implement_trait)]
 impl Mixer {
     pub fn new() -> Self {
@@ -882,7 +882,7 @@ pub struct Sprocket {
     name: String,
 }
 
-#[ffier::exportable]
+#[ffier::export]
 impl Sprocket {
     pub fn new(name: &str) -> Self {
         Sprocket {
@@ -900,7 +900,7 @@ impl Sprocket {
     }
 }
 
-#[ffier::trait_impl]
+#[ffier::export]
 impl Attachment for Sprocket {
     fn label(&self) -> &str {
         &self.name
@@ -913,7 +913,7 @@ impl Attachment for Sprocket {
 }
 
 // ---------------------------------------------------------------------------
-// Lifetime-parameterized trait_impl — tests that `impl<'a> Trait<'a> for Struct<'a>`
+// Lifetime-parameterized trait impl — tests that `impl<'a> Trait<'a> for Struct<'a>`
 // preserves lifetimes in generated client code.
 // ---------------------------------------------------------------------------
 
@@ -922,7 +922,7 @@ pub trait Snapshot<'a> {
     fn snap_source_count(&self) -> i32;
 }
 
-#[ffier::trait_impl]
+#[ffier::export]
 impl<'a> Snapshot<'a> for View<'a> {
     fn snap_description(&self) -> &str {
         &self.label
@@ -935,7 +935,7 @@ impl<'a> Snapshot<'a> for View<'a> {
 
 /// Static impl — tests that `impl Trait<'static> for Struct` preserves
 /// the concrete `'static` lifetime on the trait.
-#[ffier::trait_impl]
+#[ffier::export]
 impl Snapshot<'static> for Widget {
     fn snap_description(&self) -> &str {
         &self.name
@@ -949,7 +949,7 @@ impl Snapshot<'static> for Widget {
 /// Generic lifetime impl for a struct without lifetime params — tests that
 /// `impl<'a> Trait<'a> for Struct` does NOT add a spurious `<'a>` to the struct
 /// in the generated client code.
-#[ffier::trait_impl]
+#[ffier::export]
 impl<'a> Snapshot<'a> for Gadget {
     fn snap_description(&self) -> &str {
         "gadget"
@@ -966,13 +966,13 @@ impl<'a> Snapshot<'a> for Gadget {
 
 pub use foreign_trait_crate::Weighable;
 
-#[ffier::implementable(foreign)]
+#[ffier::export(foreign)]
 trait Weighable {
     #[ffier(index = 0)]
     fn weight_grams(&self) -> i32;
 }
 
-#[ffier::trait_impl]
+#[ffier::export]
 impl Weighable for Apple {
     fn weight_grams(&self) -> i32 {
         self.weight * 10
@@ -983,7 +983,7 @@ impl Weighable for Apple {
 // Enum constants — plain enums exported as C #define constants
 // ---------------------------------------------------------------------------
 
-#[ffier::exportable]
+#[ffier::export]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -1020,7 +1020,7 @@ ffier::exportable_bitflags!(Permissions: u32 {
 // Free functions — not methods on any type
 // ---------------------------------------------------------------------------
 
-#[ffier::exportable]
+#[ffier::export]
 /// Describe a log level as a string.
 pub fn log_level_name(level: LogLevel) -> &'static str {
     match level {
@@ -1033,19 +1033,19 @@ pub fn log_level_name(level: LogLevel) -> &'static str {
     }
 }
 
-#[ffier::exportable]
+#[ffier::export]
 /// Check if a log level is enabled (everything above Off).
 pub fn log_level_is_enabled(level: LogLevel) -> bool {
     level as u32 > 0
 }
 
-#[ffier::exportable]
+#[ffier::export]
 /// Count the number of gadgets in a slice and return the sum of their values.
 pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
     gadgets.iter().map(|g| g.value).sum()
 }
 
-#[ffier::exportable]
+#[ffier::export]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     fd.try_clone_to_owned()
@@ -1057,7 +1057,7 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 // ---------------------------------------------------------------------------
 
 /// Apply a foreign config: extract the name and value, set them on the widget.
-#[ffier::exportable]
+#[ffier::export]
 pub fn apply_foreign_config(
     widget: &mut Widget,
     #[ffier(foreign = ffier_test_foreign_lib)] config: &ffier_test_foreign_lib::ForeignConfig,
@@ -1067,7 +1067,7 @@ pub fn apply_foreign_config(
 }
 
 /// Read a foreign item's score.
-#[ffier::exportable]
+#[ffier::export]
 pub fn read_foreign_item_score(
     #[ffier(foreign = ffier_test_foreign_lib)] item: &ffier_test_foreign_lib::ForeignItem,
 ) -> i32 {
@@ -1075,14 +1075,14 @@ pub fn read_foreign_item_score(
 }
 
 /// Create a foreign item from our library's data (tests foreign return type).
-#[ffier::exportable]
+#[ffier::export]
 #[ffier(foreign_return = ffier_test_foreign_lib)]
 pub fn create_foreign_item(label: &str, score: i32) -> ffier_test_foreign_lib::ForeignItem {
     ffier_test_foreign_lib::ForeignItem::new(label, score)
 }
 
 /// Create a foreign config, returning Result (tests foreign return in GLib-style Result).
-#[ffier::exportable]
+#[ffier::export]
 #[ffier(foreign_return = ffier_test_foreign_lib)]
 pub fn create_foreign_config_checked(
     name: &str,
@@ -1103,13 +1103,13 @@ use core::ffi::c_void;
 
 /// Accept an opaque pointer and return it unchanged (round-trip test).
 /// Uses bare `c_void` (via `use`) to verify the macro emits fully qualified paths.
-#[ffier::exportable]
+#[ffier::export]
 pub fn opaque_round_trip(ptr: *mut c_void) -> *mut c_void {
     ptr
 }
 
 /// Accept an opaque const pointer and return its address as an integer.
-#[ffier::exportable]
+#[ffier::export]
 pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
     ptr as usize
 }
