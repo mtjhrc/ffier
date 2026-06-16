@@ -5,6 +5,7 @@
 //! these tokens back into the types defined here, then produce code.
 
 use proc_macro2::TokenStream;
+use quote::quote;
 use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
@@ -1278,4 +1279,49 @@ impl syn::parse::Parse for MetaTraitImpl {
             methods,
         })
     }
+}
+
+// ---------------------------------------------------------------------------
+// Type identity helpers — shared between ffier-annotations and ffier-bridge
+// ---------------------------------------------------------------------------
+
+/// Extract the last path segment name from a `syn::Type::Path`.
+///
+/// e.g. `std::result::Result` → `"Result"`, `Widget` → `"Widget"`.
+pub fn type_last_name(ty: &syn::Type) -> Option<String> {
+    match ty {
+        syn::Type::Path(tp) => tp.path.segments.last().map(|seg| seg.ident.to_string()),
+        _ => None,
+    }
+}
+
+/// Extract the `Ok` type from `Result<OkType, ErrType>` tokens.
+///
+/// If the tokens don't parse as a `Result<...>`, returns the input unchanged.
+pub fn extract_result_ok_type(tokens: &TokenStream) -> TokenStream {
+    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
+        && let syn::Type::Path(tp) = &ty
+        && let Some(last) = tp.path.segments.last()
+        && last.ident == "Result"
+        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
+        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
+    {
+        return quote! { #ok_ty };
+    }
+    tokens.clone()
+}
+
+/// Check if a `Result<T, E>` return type has an `Ok` type that is a handle,
+/// using the original Rust return type tokens (not aliased `bridge_type`).
+pub fn is_result_ok_handle(
+    rust_ret: &TokenStream,
+    handle_names: &std::collections::HashSet<String>,
+) -> bool {
+    let ok_tokens = extract_result_ok_type(rust_ret);
+    let Ok(ok_ty) = syn::parse2::<syn::Type>(ok_tokens) else {
+        return false;
+    };
+    type_last_name(&ok_ty)
+        .map(|name| name == "Self" || handle_names.contains(&name))
+        .unwrap_or(false)
 }

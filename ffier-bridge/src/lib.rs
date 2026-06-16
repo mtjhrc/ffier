@@ -11,8 +11,8 @@ use std::collections::{HashMap, HashSet};
 use ffier_meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake, peek_meta_field,
-    peek_meta_tag,
+    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
+    extract_result_ok_type, is_result_ok_handle, peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -1299,55 +1299,17 @@ fn generate_implementable_bridge(
 // Shared C ABI type resolution — used by both ffier-bridge and ffier-gen-rust
 // ===========================================================================
 
-/// Extract the last path segment name from a token stream like `$crate::Gadget`.
-/// Extract the type name (last path segment) from a syn::Type, ignoring
-/// lifetime/type arguments. E.g. `FsDevice<'a>` → `"FsDevice"`,
-/// `crate::Widget` → `"Widget"`, `Self` → `"Self"`.
-fn type_name(ty: &syn::Type) -> Option<String> {
-    match ty {
-        syn::Type::Path(tp) => tp.path.segments.last().map(|seg| seg.ident.to_string()),
-        _ => None,
-    }
-}
-
 /// Check if a type (parsed from rust_ret tokens) is `&T` or `&mut T` where
 /// `T` is a handle type. Used to emit `ffier_handle_new_borrowed` for
 /// borrowed handle returns.
 fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {
-        type_name(&ref_ty.elem)
+        ffier_meta::type_last_name(&ref_ty.elem)
             .map(|name| name == "Self" || handle_types.contains(&name))
             .unwrap_or(false)
     } else {
         false
     }
-}
-
-/// Check if a Result<T, E> Ok type is a handle, using the original Rust
-/// return type tokens (e.g. `Result<Gadget, TestError>`) rather than the
-/// bridge_type alias (which may be an opaque `_TypeN`).
-fn is_result_ok_handle(rust_ret: &TokenStream2, handle_types: &HashSet<String>) -> bool {
-    let ok_tokens = extract_result_ok_type(rust_ret);
-    let Ok(ok_ty) = syn::parse2::<syn::Type>(ok_tokens) else {
-        return false;
-    };
-    type_name(&ok_ty)
-        .map(|name| name == "Self" || handle_types.contains(&name))
-        .unwrap_or(false)
-}
-
-/// Extract the Ok type from `Result<OkType, ErrType>` tokens.
-fn extract_result_ok_type(tokens: &TokenStream2) -> TokenStream2 {
-    if let Ok(ty) = syn::parse2::<syn::Type>(tokens.clone())
-        && let syn::Type::Path(tp) = &ty
-        && let Some(last) = tp.path.segments.last()
-        && last.ident == "Result"
-        && let syn::PathArguments::AngleBracketed(args) = &last.arguments
-        && let Some(syn::GenericArgument::Type(ok_ty)) = args.args.first()
-    {
-        return quote! { #ok_ty };
-    }
-    tokens.clone()
 }
 
 // ===========================================================================

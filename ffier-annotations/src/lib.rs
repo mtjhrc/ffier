@@ -3819,10 +3819,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 quote! { -> ffier::FfierObjectArray }
             }
             ffier_meta::MetaReturn::Result { ok, .. } => {
-                let ok_is_handle = ok.as_ref().is_some_and(|tp| {
-                    let name = tp.bridge_type.to_string();
-                    handle_names.contains(&name)
-                });
+                let ok_is_handle =
+                    ok.is_some() && ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 if ok_is_handle {
                     // GLib-style: return handle, err_out param
                     param_types.push(quote! { *mut *mut core::ffi::c_void });
@@ -3894,10 +3892,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 }
             }
 
-            let ok_is_handle = matches!(&m.ret, ffier_meta::MetaReturn::Result { ok: Some(tp), .. } if {
-                let name = tp.bridge_type.to_string();
-                handle_names.contains(&name)
-            });
+            let ok_is_handle = matches!(&m.ret, ffier_meta::MetaReturn::Result { ok: Some(_), .. })
+                && ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
 
             let fn_ptr_ret = match &m.ret {
                 ffier_meta::MetaReturn::Void => quote! {},
