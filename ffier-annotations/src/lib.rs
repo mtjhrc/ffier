@@ -4102,6 +4102,30 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // --- Static assertions: verify proc-macro handle detection agrees with FfiType::IS_HANDLE ---
+    let handle_assertions: Vec<proc_macro2::TokenStream> = own_non_raw
+        .iter()
+        .filter_map(|m| {
+            if let ffier_meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
+                let bt = &tp.bridge_type;
+                let ok_is_handle = ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
+                let method_name = m.name.to_string();
+                Some(quote! {
+                    assert!(
+                        <#bt as FfiType>::IS_HANDLE == #ok_is_handle,
+                        concat!(
+                            "handle detection mismatch for method `",
+                            #method_name,
+                            "`: proc-macro and FfiType::IS_HANDLE disagree",
+                        ),
+                    );
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let output = quote! {
         #[repr(C)]
         pub struct #vtable_struct {
@@ -4111,6 +4135,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
         const _: () = {
             use #crate_path::*;
+
+            #(#handle_assertions)*
 
             impl #trait_path #trait_generics for #wrapper {
                 #(#own_method_impls)*
