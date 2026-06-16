@@ -8,6 +8,6 @@ proc-macro = true
 
 [dependencies]
 ffier-meta = { path = "../ffier-meta" }
-syn = { version = "2", features = ["full", "visit-mut"] }
+syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }
 quote = "1"
 proc-macro2 = "1"

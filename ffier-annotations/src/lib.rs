@@ -934,9 +934,8 @@ impl AliasContext {
         if is_primitive(ty) {
             return quote! { #ty };
         }
-        let ty_str = quote!(#ty).to_string();
         for (i, existing) in self.types.iter().enumerate() {
-            if quote!(#existing).to_string() == ty_str {
+            if existing == ty {
                 let alias = &self.aliases[i];
                 let helper = &self.helper_mod;
                 return quote! { $crate::#helper::#alias };
