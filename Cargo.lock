@@ -18,19 +18,9 @@ checksum = "c4512299f36f043ab09a583e57bceb5a5aab7a73db1805848e8fef3c9e8c78b3"
 name = "ffier"
 version = "0.2.0"
 dependencies = [
- "ffier-annotations",
  "ffier-builtins",
+ "ffier-impl",
  "ffier-rt",
-]
-
-[[package]]
-name = "ffier-annotations"
-version = "0.2.0"
-dependencies = [
- "ffier-meta",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -56,7 +46,7 @@ dependencies = [
 name = "ffier-builtins"
 version = "0.2.0"
 dependencies = [
- "ffier-annotations",
+ "ffier-impl",
  "ffier-rt",
 ]
 
@@ -74,6 +64,16 @@ version = "0.2.0"
 dependencies = [
  "ffier-schema",
  "serde_json",
+]
+
+[[package]]
+name = "ffier-impl"
+version = "0.2.0"
+dependencies = [
+ "ffier-meta",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

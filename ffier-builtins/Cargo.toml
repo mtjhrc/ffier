@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 ffier-rt = { path = "../ffier-rt" }
-ffier-annotations = { path = "../ffier-annotations" }
+ffier-impl = { path = "../ffier-impl" }

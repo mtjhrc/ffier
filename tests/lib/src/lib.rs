@@ -999,22 +999,18 @@ pub enum LogLevel {
 // Bitflags — flags type exported as C #define constants
 // ---------------------------------------------------------------------------
 
-bitflags::bitflags! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub struct Permissions: u32 {
-        const READ    = 0b0001;
-        const WRITE   = 0b0010;
-        const EXECUTE = 0b0100;
-        const DELETE  = 0b1000;
+ffier::export_bitflags! {
+    if = "ffi",
+    bitflags::bitflags! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub struct Permissions: u32 {
+            const READ    = 0b0001;
+            const WRITE   = 0b0010;
+            const EXECUTE = 0b0100;
+            const DELETE  = 0b1000;
+        }
     }
 }
-
-ffier::exportable_bitflags!(Permissions: u32 {
-    const READ    = 1;
-    const WRITE   = 2;
-    const EXECUTE = 4;
-    const DELETE  = 8;
-});
 
 // ---------------------------------------------------------------------------
 // Free functions — not methods on any type

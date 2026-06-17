@@ -604,35 +604,37 @@ fn extract_repr(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
 }
 
 // ---------------------------------------------------------------------------
-// ffier::exportable_bitflags! — export a bitflags type via FFI
+// ffier::export_bitflags! — define + export a bitflags type via FFI
 // ---------------------------------------------------------------------------
 
-/// Export a `bitflags!` type for FFI.
+/// Define a `bitflags!` type and export it for FFI.
 ///
-/// Place this after the `bitflags!` macro invocation. It generates the
-/// `FfiType` impl and metadata macro needed for the type to be used as
-/// a parameter/return type in exported methods and to appear in the JSON
-/// schema as named flag constants.
+/// Wraps the `bitflags!` macro invocation: the type is always defined,
+/// and the FFI metadata (FfiType impl, schema entry) is gated behind
+/// the specified Cargo feature.
 ///
 /// ```ignore
-/// bitflags::bitflags! {
-///     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-///     pub struct Permissions: u32 {
-///         const READ  = 0b001;
-///         const WRITE = 0b010;
-///         const EXEC  = 0b100;
+/// ffier::export_bitflags! {
+///     if = "ffi",
+///     bitflags::bitflags! {
+///         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///         pub struct Permissions: u32 {
+///             const READ  = 0b001;
+///             const WRITE = 0b010;
+///             const EXEC  = 0b100;
+///         }
 ///     }
 /// }
-///
-/// ffier::exportable_bitflags!(Permissions: u32 {
-///     const READ  = 0b001;
-///     const WRITE = 0b010;
-///     const EXEC  = 0b100;
-/// });
 /// ```
 #[proc_macro]
-pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
-    let parsed = parse_macro_input!(input as BitflagsInput);
+pub fn export_bitflags(input: TokenStream) -> TokenStream {
+    let parsed = match syn::parse::<ExportBitflagsInput>(input) {
+        Ok(p) => p,
+        Err(e) => return e.to_compile_error().into(),
+    };
+
+    let feature = &parsed.feature;
+    let bitflags_call = &parsed.bitflags_call;
     let name = &parsed.name;
     let repr_ident = &parsed.repr;
     let repr_str = repr_ident.to_string();
@@ -652,9 +654,12 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
     let bf_path = quote! { $crate::#name };
 
     let output = quote! {
-        #[doc(hidden)]
-        pub mod #helper_mod_name {}
+        #bitflags_call
 
+        // macro_rules! cannot be gated with #[cfg] directly and
+        // #[macro_export] cannot appear inside const blocks, so the
+        // macro is always emitted but the pub-use alias that makes it
+        // reachable is gated behind the feature flag.
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
@@ -683,6 +688,11 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
             };
         }
 
+        #[cfg(feature = #feature)]
+        #[doc(hidden)]
+        pub mod #helper_mod_name {}
+
+        #[cfg(feature = #feature)]
         #[doc(hidden)]
         pub use #internal_macro_name as #meta_alias_name;
     };
@@ -690,20 +700,138 @@ pub fn exportable_bitflags(input: TokenStream) -> TokenStream {
     output.into()
 }
 
-/// Parsed input for `exportable_bitflags!`: `Name: repr { const FLAG = val; ... }`
-struct BitflagsInput {
+/// Parsed input for `export_bitflags!`:
+/// ```ignore
+/// if = "feature",
+/// bitflags::bitflags! {
+///     [attrs]
+///     pub struct Name: repr { const FLAG = val; ... }
+/// }
+/// ```
+struct ExportBitflagsInput {
+    /// The feature name from `if = "..."`.
+    feature: String,
+    /// The complete `bitflags! { ... }` or `bitflags::bitflags! { ... }`
+    /// invocation, preserved verbatim for re-emission.
+    bitflags_call: proc_macro2::TokenStream,
+    /// Struct name extracted from the inner body.
+    name: syn::Ident,
+    /// Repr type (u8/u16/u32/u64/i8/i16/i32/i64).
+    repr: syn::Ident,
+    /// Flag constants: (name, value).
+    flags: Vec<(syn::Ident, u64)>,
+}
+
+impl Parse for ExportBitflagsInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Parse `if = "feature",`
+        input.parse::<Token![if]>()?;
+        input.parse::<Token![=]>()?;
+        let feature_lit: LitStr = input.parse()?;
+        let feature = feature_lit.value();
+        input.parse::<Token![,]>()?;
+
+        // Capture the remaining tokens as the bitflags! call.
+        // We need to parse them to extract name/repr/flags, but also
+        // preserve the original tokens for verbatim re-emission.
+        let remaining: proc_macro2::TokenStream = input.parse()?;
+        let bitflags_call = remaining.clone();
+
+        // Parse the bitflags macro call to extract struct info.
+        // Expected forms:
+        //   bitflags! { ... }
+        //   bitflags::bitflags! { ... }
+        //   path::to::bitflags! { ... }
+        let body = parse_bitflags_body(remaining)?;
+
+        Ok(ExportBitflagsInput {
+            feature,
+            bitflags_call,
+            name: body.name,
+            repr: body.repr,
+            flags: body.flags,
+        })
+    }
+}
+
+/// Extract struct name, repr, and flag constants from a `bitflags! { ... }` call.
+///
+/// Parses through the macro path to find the braced body, then scans for
+/// `struct Name: repr { const FLAG = val; ... }` inside it, skipping any
+/// leading attributes.
+fn parse_bitflags_body(tokens: proc_macro2::TokenStream) -> syn::Result<BitflagsStructBody> {
+    // Find the `!` and the braced body after the macro path.
+    let mut iter = tokens.into_iter().peekable();
+    let mut found_bang = false;
+
+    for tt in iter.by_ref() {
+        if let proc_macro2::TokenTree::Punct(p) = &tt
+            && p.as_char() == '!'
+        {
+            found_bang = true;
+            break;
+        }
+    }
+
+    if !found_bang {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "expected `bitflags! { ... }` macro invocation",
+        ));
+    }
+
+    // The next token should be a brace-delimited group
+    let body_group = match iter.next() {
+        Some(proc_macro2::TokenTree::Group(g))
+            if g.delimiter() == proc_macro2::Delimiter::Brace =>
+        {
+            g
+        }
+        _ => {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                "expected braced body after `bitflags!`",
+            ));
+        }
+    };
+
+    // Parse the inner body to find `struct Name: repr { ... }`
+    // Skip leading attributes (#[...]) and visibility (pub)
+    let body_stream = body_group.stream();
+    syn::parse2::<BitflagsStructBody>(body_stream)
+}
+
+/// Parser for the inside of a `bitflags! { ... }` body.
+/// Skips attributes, parses `[pub] struct Name: repr { const FLAG = val; ... }`.
+struct BitflagsStructBody {
     name: syn::Ident,
     repr: syn::Ident,
     flags: Vec<(syn::Ident, u64)>,
 }
 
-impl Parse for BitflagsInput {
+impl Parse for BitflagsStructBody {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Skip outer attributes (#[derive(...)], #[repr(...)], etc.)
+        let _ = input.call(syn::Attribute::parse_outer)?;
+
+        // Skip optional visibility
+        let _: Option<syn::Visibility> = if input.peek(Token![pub]) {
+            Some(input.parse()?)
+        } else {
+            None
+        };
+
+        // `struct`
+        input.parse::<Token![struct]>()?;
+
+        // Name
         let name: syn::Ident = input.parse()?;
+
+        // `: repr`
         input.parse::<Token![:]>()?;
         let repr: syn::Ident = input.parse()?;
 
-        // Validate repr is a supported integer type
+        // Validate repr
         let repr_s = repr.to_string();
         if !matches!(
             repr_s.as_str(),
@@ -715,17 +843,23 @@ impl Parse for BitflagsInput {
             ));
         }
 
+        // `{ const FLAG = val; ... }`
         let content;
         syn::braced!(content in input);
 
         let mut flags = Vec::new();
         while !content.is_empty() {
+            // Skip attributes on individual flags (e.g. #[doc = "..."])
+            let _ = content.call(syn::Attribute::parse_outer)?;
+
+            if content.is_empty() {
+                break;
+            }
+
             content.parse::<Token![const]>()?;
             let flag_name: syn::Ident = content.parse()?;
             content.parse::<Token![=]>()?;
 
-            // Parse the value expression — support integer literals and
-            // simple binary/hex literals.
             let lit: syn::LitInt = content.parse()?;
             let value = lit.base10_parse::<u64>()?;
 
@@ -736,7 +870,7 @@ impl Parse for BitflagsInput {
             let _ = content.parse::<Token![,]>();
         }
 
-        Ok(BitflagsInput { name, repr, flags })
+        Ok(BitflagsStructBody { name, repr, flags })
     }
 }
 

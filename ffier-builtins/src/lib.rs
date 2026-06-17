@@ -23,7 +23,7 @@ pub use ffier_rt::ffier_result;
 /// Returns `true` on success, `false` to abort formatting (e.g. buffer
 /// full). On `false`, `fmt::Write::write_str` returns `Err(fmt::Error)`
 /// which short-circuits `write!()`.
-#[ffier_annotations::export(bless = "push_str")]
+#[ffier_impl::export(bless = "push_str")]
 pub trait PushStr {
     #[ffier(index = 0)]
     fn push(&mut self, s: &str) -> bool;
@@ -45,7 +45,7 @@ impl core::fmt::Write for dyn PushStr + '_ {
 ///
 /// `#[derive(FfiError)]` auto-generates the impl. Self-dispatch generates
 /// `ft_error_code(handle)` and `ft_error_message(handle, writer)`.
-#[ffier_annotations::export(bless = "error_trait")]
+#[ffier_impl::export(bless = "error_trait")]
 pub trait Error {
     #[ffier(index = 0)]
     fn code(&self) -> u32;

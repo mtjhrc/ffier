@@ -11,7 +11,7 @@ fruit-label = ["ffier-test-lib/fruit-label"]
 crate-type = ["cdylib"]
 
 [dependencies]
-ffier-test-lib = { path = "../lib", default-features = false }
+ffier-test-lib = { path = "../lib", default-features = false, features = ["ffi"] }
 ffier-test-foreign-lib = { path = "../foreign-lib" }
 ffier = { path = "../../ffier" }
 ffier-bridge = { path = "../../ffier-bridge" }

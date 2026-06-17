@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-default = ["fruit-label"]
+default = ["fruit-label", "ffi"]
 fruit-label = []
+ffi = []
 
 [dependencies]
 ffier = { path = "../../ffier" }

@@ -9,5 +9,5 @@ std = ["ffier-rt/std"]
 
 [dependencies]
 ffier-rt = { path = "../ffier-rt" }
-ffier-annotations = { path = "../ffier-annotations" }
+ffier-impl = { path = "../ffier-impl" }
 ffier-builtins = { path = "../ffier-builtins" }

@@ -1,4 +1,4 @@
-pub use ffier_annotations::*;
+pub use ffier_impl::*;
 pub use ffier_rt::*;
 
 // Re-export built-in traits at the crate root so `ffier::Error`,

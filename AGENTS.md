@@ -9,7 +9,7 @@ The library API, ABI, and JSON schema are **not stable**. Breaking changes to an
 ## Architecture
 
 ```
-ffier-annotations          proc macros (#[exportable], #[implementable], etc.)
+ffier-impl                 proc macros (#[exportable], #[implementable], etc.)
   |-- uses ffier-meta        to parse/emit structured token streams
   `-- emits token streams -> consumed by ffier-bridge-macros::generate
                                         |
@@ -21,7 +21,7 @@ ffier-annotations          proc macros (#[exportable], #[implementable], etc.)
                               ffier-gen-rust-client <-'
 ```
 
-`ffier-meta` is a shared parsing library — both `ffier-annotations` and
+`ffier-meta` is a shared parsing library — both `ffier-impl` and
 `ffier-bridge` depend on it. It defines the metadata types (`MetaMethod`,
 `MetaMethodContext`, etc.) and their `syn::Parse` impls. The token stream
 is the data transport between annotations and bridge; `ffier-meta` is
