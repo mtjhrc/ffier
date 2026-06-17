@@ -1296,7 +1296,7 @@ fn generate_implementable_bridge(
 }
 
 // ===========================================================================
-// Shared C ABI type resolution — used by both ffier-bridge and ffier-gen-rust
+// Shared C ABI type resolution — used by bridge generation and client generators
 // ===========================================================================
 
 /// Check if a type (parsed from rust_ret tokens) is `&T` or `&mut T` where

@@ -9,32 +9,64 @@ The library API, ABI, and JSON schema are **not stable**. Breaking changes to an
 ## Architecture
 
 ```
-ffier-impl                 proc macros (#[exportable], #[implementable], etc.)
-  |-- uses ffier-meta        to parse/emit structured token streams
-  `-- emits token streams -> consumed by ffier-bridge-macros::generate
-                                        |
-                              ffier-bridge  (uses ffier-meta to parse tokens)
-                                |-- generates extern "C" bridge functions
-                                `-- writes target/ffier-{name}.json  (ffier-schema types)
-                                                    |
-                              ffier-gen-c-header  <--+  (reads JSON schema)
-                              ffier-gen-rust-client <-'
+ffier              lib — re-exports ffier-impl + ffier-rt + ffier-builtins
+ffier-impl         proc-macro crate — all codegen
+  src/lib.rs         #[export], #[derive(FfiError)], library_definition!, etc.
+  src/meta.rs        metadata types (MetaMethod, etc.) + syn::Parse impls
+  src/bridge.rs      extern "C" bridge generation + JSON schema emission
+ffier-rt           runtime types (FfierHandle, FfierBytes, VtableHandle, etc.)
+ffier-builtins     pre-annotated PushStr + Error traits
+ffier-schema       JSON schema types (serde) — read by generators
+ffier-gen-c-header     reads JSON → C header
+ffier-gen-rust-client  reads JSON → Rust client bindings
 ```
 
-`ffier-meta` is a shared parsing library — both `ffier-impl` and
-`ffier-bridge` depend on it. It defines the metadata types (`MetaMethod`,
-`MetaMethodContext`, etc.) and their `syn::Parse` impls. The token stream
-is the data transport between annotations and bridge; `ffier-meta` is
-not a relay but a shared vocabulary.
+### Conditional FFI
+
+Users gate FFI annotations behind a Cargo feature using standard `cfg_attr`:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl Widget { ... }
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait Processor {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn process(&self, input: i32) -> i32;
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("ft", library_tag = 1, Widget = 2, ...);
+```
+
+When the feature is off, all annotations are stripped by `cfg_attr` and
+the crate compiles as pure Rust with no FFI overhead. The proc macro
+understands `cfg_attr`-wrapped `#[ffier(...)]` attributes and unwraps
+them during expansion.
+
+### Bridge generation
+
+`library_definition!` emits a `__ffier_{prefix}_generate_ffi_bridge!()` macro
+that drives a chain of metadata macros through each registered type,
+accumulating metadata blobs. The chain's base case calls
+`ffier::__generate_bridge` (a proc macro in ffier-impl) which produces
+all `extern "C"` bridge functions and writes `target/ffier-{prefix}.json`.
+
+The bridge macro is called from a cdylib crate (cross-crate):
+```rust
+ffier_test_lib::__ffier_ft_generate_ffi_bridge!();
+```
+Or from the same crate as `library_definition!` (local):
+```rust
+__ffier_ft_generate_ffi_bridge!(local);
+```
 
 ### Method kinds
 
 Methods in the proc-macro token stream carry an explicit `method_kind` tag:
 
-- `method_kind = definition` -- trait definition method (from `#[implementable]`). Carries `index`, `has_default`, `raw_handle`.
-- `method_kind = impl` -- concrete method (from `#[exportable]` or `#[trait_impl]`). Carries `ffi_name`, `is_builder`.
-
-In the JSON schema, `ffi_name` is always a top-level field on `Method`. Trait definition methods additionally have an optional `trait_definition` sub-object with `index` and `has_default`.
+- `method_kind = definition` — trait definition method. Carries `index`, `has_default`, `raw_handle`.
+- `method_kind = impl` — concrete method (struct impl or trait impl). Carries `ffi_name`, `is_builder`.
 
 ## Testing
 

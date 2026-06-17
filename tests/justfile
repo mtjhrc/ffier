@@ -3,7 +3,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 root := justfile_directory() / ".."
 
 # Run all tests
-default: check-header check-generated-client check-generated-compat valgrind miri consumer compat cargo-test
+default: no-codegen check-header check-generated-client check-generated-compat valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -84,6 +84,12 @@ check-generated-compat: gen-v1-client
 # Run vtable backward-compatibility tests (v1 client → v2 library)
 compat: build
     cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-compat
+
+# Verify the test lib compiles without FFI (no codegen, pure Rust types).
+# Compilation alone proves no FFI symbols leak: library_definition! and
+# all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
+no-codegen:
+    cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
 
 # Run all Rust tests (cdylib, via-cdylib, submodule, etc.)
 cargo-test: build

@@ -1248,7 +1248,7 @@ impl syn::parse::Parse for MetaTraitImpl {
 }
 
 // ---------------------------------------------------------------------------
-// Type identity helpers — shared between ffier-impl and ffier-bridge
+// Type identity helpers
 // ---------------------------------------------------------------------------
 
 /// Extract the last path segment name from a `syn::Type::Path`.

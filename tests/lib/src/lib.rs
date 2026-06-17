@@ -4,26 +4,27 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, thiserror::Error, ffier::FfiError)]
+#[derive(Debug, thiserror::Error)]
+#[cfg_attr(feature = "ffi", derive(ffier::FfiError))]
 #[non_exhaustive]
 pub enum TestError {
     #[error("not found: {0}")]
-    #[ffier(code = 1)]
+    #[cfg_attr(feature = "ffi", ffier(code = 1))]
     #[non_exhaustive]
     NotFound(Box<str>),
     #[error("custom error message")]
-    #[ffier(code = 2)]
+    #[cfg_attr(feature = "ffi", ffier(code = 2))]
     CustomMessage(),
     #[error("invalid input")]
-    #[ffier(code = 3)]
+    #[cfg_attr(feature = "ffi", ffier(code = 3))]
     InvalidInput(),
     #[error("numeric error: {0}")]
-    #[ffier(code = 4)]
+    #[cfg_attr(feature = "ffi", ffier(code = 4))]
     NumericError(i32),
     /// An unrecoverable error carrying an arbitrary `anyhow` error chain.
     /// The inner value is Rust-only and not marshalled across FFI (`opaque`).
     #[error(transparent)]
-    #[ffier(code = 5, opaque)]
+    #[cfg_attr(feature = "ffi", ffier(code = 5, opaque))]
     Fatal(anyhow::Error),
 }
 
@@ -40,7 +41,7 @@ pub struct Widget {
     gadgets: Vec<Gadget>,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Widget {
     /// Create a new widget with default values.
     pub fn new() -> Self {
@@ -278,7 +279,7 @@ pub struct Gadget {
     value: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Gadget {
     /// Get the gadget value.
     pub fn get(&self) -> i32 {
@@ -295,7 +296,7 @@ pub struct Config {
     size: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Config {
     /// Create a new config.
     pub fn new() -> Self {
@@ -352,7 +353,7 @@ pub struct Gizmo {
     size: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Gizmo {
     /// Get the gizmo name.
     pub fn name(&self) -> &str {
@@ -370,7 +371,7 @@ pub struct GizmoBuilder {
     size: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl GizmoBuilder {
     /// Create a new gizmo builder.
     pub fn new() -> Self {
@@ -426,7 +427,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -475,7 +476,7 @@ impl<'a> View<'a> {
 
 pub struct ViewFactory;
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl ViewFactory {
     pub fn new() -> Self {
         ViewFactory
@@ -503,11 +504,11 @@ impl Default for ViewFactory {
 // Implementable trait: Processor
 // ---------------------------------------------------------------------------
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub trait Processor {
-    #[ffier(index = 0)]
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn process(&self, input: i32) -> i32;
-    #[ffier(index = 1)]
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
     fn name(&self) -> &str;
 }
 
@@ -519,7 +520,7 @@ pub struct Pipeline {
     results: Vec<i32>,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Pipeline {
     /// Create a new pipeline.
     pub fn new() -> Self {
@@ -563,7 +564,7 @@ pub struct Apple {
     weight: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Apple {
     pub fn new(weight: i32) -> Self {
         Apple { weight }
@@ -574,7 +575,7 @@ pub struct Orange {
     juice: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Orange {
     pub fn new(juice: i32) -> Self {
         Orange { juice }
@@ -582,41 +583,41 @@ impl Orange {
 }
 
 #[cfg(feature = "fruit-label")]
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub trait Fruit {
-    #[ffier(index = 0)]
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn value(&self) -> i32;
 
     /// Default label — returns "fruit". C can override by providing the
     /// vtable field; if left NULL, this default runs.
-    #[ffier(index = 1)]
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
     fn label(&self) -> &str {
         "fruit"
     }
 
     /// Fallible count — returns error if input is negative.
-    #[ffier(index = 2)]
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
     fn try_count(&self, input: i32) -> Result<i32, TestError>;
 
     /// Count how many of the given tags match the fruit's label.
-    #[ffier(index = 3)]
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
     fn count_tags(&self, tags: &[&str]) -> i32;
 }
 
 #[cfg(not(feature = "fruit-label"))]
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub trait Fruit {
-    #[ffier(index = 0)]
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn value(&self) -> i32;
 
-    #[ffier(index = 2)]
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
     fn try_count(&self, input: i32) -> Result<i32, TestError>;
 
-    #[ffier(index = 3)]
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
     fn count_tags(&self, tags: &[&str]) -> i32;
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Apple {
     fn value(&self) -> i32 {
         self.weight
@@ -633,7 +634,7 @@ impl Fruit for Apple {
     }
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Orange {
     fn value(&self) -> i32 {
         self.juice
@@ -653,13 +654,13 @@ impl Fruit for Orange {
 // Extra fruit types so that blend(a: impl Fruit, b: impl Fruit) has
 // 9 variants (8 concrete + VtableFruit). 9^2 = 81 > 64 dispatch limit.
 pub struct Banana(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Banana {
     pub fn new(v: i32) -> Self {
         Banana(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Banana {
     fn value(&self) -> i32 {
         self.0
@@ -677,13 +678,13 @@ impl Fruit for Banana {
 }
 
 pub struct Mango(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Mango {
     pub fn new(v: i32) -> Self {
         Mango(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Mango {
     fn value(&self) -> i32 {
         self.0
@@ -701,13 +702,13 @@ impl Fruit for Mango {
 }
 
 pub struct Peach(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Peach {
     pub fn new(v: i32) -> Self {
         Peach(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Peach {
     fn value(&self) -> i32 {
         self.0
@@ -725,13 +726,13 @@ impl Fruit for Peach {
 }
 
 pub struct Plum(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Plum {
     pub fn new(v: i32) -> Self {
         Plum(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Plum {
     fn value(&self) -> i32 {
         self.0
@@ -749,13 +750,13 @@ impl Fruit for Plum {
 }
 
 pub struct Grape(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Grape {
     pub fn new(v: i32) -> Self {
         Grape(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Grape {
     fn value(&self) -> i32 {
         self.0
@@ -773,13 +774,13 @@ impl Fruit for Grape {
 }
 
 pub struct Lemon(i32);
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Lemon {
     pub fn new(v: i32) -> Self {
         Lemon(v)
     }
 }
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Fruit for Lemon {
     fn value(&self) -> i32 {
         self.0
@@ -800,7 +801,7 @@ pub struct Mixer {
     total: i32,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 #[allow(clippy::should_implement_trait)]
 impl Mixer {
     pub fn new() -> Self {
@@ -822,8 +823,8 @@ impl Mixer {
     /// Both concrete (9^2=81 > 64, override with annotation).
     pub fn blend_concrete(
         &mut self,
-        #[ffier(dispatch = concrete)] a: impl Fruit,
-        #[ffier(dispatch = concrete)] b: impl Fruit,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] a: impl Fruit,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] b: impl Fruit,
     ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
@@ -834,7 +835,7 @@ impl Mixer {
     pub fn blend_hybrid(
         &mut self,
         a: impl Fruit,
-        #[ffier(dispatch = vtable)] b: impl Fruit,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] b: impl Fruit,
     ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
@@ -844,8 +845,8 @@ impl Mixer {
     /// Both vtable (9+9=18 branches).
     pub fn blend_dynamic(
         &mut self,
-        #[ffier(dispatch = vtable)] a: impl Fruit,
-        #[ffier(dispatch = vtable)] b: impl Fruit,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] a: impl Fruit,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] b: impl Fruit,
     ) -> i32 {
         let sum = a.value() + b.value();
         self.total += sum;
@@ -882,7 +883,7 @@ pub struct Sprocket {
     name: String,
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Sprocket {
     pub fn new(name: &str) -> Self {
         Sprocket {
@@ -900,13 +901,13 @@ impl Sprocket {
     }
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Attachment for Sprocket {
     fn label(&self) -> &str {
         &self.name
     }
 
-    #[ffier(skip)]
+    #[cfg_attr(feature = "ffi", ffier(skip))]
     fn attach(&self, state: &InternalState) -> bool {
         !state._data.is_empty()
     }
@@ -922,7 +923,7 @@ pub trait Snapshot<'a> {
     fn snap_source_count(&self) -> i32;
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl<'a> Snapshot<'a> for View<'a> {
     fn snap_description(&self) -> &str {
         &self.label
@@ -935,7 +936,7 @@ impl<'a> Snapshot<'a> for View<'a> {
 
 /// Static impl — tests that `impl Trait<'static> for Struct` preserves
 /// the concrete `'static` lifetime on the trait.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Snapshot<'static> for Widget {
     fn snap_description(&self) -> &str {
         &self.name
@@ -949,7 +950,7 @@ impl Snapshot<'static> for Widget {
 /// Generic lifetime impl for a struct without lifetime params — tests that
 /// `impl<'a> Trait<'a> for Struct` does NOT add a spurious `<'a>` to the struct
 /// in the generated client code.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl<'a> Snapshot<'a> for Gadget {
     fn snap_description(&self) -> &str {
         "gadget"
@@ -966,13 +967,14 @@ impl<'a> Snapshot<'a> for Gadget {
 
 pub use foreign_trait_crate::Weighable;
 
+#[cfg(feature = "ffi")]
 #[ffier::export(foreign)]
 trait Weighable {
     #[ffier(index = 0)]
     fn weight_grams(&self) -> i32;
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 impl Weighable for Apple {
     fn weight_grams(&self) -> i32 {
         self.weight * 10
@@ -983,7 +985,7 @@ impl Weighable for Apple {
 // Enum constants — plain enums exported as C #define constants
 // ---------------------------------------------------------------------------
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
@@ -1000,7 +1002,6 @@ pub enum LogLevel {
 // ---------------------------------------------------------------------------
 
 ffier::export_bitflags! {
-    if = "ffi",
     bitflags::bitflags! {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct Permissions: u32 {
@@ -1016,7 +1017,7 @@ ffier::export_bitflags! {
 // Free functions — not methods on any type
 // ---------------------------------------------------------------------------
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 /// Describe a log level as a string.
 pub fn log_level_name(level: LogLevel) -> &'static str {
     match level {
@@ -1029,19 +1030,19 @@ pub fn log_level_name(level: LogLevel) -> &'static str {
     }
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 /// Check if a log level is enabled (everything above Off).
 pub fn log_level_is_enabled(level: LogLevel) -> bool {
     level as u32 > 0
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 /// Count the number of gadgets in a slice and return the sum of their values.
 pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
     gadgets.iter().map(|g| g.value).sum()
 }
 
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     fd.try_clone_to_owned()
@@ -1053,33 +1054,35 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 // ---------------------------------------------------------------------------
 
 /// Apply a foreign config: extract the name and value, set them on the widget.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub fn apply_foreign_config(
     widget: &mut Widget,
-    #[ffier(foreign = ffier_test_foreign_lib)] config: &ffier_test_foreign_lib::ForeignConfig,
+    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib))]
+    config: &ffier_test_foreign_lib::ForeignConfig,
 ) {
     widget.name = config.name.clone();
     widget.count = config.value;
 }
 
 /// Read a foreign item's score.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub fn read_foreign_item_score(
-    #[ffier(foreign = ffier_test_foreign_lib)] item: &ffier_test_foreign_lib::ForeignItem,
+    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib))]
+    item: &ffier_test_foreign_lib::ForeignItem,
 ) -> i32 {
     item.score
 }
 
 /// Create a foreign item from our library's data (tests foreign return type).
-#[ffier::export]
-#[ffier(foreign_return = ffier_test_foreign_lib)]
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier(foreign_return = ffier_test_foreign_lib))]
 pub fn create_foreign_item(label: &str, score: i32) -> ffier_test_foreign_lib::ForeignItem {
     ffier_test_foreign_lib::ForeignItem::new(label, score)
 }
 
 /// Create a foreign config, returning Result (tests foreign return in GLib-style Result).
-#[ffier::export]
-#[ffier(foreign_return = ffier_test_foreign_lib)]
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier(foreign_return = ffier_test_foreign_lib))]
 pub fn create_foreign_config_checked(
     name: &str,
     value: i32,
@@ -1099,13 +1102,13 @@ use core::ffi::c_void;
 
 /// Accept an opaque pointer and return it unchanged (round-trip test).
 /// Uses bare `c_void` (via `use`) to verify the macro emits fully qualified paths.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub fn opaque_round_trip(ptr: *mut c_void) -> *mut c_void {
     ptr
 }
 
 /// Accept an opaque const pointer and return its address as an integer.
-#[ffier::export]
+#[cfg_attr(feature = "ffi", ffier::export)]
 pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
     ptr as usize
 }
@@ -1114,11 +1117,12 @@ pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
 // Error — deliberately named `Error` to catch collisions with std::error::Error
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, PartialEq, Eq, thiserror::Error, ffier::FfiError)]
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[cfg_attr(feature = "ffi", derive(ffier::FfiError))]
 #[non_exhaustive]
 pub enum Error {
     #[error("generic failure")]
-    #[ffier(code = 1)]
+    #[cfg_attr(feature = "ffi", ffier(code = 1))]
     Failed(),
 }
 
@@ -1155,6 +1159,7 @@ mod tests {
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "ffi")]
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
     Widget = 2, Gadget = 3, Config = 4,

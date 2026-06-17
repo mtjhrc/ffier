@@ -20,6 +20,65 @@ use meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
 static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 // ---------------------------------------------------------------------------
+// cfg_attr unwrapping — #[cfg_attr(COND, ffier(...))] → #[ffier(...)]
+// ---------------------------------------------------------------------------
+
+/// Extract `#[ffier(...)]` from an attribute — handles both plain
+/// `#[ffier(...)]` and `#[cfg_attr(COND, ffier(...))]`.
+/// Returns `None` for non-ffier attrs.
+fn extract_ffier_attr(attr: &syn::Attribute) -> Option<syn::Attribute> {
+    if attr.path().is_ident("ffier") {
+        return Some(attr.clone());
+    }
+    if !attr.path().is_ident("cfg_attr") {
+        return None;
+    }
+    let tokens = match &attr.meta {
+        syn::Meta::List(list) => list.tokens.clone(),
+        _ => return None,
+    };
+
+    // Find the top-level comma separating condition from the inner attr,
+    // then check if the remainder starts with `ffier`.
+    // Group tokens (parenthesized, braced, bracketed) are atomic in
+    // proc_macro2 — a comma inside `all(feature = "ffi")` is inside the
+    // group's stream and never appears as a top-level Punct.
+    let mut after_comma = proc_macro2::TokenStream::new();
+    let mut found_comma = false;
+
+    for tt in tokens {
+        if !found_comma {
+            if let proc_macro2::TokenTree::Punct(p) = &tt
+                && p.as_char() == ','
+            {
+                found_comma = true;
+                continue;
+            }
+        } else {
+            after_comma.extend(std::iter::once(tt));
+        }
+    }
+
+    if !found_comma {
+        return None;
+    }
+
+    let mut after_iter = after_comma.clone().into_iter();
+    if let Some(proc_macro2::TokenTree::Ident(id)) = after_iter.next()
+        && id == "ffier"
+    {
+        return Some(syn::parse_quote! { #[#after_comma] });
+    }
+
+    None
+}
+
+/// Strip all ffier attrs (direct or cfg_attr-wrapped) from an attribute list.
+fn strip_ffier_attrs(attrs: &mut Vec<syn::Attribute>) {
+    attrs.retain(|a| extract_ffier_attr(a).is_none());
+}
+
+// ---------------------------------------------------------------------------
 // Type classification for params and return values
 // ---------------------------------------------------------------------------
 
@@ -281,10 +340,10 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
         let mut block = input.clone();
         for item in &mut block.items {
             if let ImplItem::Fn(method) = item {
-                method.attrs.retain(|a| !a.path().is_ident("ffier"));
+                strip_ffier_attrs(&mut method.attrs);
                 for arg in &mut method.sig.inputs {
                     if let FnArg::Typed(pat_ty) = arg {
-                        pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
+                        strip_ffier_attrs(&mut pat_ty.attrs);
                     }
                 }
             }
@@ -634,7 +693,6 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    let feature = &parsed.feature;
     let bitflags_call = &parsed.bitflags_call;
     let name = &parsed.name;
     let repr_ident = &parsed.repr;
@@ -687,11 +745,9 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
             };
         }
 
-        #[cfg(feature = #feature)]
         #[doc(hidden)]
         pub mod #helper_mod_name {}
 
-        #[cfg(feature = #feature)]
         #[doc(hidden)]
         pub use #internal_macro_name as #meta_alias_name;
     };
@@ -701,15 +757,12 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
 
 /// Parsed input for `export_bitflags!`:
 /// ```ignore
-/// if = "feature",
 /// bitflags::bitflags! {
 ///     [attrs]
 ///     pub struct Name: repr { const FLAG = val; ... }
 /// }
 /// ```
 struct ExportBitflagsInput {
-    /// The feature name from `if = "..."`.
-    feature: String,
     /// The complete `bitflags! { ... }` or `bitflags::bitflags! { ... }`
     /// invocation, preserved verbatim for re-emission.
     bitflags_call: proc_macro2::TokenStream,
@@ -723,13 +776,6 @@ struct ExportBitflagsInput {
 
 impl Parse for ExportBitflagsInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
-        // Parse `if = "feature",`
-        input.parse::<Token![if]>()?;
-        input.parse::<Token![=]>()?;
-        let feature_lit: LitStr = input.parse()?;
-        let feature = feature_lit.value();
-        input.parse::<Token![,]>()?;
-
         // Capture the remaining tokens as the bitflags! call.
         // We need to parse them to extract name/repr/flags, but also
         // preserve the original tokens for verbatim re-emission.
@@ -744,7 +790,6 @@ impl Parse for ExportBitflagsInput {
         let body = parse_bitflags_body(remaining)?;
 
         Ok(ExportBitflagsInput {
-            feature,
             bitflags_call,
             name: body.name,
             repr: body.repr,
@@ -923,10 +968,10 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
     // Strip #[ffier(...)] attributes from the function and its params
     let clean_fn = {
         let mut f = input.clone();
-        f.attrs.retain(|a| !a.path().is_ident("ffier"));
+        strip_ffier_attrs(&mut f.attrs);
         for arg in &mut f.sig.inputs {
             if let FnArg::Typed(pat_ty) = arg {
-                pat_ty.attrs.retain(|a| !a.path().is_ident("ffier"));
+                strip_ffier_attrs(&mut pat_ty.attrs);
             }
         }
         f
@@ -1483,10 +1528,11 @@ struct FfierVariantAttrs {
 }
 
 fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVariantAttrs> {
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
+    for raw_attr in attrs {
+        let Some(attr) = extract_ffier_attr(raw_attr) else {
             continue;
-        }
+        };
+        let attr = &attr;
 
         let mut code = None;
         let mut message = None;
@@ -1541,10 +1587,10 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
         dispatch: None,
         foreign_crate: None,
     };
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
+    for raw_attr in attrs {
+        let Some(attr) = extract_ffier_attr(raw_attr) else {
             continue;
-        }
+        };
         let _ = attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("dispatch") {
                 let value = meta.value()?;
@@ -1587,10 +1633,10 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
         foreign_return: None,
     };
 
-    for attr in attrs {
-        if !attr.path().is_ident("ffier") {
+    for raw_attr in attrs {
+        let Some(attr) = extract_ffier_attr(raw_attr) else {
             continue;
-        }
+        };
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("index") {
                 let value = meta.value()?;
@@ -2459,7 +2505,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         let is_raw_handle = vtable_methods
             .iter()
             .any(|vm| vm.name == method.sig.ident && vm.raw_handle);
-        method.attrs.retain(|attr| !attr.path().is_ident("ffier"));
+        strip_ffier_attrs(&mut method.attrs);
         let Some(default_block) = &method.default else {
             continue;
         };
@@ -2735,7 +2781,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
     let mut clean_impl = input.clone();
     for item in &mut clean_impl.items {
         if let ImplItem::Fn(method) = item {
-            method.attrs.retain(|a| !a.path().is_ident("ffier"));
+            strip_ffier_attrs(&mut method.attrs);
         }
     }
 
@@ -2913,7 +2959,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
 /// );
 ///
 /// // In cdylib:
-/// mylib::__ffier_mylib_library!(ffier_bridge_macros::generate);
+/// mylib::__ffier_mylib_generate_ffi_bridge!();
 /// ```
 ///
 /// ## Shared primitives prefix
@@ -2953,10 +2999,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     // For each entry, compute:
     // 1. shim_macros: shim macros that inject the tag into the metadata macro call
     // 2. reexport_invocations: `alias_path!(@on_library_export, ...)` calls
-    // 3. chain_paths: the macro path used inside the generated library macro
+    // 3. shim_names: bare ident of each shim macro (entry macro adds $crate:: or not)
     let mut shim_macros: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut reexport_invocations: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut chain_paths: Vec<proc_macro2::TokenStream> = Vec::new();
+    let mut shim_names: Vec<syn::Ident> = Vec::new();
 
     // Collect names of external traits (from TaggedTrait entries) so that
     // TraitImpl entries can use the internal alias instead of bare names.
@@ -3012,8 +3058,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                // chain_path is the shim (which injects the tag)
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
 
                 // @on_library_export generates FfiHandle + FfiType impls
                 reexport_invocations.push(
@@ -3098,7 +3143,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 reexport_invocations.push(
                     quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
                 );
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
             }
             LibraryEntry::Enum(path) => {
                 let last_ident = path_last_ident(path);
@@ -3121,7 +3166,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 reexport_invocations.push(
                     quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
                 );
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
                 let helper_mod_name =
@@ -3155,7 +3200,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 reexport_invocations.push(
                     quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
                 );
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
                 let helper_mod_name =
@@ -3185,7 +3230,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 });
 
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
                 let helper_mod_name = format_ident!("_ffier_fn_{}", last_ident);
@@ -3241,7 +3286,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         };
                     }
                 });
-                chain_paths.push(quote! { $crate::#shim_name });
+                shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
                 let trait_snake = camel_to_snake(&trait_name.to_string());
@@ -3258,14 +3303,14 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         }
     }
 
-    if chain_paths.is_empty() {
+    if shim_names.is_empty() {
         return quote! { compile_error!("library_definition! requires at least one type"); }.into();
     }
 
-    let first = &chain_paths[0];
-    let rest = &chain_paths[1..];
+    let first = &shim_names[0];
+    let rest = &shim_names[1..];
 
-    let entry_macro_name = format_ident!("__ffier_{prefix_str}_library");
+    let entry_macro_name = format_ident!("__ffier_{prefix_str}_generate_ffi_bridge");
 
     let output = quote! {
         #[doc(hidden)]
@@ -3477,39 +3522,58 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
         #(#shim_macros)*
 
+        // Chain accumulator — shared by both cross-crate and local entry
+        // macros. The `$chain` parameter is how the chain references itself:
+        // cross-crate passes `$crate::__ffier_chain`, local passes the
+        // bare name `__ffier_chain`.
+        //
+        // The #[macro_export] version is needed for cross-crate visibility.
+        // The local alias below re-uses the same logic without $crate::.
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
-            // Recursive: append metadata, expand next
-            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+            ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              [$($acc:tt)*], [$next:path, $($remaining:path),*]) => {
-                $next! { $prefix, $crate::__ffier_chain,
-                    $prefix, $final_cb,
+                $next! { $prefix, $chain,
+                    $prefix, $chain, $final_cb,
                     [$($acc)* { $($meta)* }],
                     [$($remaining),*]
                 }
             };
-            // Recursive: append metadata, expand last item
-            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+            ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              [$($acc:tt)*], [$next:path]) => {
-                $next! { $prefix, $crate::__ffier_chain,
-                    $prefix, $final_cb,
+                $next! { $prefix, $chain,
+                    $prefix, $chain, $final_cb,
                     [$($acc)* { $($meta)* }],
                     []
                 }
             };
-            // Base case: call the final callback with everything
-            ({ $($meta:tt)* }, $prefix:literal, $final_cb:path,
+            ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              [$($acc:tt)*], []) => {
                 $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; $($acc)* { $($meta)* } }
             };
         }
 
+        /// Generate `extern "C"` bridge functions and JSON schema.
+        ///
+        /// Two invocation forms:
+        /// - `__ffier_{prefix}_generate_ffi_bridge!()` — from a separate
+        ///   cdylib crate (cross-crate, uses `$crate::` paths).
+        /// - `__ffier_{prefix}_generate_ffi_bridge!(local)` — from the
+        ///   same crate as `library_definition!` (bare names, avoids
+        ///   Rust's `$crate::` restriction on macro-expanded macros).
         #[macro_export]
         macro_rules! #entry_macro_name {
             () => {
-                #first! { #prefix_lit, $crate::__ffier_chain,
-                    #prefix_lit, ffier::__generate_bridge,
+                $crate::#first! { #prefix_lit, $crate::__ffier_chain,
+                    #prefix_lit, $crate::__ffier_chain, ffier::__generate_bridge,
+                    [],
+                    [#($crate::#rest),*]
+                }
+            };
+            (local) => {
+                #first! { #prefix_lit, __ffier_chain,
+                    #prefix_lit, __ffier_chain, ffier::__generate_bridge,
                     [],
                     [#(#rest),*]
                 }
