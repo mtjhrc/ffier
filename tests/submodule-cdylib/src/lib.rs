@@ -2,7 +2,7 @@
 //! This verifies that types defined in submodules and referenced via `crate::`
 //! paths in `library_definition!` produce working bridge functions.
 
-ffier_test_submodule_lib::__ffier_subtest_library!(ffier_bridge_macros::generate);
+ffier_test_submodule_lib::__ffier_subtest_library!();
 
 #[cfg(test)]
 mod tests {

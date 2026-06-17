@@ -8,7 +8,7 @@ use quote::{ToTokens, format_ident, quote};
 
 use std::collections::{HashMap, HashSet};
 
-use ffier_meta::{
+use crate::meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
     MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
@@ -896,8 +896,8 @@ fn generate_error_bridge(_meta: MetaError, _lib_crate: &TokenStream2) -> TokenSt
 /// Info about a single `impl Trait` param, used for dispatch codegen.
 struct ImplTraitParam {
     name: syn::Ident,
-    dispatch: ffier_meta::DispatchMode,
-    ref_kind: ffier_meta::ImplTraitRefKind,
+    dispatch: crate::meta::DispatchMode,
+    ref_kind: crate::meta::ImplTraitRefKind,
     trait_name: String,
     variants: Vec<(String, TokenStream2)>,
 }
@@ -966,29 +966,29 @@ fn convert_params(
     // Check for dispatch limit (auto mode only)
     let concrete_params: Vec<_> = impl_trait_params
         .iter()
-        .filter(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
+        .filter(|p| p.dispatch != crate::meta::DispatchMode::Vtable)
         .collect();
     let total_branches: u64 = concrete_params
         .iter()
         .map(|p| p.variants.len() as u64)
         .product();
-    if total_branches > ffier_meta::DEFAULT_MAX_DISPATCH
+    if total_branches > crate::meta::DEFAULT_MAX_DISPATCH
         && impl_trait_params
             .iter()
-            .any(|p| p.dispatch == ffier_meta::DispatchMode::Auto)
+            .any(|p| p.dispatch == crate::meta::DispatchMode::Auto)
     {
         let msg = format!(
             "ffier: `{ffi_name_str}` would generate {total_branches} dispatch \
              branches (limit: {}). Add `#[ffier(dispatch = vtable)]` to the impl Trait \
              param(s) or `#[ffier(dispatch = concrete)]` to override the limit.",
-            ffier_meta::DEFAULT_MAX_DISPATCH,
+            crate::meta::DEFAULT_MAX_DISPATCH,
         );
         return Err(quote! { compile_error!(#msg); });
     }
 
     // Check vtable dispatch is possible (trait must be exported)
     for p in &impl_trait_params {
-        if p.dispatch == ffier_meta::DispatchMode::Vtable
+        if p.dispatch == crate::meta::DispatchMode::Vtable
             && trait_map
                 .get(&p.trait_name)
                 .and_then(|info| info.implementable.as_ref())
@@ -1035,11 +1035,11 @@ fn convert_params(
     let all_concrete = total_branches > 0
         && impl_trait_params
             .iter()
-            .all(|p| p.dispatch != ffier_meta::DispatchMode::Vtable)
-        && (total_branches <= ffier_meta::DEFAULT_MAX_DISPATCH
+            .all(|p| p.dispatch != crate::meta::DispatchMode::Vtable)
+        && (total_branches <= crate::meta::DEFAULT_MAX_DISPATCH
             || impl_trait_params
                 .iter()
-                .all(|p| p.dispatch == ffier_meta::DispatchMode::Concrete));
+                .all(|p| p.dispatch == crate::meta::DispatchMode::Concrete));
     let effective_dispatch: Vec<bool> = if all_concrete {
         vec![false; impl_trait_params.len()]
     } else {
@@ -1047,9 +1047,9 @@ fn convert_params(
         impl_trait_params
             .iter()
             .map(|p| match p.dispatch {
-                ffier_meta::DispatchMode::Concrete => false,
-                ffier_meta::DispatchMode::Vtable => true,
-                ffier_meta::DispatchMode::Auto => {
+                crate::meta::DispatchMode::Concrete => false,
+                crate::meta::DispatchMode::Vtable => true,
+                crate::meta::DispatchMode::Auto => {
                     if !first_auto_seen {
                         first_auto_seen = true;
                         false
@@ -1082,7 +1082,7 @@ fn convert_params(
         let expected_msg = format!("impl {}", p.trait_name);
         let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
-        use ffier_meta::ImplTraitRefKind;
+        use crate::meta::ImplTraitRefKind;
         match p.ref_kind {
             ImplTraitRefKind::Value => {
                 let dyn_box_id = format_ident!("__dyn_box_{}", p.name);
@@ -1181,7 +1181,7 @@ fn wrap_concrete_dispatch(
         .fold(base_call, |inner, p| {
             let dyn_id = &p.name;
             let variants = &p.variants;
-            use ffier_meta::ImplTraitRefKind;
+            use crate::meta::ImplTraitRefKind;
             let if_branches: Vec<_> = variants
                 .iter()
                 .map(|(_, ty_tokens)| {
@@ -1304,7 +1304,7 @@ fn generate_implementable_bridge(
 /// borrowed handle returns.
 fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {
-        ffier_meta::type_last_name(&ref_ty.elem)
+        crate::meta::type_last_name(&ref_ty.elem)
             .map(|name| name == "Self" || handle_types.contains(&name))
             .unwrap_or(false)
     } else {
@@ -2156,8 +2156,8 @@ struct CTypeResolver {
 
 impl CTypeResolver {
     fn new(prefix: &str, primitives_prefix: Option<&str>) -> Self {
-        let type_pfx = ffier_meta::snake_to_pascal(prefix);
-        let prim_type_pfx = ffier_meta::snake_to_pascal(primitives_prefix.unwrap_or(prefix));
+        let type_pfx = crate::meta::snake_to_pascal(prefix);
+        let prim_type_pfx = crate::meta::snake_to_pascal(primitives_prefix.unwrap_or(prefix));
         let upper_pfx = format!("{}_", prefix.to_ascii_uppercase());
         let fn_pfx = format!("{prefix}_");
         CTypeResolver {
@@ -2994,7 +2994,7 @@ fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
     }
 }
 
-fn convert_param(p: &ffier_meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
+fn convert_param(p: &crate::meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
     let param_type = match &p.kind {
         MetaParamKind::Regular(tp) => {
             ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type))

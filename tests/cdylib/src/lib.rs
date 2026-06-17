@@ -1,5 +1,5 @@
 #![recursion_limit = "256"]
-ffier_test_lib::__ffier_ft_library!(ffier_bridge_macros::generate);
+ffier_test_lib::__ffier_ft_library!();
 
 // ---------------------------------------------------------------------------
 // Manual bridge function — peeks at a handle's type tag to verify dispatch path.

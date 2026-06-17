@@ -9,5 +9,3 @@ crate-type = ["cdylib"]
 [dependencies]
 ffier-test-submodule-lib = { path = "../submodule-lib" }
 ffier = { path = "../../ffier" }
-ffier-bridge = { path = "../../ffier-bridge" }
-ffier-bridge-macros = { path = "../../ffier-bridge-macros" }

@@ -24,25 +24,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffier-bridge"
-version = "0.2.0"
-dependencies = [
- "ffier-meta",
- "ffier-schema",
- "proc-macro2",
- "quote",
- "serde_json",
- "syn",
-]
-
-[[package]]
-name = "ffier-bridge-macros"
-version = "0.2.0"
-dependencies = [
- "ffier-bridge",
-]
-
-[[package]]
 name = "ffier-builtins"
 version = "0.2.0"
 dependencies = [
@@ -70,18 +51,10 @@ dependencies = [
 name = "ffier-impl"
 version = "0.2.0"
 dependencies = [
- "ffier-meta",
+ "ffier-schema",
  "proc-macro2",
  "quote",
- "syn",
-]
-
-[[package]]
-name = "ffier-meta"
-version = "0.2.0"
-dependencies = [
- "proc-macro2",
- "quote",
+ "serde_json",
  "syn",
 ]
 
@@ -102,8 +75,6 @@ name = "ffier-test-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-bridge",
- "ffier-bridge-macros",
  "ffier-gen-c-header",
  "ffier-gen-rust-client",
  "ffier-schema",
@@ -162,8 +133,6 @@ name = "ffier-test-submodule-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-bridge",
- "ffier-bridge-macros",
  "ffier-test-submodule-lib",
 ]
 

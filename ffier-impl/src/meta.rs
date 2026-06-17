@@ -149,16 +149,6 @@ pub trait HasPrefix {
     fn fn_pfx(&self) -> String {
         format!("{}_", self.prefix())
     }
-
-    /// `snake_to_pascal(prefix)` — C type name prefix.
-    fn type_pfx(&self) -> String {
-        snake_to_pascal(self.prefix())
-    }
-
-    /// `"{PREFIX}_"` — C constant name prefix.
-    fn upper_pfx(&self) -> String {
-        format!("{}_", self.prefix().to_ascii_uppercase())
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,12 +294,6 @@ pub struct MetaParam {
     pub kind: MetaParamKind,
 }
 
-impl MetaParam {
-    pub fn is_impl_trait(&self) -> bool {
-        matches!(self.kind, MetaParamKind::ImplTrait { .. })
-    }
-}
-
 /// How an `impl Trait` parameter is referenced at the call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImplTraitRefKind {
@@ -333,7 +317,6 @@ pub enum MetaParamKind {
     ImplTrait {
         trait_name: String,
         dispatch: DispatchMode,
-        types: MetaTypePair,
         /// How the param is passed: by value, &, or &mut.
         ref_kind: ImplTraitRefKind,
         /// Lifetime arguments on the trait at this usage site (e.g. `["a"]` for `impl Snapshot<'a>`).
@@ -392,7 +375,6 @@ pub struct MetaErrorVariant {
 
 pub struct MetaEnum {
     pub name: Ident,
-    pub path: TokenStream,
     pub prefix: String,
     /// The `#[repr(...)]` integer type (e.g. "u32", "u64").
     pub repr: String,
@@ -419,7 +401,6 @@ pub struct MetaEnumVariant {
 /// invocations (Rust) or annotated `#define` groups (C) instead of plain enums.
 pub struct MetaBitflags {
     pub name: Ident,
-    pub path: TokenStream,
     pub prefix: String,
     /// The underlying integer type (e.g. "u32", "u64").
     pub repr: String,
@@ -461,7 +442,6 @@ pub struct MetaImplementable {
     pub prefix: String,
     /// Stable type tag assigned in `library_definition!`. Nonzero when set.
     pub type_tag: u32,
-    pub vtable_struct_name: TokenStream,
     pub wrapper_name: TokenStream,
     /// Lifetime parameters on the trait definition (e.g. `[a]` for `trait Snapshot<'a>`).
     pub trait_lifetimes: Vec<Ident>,
@@ -834,12 +814,10 @@ impl syn::parse::Parse for MetaParam {
                 let trait_lifetime_args =
                     parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
                 parse_comma(input)?;
-                let types = parse_type_pair(input)?;
                 MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
                     ref_kind,
-                    types,
                     trait_lifetime_args,
                 }
             }
@@ -991,10 +969,6 @@ impl syn::parse::Parse for MetaEnum {
         let name: Ident = input.parse()?;
         parse_comma(input)?;
 
-        expect_key(input, "path")?;
-        let path = parse_parenthesized_tokens(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "prefix")?;
         let prefix = parse_string(input)?;
         parse_comma(input)?;
@@ -1020,7 +994,6 @@ impl syn::parse::Parse for MetaEnum {
 
         Ok(MetaEnum {
             name,
-            path,
             prefix,
             repr,
             variants,
@@ -1043,10 +1016,6 @@ impl syn::parse::Parse for MetaBitflags {
 
         expect_key(input, "name")?;
         let name: Ident = input.parse()?;
-        parse_comma(input)?;
-
-        expect_key(input, "path")?;
-        let path = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
         expect_key(input, "prefix")?;
@@ -1074,7 +1043,6 @@ impl syn::parse::Parse for MetaBitflags {
 
         Ok(MetaBitflags {
             name,
-            path,
             prefix,
             repr,
             variants,
@@ -1160,10 +1128,6 @@ impl syn::parse::Parse for MetaImplementable {
         let type_tag = type_tag.base10_parse::<u32>()?;
         parse_comma(input)?;
 
-        expect_key(input, "vtable_struct")?;
-        let vtable_struct_name = parse_parenthesized_tokens(input)?;
-        parse_comma(input)?;
-
         expect_key(input, "wrapper_name")?;
         let wrapper_name = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
@@ -1207,7 +1171,6 @@ impl syn::parse::Parse for MetaImplementable {
             trait_path,
             prefix,
             type_tag,
-            vtable_struct_name,
             wrapper_name,
             trait_lifetimes,
             methods,

@@ -9,7 +9,10 @@ use syn::{
     visit_mut::VisitMut,
 };
 
-use ffier_meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
+mod bridge;
+mod meta;
+
+use meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
 
 /// Counter for generating unique `#[macro_export]` macro names.
 /// The exported name is an implementation detail — users access the macro
@@ -533,7 +536,6 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{enum_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
     let helper_mod_name = format_ident!("_ffier_{enum_snake}");
-    let enum_path = quote! { $crate::#name };
 
     let output = quote! {
         #input
@@ -568,7 +570,6 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
                 $callback! { {
                     @exported_enum,
                     name = #name,
-                    path = (#enum_path),
                     prefix = $prefix,
                     repr = #repr_str,
                     variants = [#(#variants_meta),*],
@@ -651,7 +652,6 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let internal_macro_name = format_ident!("__ffier_internal_{bf_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
     let helper_mod_name = format_ident!("_ffier_{bf_snake}");
-    let bf_path = quote! { $crate::#name };
 
     let output = quote! {
         #bitflags_call
@@ -680,7 +680,6 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
                 $callback! { {
                     @exported_bitflags,
                     name = #name,
-                    path = (#bf_path),
                     prefix = $prefix,
                     repr = #repr_str,
                     variants = [#(#variants_meta),*],
@@ -2143,14 +2142,18 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                 quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*] }
             }
         };
-        let type_tokens = match &p.types {
-            Some(tp) => {
-                let bt = &tp.bridge;
-                let rt = &tp.rust;
-                let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
-                quote! { bridge_type = (#bt), rust_type = (#rt), #fc }
+        let type_tokens = if p.is_impl_trait() {
+            quote! {}
+        } else {
+            match &p.types {
+                Some(tp) => {
+                    let bt = &tp.bridge;
+                    let rt = &tp.rust;
+                    let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
+                    quote! { bridge_type = (#bt), rust_type = (#rt), #fc }
+                }
+                None => quote! {},
             }
-            None => quote! {},
         };
         quote! { { name = #id, kind = #kind_tokens, #type_tokens } }
     }).collect();
@@ -2698,7 +2701,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             // traits. Downstream crates in the chain only need the library
              // crate, not the upstream crate that defined the trait.
             ($prefix:literal, $type_tag:expr,
-             ($($wrapper:tt)*), ($($vstruct:tt)*), ($($tpath:tt)*),
+             ($($wrapper:tt)*), ($($tpath:tt)*),
              $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @exported_trait,
@@ -2706,7 +2709,6 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     trait_path = ($($tpath)*),
                     prefix = $prefix,
                     type_tag = $type_tag,
-                    vtable_struct = ($($vstruct)*),
                     wrapper_name = ($($wrapper)*),
                     trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
@@ -3040,7 +3042,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // chain only need the library crate, not the upstream crate.
                 let alias = meta_alias_for_type(path);
                 let wrapper_ident = format_ident!("Vtable{last_ident}");
-                let vtable_struct_ident = format_ident!("{last_ident}Vtable");
 
                 // Use `_trait_` in internal names to avoid collisions with
                 // user types that share the same last segment (e.g. crate::Error
@@ -3071,8 +3072,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     });
                 }
 
-                // Shim paths: vtable struct and wrapper are now at the library root (from @on_library_export)
-                let shim_vtable = quote! { $crate::#vtable_struct_ident };
+                // Shim paths: wrapper and trait are at the library root (from @on_library_export)
                 let shim_trait = if is_external {
                     quote! { $crate::#trait_reexport }
                 } else {
@@ -3088,7 +3088,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
                             $crate::#upstream_alias! { $prefix, #full_tag,
                                 (#shim_wrapper),
-                                (#shim_vtable),
                                 (#shim_trait),
                                 $callback $(, $($rest)*)? }
                         };
@@ -3508,9 +3507,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
         #[macro_export]
         macro_rules! #entry_macro_name {
-            ($callback:path) => {
+            () => {
                 #first! { #prefix_lit, $crate::__ffier_chain,
-                    #prefix_lit, $callback,
+                    #prefix_lit, ffier::__generate_bridge,
                     [],
                     [#(#rest),*]
                 }
@@ -3945,11 +3944,11 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         .collect();
 
     // Parse each method's metadata using the existing MetaMethod parser
-    let parsed_methods: Vec<ffier_meta::MetaMethod> = inp
+    let parsed_methods: Vec<crate::meta::MetaMethod> = inp
         .methods
         .iter()
         .map(|tokens| {
-            syn::parse2::<ffier_meta::MetaMethod>(tokens.clone())
+            syn::parse2::<crate::meta::MetaMethod>(tokens.clone())
                 .expect("failed to parse method metadata in __generate_vtable")
         })
         .collect();
@@ -3959,7 +3958,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let mut next_slot = 0usize;
 
     // Sort methods by index for vtable layout
-    let mut sorted_methods: Vec<&ffier_meta::MetaMethod> = parsed_methods.iter().collect();
+    let mut sorted_methods: Vec<&crate::meta::MetaMethod> = parsed_methods.iter().collect();
     sorted_methods.sort_by_key(|m| m.index());
 
     for m in &sorted_methods {
@@ -3983,18 +3982,18 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         let mut param_types = vec![quote! { *mut core::ffi::c_void }];
         for p in &m.params {
             match &p.kind {
-                ffier_meta::MetaParamKind::ImplTrait { .. } => {
+                crate::meta::MetaParamKind::ImplTrait { .. } => {
                     param_types.push(quote! { *mut core::ffi::c_void });
                 }
-                ffier_meta::MetaParamKind::StrSlice => {
+                crate::meta::MetaParamKind::StrSlice => {
                     param_types.push(quote! { *const ffier::FfierBytes });
                     param_types.push(quote! { usize });
                 }
-                ffier_meta::MetaParamKind::HandleSlice(_) => {
+                crate::meta::MetaParamKind::HandleSlice(_) => {
                     param_types.push(quote! { *const *mut core::ffi::c_void });
                     param_types.push(quote! { usize });
                 }
-                ffier_meta::MetaParamKind::Regular(tp) => {
+                crate::meta::MetaParamKind::Regular(tp) => {
                     let bt = &tp.bridge_type;
                     param_types.push(quote! { <#bt as FfiType>::CRepr });
                 }
@@ -4003,18 +4002,18 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
         // Build return type + optional out-params
         let fn_ret = match &m.ret {
-            ffier_meta::MetaReturn::Void => quote! {},
-            ffier_meta::MetaReturn::Value(tp) => {
+            crate::meta::MetaReturn::Void => quote! {},
+            crate::meta::MetaReturn::Value(tp) => {
                 let bt = &tp.bridge_type;
                 quote! { -> <#bt as FfiType>::CRepr }
             }
-            ffier_meta::MetaReturn::HandleSlice { .. } => {
+            crate::meta::MetaReturn::HandleSlice { .. } => {
                 // HandleSlice returns FfierObjectArray by value
                 quote! { -> ffier::FfierObjectArray }
             }
-            ffier_meta::MetaReturn::Result { ok, .. } => {
+            crate::meta::MetaReturn::Result { ok, .. } => {
                 let ok_is_handle =
-                    ok.is_some() && ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
+                    ok.is_some() && crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 if ok_is_handle {
                     // GLib-style: return handle, err_out param
                     param_types.push(quote! { *mut *mut core::ffi::c_void });
@@ -4068,38 +4067,38 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             let mut fn_ptr_param_types = vec![quote! { *mut core::ffi::c_void }];
             for p in &m.params {
                 match &p.kind {
-                    ffier_meta::MetaParamKind::ImplTrait { .. } => {
+                    crate::meta::MetaParamKind::ImplTrait { .. } => {
                         fn_ptr_param_types.push(quote! { *mut core::ffi::c_void });
                     }
-                    ffier_meta::MetaParamKind::StrSlice => {
+                    crate::meta::MetaParamKind::StrSlice => {
                         fn_ptr_param_types.push(quote! { *const ffier::FfierBytes });
                         fn_ptr_param_types.push(quote! { usize });
                     }
-                    ffier_meta::MetaParamKind::HandleSlice(_) => {
+                    crate::meta::MetaParamKind::HandleSlice(_) => {
                         fn_ptr_param_types.push(quote! { *const *mut core::ffi::c_void });
                         fn_ptr_param_types.push(quote! { usize });
                     }
-                    ffier_meta::MetaParamKind::Regular(tp) => {
+                    crate::meta::MetaParamKind::Regular(tp) => {
                         let bt = &tp.bridge_type;
                         fn_ptr_param_types.push(quote! { <#bt as FfiType>::CRepr });
                     }
                 }
             }
 
-            let ok_is_handle = matches!(&m.ret, ffier_meta::MetaReturn::Result { ok: Some(_), .. })
-                && ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
+            let ok_is_handle = matches!(&m.ret, crate::meta::MetaReturn::Result { ok: Some(_), .. })
+                && crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
 
             let fn_ptr_ret = match &m.ret {
-                ffier_meta::MetaReturn::Void => quote! {},
-                ffier_meta::MetaReturn::Value(tp) => {
+                crate::meta::MetaReturn::Void => quote! {},
+                crate::meta::MetaReturn::Value(tp) => {
                     let bt = &tp.bridge_type;
                     quote! { -> <#bt as FfiType>::CRepr }
                 }
-                ffier_meta::MetaReturn::HandleSlice { .. } => {
+                crate::meta::MetaReturn::HandleSlice { .. } => {
                     // HandleSlice returns FfierObjectArray by value
                     quote! { -> ffier::FfierObjectArray }
                 }
-                ffier_meta::MetaReturn::Result { ok, .. } => {
+                crate::meta::MetaReturn::Result { ok, .. } => {
                     if ok_is_handle {
                         fn_ptr_param_types.push(quote! { *mut *mut core::ffi::c_void });
                         quote! { -> *mut core::ffi::c_void }
@@ -4119,17 +4118,17 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             };
 
             // Build vtable call args (converting Rust values to C)
-            let has_impl_trait_params = m.params.iter().any(|p| matches!(&p.kind, ffier_meta::MetaParamKind::ImplTrait { .. }));
+            let has_impl_trait_params = m.params.iter().any(|p| matches!(&p.kind, crate::meta::MetaParamKind::ImplTrait { .. }));
 
             let mut vtable_pre = Vec::<proc_macro2::TokenStream>::new();
             let mut vtable_args = Vec::<proc_macro2::TokenStream>::new();
             for p in &m.params {
                 let id = &p.name;
                 match &p.kind {
-                    ffier_meta::MetaParamKind::ImplTrait { .. } => {
+                    crate::meta::MetaParamKind::ImplTrait { .. } => {
                         vtable_args.push(quote! { core::ptr::null_mut() });
                     }
-                    ffier_meta::MetaParamKind::StrSlice => {
+                    crate::meta::MetaParamKind::StrSlice => {
                         let vec_id = format_ident!("__{id}_ffierbytes");
                         vtable_pre.push(quote! {
                             let #vec_id: Vec<ffier::FfierBytes> = #id.iter()
@@ -4139,7 +4138,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #vec_id.as_ptr() });
                         vtable_args.push(quote! { #vec_id.len() });
                     }
-                    ffier_meta::MetaParamKind::HandleSlice(tp) => {
+                    crate::meta::MetaParamKind::HandleSlice(tp) => {
                         let rt = &tp.rust_type;
                         let vec_id = format_ident!("__{id}_handles");
                         vtable_pre.push(quote! {
@@ -4150,7 +4149,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #vec_id.as_ptr() });
                         vtable_args.push(quote! { #vec_id.len() });
                     }
-                    ffier_meta::MetaParamKind::Regular(tp) => {
+                    crate::meta::MetaParamKind::Regular(tp) => {
                         let rt = &tp.rust_type;
                         vtable_args.push(quote! { <#rt as FfiType>::into_c(#id) });
                     }
@@ -4176,12 +4175,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 }
             } else {
                 match &m.ret {
-                    ffier_meta::MetaReturn::Void => raw_call.clone(),
-                    ffier_meta::MetaReturn::Value(tp) => {
+                    crate::meta::MetaReturn::Void => raw_call.clone(),
+                    crate::meta::MetaReturn::Value(tp) => {
                         let bt = &tp.bridge_type;
                         quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
                     }
-                    ffier_meta::MetaReturn::HandleSlice { types: tp, .. } => {
+                    crate::meta::MetaReturn::HandleSlice { types: tp, .. } => {
                         // HandleSlice vtable dispatch: call __f which returns
                         // FfierObjectArray, reconstruct Vec<&T> from the handle array.
                         let bt = &tp.bridge_type;
@@ -4201,7 +4200,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                             }
                         }}
                     }
-                    ffier_meta::MetaReturn::Result { ok, err_ident, .. } => {
+                    crate::meta::MetaReturn::Result { ok, err_ident, .. } => {
                         let err_ty = format_ident!("{err_ident}");
                         if ok_is_handle {
                             // GLib-style: __f returns handle or null, err through out-param
@@ -4300,9 +4299,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let handle_assertions: Vec<proc_macro2::TokenStream> = own_non_raw
         .iter()
         .filter_map(|m| {
-            if let ffier_meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
+            if let crate::meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
                 let bt = &tp.bridge_type;
-                let ok_is_handle = ffier_meta::is_result_ok_handle(&m.rust_ret, &handle_names);
+                let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();
                 Some(quote! {
                     assert!(
@@ -4397,4 +4396,18 @@ fn collect_reexport_paths(
             // Glob imports can't be handled — we don't know which types exist.
         }
     }
+}
+
+// ===========================================================================
+// __generate_bridge — proc macro for extern "C" bridge generation
+// ===========================================================================
+
+/// Generate `extern "C"` bridge functions and write JSON schema.
+///
+/// Called by the `__ffier_chain` base case with accumulated metadata
+/// from all registered types. Not intended for direct use.
+#[doc(hidden)]
+#[proc_macro]
+pub fn __generate_bridge(input: TokenStream) -> TokenStream {
+    bridge::generate_batch_impl(input.into()).into()
 }

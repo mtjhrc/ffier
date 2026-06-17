@@ -14,8 +14,6 @@ crate-type = ["cdylib"]
 ffier-test-lib = { path = "../lib", default-features = false, features = ["ffi"] }
 ffier-test-foreign-lib = { path = "../foreign-lib" }
 ffier = { path = "../../ffier" }
-ffier-bridge = { path = "../../ffier-bridge" }
-ffier-bridge-macros = { path = "../../ffier-bridge-macros" }
 ffier-schema = { path = "../../ffier-schema" }
 ffier-gen-c-header = { path = "../../ffier-gen-c-header" }
 ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
