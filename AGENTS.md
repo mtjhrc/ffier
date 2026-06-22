@@ -35,6 +35,9 @@ pub trait Processor {
     fn process(&self, input: i32) -> i32;
 }
 
+#[cfg_attr(feature = "ffi", ffier::export(reserved(1, 3), foreign))]
+pub trait ExternalTrait { ... }
+
 #[cfg(feature = "ffi")]
 ffier::library_definition!("ft", library_tag = 1, Widget = 2, ...);
 ```
@@ -43,6 +46,10 @@ When the feature is off, all annotations are stripped by `cfg_attr` and
 the crate compiles as pure Rust with no FFI overhead. The proc macro
 understands `cfg_attr`-wrapped `#[ffier(...)]` attributes and unwraps
 them during expansion.
+
+`export_bitflags!` always defines the type (via `bitflags!`); FFI metadata
+is unconditionally emitted but only referenced by `library_definition!`
+which the user gates behind `#[cfg]`.
 
 ### Bridge generation
 
