@@ -71,15 +71,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffier-test-cdylib"
-version = "0.1.0"
-dependencies = [
- "ffier",
- "ffier-test-foreign-lib",
- "ffier-test-lib",
-]
-
-[[package]]
 name = "ffier-test-compat"
 version = "0.1.0"
 dependencies = [

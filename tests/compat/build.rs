@@ -7,5 +7,5 @@ fn main() {
         .unwrap();
     let target_dir = workspace_root.join("target").join("debug");
     println!("cargo:rustc-link-search=native={}", target_dir.display());
-    println!("cargo:rustc-link-lib=dylib=ffier_test_cdylib");
+    println!("cargo:rustc-link-lib=dylib=ffier_test_lib");
 }

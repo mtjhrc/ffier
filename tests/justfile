@@ -8,9 +8,9 @@ default: no-codegen check-header check-generated-client valgrind miri consumer c
     @echo ""
     @echo "All checks passed!"
 
-# Build the test cdylib (also writes target/ffier-ft.json)
+# Build the test lib (also produces the cdylib + writes target/ffier-ft.json)
 build:
-    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
 
 # Generate the C header
 gen-header: build
@@ -40,7 +40,7 @@ c: build gen-header
     cc -Wall -Wextra -Werror -g -o c/test_main c/test_main.c \
         -I c \
         -L {{root}}/target/debug \
-        -lffier_test_cdylib \
+        -lffier_test_lib \
         -Wl,-rpath,{{root}}/target/debug
     ./c/test_main
 
@@ -51,11 +51,11 @@ valgrind: c
 
 # Run Miri with Stacked Borrows (default model)
 miri-stacked:
-    cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+    cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
 
 # Run Miri with Tree Borrows
 miri-tree:
-    MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
+    MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
 
 # Run Miri with both memory models
 miri: miri-stacked miri-tree
@@ -73,9 +73,8 @@ consumer: consumer-native consumer-cdylib
 
 # The v1 compat bindings (compat/src/generated_v1.rs) are a checked-in
 # snapshot — they represent a v1 client without the fruit-label feature.
-# To regenerate, manually build the cdylib without fruit-label and run
-# the generator. The compat test itself verifies vtable backward
-# compatibility by linking the v1 client against the current v2 library.
+# The compat test verifies vtable backward compatibility by linking the
+# v1 client against the current v2 library.
 
 # Run vtable backward-compatibility tests (v1 client → v2 library)
 compat: build
@@ -87,6 +86,6 @@ compat: build
 no-codegen:
     cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
 
-# Run all Rust tests (cdylib, via-cdylib, submodule, etc.)
+# Run all Rust tests
 cargo-test: build
     cargo test --manifest-path {{root}}/Cargo.toml
