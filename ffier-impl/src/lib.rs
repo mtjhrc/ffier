@@ -3532,22 +3532,16 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
+            // Recursive: append metadata, call next shim
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
-             [$($acc:tt)*], [$next:path, $($remaining:path),*]) => {
+             [$($acc:tt)*], [$next:path $(, $($remaining:path),*)?]) => {
                 $next! { $prefix, $chain,
                     $prefix, $chain, $final_cb,
                     [$($acc)* { $($meta)* }],
-                    [$($remaining),*]
+                    [$($($remaining),*)?]
                 }
             };
-            ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
-             [$($acc:tt)*], [$next:path]) => {
-                $next! { $prefix, $chain,
-                    $prefix, $chain, $final_cb,
-                    [$($acc)* { $($meta)* }],
-                    []
-                }
-            };
+            // Base case: all metadata accumulated, invoke bridge generator
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              [$($acc:tt)*], []) => {
                 $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; $($acc)* { $($meta)* } }
