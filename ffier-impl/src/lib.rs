@@ -1582,7 +1582,7 @@ struct FfierParamAttrs {
     foreign_crate: Option<syn::Path>,
 }
 
-fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
+fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierParamAttrs> {
     let mut result = FfierParamAttrs {
         dispatch: None,
         foreign_crate: None,
@@ -1591,7 +1591,7 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
         let Some(attr) = extract_ffier_attr(raw_attr) else {
             continue;
         };
-        let _ = attr.parse_nested_meta(|meta| {
+        attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("dispatch") {
                 let value = meta.value()?;
                 let mode: syn::Ident = value.parse()?;
@@ -1607,9 +1607,9 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> FfierParamAttrs {
                 )));
             }
             Ok(())
-        });
+        })?;
     }
-    result
+    Ok(result)
 }
 
 /// All recognized keys from `#[ffier(...)]` on a trait/impl method.
@@ -1908,7 +1908,7 @@ fn parse_method_sig(
             };
 
             // Parse #[ffier(...)] attrs on the parameter
-            let param_attrs = parse_ffier_param_attrs(&pt.attrs);
+            let param_attrs = parse_ffier_param_attrs(&pt.attrs).ok()?;
             let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
