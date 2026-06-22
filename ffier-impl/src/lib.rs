@@ -413,7 +413,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
         let foreign_ret = method_ffier
             .as_ref()
             .and_then(|a| a.foreign_return.as_ref());
-        if let Some(mut m) = parse_method_sig(
+        match parse_method_sig(
             &method.sig,
             &method.attrs,
             &mut ctx,
@@ -422,8 +422,12 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
             false,
             foreign_ret,
         ) {
-            m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);
-            methods.push(m);
+            Ok(Some(mut m)) => {
+                m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);
+                methods.push(m);
+            }
+            Ok(None) => {}
+            Err(e) => return e.to_compile_error().into(),
         }
     }
 
@@ -944,8 +948,9 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
         false,
         foreign_ret,
     ) {
-        Some(m) => m,
-        None => {
+        Ok(Some(m)) => m,
+        Err(e) => return e.to_compile_error().into(),
+        Ok(None) => {
             return syn::Error::new_spanned(
                 &input.sig,
                 "ffier: could not parse free function signature",
@@ -1797,7 +1802,7 @@ fn extract_vtable_methods(
             has_default,
             mattrs.raw_handle,
             mattrs.foreign_return.as_ref(),
-        ) {
+        )? {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
                     &method.sig.ident,
@@ -1858,7 +1863,7 @@ fn parse_method_sig(
     has_default: bool,
     raw_handle: bool,
     foreign_return: Option<&syn::Path>,
-) -> Option<MethodInfo> {
+) -> syn::Result<Option<MethodInfo>> {
     // --- Determine receiver ---
     let receiver = if raw_handle {
         Receiver::None
@@ -1875,7 +1880,7 @@ fn parse_method_sig(
             }
             _ if self_ty.is_some() => Receiver::None, // static method in exported impl
             _ if self_ty.is_none() && !has_default => Receiver::None, // free function
-            _ => return None,                         // trait method without receiver — skip
+            _ => return Ok(None),                     // trait method without receiver — skip
         }
     };
 
@@ -1896,7 +1901,9 @@ fn parse_method_sig(
             let Pat::Ident(pi) = &*pt.pat else {
                 return None;
             };
-
+            Some((pi, pt))
+        })
+        .map(|(pi, pt)| -> syn::Result<ParamInfo> {
             // Unwrap reference for impl Trait detection:
             // `&mut impl PushStr` → inner type is `impl PushStr`, ref_kind = "mut"
             let (inner_ty, impl_trait_ref_kind) = match &*pt.ty {
@@ -1908,12 +1915,12 @@ fn parse_method_sig(
             };
 
             // Parse #[ffier(...)] attrs on the parameter
-            let param_attrs = parse_ffier_param_attrs(&pt.attrs).ok()?;
+            let param_attrs = parse_ffier_param_attrs(&pt.attrs)?;
             let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
                 let dispatch = param_attrs.dispatch.unwrap_or_else(|| "auto".to_string());
-                return Some(ParamInfo {
+                return Ok(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::ImplTrait {
                         trait_name,
@@ -1944,7 +1951,7 @@ fn parse_method_sig(
             };
 
             if is_str_slice(&param_ty_bridge) {
-                return Some(ParamInfo {
+                return Ok(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::StrSlice,
                     types: None,
@@ -1973,7 +1980,7 @@ fn parse_method_sig(
                         quote! { #inner_ty }
                     }
                 };
-                return Some(ParamInfo {
+                return Ok(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::HandleSlice,
                     types: Some(TypePair {
@@ -1985,7 +1992,7 @@ fn parse_method_sig(
             }
 
             let bridge = ctx.bridge_tokens(&param_ty_bridge);
-            Some(ParamInfo {
+            Ok(ParamInfo {
                 name: pi.ident.clone(),
                 kind: ParamKind::Regular,
                 types: Some(TypePair {
@@ -1995,7 +2002,7 @@ fn parse_method_sig(
                 }),
             })
         })
-        .collect();
+        .collect::<syn::Result<Vec<_>>>()?;
 
     // --- Parse return type ---
     let self_ty_static = self_ty.map(erase_lifetimes);
@@ -2117,7 +2124,7 @@ fn parse_method_sig(
         }
     };
 
-    Some(MethodInfo {
+    Ok(Some(MethodInfo {
         name: sig.ident.clone(),
         receiver,
         params,
@@ -2134,7 +2141,7 @@ fn parse_method_sig(
         has_default,
         index: 0,
         raw_handle,
-    })
+    }))
 }
 
 /// Whether the method is from a trait definition or a concrete impl.
@@ -2863,7 +2870,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
                 continue;
             }
             // trait_impl methods are concrete overrides, not defaults
-            if let Some(mut m) = parse_method_sig(
+            match parse_method_sig(
                 &method.sig,
                 &method.attrs,
                 &mut ctx,
@@ -2872,8 +2879,12 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
                 mattrs.raw_handle,
                 mattrs.foreign_return.as_ref(),
             ) {
-                m.ffi_name = format!("{}_{}", struct_snake, method.sig.ident);
-                ms.push(m);
+                Ok(Some(mut m)) => {
+                    m.ffi_name = format!("{}_{}", struct_snake, method.sig.ident);
+                    ms.push(m);
+                }
+                Ok(None) => {}
+                Err(e) => return e.to_compile_error().into(),
             }
         }
         ms
