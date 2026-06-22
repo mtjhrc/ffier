@@ -64,14 +64,16 @@ The bridge can be generated locally (same crate) or from a separate cdylib:
 ```rust
 // Same crate (local mode):
 #[cfg(feature = "ffi")]
-__ffier_mylib_generate_ffi_bridge!(local);
+ffier::generate_bridge!(local = __ffier_mylib_metadata,
+    schema_output = "../../target/ffier-mylib.json");
 
 // Or from a separate cdylib crate:
-mylib::__ffier_mylib_generate_ffi_bridge!();
+ffier::generate_bridge!(external = mylib::__ffier_mylib_metadata,
+    schema_output = "../../target/ffier-mylib.json");
 ```
 
-Building writes `target/ffier-mylib.json`. Feed that to the standalone
-generators:
+`schema_output` is the JSON schema path, relative to `CARGO_MANIFEST_DIR`.
+Feed it to the standalone generators:
 
 ```bash
 ffier-gen-c-header target/ffier-mylib.json > mylib.h

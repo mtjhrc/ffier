@@ -1204,7 +1204,10 @@ ffier::library_definition!("ft", library_tag = 1,
 );
 
 #[cfg(feature = "ffi")]
-__ffier_ft_generate_ffi_bridge!(local);
+ffier::generate_bridge!(
+    local = __ffier_ft_metadata,
+    schema_output = "../../target/ffier-ft.json"
+);
 
 // ---------------------------------------------------------------------------
 // Manual bridge function — peeks at a handle's type tag to verify dispatch path.

@@ -53,20 +53,24 @@ which the user gates behind `#[cfg]`.
 
 ### Bridge generation
 
-`library_definition!` emits a `__ffier_{prefix}_generate_ffi_bridge!()` macro
+`library_definition!` emits a `__ffier_{prefix}_metadata!` macro
 that drives a chain of metadata macros through each registered type,
 accumulating metadata blobs. The chain's base case calls
 `ffier::__generate_bridge` (a proc macro in ffier-impl) which produces
-all `extern "C"` bridge functions and writes `target/ffier-{prefix}.json`.
+all `extern "C"` bridge functions and writes the JSON schema.
 
-The bridge macro is called from a cdylib crate (cross-crate):
+The bridge is generated via `ffier::generate_bridge!`:
 ```rust
-ffier_test_lib::__ffier_ft_generate_ffi_bridge!();
+// From the same crate as library_definition! (local):
+ffier::generate_bridge!(local = __ffier_ft_metadata,
+    schema_output = "../../target/ffier-ft.json");
+
+// From a separate cdylib crate (external):
+ffier::generate_bridge!(external = mylib::__ffier_ft_metadata,
+    schema_output = "../../target/ffier-ft.json");
 ```
-Or from the same crate as `library_definition!` (local):
-```rust
-__ffier_ft_generate_ffi_bridge!(local);
-```
+
+`schema_output` is relative to `CARGO_MANIFEST_DIR` (the crate calling the macro).
 
 ### Method kinds
 

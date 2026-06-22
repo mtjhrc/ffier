@@ -164,6 +164,23 @@ fn generate_one(
     }
 }
 
+/// Extract a string literal value from a token tree, unwrapping transparent
+/// (None-delimited) groups that `macro_rules!` wraps around captured fragments.
+/// Uses `syn::LitStr` for proper unescaping.
+fn unwrap_literal(tt: Option<proc_macro2::TokenTree>) -> Option<String> {
+    match tt {
+        Some(proc_macro2::TokenTree::Literal(lit)) => {
+            let stream = proc_macro2::TokenStream::from(proc_macro2::TokenTree::Literal(lit));
+            syn::parse2::<syn::LitStr>(stream).ok().map(|s| s.value())
+        }
+        Some(proc_macro2::TokenTree::Group(g)) if g.delimiter() == proc_macro2::Delimiter::None => {
+            // Recurse into the transparent group
+            unwrap_literal(g.stream().into_iter().next())
+        }
+        _ => None,
+    }
+}
+
 /// Generates bridge code from batched metadata items.
 ///
 /// Input: `{ @tag, ... } { @tag, ... } ...` — multiple brace-delimited items.
@@ -196,26 +213,53 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
         path_tokens.into_iter().collect()
     };
-    // Parse @primitives_prefix = "...";
-    let primitives_prefix: Option<String> = {
-        if let Some(proc_macro2::TokenTree::Punct(p)) = iter.peek()
-            && p.as_char() == '@'
-        {
-            iter.next(); // @
-            iter.next(); // primitives_prefix
-            iter.next(); // =
-            let value = if let Some(proc_macro2::TokenTree::Literal(lit)) = iter.next() {
-                let s = lit.to_string();
-                // Strip surrounding quotes
-                Some(s.trim_matches('"').to_string())
-            } else {
-                None
-            };
-            iter.next(); // ;
-            value
-        } else {
-            None
+    // Parse optional @-prefixed preamble keys.
+    // Known keys: @primitives_prefix, @schema_output.
+    let mut primitives_prefix: Option<String> = None;
+    let mut schema_output: Option<String> = None;
+    while let Some(proc_macro2::TokenTree::Punct(p)) = iter.peek()
+        && p.as_char() == '@'
+    {
+        iter.next(); // @
+        let key = match iter.next() {
+            Some(proc_macro2::TokenTree::Ident(id)) => id.to_string(),
+            _ => {
+                return quote! { compile_error!("expected identifier after `@` in preamble"); };
+            }
+        };
+        match iter.next() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+            _ => {
+                let msg = format!("expected `=` after @{key}");
+                return quote! { compile_error!(#msg); };
+            }
         }
+        let value = match unwrap_literal(iter.next()) {
+            Some(s) => s,
+            None => {
+                let msg = format!("expected string literal for @{key}");
+                return quote! { compile_error!(#msg); };
+            }
+        };
+        match iter.next() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ';' => {}
+            _ => {
+                let msg = format!("expected `;` after @{key} value");
+                return quote! { compile_error!(#msg); };
+            }
+        }
+        match key.as_str() {
+            "primitives_prefix" => primitives_prefix = Some(value),
+            "schema_output" => schema_output = Some(value),
+            _ => {
+                let msg = format!("unknown preamble key @{key}");
+                return quote! { compile_error!(#msg); };
+            }
+        }
+    }
+    let schema_output = match schema_output {
+        Some(s) => s,
+        None => return quote! { compile_error!("missing @schema_output in bridge metadata"); },
     };
 
     let mut items: Vec<TokenStream2> = Vec::new();
@@ -513,10 +557,11 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate free_object_array function
     let free_object_array_fn = generate_free_object_array(&first_prefix);
 
-    // Emit JSON metadata to $OUT_DIR/ffier-{prefix}.json
+    // Emit JSON schema to the user-specified path.
     emit_json(
         &first_prefix,
         primitives_prefix.as_deref(),
+        &schema_output,
         &errors,
         &exportables,
         &implementables,
@@ -2091,12 +2136,14 @@ fn generate_trait_impl_bridge(
 // JSON metadata emission
 // ===========================================================================
 
-/// Convert parsed metadata to `ffier_schema::Library` and write to
-/// `target/ffier-{prefix}.json` relative to the workspace root.
+/// Convert parsed metadata to `ffier_schema::Library` and write to the
+/// user-specified `schema_output` path. Relative paths are resolved from
+/// `CARGO_MANIFEST_DIR`.
 #[allow(clippy::too_many_arguments)]
 fn emit_json(
     prefix: &str,
     primitives_prefix: Option<&str>,
+    schema_output: &str,
     errors: &[TokenStream2],
     exportables: &[TokenStream2],
     implementables: &[TokenStream2],
@@ -2105,27 +2152,15 @@ fn emit_json(
     bitflags_constants: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) {
-    // CARGO_MANIFEST_DIR is always set by cargo when rustc runs, even without
-    // a build.rs. We walk up to find the workspace target/ directory.
-    let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
-        Ok(d) => d,
-        Err(_) => return,
-    };
-    let target_dir = match std::env::var("CARGO_TARGET_DIR") {
-        Ok(d) => std::path::PathBuf::from(d),
-        Err(_) => {
-            // Walk up from manifest dir to find target/
-            let mut dir = std::path::PathBuf::from(&manifest_dir);
-            loop {
-                let candidate = dir.join("target");
-                if candidate.is_dir() {
-                    break candidate;
-                }
-                if !dir.pop() {
-                    return; // can't find target dir
-                }
-            }
-        }
+    let path = std::path::PathBuf::from(schema_output);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
+            Ok(d) => std::path::PathBuf::from(d),
+            Err(_) => return,
+        };
+        manifest_dir.join(path)
     };
 
     let library = build_schema(
@@ -2140,7 +2175,9 @@ fn emit_json(
         free_fns,
     );
     let json = library.to_json();
-    let path = target_dir.join(format!("ffier-{prefix}.json"));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
     std::fs::write(&path, json).unwrap_or_else(|e| {
         panic!("failed to write {}: {e}", path.display());
     });

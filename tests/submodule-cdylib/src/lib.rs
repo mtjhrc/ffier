@@ -2,7 +2,10 @@
 //! This verifies that types defined in submodules and referenced via `crate::`
 //! paths in `library_definition!` produce working bridge functions.
 
-ffier_test_submodule_lib::__ffier_subtest_generate_ffi_bridge!();
+ffier::generate_bridge!(
+    external = ffier_test_submodule_lib::__ffier_subtest_metadata,
+    schema_output = "../../target/ffier-subtest.json"
+);
 
 #[cfg(test)]
 mod tests {

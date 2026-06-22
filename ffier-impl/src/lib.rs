@@ -2969,8 +2969,12 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
 ///     crate::traits::Fruit for crate::types::Apple,
 /// );
 ///
-/// // In cdylib:
-/// mylib::__ffier_mylib_generate_ffi_bridge!();
+/// // Same crate:
+/// ffier::generate_bridge!(local = __ffier_mylib_metadata,
+///     schema_output = "../../target/ffier-mylib.json");
+/// // Or from a separate cdylib crate:
+/// ffier::generate_bridge!(external = mylib::__ffier_mylib_metadata,
+///     schema_output = "../../target/ffier-mylib.json");
 /// ```
 ///
 /// ## Shared primitives prefix
@@ -3321,7 +3325,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let first = &shim_names[0];
     let rest = &shim_names[1..];
 
-    let entry_macro_name = format_ident!("__ffier_{prefix_str}_generate_ffi_bridge");
+    let entry_macro_name = format_ident!("__ffier_{prefix_str}_metadata");
 
     let output = quote! {
         #[doc(hidden)]
@@ -3533,52 +3537,53 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
         #(#shim_macros)*
 
-        // Chain accumulator — shared by both cross-crate and local entry
-        // macros. The `$chain` parameter is how the chain references itself:
-        // cross-crate passes `$crate::__ffier_chain`, local passes the
-        // bare name `__ffier_chain`.
-        //
-        // The #[macro_export] version is needed for cross-crate visibility.
-        // The local alias below re-uses the same logic without $crate::.
+        // Chain accumulator — shared by both `@cross_crate` and `@local`
+        // metadata macro arms. The `$chain` parameter is how the chain
+        // references itself: cross-crate passes `$crate::__ffier_chain`,
+        // local passes the bare name `__ffier_chain` (rust#52234).
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
             // Recursive: append metadata, call next shim
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
+             $schema_output:literal,
              [$($acc:tt)*], [$next:path $(, $($remaining:path),*)?]) => {
                 $next! { $prefix, $chain,
                     $prefix, $chain, $final_cb,
+                    $schema_output,
                     [$($acc)* { $($meta)* }],
                     [$($($remaining),*)?]
                 }
             };
             // Base case: all metadata accumulated, invoke bridge generator
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
+             $schema_output:literal,
              [$($acc:tt)*], []) => {
-                $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; $($acc)* { $($meta)* } }
+                $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; @schema_output = $schema_output; $($acc)* { $($meta)* } }
             };
         }
 
-        /// Generate `extern "C"` bridge functions and JSON schema.
+        /// Metadata entry point for bridge generation.
         ///
-        /// Two invocation forms:
-        /// - `__ffier_{prefix}_generate_ffi_bridge!()` — from a separate
-        ///   cdylib crate (cross-crate, uses `$crate::` paths).
-        /// - `__ffier_{prefix}_generate_ffi_bridge!(local)` — from the
-        ///   same crate as `library_definition!` (bare names, avoids
-        ///   Rust's `$crate::` restriction on macro-expanded macros).
+        /// Not intended for direct use — call via [`ffier::generate_bridge!`]:
+        /// ```ignore
+        /// ffier::generate_bridge!(local = __ffier_{prefix}_metadata, schema_output = "target/ffier-{prefix}.json");
+        /// ffier::generate_bridge!(external = mylib::__ffier_{prefix}_metadata, schema_output = "target/ffier-{prefix}.json");
+        /// ```
         #[macro_export]
         macro_rules! #entry_macro_name {
-            () => {
+            (@cross_crate, $schema_output:literal) => {
                 $crate::#first! { #prefix_lit, $crate::__ffier_chain,
                     #prefix_lit, $crate::__ffier_chain, ffier::__generate_bridge,
+                    $schema_output,
                     [],
                     [#($crate::#rest),*]
                 }
             };
-            (local) => {
+            (@local, $schema_output:literal) => {
                 #first! { #prefix_lit, __ffier_chain,
                     #prefix_lit, __ffier_chain, ffier::__generate_bridge,
+                    $schema_output,
                     [],
                     [#(#rest),*]
                 }
@@ -4443,4 +4448,136 @@ fn collect_reexport_paths(
 #[proc_macro]
 pub fn __generate_bridge(input: TokenStream) -> TokenStream {
     bridge::generate_batch_impl(input.into()).into()
+}
+
+// ===========================================================================
+// generate_bridge — public proc macro entry point
+// ===========================================================================
+
+/// Generate `extern "C"` bridge functions for an ffier library.
+///
+/// Takes a mode keyword, the metadata macro path, and the schema output path.
+///
+/// - `local` — the macro is in the same crate as `library_definition!`.
+///   Uses bare names internally to work around rust#52234.
+/// - `external` — the macro is in a different crate (the typical cdylib case).
+///   Uses `$crate::` paths for cross-crate resolution.
+///
+/// `schema_output` is the path where the JSON schema is written.
+/// Relative paths are resolved from `CARGO_MANIFEST_DIR` (the directory
+/// containing the `Cargo.toml` of the crate calling this macro).
+///
+/// ```ignore
+/// // Same crate as library_definition!:
+/// ffier::generate_bridge!(local = __ffier_ft_metadata,
+///     schema_output = "../../target/ffier-ft.json");
+///
+/// // Separate cdylib crate:
+/// ffier::generate_bridge!(external = mylib::__ffier_ft_metadata,
+///     schema_output = "../../target/ffier-ft.json");
+/// ```
+#[proc_macro]
+pub fn generate_bridge(input: TokenStream) -> TokenStream {
+    let input2: proc_macro2::TokenStream = input.into();
+    let mut iter = input2.into_iter().peekable();
+
+    // Parse mode keyword
+    let mode_ident = match iter.next() {
+        Some(proc_macro2::TokenTree::Ident(id)) => id,
+        _ => {
+            return quote! {
+                compile_error!("expected `local = <path>, schema_output = \"...\"` or `external = <path>, schema_output = \"...\"`");
+            }
+            .into();
+        }
+    };
+
+    let mode_str = mode_ident.to_string();
+    let mode = match mode_str.as_str() {
+        "local" => quote! { @local },
+        "external" => quote! { @cross_crate },
+        _ => {
+            return quote! {
+                compile_error!(concat!(
+                    "unknown mode `", stringify!(#mode_ident),
+                    "`: expected `local` or `external`"
+                ));
+            }
+            .into();
+        }
+    };
+
+    // Consume `=`
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `=` after mode keyword");
+            }
+            .into();
+        }
+    }
+
+    // Collect metadata macro path tokens until `,`
+    let mut path_tokens = Vec::new();
+    loop {
+        match iter.peek() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',' => {
+                iter.next(); // consume `,`
+                break;
+            }
+            Some(_) => path_tokens.push(iter.next().unwrap()),
+            None => {
+                return quote! {
+                    compile_error!("expected `, schema_output = \"...\"` after metadata macro path");
+                }
+                .into();
+            }
+        }
+    }
+    let path: proc_macro2::TokenStream = path_tokens.into_iter().collect();
+    if path.is_empty() {
+        return quote! {
+            compile_error!("expected metadata macro path after `=`");
+        }
+        .into();
+    }
+
+    // Parse `schema_output = "..."`
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Ident(id)) if id == "schema_output" => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `schema_output = \"...\"`");
+            }
+            .into();
+        }
+    }
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `=` after `schema_output`");
+            }
+            .into();
+        }
+    }
+    let schema_output = match iter.next() {
+        Some(proc_macro2::TokenTree::Literal(lit)) => lit,
+        _ => {
+            return quote! {
+                compile_error!("expected string literal for schema_output path");
+            }
+            .into();
+        }
+    };
+
+    if iter.next().is_some() {
+        return quote! {
+            compile_error!("unexpected trailing tokens after schema_output");
+        }
+        .into();
+    }
+
+    quote! { #path!(#mode, #schema_output); }.into()
 }
