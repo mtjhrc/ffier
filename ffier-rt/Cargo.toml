@@ -2,6 +2,8 @@
 name = "ffier-rt"
 version = "0.2.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Runtime types for ffier FFI bindings"
 
 [features]
 default = ["std"]

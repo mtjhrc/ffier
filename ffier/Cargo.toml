@@ -2,6 +2,8 @@
 name = "ffier"
 version = "0.2.0"
 edition = "2024"
+license = "Apache-2.0"
+description = "Automatic FFI binding generator for Rust libraries"
 
 [features]
 default = ["std"]
