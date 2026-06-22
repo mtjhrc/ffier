@@ -3983,6 +3983,69 @@ impl Parse for GenerateVtableInput {
     }
 }
 
+/// Build the C function pointer signature for a vtable method:
+/// `(param_types, return_type)`. Used for both vtable struct fields
+/// and the trait impl's function pointer casts.
+/// Returns `(param_types, return_type, ok_is_handle)`.
+fn vtable_c_fn_sig(
+    m: &crate::meta::MetaMethod,
+    handle_names: &std::collections::HashSet<String>,
+) -> (
+    Vec<proc_macro2::TokenStream>,
+    proc_macro2::TokenStream,
+    bool,
+) {
+    let mut param_types = vec![quote! { *mut core::ffi::c_void }];
+    for p in &m.params {
+        match &p.kind {
+            crate::meta::MetaParamKind::ImplTrait { .. } => {
+                param_types.push(quote! { *mut core::ffi::c_void });
+            }
+            crate::meta::MetaParamKind::StrSlice => {
+                param_types.push(quote! { *const ffier::FfierBytes });
+                param_types.push(quote! { usize });
+            }
+            crate::meta::MetaParamKind::HandleSlice(_) => {
+                param_types.push(quote! { *const *mut core::ffi::c_void });
+                param_types.push(quote! { usize });
+            }
+            crate::meta::MetaParamKind::Regular(tp) => {
+                let bt = &tp.bridge_type;
+                param_types.push(quote! { <#bt as FfiType>::CRepr });
+            }
+        }
+    }
+
+    let ok_is_handle = matches!(&m.ret, crate::meta::MetaReturn::Result { ok: Some(_), .. })
+        && crate::meta::is_result_ok_handle(&m.rust_ret, handle_names);
+
+    let fn_ret = match &m.ret {
+        crate::meta::MetaReturn::Void => quote! {},
+        crate::meta::MetaReturn::Value(tp) => {
+            let bt = &tp.bridge_type;
+            quote! { -> <#bt as FfiType>::CRepr }
+        }
+        crate::meta::MetaReturn::HandleSlice { .. } => {
+            quote! { -> ffier::FfierObjectArray }
+        }
+        crate::meta::MetaReturn::Result { ok, .. } => {
+            if ok_is_handle {
+                param_types.push(quote! { *mut *mut core::ffi::c_void });
+                quote! { -> *mut core::ffi::c_void }
+            } else {
+                if let Some(ok_tp) = ok {
+                    let bt = &ok_tp.bridge_type;
+                    param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
+                }
+                param_types.push(quote! { *mut *mut core::ffi::c_void });
+                quote! { -> ffier::FfierResult }
+            }
+        }
+    };
+
+    (param_types, fn_ret, ok_is_handle)
+}
+
 #[doc(hidden)]
 #[proc_macro]
 pub fn __generate_vtable(input: TokenStream) -> TokenStream {
@@ -4036,57 +4099,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         }
 
         let method_name = &m.name;
-        // Build param types for the fn pointer
-        let mut param_types = vec![quote! { *mut core::ffi::c_void }];
-        for p in &m.params {
-            match &p.kind {
-                crate::meta::MetaParamKind::ImplTrait { .. } => {
-                    param_types.push(quote! { *mut core::ffi::c_void });
-                }
-                crate::meta::MetaParamKind::StrSlice => {
-                    param_types.push(quote! { *const ffier::FfierBytes });
-                    param_types.push(quote! { usize });
-                }
-                crate::meta::MetaParamKind::HandleSlice(_) => {
-                    param_types.push(quote! { *const *mut core::ffi::c_void });
-                    param_types.push(quote! { usize });
-                }
-                crate::meta::MetaParamKind::Regular(tp) => {
-                    let bt = &tp.bridge_type;
-                    param_types.push(quote! { <#bt as FfiType>::CRepr });
-                }
-            }
-        }
-
-        // Build return type + optional out-params
-        let fn_ret = match &m.ret {
-            crate::meta::MetaReturn::Void => quote! {},
-            crate::meta::MetaReturn::Value(tp) => {
-                let bt = &tp.bridge_type;
-                quote! { -> <#bt as FfiType>::CRepr }
-            }
-            crate::meta::MetaReturn::HandleSlice { .. } => {
-                // HandleSlice returns FfierObjectArray by value
-                quote! { -> ffier::FfierObjectArray }
-            }
-            crate::meta::MetaReturn::Result { ok, .. } => {
-                let ok_is_handle =
-                    ok.is_some() && crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
-                if ok_is_handle {
-                    // GLib-style: return handle, err_out param
-                    param_types.push(quote! { *mut *mut core::ffi::c_void });
-                    quote! { -> *mut core::ffi::c_void }
-                } else {
-                    // OutParam: return FfierResult, result + err_out params
-                    if let Some(ok_tp) = ok {
-                        let bt = &ok_tp.bridge_type;
-                        param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
-                    }
-                    param_types.push(quote! { *mut *mut core::ffi::c_void });
-                    quote! { -> ffier::FfierResult }
-                }
-            }
-        };
+        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names);
 
         vtable_fields.push(quote! {
             pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
@@ -4121,56 +4134,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
 
-            // Build fn_ptr_type (must match vtable struct field)
-            let mut fn_ptr_param_types = vec![quote! { *mut core::ffi::c_void }];
-            for p in &m.params {
-                match &p.kind {
-                    crate::meta::MetaParamKind::ImplTrait { .. } => {
-                        fn_ptr_param_types.push(quote! { *mut core::ffi::c_void });
-                    }
-                    crate::meta::MetaParamKind::StrSlice => {
-                        fn_ptr_param_types.push(quote! { *const ffier::FfierBytes });
-                        fn_ptr_param_types.push(quote! { usize });
-                    }
-                    crate::meta::MetaParamKind::HandleSlice(_) => {
-                        fn_ptr_param_types.push(quote! { *const *mut core::ffi::c_void });
-                        fn_ptr_param_types.push(quote! { usize });
-                    }
-                    crate::meta::MetaParamKind::Regular(tp) => {
-                        let bt = &tp.bridge_type;
-                        fn_ptr_param_types.push(quote! { <#bt as FfiType>::CRepr });
-                    }
-                }
-            }
-
-            let ok_is_handle = matches!(&m.ret, crate::meta::MetaReturn::Result { ok: Some(_), .. })
-                && crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
-
-            let fn_ptr_ret = match &m.ret {
-                crate::meta::MetaReturn::Void => quote! {},
-                crate::meta::MetaReturn::Value(tp) => {
-                    let bt = &tp.bridge_type;
-                    quote! { -> <#bt as FfiType>::CRepr }
-                }
-                crate::meta::MetaReturn::HandleSlice { .. } => {
-                    // HandleSlice returns FfierObjectArray by value
-                    quote! { -> ffier::FfierObjectArray }
-                }
-                crate::meta::MetaReturn::Result { ok, .. } => {
-                    if ok_is_handle {
-                        fn_ptr_param_types.push(quote! { *mut *mut core::ffi::c_void });
-                        quote! { -> *mut core::ffi::c_void }
-                    } else {
-                        if let Some(ok_tp) = ok {
-                            let bt = &ok_tp.bridge_type;
-                            fn_ptr_param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
-                        }
-                        fn_ptr_param_types.push(quote! { *mut *mut core::ffi::c_void });
-                        quote! { -> ffier::FfierResult }
-                    }
-                }
-            };
-
+            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) = vtable_c_fn_sig(m, &handle_names);
             let fn_ptr_type = quote! {
                 unsafe extern "C" fn(#(#fn_ptr_param_types),*) #fn_ptr_ret
             };
