@@ -1,23 +1,24 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 root := justfile_directory() / ".."
+schema := root / "target" / "ffier-ft.json"
 
 # Run all tests
-default: no-codegen check-header check-generated-client check-generated-compat valgrind miri consumer compat cargo-test
+default: no-codegen check-header check-generated-client valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
-# Build the test cdylib
+# Build the test cdylib (also writes target/ffier-ft.json)
 build:
     cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib
 
 # Generate the C header
-gen-header:
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-header > c/ffier_test.h
+gen-header: build
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{schema}} > c/ffier_test.h
 
 # Generate Rust client bindings source
 gen-rust-client: build
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-rust-client | rustfmt > lib-via-cdylib/src/generated.rs
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} | rustfmt > lib-via-cdylib/src/generated.rs
 
 # Update the expected header snapshot
 update-expected-header: gen-header
@@ -32,7 +33,7 @@ check-header: gen-header
 
 # Check generated client matches checked-in version
 check-generated-client: gen-rust-client
-    diff lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --bin gen-rust-client 2>/dev/null | rustfmt)
+    diff lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} 2>/dev/null | rustfmt)
 
 # Compile and run the C tests
 c: build gen-header
@@ -70,16 +71,11 @@ consumer-cdylib: build
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
 
-# Generate v1 client bindings (Fruit without label method)
-gen-v1-client: build
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --no-default-features --bin gen-rust-client | rustfmt > compat/src/generated_v1.rs
-
-# Update the v1 compat bindings
-update-generated-compat: gen-v1-client
-
-# Check v1 compat bindings match checked-in version
-check-generated-compat: gen-v1-client
-    diff compat/src/generated_v1.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-test-cdylib --no-default-features --bin gen-rust-client 2>/dev/null | rustfmt)
+# The v1 compat bindings (compat/src/generated_v1.rs) are a checked-in
+# snapshot — they represent a v1 client without the fruit-label feature.
+# To regenerate, manually build the cdylib without fruit-label and run
+# the generator. The compat test itself verifies vtable backward
+# compatibility by linking the v1 client against the current v2 library.
 
 # Run vtable backward-compatibility tests (v1 client → v2 library)
 compat: build

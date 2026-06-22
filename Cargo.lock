@@ -75,9 +75,6 @@ name = "ffier-test-cdylib"
 version = "0.1.0"
 dependencies = [
  "ffier",
- "ffier-gen-c-header",
- "ffier-gen-rust-client",
- "ffier-schema",
  "ffier-test-foreign-lib",
  "ffier-test-lib",
 ]
