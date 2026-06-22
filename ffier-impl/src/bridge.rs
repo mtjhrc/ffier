@@ -2178,9 +2178,17 @@ fn emit_json(
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    std::fs::write(&path, json).unwrap_or_else(|e| {
-        panic!("failed to write {}: {e}", path.display());
-    });
+    // Only write if contents changed to avoid bumping the timestamp
+    // (which would trigger unnecessary downstream rebuilds).
+    let needs_write = match std::fs::read(&path) {
+        Ok(existing) => existing != json.as_bytes(),
+        Err(_) => true,
+    };
+    if needs_write {
+        std::fs::write(&path, json).unwrap_or_else(|e| {
+            panic!("failed to write {}: {e}", path.display());
+        });
+    }
 }
 
 /// Context for C type resolution during schema conversion.
