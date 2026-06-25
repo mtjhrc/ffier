@@ -2,6 +2,7 @@ use std::path::Path;
 use std::process;
 
 use clap::Parser;
+use ffier_gen_c_header::Options;
 
 /// Generate a C header from an ffier JSON schema.
 #[derive(Parser)]
@@ -12,6 +13,9 @@ struct Cli {
     /// Header guard name. Derived from the filename if omitted
     /// (e.g. `ffier-ft.json` becomes `FFIER_FT_H`).
     header_guard: Option<String>,
+
+    #[command(flatten)]
+    opts: Options,
 }
 
 fn main() {
@@ -21,7 +25,7 @@ fn main() {
         .header_guard
         .unwrap_or_else(|| default_guard(&cli.json_file));
 
-    match ffier_gen_c_header::generate_from_file(&cli.json_file, &guard) {
+    match ffier_gen_c_header::generate_from_file(&cli.json_file, &guard, &cli.opts) {
         Ok(header) => print!("{header}"),
         Err(e) => {
             eprintln!("error: {e}");

@@ -16,8 +16,17 @@ use ffier_schema::{
     ParamType, Receiver, Return, TraitImpl,
 };
 
+/// Options controlling C header generation.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct Options {
+    /// Emit `typedef RET (*name_fn)(PARAMS);` for every function declaration.
+    /// Useful for consumers that `dlopen`/`dlsym` at runtime.
+    #[arg(long)]
+    pub fn_typedefs: bool,
+}
+
 /// Generate a C header string from a library schema.
-pub fn generate(lib: &Library, guard: &str) -> String {
+pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     let mut out = String::new();
     let fn_pfx = format!("{}_", lib.prefix);
 
@@ -46,7 +55,7 @@ pub fn generate(lib: &Library, guard: &str) -> String {
     // Shared types — use primitives_prefix for type names and guards
     let prim_pfx = lib.primitives_prefix();
     let prim_upper_pfx = format!("{}_", prim_pfx.to_ascii_uppercase());
-    emit_shared_types(&mut out, &prim_upper_pfx, &fn_pfx, lib);
+    emit_shared_types(&mut out, &prim_upper_pfx, &fn_pfx, lib, opts);
 
     // Enum constant sections
     for en in &lib.enum_constants {
@@ -65,27 +74,27 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
-        emit_type_section(&mut out, ty, lib);
+        emit_type_section(&mut out, ty, lib, opts);
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
         emit_vtable_section(&mut out, tr, lib);
-        emit_dispatch_section(&mut out, tr, lib);
+        emit_dispatch_section(&mut out, tr, lib, opts);
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        emit_trait_impl_section(&mut out, ti, lib);
+        emit_trait_impl_section(&mut out, ti, lib, opts);
     }
 
     // Free functions
     if !lib.free_functions.is_empty() {
-        emit_free_functions(&mut out, &lib.free_functions, lib);
+        emit_free_functions(&mut out, &lib.free_functions, lib, opts);
     }
 
     // Utility functions
-    emit_utility_functions(&mut out, &fn_pfx, lib);
+    emit_utility_functions(&mut out, &fn_pfx, lib, opts);
 
     out.push('\n');
     out.push_str(&format!("#endif /* {guard} */\n"));
@@ -96,10 +105,11 @@ pub fn generate(lib: &Library, guard: &str) -> String {
 pub fn generate_from_file(
     json_path: &str,
     guard: &str,
+    opts: &Options,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(json_path)?;
     let lib = Library::from_json(&json)?;
-    Ok(generate(&lib, guard))
+    Ok(generate(&lib, guard, opts))
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +126,13 @@ pub fn generate_from_file(
 /// Each primitive type definition is guarded by `#ifndef` so that when
 /// multiple headers share the same `primitives_prefix`, whichever is
 /// included first defines the types.
-fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: &Library) {
+fn emit_shared_types(
+    out: &mut String,
+    prim_upper_pfx: &str,
+    fn_pfx: &str,
+    lib: &Library,
+    opts: &Options,
+) {
     use ffier_schema::Blessing;
     let result_c = blessed_c_type(lib, Blessing::Result);
     let str_c = blessed_c_type(lib, Blessing::Str);
@@ -263,13 +279,15 @@ fn emit_shared_types(out: &mut String, prim_upper_pfx: &str, fn_pfx: &str, lib: 
     // Each library has its own allocator so str_free must be library-specific.
     let str_free_fn = format!("{fn_pfx}str_free");
     out.push_str("/* Free an owned string returned by the library */\n");
-    out.push_str(&format!("void {str_free_fn}({str_c} s);\n\n"));
+    write_decl(out, "void", &str_free_fn, &format!("{str_c} s"), opts);
+    out.push('\n');
 
     // free_object_array — uses the library prefix (each library has its own allocator).
     if let Some(object_array_c) = try_blessed_c_type(lib, Blessing::ObjectArray) {
         let free_fn = format!("{fn_pfx}free_object_array");
         out.push_str("/* Free an object array returned by the library */\n");
-        out.push_str(&format!("void {free_fn}({object_array_c} a);\n\n"));
+        write_decl(out, "void", &free_fn, &format!("{object_array_c} a"), opts);
+        out.push('\n');
     }
 }
 
@@ -396,36 +414,37 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library) {
+fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &Options) {
     emit_section_header(out, &ty.name);
 
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
         emit_doc_comment(out, &m.doc);
-        let decl = format_c_declaration(&m.ffi_name, c_name, m, ty.is_builder_type, lib);
-        out.push_str(&decl);
-        out.push('\n');
+        let (ret_type, params_str) = build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
+        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
     }
 
     // Destroy function
-    out.push_str(&format!(
-        "void {}({} handle);\n",
-        ty.destroy_ffi_name, c_name
-    ));
+    write_decl(
+        out,
+        "void",
+        &ty.destroy_ffi_name,
+        &format!("{c_name} handle"),
+        opts,
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Trait impl bridge functions
 // ---------------------------------------------------------------------------
 
-fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
+fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts: &Options) {
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        let decl = format_dispatch_declaration(&m.ffi_name, &struct_c_name, m, lib);
-        out.push_str(&decl);
-        out.push('\n');
+        let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
+        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
     }
 }
 
@@ -433,7 +452,7 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library) {
 // Self-dispatch functions for exported traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library, opts: &Options) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     let handle_c_name = lib.c_type_of(&tr.name);
@@ -441,23 +460,30 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Librar
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
         emit_doc_comment(out, &m.doc);
-        let decl = format_dispatch_declaration(&m.ffi_name, handle_c_name, m, lib);
-        out.push_str(&decl);
-        out.push('\n');
+        let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
+        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
     }
 
     // Destroy dispatch
-    out.push_str(&format!(
-        "void {}({} handle);\n",
-        tr.destroy_ffi_name, handle_c_name
-    ));
+    write_decl(
+        out,
+        "void",
+        &tr.destroy_ffi_name,
+        &format!("{handle_c_name} handle"),
+        opts,
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Free functions
 // ---------------------------------------------------------------------------
 
-fn emit_free_functions(out: &mut String, functions: &[FreeFunction], lib: &Library) {
+fn emit_free_functions(
+    out: &mut String,
+    functions: &[FreeFunction],
+    lib: &Library,
+    opts: &Options,
+) {
     emit_section_header(out, "Free functions");
 
     for f in functions {
@@ -474,7 +500,7 @@ fn emit_free_functions(out: &mut String, functions: &[FreeFunction], lib: &Libra
         } else {
             params.join(", ")
         };
-        out.push_str(&format!("{ret_type} {}({params_str});\n", f.ffi_name));
+        write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
     }
 }
 
@@ -482,13 +508,19 @@ fn emit_free_functions(out: &mut String, functions: &[FreeFunction], lib: &Libra
 // Utility functions
 // ---------------------------------------------------------------------------
 
-fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library) {
+fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &Options) {
     let result_c = blessed_c_type(lib, ffier_schema::Blessing::Result);
     let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
-    out.push_str(&format!("{str_c} {fn_pfx}result_name({result_c} r);\n"));
-    out.push_str(&format!(
-        "const char* {fn_pfx}result_name_cstr({result_c} r);\n"
-    ));
+    let result_name_fn = format!("{fn_pfx}result_name");
+    let result_name_cstr_fn = format!("{fn_pfx}result_name_cstr");
+    write_decl(out, &str_c, &result_name_fn, &format!("{result_c} r"), opts);
+    write_decl(
+        out,
+        "const char*",
+        &result_name_cstr_fn,
+        &format!("{result_c} r"),
+        opts,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -521,14 +553,14 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
 // Declaration formatting
 // ---------------------------------------------------------------------------
 
-/// Format a C function declaration for an exported method.
-fn format_c_declaration(
-    ffi_name: &str,
+/// Build the components of a C function declaration for an exported method.
+/// Returns `(return_type, params_str)`.
+fn build_c_declaration_parts(
     handle_c_name: &str,
     m: &Method,
     is_builder_type: bool,
     lib: &Library,
-) -> String {
+) -> (String, String) {
     let mut params: Vec<String> = Vec::new();
 
     // Handle param (self)
@@ -549,16 +581,16 @@ fn format_c_declaration(
     params.extend(extra_params);
 
     let params_str = params.join(", ");
-    format!("{ret_type} {ffi_name}({params_str});")
+    (ret_type, params_str)
 }
 
-/// Format a C function declaration for a trait dispatch or trait impl method.
-fn format_dispatch_declaration(
-    ffi_name: &str,
+/// Build the components of a C function declaration for a trait dispatch or trait impl method.
+/// Returns `(return_type, params_str)`.
+fn build_dispatch_declaration_parts(
     handle_c_name: &str,
     m: &Method,
     lib: &Library,
-) -> String {
+) -> (String, String) {
     let mut params = vec![format!("{handle_c_name} handle")];
     format_c_params(&m.params, lib, &mut params);
 
@@ -567,12 +599,22 @@ fn format_dispatch_declaration(
     params.extend(extra_params);
 
     let params_str = params.join(", ");
-    format!("{ret_type} {ffi_name}({params_str});")
+    (ret_type, params_str)
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Write a C function declaration, and optionally a `_fn` function-pointer typedef.
+fn write_decl(out: &mut String, ret_type: &str, fn_name: &str, params_str: &str, opts: &Options) {
+    out.push_str(&format!("{ret_type} {fn_name}({params_str});\n"));
+    if opts.fn_typedefs {
+        out.push_str(&format!(
+            "typedef {ret_type} (*{fn_name}_fn)({params_str});\n"
+        ));
+    }
+}
 
 /// Compute the C return type and any extra out-parameters for a method.
 /// Returns `(c_return_type, extra_params_to_append)`.
