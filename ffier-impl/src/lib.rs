@@ -93,6 +93,8 @@ struct TypePair {
     /// When set, the type comes from a foreign ffier library and this
     /// is the crate path whose `FfiType`/`FfiHandle` traits should be used.
     foreign_crate: Option<proc_macro2::TokenStream>,
+    /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
+    foreign_c_name: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -410,9 +412,24 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
 
         // Parse method-level #[ffier(...)] for foreign_return
         let method_ffier = parse_ffier_method_attrs(&method.attrs).ok();
+        if method_ffier
+            .as_ref()
+            .is_some_and(|a| a.foreign_return.is_some() && a.foreign_return_c_name.is_none())
+        {
+            return syn::Error::new_spanned(
+                &method.sig.ident,
+                "#[ffier(foreign_return = ...)] requires c_name = \"...\" \
+                 (the C typedef name for the foreign handle type)",
+            )
+            .to_compile_error()
+            .into();
+        }
         let foreign_ret = method_ffier
             .as_ref()
             .and_then(|a| a.foreign_return.as_ref());
+        let foreign_ret_c = method_ffier
+            .as_ref()
+            .and_then(|a| a.foreign_return_c_name.as_deref());
         match parse_method_sig(
             &method.sig,
             &method.attrs,
@@ -421,6 +438,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
             false,
             false,
             foreign_ret,
+            foreign_ret_c,
         ) {
             Ok(Some(mut m)) => {
                 m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);
@@ -936,9 +954,24 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
 
     // Parse the function signature as a static method (no self)
     let method_ffier = parse_ffier_method_attrs(&input.attrs).ok();
+    if method_ffier
+        .as_ref()
+        .is_some_and(|a| a.foreign_return.is_some() && a.foreign_return_c_name.is_none())
+    {
+        return syn::Error::new_spanned(
+            &input.sig.ident,
+            "#[ffier(foreign_return = ...)] requires c_name = \"...\" \
+             (the C typedef name for the foreign handle type)",
+        )
+        .to_compile_error()
+        .into();
+    }
     let foreign_ret = method_ffier
         .as_ref()
         .and_then(|a| a.foreign_return.as_ref());
+    let foreign_ret_c = method_ffier
+        .as_ref()
+        .and_then(|a| a.foreign_return_c_name.as_deref());
     let mut method = match parse_method_sig(
         &input.sig,
         &input.attrs,
@@ -947,6 +980,7 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
         false,
         false,
         foreign_ret,
+        foreign_ret_c,
     ) {
         Ok(Some(m)) => m,
         Err(e) => return e.to_compile_error().into(),
@@ -1585,12 +1619,15 @@ struct FfierParamAttrs {
     dispatch: Option<String>,
     /// Foreign ffier library crate path (e.g. `other_lib`).
     foreign_crate: Option<syn::Path>,
+    /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
+    foreign_c_name: Option<String>,
 }
 
 fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierParamAttrs> {
     let mut result = FfierParamAttrs {
         dispatch: None,
         foreign_crate: None,
+        foreign_c_name: None,
     };
     for raw_attr in attrs {
         let Some(attr) = extract_ffier_attr(raw_attr) else {
@@ -1605,6 +1642,10 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierParamAt
                 let value = meta.value()?;
                 let path: syn::Path = value.parse()?;
                 result.foreign_crate = Some(path);
+            } else if meta.path.is_ident("c_name") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                result.foreign_c_name = Some(lit.value());
             } else {
                 return Err(meta.error(format!(
                     "unknown #[ffier] key `{}` on parameter",
@@ -1625,6 +1666,8 @@ struct FfierMethodAttrs {
     skip: bool,
     /// Foreign ffier library crate path for the return type.
     foreign_return: Option<syn::Path>,
+    /// C typedef name for the foreign return handle type.
+    foreign_return_c_name: Option<String>,
 }
 
 /// Parse all `#[ffier(...)]` attributes on a method in one pass.
@@ -1636,6 +1679,7 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
         dispatch: None,
         skip: false,
         foreign_return: None,
+        foreign_return_c_name: None,
     };
 
     for raw_attr in attrs {
@@ -1659,6 +1703,10 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
                 let value = meta.value()?;
                 let path: syn::Path = value.parse()?;
                 result.foreign_return = Some(path);
+            } else if meta.path.is_ident("c_name") {
+                let value = meta.value()?;
+                let lit: syn::LitStr = value.parse()?;
+                result.foreign_return_c_name = Some(lit.value());
             } else {
                 return Err(meta.error(format!(
                     "unknown #[ffier] key `{}`",
@@ -1802,6 +1850,7 @@ fn extract_vtable_methods(
             has_default,
             mattrs.raw_handle,
             mattrs.foreign_return.as_ref(),
+            mattrs.foreign_return_c_name.as_deref(),
         )? {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(
@@ -1855,6 +1904,7 @@ fn extract_vtable_methods(
 ///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
+#[allow(clippy::too_many_arguments)]
 fn parse_method_sig(
     sig: &syn::Signature,
     attrs: &[syn::Attribute],
@@ -1863,6 +1913,7 @@ fn parse_method_sig(
     has_default: bool,
     raw_handle: bool,
     foreign_return: Option<&syn::Path>,
+    foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
     // --- Determine receiver ---
     let receiver = if raw_handle {
@@ -1916,6 +1967,13 @@ fn parse_method_sig(
 
             // Parse #[ffier(...)] attrs on the parameter
             let param_attrs = parse_ffier_param_attrs(&pt.attrs)?;
+            if param_attrs.foreign_crate.is_some() && param_attrs.foreign_c_name.is_none() {
+                return Err(syn::Error::new_spanned(
+                    &pt.pat,
+                    "#[ffier(foreign = ...)] requires c_name = \"...\" \
+                     (the C typedef name for the foreign handle type)",
+                ));
+            }
             let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
 
             if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
@@ -1932,6 +1990,7 @@ fn parse_method_sig(
                         bridge: quote! { *mut core::ffi::c_void },
                         rust: quote! { *mut core::ffi::c_void },
                         foreign_crate: None,
+                        foreign_c_name: None,
                     }),
                 });
             }
@@ -1987,6 +2046,7 @@ fn parse_method_sig(
                         bridge: elem_bridge,
                         rust: elem_rust,
                         foreign_crate: foreign_crate_tokens.clone(),
+                        foreign_c_name: param_attrs.foreign_c_name.clone(),
                     }),
                 });
             }
@@ -1999,6 +2059,7 @@ fn parse_method_sig(
                     bridge,
                     rust: quote! { #param_ty_rust },
                     foreign_crate: foreign_crate_tokens,
+                    foreign_c_name: param_attrs.foreign_c_name,
                 }),
             })
         })
@@ -2007,6 +2068,7 @@ fn parse_method_sig(
     // --- Parse return type ---
     let self_ty_static = self_ty.map(erase_lifetimes);
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
+    let foreign_ret_c_name = foreign_return_c_name.map(|s| s.to_string());
 
     // Builder detection: method returns Self (only for exported impls, requires a receiver)
     let has_receiver = receiver != Receiver::None;
@@ -2060,6 +2122,7 @@ fn parse_method_sig(
                         bridge: elem_bridge,
                         rust: quote! { #inner_ty_rust },
                         foreign_crate: foreign_return_tokens.clone(),
+                        foreign_c_name: foreign_ret_c_name.clone(),
                     },
                     direct,
                 }
@@ -2080,6 +2143,7 @@ fn parse_method_sig(
                         bridge: quote! { #erased },
                         rust: quote! { #rust },
                         foreign_crate: foreign_return_tokens.clone(),
+                        foreign_c_name: foreign_ret_c_name.clone(),
                     })
                 } else {
                     let bridge = ctx.bridge_tokens(&ok_bridge);
@@ -2088,6 +2152,7 @@ fn parse_method_sig(
                         bridge,
                         rust: quote! { #rust },
                         foreign_crate: foreign_return_tokens.clone(),
+                        foreign_c_name: foreign_ret_c_name.clone(),
                     })
                 };
                 ReturnKind::Result {
@@ -2100,6 +2165,7 @@ fn parse_method_sig(
                     bridge: quote! { #erased },
                     rust: quote! { #ty_rust },
                     foreign_crate: foreign_return_tokens.clone(),
+                    foreign_c_name: foreign_ret_c_name.clone(),
                 })
             } else {
                 let bridge = ctx.bridge_tokens(&ty_bridge);
@@ -2107,6 +2173,7 @@ fn parse_method_sig(
                     bridge,
                     rust: quote! { #ty_rust },
                     foreign_crate: foreign_return_tokens,
+                    foreign_c_name: foreign_ret_c_name,
                 })
             }
         }
@@ -2203,7 +2270,8 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                     let bt = &tp.bridge;
                     let rt = &tp.rust;
                     let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
-                    quote! { bridge_type = (#bt), rust_type = (#rt), #fc }
+                    let fcn = tp.foreign_c_name.as_ref().map(|n| quote! { foreign_c_name = (#n), });
+                    quote! { bridge_type = (#bt), rust_type = (#rt), #fc #fcn }
                 }
                 None => quote! {},
             }
@@ -2220,7 +2288,11 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                 .foreign_crate
                 .as_ref()
                 .map(|fc| quote! { foreign_crate = (#fc), });
-            quote! { value(bridge_type = (#bt), rust_type = (#rt), #fc) }
+            let fcn = tp
+                .foreign_c_name
+                .as_ref()
+                .map(|n| quote! { foreign_c_name = (#n), });
+            quote! { value(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
         }
         ReturnKind::Result { ok, err_ident } => {
             let ok_tokens = match ok {
@@ -2232,7 +2304,11 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                         .foreign_crate
                         .as_ref()
                         .map(|fc| quote! { foreign_crate = (#fc), });
-                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt), #fc) }
+                    let fcn = tp
+                        .foreign_c_name
+                        .as_ref()
+                        .map(|n| quote! { foreign_c_name = (#n), });
+                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
                 }
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
@@ -2244,10 +2320,14 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                 .foreign_crate
                 .as_ref()
                 .map(|fc| quote! { foreign_crate = (#fc), });
+            let fcn = tp
+                .foreign_c_name
+                .as_ref()
+                .map(|n| quote! { foreign_c_name = (#n), });
             if *direct {
-                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc) }
+                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
             } else {
-                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc) }
+                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
             }
         }
     };
@@ -2878,6 +2958,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
                 false,
                 mattrs.raw_handle,
                 mattrs.foreign_return.as_ref(),
+                mattrs.foreign_return_c_name.as_deref(),
             ) {
                 Ok(Some(mut m)) => {
                     m.ffi_name = format!("{}_{}", struct_snake, method.sig.ident);

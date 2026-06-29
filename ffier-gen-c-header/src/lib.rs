@@ -50,6 +50,13 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Trait typedefs with implementor lists
     emit_trait_typedefs(&mut out, lib);
+
+    // Foreign handle typedefs
+    for entry in lib.type_registry.values() {
+        if let ffier_schema::TypeKind::ForeignHandle { c_name, .. } = &entry.kind {
+            out.push_str(&format!("typedef void* {c_name};\n"));
+        }
+    }
     out.push('\n');
 
     // Shared types — use primitives_prefix for type names and guards

@@ -155,6 +155,30 @@ pub enum TypeKind {
         /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
         alias_of: std::string::String,
     },
+    /// Handle type from a foreign ffier library. Passed as `*mut c_void`
+    /// across the C ABI but the type definition lives in the foreign
+    /// library's generated client crate, not in this library's.
+    /// Generators should not emit a struct definition for this type;
+    /// instead they should reference it from the foreign client crate.
+    ForeignHandle {
+        /// The Rust crate path that provides this type (e.g.
+        /// `"ffier_test_foreign_lib_via_cdylib"`). Generators emit
+        /// a `use` import for this crate and reference the type directly.
+        foreign_crate: String,
+        /// C typedef name (e.g. `"FlForeignConfig"`). Used by the C header
+        /// generator to emit typed parameters instead of `void*`.
+        c_name: String,
+    },
+}
+
+impl TypeKind {
+    /// True for `Handle` and `ForeignHandle` — any opaque handle type.
+    pub fn is_handle(&self) -> bool {
+        matches!(
+            self,
+            TypeKind::Handle { .. } | TypeKind::ForeignHandle { .. }
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +711,7 @@ impl Library {
                 | TypeKind::Handle { c_name }
                 | TypeKind::Error { c_name }
                 | TypeKind::Trait { c_name } => return c_name,
+                TypeKind::ForeignHandle { c_name, .. } => return c_name,
             }
         }
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");

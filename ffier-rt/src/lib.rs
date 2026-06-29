@@ -560,5 +560,22 @@ pub fn ffier_result_code(r: FfierResult) -> u32 {
     r as u32
 }
 
+/// Const-compatible string equality check.
+pub const fn const_str_eq(a: &str, b: &str) -> bool {
+    let a = a.as_bytes();
+    let b = b.as_bytes();
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Success value.
 pub const FFIER_RESULT_SUCCESS: FfierResult = 0;

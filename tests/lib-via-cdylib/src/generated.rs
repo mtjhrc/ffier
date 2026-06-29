@@ -1,5 +1,7 @@
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
+use ffier_test_foreign_lib_via_cdylib::{ForeignConfig, ForeignItem};
+
 /// Marker trait for types exported as opaque C handles.
 pub trait FfiHandle {
     const C_HANDLE_NAME: &'static str;
@@ -160,10 +162,10 @@ impl<T: FfiHandle + 'static> FfiType for &T {
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut core::ffi::c_void {
-        unsafe { self.as_handle() }
+        unsafe { FfiHandle::as_handle(self) }
     }
     unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {
-        unimplemented!("client-side &T from_c")
+        unimplemented!("&T from_c")
     }
 }
 impl<T: FfiHandle + 'static> FfiType for &mut T {
@@ -171,10 +173,56 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;
     const IS_HANDLE: bool = true;
     fn into_c(self) -> *mut core::ffi::c_void {
-        unsafe { self.as_handle() }
+        unsafe { FfiHandle::as_handle(self) }
     }
     unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {
-        unimplemented!("client-side &mut T from_c")
+        unimplemented!("&mut T from_c")
+    }
+}
+
+impl FfiHandle for ForeignConfig {
+    const C_HANDLE_NAME: &'static str =
+        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    const TYPE_TAG: u32 = <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    }
+}
+impl FfiType for ForeignConfig {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str =
+        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    fn into_c(self) -> *mut core::ffi::c_void {
+        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+    }
+}
+
+impl FfiHandle for ForeignItem {
+    const C_HANDLE_NAME: &'static str =
+        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    const TYPE_TAG: u32 = <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    }
+}
+impl FfiType for ForeignItem {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str =
+        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    fn into_c(self) -> *mut core::ffi::c_void {
+        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
     }
 }
 
@@ -582,6 +630,10 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         fd: <BorrowedFd<'static> as FfiType>::CRepr,
     ) -> <OwnedFd as FfiType>::CRepr;
+    pub fn ft_widget_apply_config(
+        handle: *mut core::ffi::c_void,
+        config: <&'static ForeignConfig as FfiType>::CRepr,
+    );
 }
 
 pub struct Widget(*mut core::ffi::c_void);
@@ -599,7 +651,7 @@ impl Widget {
 }
 
 impl FfiHandle for Widget {
-    const C_HANDLE_NAME: &'static str = "Widget";
+    const C_HANDLE_NAME: &'static str = "FtWidget";
     const TYPE_TAG: u32 = 16777218u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -804,7 +856,7 @@ impl Widget {
     #[doc = " Return a borrowed reference to the widget's internal gadget."]
     pub fn gadget(&self) -> Gadget {
         let __raw = unsafe { ft_widget_gadget(self.0) };
-        Gadget(__raw)
+        <Gadget as FfiHandle>::__from_raw(__raw)
     }
     #[doc = " Return a borrowed slice of the widget's gadgets (&[T] pattern)."]
     pub fn gadgets(&self) -> ForeignSlice<Gadget> {
@@ -912,6 +964,10 @@ impl Widget {
         let __raw = unsafe { ft_widget_dup_fd(self.0, <BorrowedFd<'_> as FfiType>::into_c(fd)) };
         unsafe { <OwnedFd as FfiType>::from_c(__raw) }
     }
+    #[doc = " Apply a foreign config to this widget (tests foreign param on a method)."]
+    pub fn apply_config(&mut self, config: &ForeignConfig) {
+        unsafe { ft_widget_apply_config(self.0, FfiHandle::as_handle(config)) }
+    }
 }
 
 impl Default for Widget {
@@ -946,7 +1002,7 @@ impl Gadget {
 }
 
 impl FfiHandle for Gadget {
-    const C_HANDLE_NAME: &'static str = "Gadget";
+    const C_HANDLE_NAME: &'static str = "FtGadget";
     const TYPE_TAG: u32 = 16777219u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1018,7 +1074,7 @@ impl Config {
 }
 
 impl FfiHandle for Config {
-    const C_HANDLE_NAME: &'static str = "Config";
+    const C_HANDLE_NAME: &'static str = "FtConfig";
     const TYPE_TAG: u32 = 16777220u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1143,7 +1199,7 @@ impl Gizmo {
 }
 
 impl FfiHandle for Gizmo {
-    const C_HANDLE_NAME: &'static str = "Gizmo";
+    const C_HANDLE_NAME: &'static str = "FtGizmo";
     const TYPE_TAG: u32 = 16777221u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1219,7 +1275,7 @@ impl GizmoBuilder {
 }
 
 impl FfiHandle for GizmoBuilder {
-    const C_HANDLE_NAME: &'static str = "GizmoBuilder";
+    const C_HANDLE_NAME: &'static str = "FtGizmoBuilder";
     const TYPE_TAG: u32 = 16777222u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1333,7 +1389,7 @@ impl<'a> View<'a> {
 }
 
 impl<'a> FfiHandle for View<'a> {
-    const C_HANDLE_NAME: &'static str = "View";
+    const C_HANDLE_NAME: &'static str = "FtView";
     const TYPE_TAG: u32 = 16777223u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1429,7 +1485,7 @@ impl ViewFactory {
 }
 
 impl FfiHandle for ViewFactory {
-    const C_HANDLE_NAME: &'static str = "ViewFactory";
+    const C_HANDLE_NAME: &'static str = "FtViewFactory";
     const TYPE_TAG: u32 = 16777224u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1519,7 +1575,7 @@ impl Pipeline {
 }
 
 impl FfiHandle for Pipeline {
-    const C_HANDLE_NAME: &'static str = "Pipeline";
+    const C_HANDLE_NAME: &'static str = "FtPipeline";
     const TYPE_TAG: u32 = 16777225u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1618,7 +1674,7 @@ impl Apple {
 }
 
 impl FfiHandle for Apple {
-    const C_HANDLE_NAME: &'static str = "Apple";
+    const C_HANDLE_NAME: &'static str = "FtApple";
     const TYPE_TAG: u32 = 16777227u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1678,7 +1734,7 @@ impl Orange {
 }
 
 impl FfiHandle for Orange {
-    const C_HANDLE_NAME: &'static str = "Orange";
+    const C_HANDLE_NAME: &'static str = "FtOrange";
     const TYPE_TAG: u32 = 16777228u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1738,7 +1794,7 @@ impl Banana {
 }
 
 impl FfiHandle for Banana {
-    const C_HANDLE_NAME: &'static str = "Banana";
+    const C_HANDLE_NAME: &'static str = "FtBanana";
     const TYPE_TAG: u32 = 16777229u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1798,7 +1854,7 @@ impl Mango {
 }
 
 impl FfiHandle for Mango {
-    const C_HANDLE_NAME: &'static str = "Mango";
+    const C_HANDLE_NAME: &'static str = "FtMango";
     const TYPE_TAG: u32 = 16777230u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1858,7 +1914,7 @@ impl Peach {
 }
 
 impl FfiHandle for Peach {
-    const C_HANDLE_NAME: &'static str = "Peach";
+    const C_HANDLE_NAME: &'static str = "FtPeach";
     const TYPE_TAG: u32 = 16777231u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1918,7 +1974,7 @@ impl Plum {
 }
 
 impl FfiHandle for Plum {
-    const C_HANDLE_NAME: &'static str = "Plum";
+    const C_HANDLE_NAME: &'static str = "FtPlum";
     const TYPE_TAG: u32 = 16777232u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -1978,7 +2034,7 @@ impl Grape {
 }
 
 impl FfiHandle for Grape {
-    const C_HANDLE_NAME: &'static str = "Grape";
+    const C_HANDLE_NAME: &'static str = "FtGrape";
     const TYPE_TAG: u32 = 16777233u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -2038,7 +2094,7 @@ impl Lemon {
 }
 
 impl FfiHandle for Lemon {
-    const C_HANDLE_NAME: &'static str = "Lemon";
+    const C_HANDLE_NAME: &'static str = "FtLemon";
     const TYPE_TAG: u32 = 16777234u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -2119,7 +2175,7 @@ impl Mixer {
 }
 
 impl FfiHandle for Mixer {
-    const C_HANDLE_NAME: &'static str = "Mixer";
+    const C_HANDLE_NAME: &'static str = "FtMixer";
     const TYPE_TAG: u32 = 16777237u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -2231,7 +2287,7 @@ impl Sprocket {
 }
 
 impl FfiHandle for Sprocket {
-    const C_HANDLE_NAME: &'static str = "Sprocket";
+    const C_HANDLE_NAME: &'static str = "FtSprocket";
     const TYPE_TAG: u32 = 16777238u32;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
@@ -3326,4 +3382,93 @@ unsafe extern "C" {
 pub fn opaque_ptr_to_int(ptr: *const core::ffi::c_void) -> usize {
     let __raw = unsafe { ft_opaque_ptr_to_int(<*const core::ffi::c_void as FfiType>::into_c(ptr)) };
     unsafe { <usize as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_apply_foreign_config(
+        widget: <&'static mut Widget as FfiType>::CRepr,
+        config: <&'static ForeignConfig as FfiType>::CRepr,
+    );
+}
+
+#[doc = " Apply a foreign config: extract the name and value, set them on the widget."]
+pub fn apply_foreign_config(widget: &mut Widget, config: &ForeignConfig) {
+    unsafe { ft_apply_foreign_config(FfiHandle::as_handle(widget), FfiHandle::as_handle(config)) }
+}
+
+unsafe extern "C" {
+    pub fn ft_read_foreign_item_score(
+        item: <&'static ForeignItem as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+#[doc = " Read a foreign item's score."]
+pub fn read_foreign_item_score(item: &ForeignItem) -> i32 {
+    let __raw = unsafe { ft_read_foreign_item_score(FfiHandle::as_handle(item)) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_double_foreign_item_score(item: <&'static mut ForeignItem as FfiType>::CRepr);
+}
+
+#[doc = " Mutate a foreign item's score (tests &mut foreign param)."]
+pub fn double_foreign_item_score(item: &mut ForeignItem) {
+    unsafe { ft_double_foreign_item_score(FfiHandle::as_handle(item)) }
+}
+
+unsafe extern "C" {
+    pub fn ft_consume_foreign_item(
+        item: <ForeignItem as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+#[doc = " Consume a foreign item and return its score (tests by-value foreign param)."]
+pub fn consume_foreign_item(item: ForeignItem) -> i32 {
+    let __raw = unsafe { ft_consume_foreign_item(<ForeignItem as FfiType>::into_c(item)) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_create_foreign_item(
+        label: <&'static str as FfiType>::CRepr,
+        score: <i32 as FfiType>::CRepr,
+    ) -> <ForeignItem as FfiType>::CRepr;
+}
+
+#[doc = " Create a foreign item from our library's data (tests foreign return type)."]
+pub fn create_foreign_item(label: &str, score: i32) -> ForeignItem {
+    let __raw = unsafe {
+        ft_create_foreign_item(
+            <&str as FfiType>::into_c(label),
+            <i32 as FfiType>::into_c(score),
+        )
+    };
+    unsafe { <ForeignItem as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_create_foreign_config_checked(
+        name: <&'static str as FfiType>::CRepr,
+        value: <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> *mut core::ffi::c_void;
+}
+
+#[doc = " Create a foreign config, returning Result with foreign ok type."]
+pub fn create_foreign_config_checked(name: &str, value: i32) -> Result<ForeignConfig, TestError> {
+    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+    let __raw = unsafe {
+        ft_create_foreign_config_checked(
+            <&str as FfiType>::into_c(name),
+            <i32 as FfiType>::into_c(value),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
+    if !__raw.is_null() {
+        Ok(unsafe { <ForeignConfig as FfiType>::from_c(__raw) })
+    } else {
+        let __r = unsafe { ft_error_result(__err) };
+        Err(TestError::from_ffi(__r, __err))
+    }
 }

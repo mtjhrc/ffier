@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 bitflags = "2"
 ffier = { path = "../../ffier" }
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }

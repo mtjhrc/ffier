@@ -317,7 +317,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     };
 
     // Build handle set: type names that are opaque handles (exportables + implementables).
-    // Used to determine GLib-style returns for Result<Handle, E>.
+    // Used to determine handle-or-null returns for Result<Handle, E>.
     let handle_types: HashSet<String> = {
         let mut set = HashSet::new();
         for item in &exportables {
@@ -1069,6 +1069,22 @@ fn convert_params(
                     pre_bindings.push(quote! { let #vec_id = #binding; });
                     quote! { &#vec_id }
                 }
+                MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
+                    let binding = meta_param_conversion(id, &p.kind, None, lib_crate);
+                    let foreign_id = format_ident!("__{id}_foreign");
+                    pre_bindings.push(binding);
+                    // Check if the bridge_type is a reference — if so, borrow the
+                    // ManuallyDrop binding. If by-value, pass the binding directly.
+                    match syn::parse2::<syn::Type>(tp.bridge_type.clone()).ok() {
+                        Some(syn::Type::Reference(r)) if r.mutability.is_some() => {
+                            quote! { &mut *#foreign_id }
+                        }
+                        Some(syn::Type::Reference(_)) => {
+                            quote! { &*#foreign_id }
+                        }
+                        _ => quote! { #foreign_id },
+                    }
+                }
                 other => meta_param_conversion(id, other, None, lib_crate),
             }
         })
@@ -1466,7 +1482,7 @@ fn wrap_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
-            // A foreign ok type is always a handle (GLib-style return).
+            // A foreign ok type is always a handle.
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle =
                 ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
@@ -1502,7 +1518,7 @@ fn wrap_return(
                 .unwrap_or(lib_crate);
 
             if ok_is_handle && !ok_is_borrowed_handle {
-                // GLib-style: return owned handle directly, NULL on error.
+                // Return owned handle directly, NULL on error.
                 quote! {
                     match #call_expr {
                         Ok(ok_val) => <_ as #ok_tc::FfiType>::into_c(ok_val),
@@ -1510,7 +1526,7 @@ fn wrap_return(
                     }
                 }
             } else if ok_is_borrowed_handle {
-                // GLib-style but borrowed: Result<&Handle, E> → new_borrowed, NULL on error.
+                // Borrowed handle return: Result<&Handle, E> → new_borrowed, NULL on error.
                 let ok_pair = ok.as_ref().unwrap();
                 let inner_bridge = if let Ok(syn::Type::Reference(ref_ty)) =
                     syn::parse2::<syn::Type>(ok_pair.bridge_type.clone())
@@ -1669,7 +1685,7 @@ fn c_signature_for_method(
             quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
-            // Foreign ok types are always handles (GLib-style).
+            // Foreign ok types are always handles (handle-or-null).
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle = ok_is_foreign
                 || (ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types));
@@ -1682,12 +1698,12 @@ fn c_signature_for_method(
 
             // Builder by-value Result<Self, E>: the ok value is written back
             // through the double-pointer handle param, not returned. Use
-            // FtResult style, not GLib-style.
+            // FtResult style, not handle-or-null.
             let is_builder_self_result =
                 method.is_builder() && method.receiver == MetaReceiver::Value;
 
             if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
-                // GLib-style: return handle directly (NULL on error).
+                // Handle-or-null: return handle directly (NULL on error).
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
                     name: format_ident!("err_out"),
@@ -1761,6 +1777,66 @@ fn meta_param_conversion(
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match kind {
+        MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
+            // Foreign handle type from another ffier library's generated client.
+            // We can't use FfiType::from_c because the handle's inner value is the
+            // real Rust type from the foreign library, not the client wrapper.
+            // Instead, wrap the raw pointer in the client handle type directly.
+            let tc = tp.foreign_crate.as_ref().unwrap();
+            let bridge_type = &tp.bridge_type;
+            let foreign_id = format_ident!("__{id}_foreign");
+
+            // Compile-time assert: verify user-provided c_name matches the
+            // foreign crate's C_HANDLE_NAME const.
+            let c_name_assert = tp.foreign_c_name.as_ref().map(|c_name| {
+                let inner = if let Ok(syn::Type::Reference(r)) =
+                    syn::parse2::<syn::Type>(bridge_type.clone())
+                {
+                    let elem = &r.elem;
+                    quote! { #elem }
+                } else {
+                    bridge_type.clone()
+                };
+                let msg = format!(
+                    "foreign c_name mismatch for `{}`: expected \"{}\"",
+                    inner, c_name,
+                );
+                quote! {
+                    const _: () = assert!(
+                        ffier::const_str_eq(
+                            <#inner as #tc::FfiHandle>::C_HANDLE_NAME,
+                            #c_name,
+                        ),
+                        #msg,
+                    );
+                }
+            });
+
+            // Strip the reference (if any) to get the inner handle type.
+            if let Ok(syn::Type::Reference(ref_ty)) = syn::parse2::<syn::Type>(bridge_type.clone())
+            {
+                let inner = &ref_ty.elem;
+                if ref_ty.mutability.is_some() {
+                    quote! {
+                        #c_name_assert
+                        let mut #foreign_id = core::mem::ManuallyDrop::new(
+                            <#inner as #tc::FfiHandle>::__from_raw(#id));
+                    }
+                } else {
+                    quote! {
+                        #c_name_assert
+                        let #foreign_id = core::mem::ManuallyDrop::new(
+                            <#inner as #tc::FfiHandle>::__from_raw(#id));
+                    }
+                }
+            } else {
+                // By-value foreign handle — ownership transfers, Drop is caller's intent.
+                quote! {
+                    #c_name_assert
+                    let #foreign_id = <#bridge_type as #tc::FfiHandle>::__from_raw(#id);
+                }
+            }
+        }
         MetaParamKind::Regular(tp) => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
@@ -2789,6 +2865,57 @@ fn build_schema(
         },
     );
 
+    // Foreign handle types — scan all methods/free-functions for foreign type
+    // references and register them so generators know they are opaque handles
+    // from another ffier library.
+    {
+        // Map type_name → (foreign_crate, c_name).
+        let mut foreign_types =
+            std::collections::HashMap::<String, (String, Option<String>)>::new();
+        let mut record_foreign = |tp: &MetaTypePair| {
+            if let Some(fc) = &tp.foreign_crate {
+                let type_name = resolver.type_ref_from_tokens(&tp.rust_type).type_name;
+                let crate_path = fc.to_string().replace(' ', "");
+                foreign_types
+                    .entry(type_name)
+                    .or_insert((crate_path, tp.foreign_c_name.clone()));
+            }
+        };
+        let all_methods = free_fns_parsed
+            .iter()
+            .flat_map(|f| f.methods.iter())
+            .chain(exportables_parsed.iter().flat_map(|e| e.methods.iter()))
+            .chain(implementables_parsed.iter().flat_map(|i| i.methods.iter()))
+            .chain(trait_impls_parsed.iter().flat_map(|t| t.methods.iter()));
+        for m in all_methods {
+            for p in &m.params {
+                if let MetaParamKind::Regular(tp) = &p.kind {
+                    record_foreign(tp);
+                }
+            }
+            match &m.ret {
+                MetaReturn::Value(tp) => record_foreign(tp),
+                MetaReturn::Result { ok: Some(tp), .. } => record_foreign(tp),
+                _ => {}
+            }
+        }
+        for (name, (crate_path, c_name)) in foreign_types {
+            type_registry
+                .entry(name.clone())
+                .or_insert_with(|| ffier_schema::TypeEntry {
+                    kind: ffier_schema::TypeKind::ForeignHandle {
+                        foreign_crate: crate_path,
+                        c_name: c_name.expect(
+                            "foreign type missing c_name (should have been caught earlier)",
+                        ),
+                    },
+                    type_tag: None,
+                    bless: None,
+                    lifetime_params: vec![],
+                });
+        }
+    }
+
     let mut library = ffier_schema::Library {
         prefix: prefix.to_string(),
         primitives_prefix: primitives_prefix.map(|s| s.to_string()),
@@ -3163,8 +3290,10 @@ fn convert_return(
         }
         MetaReturn::Result { ok, err_ident } => {
             let ok_ref = ok.as_ref().map(|tp| r.type_ref_from_tokens(&tp.rust_type));
-            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
-            let ok_is_borrowed_handle = ok.is_some() && {
+            let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
+            let ok_is_handle =
+                ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
+            let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
                 let ok_tokens = extract_result_ok_type(rust_ret);
                 syn::parse2::<syn::Type>(ok_tokens)
                     .ok()

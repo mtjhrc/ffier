@@ -33,6 +33,8 @@ typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
+typedef void* FlForeignConfig;
+typedef void* FlForeignItem;
 
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
@@ -234,6 +236,8 @@ int32_t ft_widget_fd_number_optional(FtWidget handle, int fd);
 FtResult ft_widget_maybe_fd(FtWidget handle, int32_t selector, int* result, FtError* err_out);
 /** Duplicate a file descriptor (returns owned fd). */
 int ft_widget_dup_fd(FtWidget handle, int fd);
+/** Apply a foreign config to this widget (tests foreign param on a method). */
+void ft_widget_apply_config(FtWidget handle, FlForeignConfig config);
 void ft_widget_destroy(FtWidget handle);
 
 /* Gadget ------------------------------------------------------------ */
@@ -531,6 +535,18 @@ int32_t ft_sum_gadget_values(const FtGadget* gadgets, size_t gadgets_len);
 void* ft_opaque_round_trip(void* ptr);
 /** Accept an opaque const pointer and return its address as an integer. */
 size_t ft_opaque_ptr_to_int(const void* ptr);
+/** Apply a foreign config: extract the name and value, set them on the widget. */
+void ft_apply_foreign_config(FtWidget widget, FlForeignConfig config);
+/** Read a foreign item's score. */
+int32_t ft_read_foreign_item_score(FlForeignItem item);
+/** Mutate a foreign item's score (tests &mut foreign param). */
+void ft_double_foreign_item_score(FlForeignItem item);
+/** Consume a foreign item and return its score (tests by-value foreign param). */
+int32_t ft_consume_foreign_item(FlForeignItem item);
+/** Create a foreign item from our library's data (tests foreign return type). */
+FlForeignItem ft_create_foreign_item(FtStr label, int32_t score);
+/** Create a foreign config, returning Result with foreign ok type. */
+FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtError* err_out);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

@@ -404,4 +404,67 @@ mod tests {
         let _w = Widget::new();
         // Drop runs ft_widget_destroy automatically
     }
+
+    // ================================================================
+    // Foreign handle types (cross-library FFI)
+    // ================================================================
+
+    #[test]
+    fn foreign_apply_config() {
+        let mut w = Widget::new();
+        let config = ffier_test_foreign_lib_via_cdylib::ForeignConfig::new("imported", 99);
+        apply_foreign_config(&mut w, &config);
+        assert_eq!(w.name(), "imported");
+        assert_eq!(w.get_count(), 99);
+    }
+
+    #[test]
+    fn foreign_read_item_score() {
+        let item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("test", 42);
+        assert_eq!(read_foreign_item_score(&item), 42);
+    }
+
+    #[test]
+    fn foreign_create_item() {
+        let item = create_foreign_item("created", 7);
+        assert_eq!(item.label(), "created");
+        assert_eq!(item.score(), 7);
+    }
+
+    #[test]
+    fn foreign_create_config_checked_ok() {
+        let config = create_foreign_config_checked("valid", 55).unwrap();
+        assert_eq!(config.name(), "valid");
+        assert_eq!(config.value(), 55);
+    }
+
+    #[test]
+    fn foreign_create_config_checked_err() {
+        let err = create_foreign_config_checked("", 0).unwrap_err();
+        assert!(matches!(err, TestError::NotFound(_)));
+    }
+
+    #[test]
+    fn foreign_mut_param() {
+        let mut item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("test", 10);
+        double_foreign_item_score(&mut item);
+        assert_eq!(item.score(), 20);
+    }
+
+    #[test]
+    fn foreign_by_value_param() {
+        let item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("consumed", 33);
+        let score = consume_foreign_item(item);
+        assert_eq!(score, 33);
+        // `item` has been consumed — it's moved into the function
+    }
+
+    #[test]
+    fn foreign_param_on_method() {
+        let mut w = Widget::new();
+        let config = ffier_test_foreign_lib_via_cdylib::ForeignConfig::new("method", 77);
+        w.apply_config(&config);
+        assert_eq!(w.name(), "method");
+        assert_eq!(w.get_count(), 77);
+    }
 }

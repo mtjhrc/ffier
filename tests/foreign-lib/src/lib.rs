@@ -38,6 +38,10 @@ impl ForeignItem {
     pub fn score(&self) -> i32 {
         self.score
     }
+
+    pub fn set_score(&mut self, score: i32) {
+        self.score = score;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -78,4 +82,9 @@ ffier::library_definition!("fl", library_tag = 2,
     trait ffier_builtins::PushStr = 4,
     trait ffier_builtins::Error = 5,
     Error for ForeignError,
+);
+
+ffier::generate_bridge!(
+    local = __ffier_fl_metadata,
+    schema_output = "../../target/ffier-fl.json"
 );

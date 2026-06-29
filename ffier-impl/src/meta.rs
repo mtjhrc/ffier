@@ -194,6 +194,8 @@ pub struct MetaTypePair {
     /// The tokens are the crate path (e.g. `other_lib`) whose `FfiType`
     /// and `FfiHandle` traits should be used instead of the local library's.
     pub foreign_crate: Option<TokenStream>,
+    /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
+    pub foreign_c_name: Option<String>,
 }
 
 pub struct MetaMethod {
@@ -721,7 +723,7 @@ impl syn::parse::Parse for MetaMethod {
     }
 }
 
-/// Parse `bridge_type = (...), rust_type = (...), [foreign_crate = (...),]` type pair.
+/// Parse `bridge_type = (...), rust_type = (...), [foreign_crate = (...),] [foreign_c_name = (...),]` type pair.
 fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
     expect_key(input, "bridge_type")?;
     let bridge_type = parse_parenthesized_tokens(input)?;
@@ -743,10 +745,27 @@ fn parse_type_pair(input: ParseStream) -> syn::Result<MetaTypePair> {
     } else {
         None
     };
+    // Optional: foreign_c_name = (literal),
+    let foreign_c_name = if input.peek(Ident)
+        && input
+            .fork()
+            .parse::<Ident>()
+            .is_ok_and(|id| id == "foreign_c_name")
+    {
+        expect_key(input, "foreign_c_name")?;
+        let content;
+        syn::parenthesized!(content in input);
+        let lit: syn::LitStr = content.parse()?;
+        parse_comma(input)?;
+        Some(lit.value())
+    } else {
+        None
+    };
     Ok(MetaTypePair {
         bridge_type,
         rust_type,
         foreign_crate,
+        foreign_c_name,
     })
 }
 
