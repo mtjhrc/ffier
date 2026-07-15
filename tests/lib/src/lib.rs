@@ -233,6 +233,11 @@ impl Widget {
         gadgets.iter().map(|g| g.value).sum()
     }
 
+    /// Sum a slice of u32 values.
+    pub fn sum_values(&self, values: &[u32]) -> u32 {
+        values.iter().sum()
+    }
+
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);
@@ -2734,6 +2739,29 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Primitive slice: &[u32] as param
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn primitive_slice_param_method() {
+        unsafe {
+            let w = ft_widget_new();
+            let values: [u32; 3] = [10, 20, 30];
+            let sum = ft_widget_sum_values(w, values.as_ptr(), values.len());
+            assert_eq!(sum, 60);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn primitive_slice_param_empty() {
+        unsafe {
+            let w = ft_widget_new();
+            let sum = ft_widget_sum_values(w, core::ptr::null(), 0);
+            assert_eq!(sum, 0);
+            ft_widget_destroy(w);
+        }
+    }
 
     // -----------------------------------------------------------------------
     // &[T] direct handle slice return

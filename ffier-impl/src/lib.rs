@@ -117,6 +117,9 @@ enum ParamKind {
     /// `&[T]` where T is an exported handle type — slice of struct references,
     /// expands to two C params (pointer to handle array + length).
     HandleSlice,
+    /// `&[T]` where T is a primitive type (u32, i64, bool, etc.) —
+    /// expands to two C params (pointer to element array + length).
+    PrimitiveSlice,
     /// `impl Trait` parameter — generator resolves dispatch types from trait map.
     ImplTrait {
         trait_name: String,
@@ -272,6 +275,36 @@ fn handle_slice_elem(ty: &Type) -> Option<&Type> {
 /// Compat wrapper — returns true for `&[&T]` or `&[T]` handle slices.
 fn is_handle_slice(ty: &Type) -> bool {
     handle_slice_elem(ty).is_some()
+}
+
+/// Detect `&[T]` where T is a primitive type (u32, i64, bool, etc.).
+/// Returns the element type T if matched.
+/// Excludes `&[u8]` (already handled as `FfierBytes`/bytes).
+fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
+    let Type::Reference(ref_ty) = ty else {
+        return None;
+    };
+    let Type::Slice(sl) = &*ref_ty.elem else {
+        return None;
+    };
+    // Must not have an inner reference — &[T] not &[&T]
+    if matches!(&*sl.elem, Type::Reference(_)) {
+        return None;
+    }
+    let Type::Path(tp) = &*sl.elem else {
+        return None;
+    };
+    let name = tp
+        .path
+        .segments
+        .last()
+        .map(|s| s.ident.to_string())
+        .unwrap_or_default();
+    // Must be a primitive, but not u8 (which is already handled as bytes)
+    if name == "u8" || !PRIMITIVES.contains(&name.as_str()) {
+        return None;
+    }
+    Some(&*sl.elem)
 }
 
 // ---------------------------------------------------------------------------
@@ -2017,6 +2050,29 @@ fn parse_method_sig(
                 });
             }
 
+            if let Some(elem_ty) = primitive_slice_elem(&param_ty_bridge) {
+                let elem_bridge = ctx.bridge_tokens(elem_ty);
+                let elem_rust = match self_ty {
+                    Some(sty) => {
+                        let replaced = replace_self_type(elem_ty, sty);
+                        quote! { #replaced }
+                    }
+                    None => {
+                        quote! { #elem_ty }
+                    }
+                };
+                return Ok(ParamInfo {
+                    name: pi.ident.clone(),
+                    kind: ParamKind::PrimitiveSlice,
+                    types: Some(TypePair {
+                        bridge: elem_bridge,
+                        rust: elem_rust,
+                        foreign_crate: foreign_crate_tokens.clone(),
+                        foreign_c_name: param_attrs.foreign_c_name.clone(),
+                    }),
+                });
+            }
+
             if is_handle_slice(&param_ty_bridge) {
                 // Extract the inner type T from &[&T] for bridge resolution
                 let Type::Reference(ref_ty) = &param_ty_bridge else {
@@ -2251,6 +2307,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             ParamKind::Regular => quote! { regular },
             ParamKind::StrSlice => quote! { str_slice },
             ParamKind::HandleSlice => quote! { handle_slice },
+            ParamKind::PrimitiveSlice => quote! { primitive_slice },
             ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args } => {
                 let dispatch_ident = format_ident!("{dispatch}");
                 let ref_kind_ident = match ref_kind.as_str() {
@@ -4106,6 +4163,11 @@ fn vtable_c_fn_sig(
                 param_types.push(quote! { *const *mut core::ffi::c_void });
                 param_types.push(quote! { usize });
             }
+            crate::meta::MetaParamKind::PrimitiveSlice(tp) => {
+                let bt = &tp.bridge_type;
+                param_types.push(quote! { *const <#bt as FfiType>::CRepr });
+                param_types.push(quote! { usize });
+            }
             crate::meta::MetaParamKind::Regular(tp) => {
                 let bt = &tp.bridge_type;
                 param_types.push(quote! { <#bt as FfiType>::CRepr });
@@ -4267,6 +4329,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         });
                         vtable_args.push(quote! { #vec_id.as_ptr() });
                         vtable_args.push(quote! { #vec_id.len() });
+                    }
+                    crate::meta::MetaParamKind::PrimitiveSlice(_) => {
+                        // Primitives are layout-compatible with their CRepr,
+                        // so just pass the slice pointer and length directly.
+                        vtable_args.push(quote! { #id.as_ptr() });
+                        vtable_args.push(quote! { #id.len() });
                     }
                     crate::meta::MetaParamKind::Regular(tp) => {
                         let rt = &tp.rust_type;

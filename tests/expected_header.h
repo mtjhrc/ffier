@@ -223,6 +223,8 @@ FtStr ft_widget_owned_name(FtWidget handle);
 uint32_t ft_widget_add_permission(FtWidget handle, uint32_t base, uint32_t flag);
 /** Sum the values of a slice of gadgets. */
 int32_t ft_widget_sum_gadgets(FtWidget handle, const FtGadget* gadgets, size_t gadgets_len);
+/** Sum a slice of u32 values. */
+uint32_t ft_widget_sum_values(FtWidget handle, const uint32_t* values, size_t values_len);
 /** Consume the widget (by-value self, void return). */
 void ft_widget_consume(FtWidget handle);
 /** Get the raw fd number from a borrowed fd. */

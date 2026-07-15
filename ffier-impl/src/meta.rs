@@ -314,6 +314,10 @@ pub enum MetaParamKind {
     /// expands to two C params (pointer to handle array + length).
     /// The `MetaTypePair` contains the element type (T, not &[T]).
     HandleSlice(MetaTypePair),
+    /// `&[T]` where T is a primitive type (u32, i64, bool, etc.) —
+    /// expands to two C params (pointer to element array + length).
+    /// The `MetaTypePair` contains the element type (T, not &[T]).
+    PrimitiveSlice(MetaTypePair),
     /// `impl Trait` parameter — the generator resolves concrete dispatch
     /// types from the trait map built from `@trait_impl`/`@implementable` metadata entries.
     ImplTrait {
@@ -795,6 +799,11 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 let types = parse_type_pair(input)?;
                 MetaParamKind::HandleSlice(types)
+            }
+            "primitive_slice" => {
+                parse_comma(input)?;
+                let types = parse_type_pair(input)?;
+                MetaParamKind::PrimitiveSlice(types)
             }
             "impl_trait" => {
                 parse_comma(input)?;

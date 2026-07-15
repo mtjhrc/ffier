@@ -6,7 +6,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
@@ -1069,6 +1069,20 @@ fn convert_params(
                     pre_bindings.push(quote! { let #vec_id = #binding; });
                     quote! { &#vec_id }
                 }
+                MetaParamKind::PrimitiveSlice(_) => {
+                    let len_name = format!("{}_len", p.name);
+                    let len_id = &c_sig
+                        .params
+                        .iter()
+                        .find(|cp| cp.name == len_name)
+                        .expect("Slice param must have _len param in c_sig")
+                        .name;
+                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
+                    let slice_id = format_ident!("__{id}_slice");
+                    pre_bindings.push(quote! { let #slice_id = #binding; });
+                    // Already &[T] from from_raw_parts, pass directly.
+                    quote! { #slice_id }
+                }
                 MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
                     let binding = meta_param_conversion(id, &p.kind, None, lib_crate);
                     let foreign_id = format_ident!("__{id}_foreign");
@@ -1653,7 +1667,9 @@ fn c_signature_for_method(
     for p in &method.params {
         if matches!(
             p.kind,
-            MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_)
+            MetaParamKind::StrSlice
+                | MetaParamKind::HandleSlice(_)
+                | MetaParamKind::PrimitiveSlice(_)
         ) {
             params.push(CExternParam {
                 name: p.name.clone(),
@@ -1754,6 +1770,11 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
         MetaParamKind::HandleSlice(_) => quote! { *const *mut core::ffi::c_void },
+        MetaParamKind::PrimitiveSlice(tp) => {
+            let bridge_type = &tp.bridge_type;
+            let tc = resolve_trait_crate(tp, lib_crate);
+            quote! { *const <#bridge_type as #tc::FfiType>::CRepr }
+        }
     }
 }
 
@@ -1863,6 +1884,16 @@ fn meta_param_conversion(
                     __handles.iter()
                         .map(|h| unsafe { ffier::ffier_handle_borrow::<#bridge_type>(*h) })
                         .collect()
+                }
+            } }
+        }
+        MetaParamKind::PrimitiveSlice(_) => {
+            let len_id = len_ident.expect("PrimitiveSlice conversion needs len_ident");
+            quote! { {
+                if #len_id == 0 {
+                    &[]
+                } else {
+                    unsafe { core::slice::from_raw_parts(#id, #len_id) }
                 }
             } }
         }
@@ -2596,7 +2627,7 @@ fn build_schema(
     };
 
     // Build type registry
-    let mut type_registry = std::collections::BTreeMap::new();
+    let mut type_registry = BTreeMap::new();
 
     // Primitives
     for (name, c_type) in &[
@@ -2916,38 +2947,47 @@ fn build_schema(
         }
     }
 
+    // Build schema fields while type_registry is still borrowable.
+    let exported_types: Vec<_> = exportables_parsed
+        .iter()
+        .map(|e| convert_exportable(e, &resolver, &handle_types, &type_registry))
+        .collect();
+    let errors: Vec<_> = errors_parsed
+        .iter()
+        .map(|e| convert_error(e, &resolver))
+        .collect();
+    let enum_constants: Vec<_> = enums_parsed
+        .iter()
+        .map(|e| convert_enum(e, &resolver))
+        .collect();
+    let bitflags_constants: Vec<_> = bitflags_parsed
+        .iter()
+        .map(|bf| convert_bitflags(bf, &resolver))
+        .collect();
+    let free_functions: Vec<_> = free_fns_parsed
+        .iter()
+        .map(|f| convert_free_fn(f, &resolver, &handle_types, &type_registry))
+        .collect();
+    let traits: Vec<_> = implementables_parsed
+        .iter()
+        .map(|i| convert_implementable(i, &resolver, &handle_types, &type_registry))
+        .collect();
+    let trait_impls: Vec<_> = trait_impls_parsed
+        .iter()
+        .map(|t| convert_trait_impl(t, &resolver, &handle_types, &type_registry))
+        .collect();
+
     let mut library = ffier_schema::Library {
         prefix: prefix.to_string(),
         primitives_prefix: primitives_prefix.map(|s| s.to_string()),
         type_registry,
-        exported_types: exportables_parsed
-            .iter()
-            .map(|e| convert_exportable(e, &resolver, &handle_types))
-            .collect(),
-        errors: errors_parsed
-            .iter()
-            .map(|e| convert_error(e, &resolver))
-            .collect(),
-        enum_constants: enums_parsed
-            .iter()
-            .map(|e| convert_enum(e, &resolver))
-            .collect(),
-        bitflags_constants: bitflags_parsed
-            .iter()
-            .map(|bf| convert_bitflags(bf, &resolver))
-            .collect(),
-        free_functions: free_fns_parsed
-            .iter()
-            .map(|f| convert_free_fn(f, &resolver, &handle_types))
-            .collect(),
-        traits: implementables_parsed
-            .iter()
-            .map(|i| convert_implementable(i, &resolver, &handle_types))
-            .collect(),
-        trait_impls: trait_impls_parsed
-            .iter()
-            .map(|t| convert_trait_impl(t, &resolver, &handle_types))
-            .collect(),
+        exported_types,
+        errors,
+        enum_constants,
+        bitflags_constants,
+        free_functions,
+        traits,
+        trait_impls,
     };
     library.prune_unreferenced_types();
     library
@@ -3001,6 +3041,7 @@ fn convert_free_fn(
     meta: &MetaFreeFunction,
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::FreeFunction {
     // A free function has exactly one "method" in its methods list.
     let m = &meta.methods[0];
@@ -3008,7 +3049,11 @@ fn convert_free_fn(
         name: meta.name.to_string(),
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
         doc: meta.doc.clone(),
-        params: m.params.iter().map(|p| convert_param(p, r)).collect(),
+        params: m
+            .params
+            .iter()
+            .map(|p| convert_param(p, r, type_registry))
+            .collect(),
         ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
     }
 }
@@ -3017,6 +3062,7 @@ fn convert_exportable(
     meta: &MetaExportable,
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::ExportedType {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
@@ -3031,7 +3077,7 @@ fn convert_exportable(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, None, handle_types))
+            .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
     }
 }
@@ -3066,6 +3112,7 @@ fn convert_implementable(
     meta: &MetaImplementable,
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::ImplementableTrait {
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
@@ -3082,7 +3129,7 @@ fn convert_implementable(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types))
+            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types, type_registry))
             .collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
@@ -3093,6 +3140,7 @@ fn convert_trait_impl(
     meta: &MetaTraitImpl,
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::TraitImpl {
     ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
@@ -3103,7 +3151,7 @@ fn convert_trait_impl(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, None, handle_types))
+            .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
     }
 }
@@ -3117,6 +3165,7 @@ fn convert_method(
     r: &CTypeResolver,
     parent_ffi_prefix: Option<&str>,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::Method {
     let (ffi_name, trait_definition) = match &meta.context {
         MetaMethodContext::Exportable { ffi_name, .. } => (r.ffi_fn_name(ffi_name), None),
@@ -3150,7 +3199,11 @@ fn convert_method(
             .iter()
             .map(|lt| lt.to_string())
             .collect(),
-        params: meta.params.iter().map(|p| convert_param(p, r)).collect(),
+        params: meta
+            .params
+            .iter()
+            .map(|p| convert_param(p, r, type_registry))
+            .collect(),
         ret,
         ffi_name,
         trait_definition,
@@ -3166,7 +3219,11 @@ fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
     }
 }
 
-fn convert_param(p: &crate::meta::MetaParam, r: &CTypeResolver) -> ffier_schema::Param {
+fn convert_param(
+    p: &crate::meta::MetaParam,
+    r: &CTypeResolver,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+) -> ffier_schema::Param {
     let param_type = match &p.kind {
         MetaParamKind::Regular(tp) => {
             ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type))
@@ -3213,6 +3270,43 @@ fn convert_param(p: &crate::meta::MetaParam, r: &CTypeResolver) -> ffier_schema:
                     ffier_schema::CParam {
                         name: p.name.to_string(),
                         c_type: format!("const {handle_c}*"),
+                    },
+                    ffier_schema::CParam {
+                        name: format!("{}_len", p.name),
+                        c_type: "size_t".to_string(),
+                    },
+                ],
+            }
+        }
+        MetaParamKind::PrimitiveSlice(tp) => {
+            // &[T] where T is a primitive → two C params: pointer to T array + length.
+            let elem_ref = r.type_ref_from_tokens(&tp.rust_type);
+            let entry = type_registry.get(&elem_ref.type_name).unwrap_or_else(|| {
+                panic!(
+                    "primitive type `{}` not found in type_registry",
+                    elem_ref.type_name
+                )
+            });
+            let elem_c = match &entry.kind {
+                ffier_schema::TypeKind::Primitive { c_type } => c_type.as_str(),
+                _ => panic!(
+                    "expected primitive type for `{}`, got {:?}",
+                    elem_ref.type_name, entry.kind
+                ),
+            };
+            ffier_schema::ParamType::Slice {
+                element: ffier_schema::TypeRef {
+                    type_name: elem_ref.type_name,
+                    ref_kind: ffier_schema::RefKind::None,
+                    ref_lifetime: None,
+                    type_args: vec![],
+                    optional: false,
+                    owned: false,
+                },
+                c_params: vec![
+                    ffier_schema::CParam {
+                        name: p.name.to_string(),
+                        c_type: format!("const {elem_c}*"),
                     },
                     ffier_schema::CParam {
                         name: format!("{}_len", p.name),

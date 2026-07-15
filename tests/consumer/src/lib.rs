@@ -12,7 +12,7 @@ use ffier_test_lib_via_cdylib as api;
 mod tests {
     use std::os::fd::AsRawFd;
 
-    use super::api::{self, Config, Gadget, Mixer, View, Widget};
+    use super::api::{self, Config, Gadget, Mixer, View, Widget, sum_gadget_values};
 
     fn make_widget() -> Widget {
         Widget::new()
@@ -121,6 +121,35 @@ mod tests {
         let mut w = make_widget();
         w.set_tags(&["a", "b", "c"]);
         assert_eq!(w.tags_joined(), "a,b,c");
+    }
+
+    #[test]
+    fn test_primitive_slice_param() {
+        let w = make_widget();
+        assert_eq!(w.sum_values(&[10, 20, 30]), 60);
+        assert_eq!(w.sum_values(&[]), 0);
+    }
+
+    #[test]
+    fn test_handle_slice_param() {
+        let mut w = make_widget();
+        w.set_count(5);
+        let g1 = w.create_gadget();
+        let g2 = w.create_gadget();
+        w.set_count(7);
+        let g3 = w.create_gadget();
+        assert_eq!(w.sum_gadgets(&[&g1, &g2, &g3]), 17);
+        assert_eq!(w.sum_gadgets(&[]), 0);
+    }
+
+    #[test]
+    fn test_handle_slice_param_free_fn() {
+        let mut w = make_widget();
+        w.set_count(3);
+        let g1 = w.create_gadget();
+        w.set_count(4);
+        let g2 = w.create_gadget();
+        assert_eq!(sum_gadget_values(&[&g1, &g2]), 7);
     }
 
     #[test]

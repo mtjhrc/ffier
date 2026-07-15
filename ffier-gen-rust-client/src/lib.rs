@@ -1603,13 +1603,24 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                     ParamType::ImplTrait { .. } => {
                         call_args.push(p.name.clone());
                     }
-                    ParamType::Slice { .. } => {
-                        let vec_name = format!("__slice_{}", p.name);
-                        writeln!(out,
-                            "                    let {vec_name}: Vec<&str> = unsafe {{ core::slice::from_raw_parts({}, {}_len) }}.iter().map(|b| unsafe {{ b.as_str_unchecked() }}).collect();",
-                            p.name, p.name
-                        ).unwrap();
-                        call_args.push(format!("&{vec_name}"));
+                    ParamType::Slice { element, .. } => {
+                        let slice_name = format!("__slice_{}", p.name);
+                        if element.ref_kind != ffier_schema::RefKind::None {
+                            // Ref elements: reconstruct Vec<&T> from C repr array.
+                            let elem_ty = element.to_rust_type();
+                            writeln!(out,
+                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({}, {}_len) }}.iter().map(|v| unsafe {{ <{elem_ty} as FfiType>::from_c(*v) }}).collect();",
+                                p.name, p.name
+                            ).unwrap();
+                            call_args.push(format!("&{slice_name}"));
+                        } else {
+                            // Non-ref elements (primitives): from_raw_parts gives &[T] directly.
+                            writeln!(out,
+                                "                    let {slice_name} = if {}_len == 0 {{ &[] as &[{}] }} else {{ unsafe {{ core::slice::from_raw_parts({}, {}_len) }} }};",
+                                p.name, element.to_rust_type(), p.name, p.name
+                            ).unwrap();
+                            call_args.push(slice_name);
+                        }
                     }
                 }
             }
@@ -2240,8 +2251,9 @@ fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
                 let ty = tr.to_rust_type_static();
                 out.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
             }
-            ParamType::Slice { .. } => {
-                out.push(format!("{}: *const ffier::FfierBytes", p.name));
+            ParamType::Slice { element, .. } => {
+                let elem_ty = element.to_rust_type_static();
+                out.push(format!("{}: *const <{elem_ty} as FfiType>::CRepr", p.name));
                 out.push(format!("{}_len: usize", p.name));
             }
             ParamType::ImplTrait { .. } => {
@@ -2289,8 +2301,9 @@ fn push_extern_param_types(params: &[ffier_schema::Param], out: &mut Vec<String>
                 let ty = tr.to_rust_type_static();
                 out.push(format!("<{ty} as FfiType>::CRepr"));
             }
-            ParamType::Slice { .. } => {
-                out.push("*const ffier::FfierBytes".to_string());
+            ParamType::Slice { element, .. } => {
+                let elem_ty = element.to_rust_type_static();
+                out.push(format!("*const <{elem_ty} as FfiType>::CRepr"));
                 out.push("usize".to_string());
             }
             ParamType::ImplTrait { .. } => {
@@ -2318,9 +2331,18 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                     args.push(format!("<{ty} as FfiType>::into_c({})", p.name));
                 }
             }
-            ParamType::Slice { .. } => {
-                args.push(format!("__ffi_{}.as_ptr()", p.name));
-                args.push(format!("__ffi_{}.len()", p.name));
+            ParamType::Slice { element, .. } => {
+                if element.ref_kind != ffier_schema::RefKind::None {
+                    // Ref elements (str, handles) were converted into a Vec
+                    // by emit_slice_pre_bindings — use the converted Vec.
+                    args.push(format!("__ffi_{}.as_ptr()", p.name));
+                    args.push(format!("__ffi_{}.len()", p.name));
+                } else {
+                    // Non-ref elements (primitives) are layout-compatible,
+                    // pass the slice data directly.
+                    args.push(format!("{}.as_ptr()", p.name));
+                    args.push(format!("{}.len()", p.name));
+                }
             }
             ParamType::ImplTrait { .. } => {
                 args.push(format!("{}.__into_raw_handle()", p.name));
@@ -2330,13 +2352,21 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
     args
 }
 
-/// Emit slice pre-bindings (converting `&[&str]` to `Vec<FfierBytes>`)
-/// for all slice params in the method.
+/// Emit slice pre-bindings for ref-element slices (converting each element
+/// via `into_c()` into a `Vec<CRepr>`). Non-ref element slices (primitives)
+/// are layout-compatible and need no pre-binding.
 fn emit_slice_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
     for p in params {
-        if matches!(&p.param_type, ParamType::Slice { .. }) {
-            writeln!(out, "{indent}let __ffi_{}: Vec<ffier::FfierBytes> = {}.iter().map(|s| unsafe {{ ffier::FfierBytes::from_str(s) }}).collect();",
-                p.name, p.name).unwrap();
+        if let ParamType::Slice { element, .. } = &p.param_type
+            && element.ref_kind != ffier_schema::RefKind::None
+        {
+            let elem_ty = element.to_rust_type();
+            writeln!(
+                out,
+                "{indent}let __ffi_{}: Vec<<{elem_ty} as FfiType>::CRepr> = {}.iter().map(|s| <{elem_ty} as FfiType>::into_c(*s)).collect();",
+                p.name, p.name,
+            )
+            .unwrap();
         }
     }
 }
@@ -2741,7 +2771,9 @@ fn emit_free_function(
 fn format_param_sig(p: &ffier_schema::Param) -> String {
     match &p.param_type {
         ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
-        ParamType::Slice { .. } => format!("{}: &[&str]", p.name),
+        ParamType::Slice { element, .. } => {
+            format!("{}: &[{}]", p.name, element.to_rust_type())
+        }
         ParamType::ImplTrait {
             trait_name,
             type_args,

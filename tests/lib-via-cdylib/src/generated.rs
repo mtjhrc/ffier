@@ -573,7 +573,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_widget_set_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     );
     pub fn ft_widget_tags_joined(
@@ -608,9 +608,14 @@ unsafe extern "C" {
     ) -> <Permissions as FfiType>::CRepr;
     pub fn ft_widget_sum_gadgets(
         handle: *mut core::ffi::c_void,
-        gadgets: *const ffier::FfierBytes,
+        gadgets: *const <&'static Gadget as FfiType>::CRepr,
         gadgets_len: usize,
     ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_sum_values(
+        handle: *mut core::ffi::c_void,
+        values: *const <u32 as FfiType>::CRepr,
+        values_len: usize,
+    ) -> <u32 as FfiType>::CRepr;
     pub fn ft_widget_consume(handle: *mut core::ffi::c_void);
     pub fn ft_widget_fd_number(
         handle: *mut core::ffi::c_void,
@@ -837,10 +842,8 @@ impl Widget {
     }
     #[doc = " Set tags from a string slice."]
     pub fn set_tags(&mut self, tags: &[&str]) {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         unsafe { ft_widget_set_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) }
     }
     #[doc = " Get joined tags."]
@@ -911,14 +914,19 @@ impl Widget {
         unsafe { <Permissions as FfiType>::from_c(__raw) }
     }
     #[doc = " Sum the values of a slice of gadgets."]
-    pub fn sum_gadgets(&self, gadgets: &[&str]) -> i32 {
-        let __ffi_gadgets: Vec<ffier::FfierBytes> = gadgets
+    pub fn sum_gadgets(&self, gadgets: &[&Gadget]) -> i32 {
+        let __ffi_gadgets: Vec<<&Gadget as FfiType>::CRepr> = gadgets
             .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+            .map(|s| <&Gadget as FfiType>::into_c(*s))
             .collect();
         let __raw =
             unsafe { ft_widget_sum_gadgets(self.0, __ffi_gadgets.as_ptr(), __ffi_gadgets.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Sum a slice of u32 values."]
+    pub fn sum_values(&self, values: &[u32]) -> u32 {
+        let __raw = unsafe { ft_widget_sum_values(self.0, values.as_ptr(), values.len()) };
+        unsafe { <u32 as FfiType>::from_c(__raw) }
     }
     #[doc = " Consume the widget (by-value self, void return)."]
     pub fn consume(self) {
@@ -2511,14 +2519,14 @@ pub trait Fruit {
             count_tags: Some({
                 unsafe extern "C" fn __trampoline<__T: Fruit>(
                     __ud: *mut core::ffi::c_void,
-                    tags: *const ffier::FfierBytes,
+                    tags: *const <&'static str as FfiType>::CRepr,
                     tags_len: usize,
                 ) -> <i32 as FfiType>::CRepr {
                     let __val = unsafe { &*(__ud as *const __T) };
                     let __slice_tags: Vec<&str> =
                         unsafe { core::slice::from_raw_parts(tags, tags_len) }
                             .iter()
-                            .map(|b| unsafe { b.as_str_unchecked() })
+                            .map(|v| unsafe { <&str as FfiType>::from_c(*v) })
                             .collect();
                     let __result = __val.count_tags(&__slice_tags);
                     <i32 as FfiType>::into_c(__result)
@@ -2566,7 +2574,7 @@ pub struct FruitVtable {
     pub count_tags: Option<
         unsafe extern "C" fn(
             *mut core::ffi::c_void,
-            *const ffier::FfierBytes,
+            *const <&'static str as FfiType>::CRepr,
             usize,
         ) -> <i32 as FfiType>::CRepr,
     >,
@@ -2750,7 +2758,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_apple_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -2778,10 +2786,8 @@ impl Fruit for Apple {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_apple_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -2805,7 +2811,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_orange_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -2833,10 +2839,8 @@ impl Fruit for Orange {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_orange_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -2860,7 +2864,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_banana_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -2888,10 +2892,8 @@ impl Fruit for Banana {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_banana_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -2915,7 +2917,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_mango_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -2943,10 +2945,8 @@ impl Fruit for Mango {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_mango_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -2970,7 +2970,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_peach_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -2998,10 +2998,8 @@ impl Fruit for Peach {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_peach_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -3025,7 +3023,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_plum_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -3053,10 +3051,8 @@ impl Fruit for Plum {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_plum_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -3080,7 +3076,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_grape_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -3108,10 +3104,8 @@ impl Fruit for Grape {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_grape_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -3135,7 +3129,7 @@ unsafe extern "C" {
     ) -> ffier::FfierResult;
     pub fn ft_lemon_count_tags(
         handle: *mut core::ffi::c_void,
-        tags: *const ffier::FfierBytes,
+        tags: *const <&'static str as FfiType>::CRepr,
         tags_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
@@ -3163,10 +3157,8 @@ impl Fruit for Lemon {
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
-        let __ffi_tags: Vec<ffier::FfierBytes> = tags
-            .iter()
-            .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-            .collect();
+        let __ffi_tags: Vec<<&str as FfiType>::CRepr> =
+            tags.iter().map(|s| <&str as FfiType>::into_c(*s)).collect();
         let __raw = unsafe { ft_lemon_count_tags(self.0, __ffi_tags.as_ptr(), __ffi_tags.len()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
@@ -3344,16 +3336,16 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
 
 unsafe extern "C" {
     pub fn ft_sum_gadget_values(
-        gadgets: *const ffier::FfierBytes,
+        gadgets: *const <&'static Gadget as FfiType>::CRepr,
         gadgets_len: usize,
     ) -> <i32 as FfiType>::CRepr;
 }
 
 #[doc = " Count the number of gadgets in a slice and return the sum of their values."]
-pub fn sum_gadget_values(gadgets: &[&str]) -> i32 {
-    let __ffi_gadgets: Vec<ffier::FfierBytes> = gadgets
+pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
+    let __ffi_gadgets: Vec<<&Gadget as FfiType>::CRepr> = gadgets
         .iter()
-        .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
+        .map(|s| <&Gadget as FfiType>::into_c(*s))
         .collect();
     let __raw = unsafe { ft_sum_gadget_values(__ffi_gadgets.as_ptr(), __ffi_gadgets.len()) };
     unsafe { <i32 as FfiType>::from_c(__raw) }
