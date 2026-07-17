@@ -11,11 +11,13 @@ default: no-codegen check-header check-generated-client check-generated-foreign-
 
 # Build the foreign lib (produces cdylib + writes target/ffier-fl.json)
 build-foreign:
-    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-foreign-lib
+    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-foreign-lib --crate-type cdylib --message-format=json-render-diagnostics \
+        | python3 -c 'import json, shutil, sys; from pathlib import Path; ns = {"json": json, "shutil": shutil, "sys": sys, "Path": Path}; exec("""out = Path(r\"{{root}}/target/debug/libffier_test_foreign_lib.so\")\nsrc = None\nfor line in sys.stdin:\n    try:\n        msg = json.loads(line)\n    except json.JSONDecodeError:\n        continue\n    if msg.get(\"reason\") == \"compiler-artifact\" and msg.get(\"target\", {}).get(\"name\") == \"ffier_test_foreign_lib\":\n        for filename in msg.get(\"filenames\", []):\n            if filename.endswith(\".so\"):\n                src = filename\nif src is None:\n    raise SystemExit(\"failed to locate ffier-test-foreign-lib cdylib artifact\")\nout.parent.mkdir(parents=True, exist_ok=True)\nshutil.copy2(src, out)\n""", ns, ns)'
 
 # Build the test lib (also produces the cdylib + writes target/ffier-ft.json)
 build: build-foreign
-    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
+    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --crate-type cdylib --message-format=json-render-diagnostics \
+        | python3 -c 'import json, shutil, sys; from pathlib import Path; ns = {"json": json, "shutil": shutil, "sys": sys, "Path": Path}; exec("""out = Path(r\"{{root}}/target/debug/libffier_test_lib.so\")\nsrc = None\nfor line in sys.stdin:\n    try:\n        msg = json.loads(line)\n    except json.JSONDecodeError:\n        continue\n    if msg.get(\"reason\") == \"compiler-artifact\" and msg.get(\"target\", {}).get(\"name\") == \"ffier_test_lib\":\n        for filename in msg.get(\"filenames\", []):\n            if filename.endswith(\".so\"):\n                src = filename\nif src is None:\n    raise SystemExit(\"failed to locate ffier-test-lib cdylib artifact\")\nout.parent.mkdir(parents=True, exist_ok=True)\nshutil.copy2(src, out)\n""", ns, ns)'
 
 # Generate the C header
 gen-header: build
