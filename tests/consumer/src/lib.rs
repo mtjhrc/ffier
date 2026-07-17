@@ -12,7 +12,10 @@ use ffier_test_lib_via_cdylib as api;
 mod tests {
     use std::os::fd::AsRawFd;
 
-    use super::api::{self, Config, Gadget, Mixer, View, Widget, sum_gadget_values};
+    use super::api::{
+        self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,
+        View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
+    };
 
     fn make_widget() -> Widget {
         Widget::new()
@@ -338,6 +341,34 @@ mod tests {
         let w = make_widget();
         let perms = w.add_permission(api::Permissions::empty(), api::Permissions::EXECUTE);
         assert_eq!(perms, api::Permissions::EXECUTE);
+    }
+
+    struct Triple;
+
+    impl OptionalWorker for Triple {
+        fn amplify(&self, input: i32) -> i32 {
+            input * 3
+        }
+    }
+
+    #[test]
+    fn test_optional_handle_and_trait_impl() {
+        let widget = OptionalWidget::new(7);
+        assert_eq!(widget.base(), 7);
+        assert_eq!(widget.amplify(3), 21);
+        assert_eq!(optional_apply(widget, 4), 28);
+    }
+
+    #[test]
+    fn test_optional_custom_trait_vtable_dispatch() {
+        assert_eq!(optional_apply(Triple, 5), 15);
+    }
+
+    #[test]
+    fn test_optional_enum_and_bitflags() {
+        assert_eq!(optional_mode_name(OptionalMode::Basic), "basic");
+        let flags = optional_merge_flags(OptionalFlags::READ, OptionalFlags::WRITE);
+        assert_eq!(flags, OptionalFlags::READ | OptionalFlags::WRITE);
     }
 
     #[test]

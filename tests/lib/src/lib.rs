@@ -1066,6 +1066,85 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
         .map_err(|_| TestError::InvalidInput())
 }
 
+#[cfg(feature = "optional-entry")]
+pub mod optional_api {
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    pub trait OptionalWorker {
+        #[cfg_attr(feature = "ffi", ffier(index = 0))]
+        fn amplify(&self, input: i32) -> i32;
+    }
+
+    pub struct OptionalWidget {
+        base: i32,
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    impl OptionalWidget {
+        pub fn new(base: i32) -> Self {
+            Self { base }
+        }
+
+        pub fn base(&self) -> i32 {
+            self.base
+        }
+    }
+
+    impl Default for OptionalWidget {
+        fn default() -> Self {
+            Self::new(0)
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    impl OptionalWorker for OptionalWidget {
+        fn amplify(&self, input: i32) -> i32 {
+            self.base * input
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[repr(u32)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum OptionalMode {
+        Basic = 1,
+        Advanced = 2,
+    }
+
+    ffier::export_bitflags! {
+        bitflags::bitflags! {
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub struct OptionalFlags: u32 {
+                const READ  = 0b0001;
+                const WRITE = 0b0010;
+            }
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
+        worker.amplify(input)
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    pub fn optional_mode_name(mode: OptionalMode) -> &'static str {
+        match mode {
+            OptionalMode::Basic => "basic",
+            OptionalMode::Advanced => "advanced",
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export)]
+    pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags {
+        a | b
+    }
+}
+
+#[cfg(feature = "optional-entry")]
+pub use optional_api::{
+    OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker, optional_apply,
+    optional_merge_flags, optional_mode_name,
+};
+
 // ---------------------------------------------------------------------------
 // Foreign type tests — accept/return types from another ffier library via its
 // generated client bindings (opaque handles + accessor methods, no field access).
@@ -1233,10 +1312,26 @@ ffier::library_definition!("ft", library_tag = 1,
     Error for TestError,
     Error = 26,
     Error for Error,
+    #[cfg(feature = "optional-entry")]
+    crate::optional_api::OptionalWidget = 27,
+    #[cfg(feature = "optional-entry")]
+    trait crate::optional_api::OptionalWorker = 28,
+    #[cfg(feature = "optional-entry")]
+    crate::optional_api::OptionalWorker for crate::optional_api::OptionalWidget,
     enum LogLevel,
+    #[cfg(feature = "optional-entry")]
+    enum crate::optional_api::OptionalMode,
+    #[cfg(feature = "optional-entry")]
+    bitflags crate::optional_api::OptionalFlags,
     bitflags Permissions,
     fn log_level_name,
     fn log_level_is_enabled,
+    #[cfg(feature = "optional-entry")]
+    fn crate::optional_api::optional_apply,
+    #[cfg(feature = "optional-entry")]
+    fn crate::optional_api::optional_mode_name,
+    #[cfg(feature = "optional-entry")]
+    fn crate::optional_api::optional_merge_flags,
     fn clone_fd,
     fn sum_gadget_values,
     fn opaque_round_trip,

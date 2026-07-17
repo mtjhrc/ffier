@@ -292,6 +292,47 @@ impl FfiType for LogLevel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum OptionalMode {
+    Basic = 1,
+    Advanced = 2,
+}
+
+impl FfiType for OptionalMode {
+    type CRepr = u32;
+    const C_TYPE_NAME: &'static str = "OptionalMode";
+    fn into_c(self) -> u32 {
+        self as u32
+    }
+    unsafe fn from_c(repr: u32) -> Self {
+        match repr {
+            1 => Self::Basic,
+            2 => Self::Advanced,
+            unknown => panic!("invalid OptionalMode discriminant: {}", unknown),
+        }
+    }
+}
+
+bitflags::bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct OptionalFlags: u32 {
+        const READ = 1;
+        const WRITE = 2;
+    }
+}
+
+impl FfiType for OptionalFlags {
+    type CRepr = u32;
+    const C_TYPE_NAME: &'static str = "OptionalFlags";
+    fn into_c(self) -> u32 {
+        self.bits()
+    }
+    unsafe fn from_c(repr: u32) -> Self {
+        Self::from_bits_retain(repr)
+    }
+}
+
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Permissions: u32 {
@@ -2346,6 +2387,73 @@ impl Drop for Sprocket {
     }
 }
 
+unsafe extern "C" {
+    pub fn ft_optional_widget_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_optional_widget_new(
+        base: <i32 as FfiType>::CRepr,
+    ) -> <OptionalWidget as FfiType>::CRepr;
+    pub fn ft_optional_widget_base(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub struct OptionalWidget(*mut core::ffi::c_void);
+
+impl OptionalWidget {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl FfiHandle for OptionalWidget {
+    const C_HANDLE_NAME: &'static str = "FtOptionalWidget";
+    const TYPE_TAG: u32 = 16777243u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
+}
+
+impl FfiType for OptionalWidget {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "OptionalWidget";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+
+impl std::fmt::Debug for OptionalWidget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("OptionalWidget").field(&self.0).finish()
+    }
+}
+
+impl OptionalWidget {
+    pub fn new(base: i32) -> OptionalWidget {
+        let __raw = unsafe { ft_optional_widget_new(<i32 as FfiType>::into_c(base)) };
+        unsafe { <OptionalWidget as FfiType>::from_c(__raw) }
+    }
+    pub fn base(&self) -> i32 {
+        let __raw = unsafe { ft_optional_widget_base(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl Drop for OptionalWidget {
+    fn drop(&mut self) {
+        unsafe { ft_optional_widget_destroy(self.0) }
+    }
+}
+
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
     fn name(&self) -> &str;
@@ -2746,6 +2854,80 @@ unsafe extern "C" {
     pub fn ft_error_message(handle: *mut core::ffi::c_void, writer: *mut core::ffi::c_void);
     pub fn ft_error_result(handle: *mut core::ffi::c_void) -> <u64 as FfiType>::CRepr;
     pub fn ft_error_destroy(handle: *mut core::ffi::c_void);
+}
+
+pub trait OptionalWorker {
+    fn amplify(&self, input: i32) -> i32;
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static OptionalWorkerVtable
+    where
+        Self: Sized,
+    {
+        &OptionalWorkerVtable {
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+            amplify: Some({
+                unsafe extern "C" fn __trampoline<__T: OptionalWorker>(
+                    __ud: *mut core::ffi::c_void,
+                    input: <i32 as FfiType>::CRepr,
+                ) -> <i32 as FfiType>::CRepr {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.amplify(unsafe { <i32 as FfiType>::from_c(input) });
+                    <i32 as FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            }),
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static OptionalWorkerVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        let vtable_size: u16 = core::mem::size_of::<OptionalWorkerVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            16777244u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const OptionalWorkerVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct OptionalWorkerVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub amplify: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <i32 as FfiType>::CRepr,
+        ) -> <i32 as FfiType>::CRepr,
+    >,
+}
+
+pub struct VtableOptionalWorker(*mut core::ffi::c_void);
+
+impl VtableOptionalWorker {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableOptionalWorker {
+    fn drop(&mut self) {}
 }
 
 unsafe extern "C" {
@@ -3286,6 +3468,24 @@ impl Weighable for Apple {
 }
 
 unsafe extern "C" {
+    pub fn ft_optional_widget_amplify(
+        handle: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+impl OptionalWorker for OptionalWidget {
+    fn amplify(&self, input: i32) -> i32 {
+        let __raw = unsafe { ft_optional_widget_amplify(self.0, <i32 as FfiType>::into_c(input)) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+unsafe extern "C" {
     pub fn ft_log_level_name(
         level: <LogLevel as FfiType>::CRepr,
     ) -> <&'static str as FfiType>::CRepr;
@@ -3306,6 +3506,47 @@ unsafe extern "C" {
 pub fn log_level_is_enabled(level: LogLevel) -> bool {
     let __raw = unsafe { ft_log_level_is_enabled(<LogLevel as FfiType>::into_c(level)) };
     unsafe { <bool as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_optional_apply(
+        worker: *mut core::ffi::c_void,
+        input: <i32 as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
+    let __raw =
+        unsafe { ft_optional_apply(worker.__into_raw_handle(), <i32 as FfiType>::into_c(input)) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_optional_mode_name(
+        mode: <OptionalMode as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+}
+
+pub fn optional_mode_name(mode: OptionalMode) -> &'static str {
+    let __raw = unsafe { ft_optional_mode_name(<OptionalMode as FfiType>::into_c(mode)) };
+    unsafe { <&'static str as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_optional_merge_flags(
+        a: <OptionalFlags as FfiType>::CRepr,
+        b: <OptionalFlags as FfiType>::CRepr,
+    ) -> <OptionalFlags as FfiType>::CRepr;
+}
+
+pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags {
+    let __raw = unsafe {
+        ft_optional_merge_flags(
+            <OptionalFlags as FfiType>::into_c(a),
+            <OptionalFlags as FfiType>::into_c(b),
+        )
+    };
+    unsafe { <OptionalFlags as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {

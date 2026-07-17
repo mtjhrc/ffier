@@ -26,9 +26,11 @@ typedef void* FtGrape;
 typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtSprocket;
+typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtError; /* FtTestError | FtError | FtVtableError */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
+typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
@@ -39,7 +41,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -127,6 +129,16 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_LOG_LEVEL_INFO 3
 #define FT_LOG_LEVEL_DEBUG 4
 #define FT_LOG_LEVEL_TRACE 5
+
+/* OptionalMode ------------------------------------------------------ */
+
+#define FT_OPTIONAL_MODE_BASIC 1
+#define FT_OPTIONAL_MODE_ADVANCED 2
+
+/* OptionalFlags ----------------------------------------------------- */
+
+#define FT_OPTIONAL_FLAGS_READ 1
+#define FT_OPTIONAL_FLAGS_WRITE 2
 
 /* Permissions ------------------------------------------------------- */
 
@@ -396,6 +408,12 @@ FtSprocket ft_sprocket_new(FtStr name);
 FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
+/* OptionalWidget ---------------------------------------------------- */
+
+FtOptionalWidget ft_optional_widget_new(int32_t base);
+int32_t ft_optional_widget_base(FtOptionalWidget handle);
+void ft_optional_widget_destroy(FtOptionalWidget handle);
+
 /* FtProcessorVtable ------------------------------------------------- */
 
 #define FT_PROCESSOR_TYPE_TAG 16777226
@@ -483,6 +501,20 @@ uint32_t ft_error_code(FtError handle);
 void ft_error_message(FtError handle, FtPushStr writer);
 uint64_t ft_error_result(FtError handle);
 void ft_error_destroy(FtError handle);
+
+/* FtOptionalWorkerVtable -------------------------------------------- */
+
+#define FT_OPTIONAL_WORKER_TYPE_TAG 16777244
+
+typedef struct {
+    void (*drop)(void* self_data);
+    int32_t (*amplify)(void* self_data, int32_t input);
+} FtOptionalWorkerVtable;
+
+/* OptionalWorker (dispatch) ----------------------------------------- */
+
+int32_t ft_optional_worker_amplify(FtOptionalWorker handle, int32_t input);
+void ft_optional_worker_destroy(FtOptionalWorker handle);
 int32_t ft_apple_value(FtApple handle);
 FtResult ft_apple_try_count(FtApple handle, int32_t input, int32_t* result, FtError* err_out);
 int32_t ft_apple_count_tags(FtApple handle, const FtStr* tags, size_t tags_len);
@@ -519,6 +551,7 @@ uint32_t ft_test_error_code(FtTestError handle);
 void ft_test_error_message(FtTestError handle, FtPushStr writer);
 uint32_t ft_error_code(FtError handle);
 void ft_error_message(FtError handle, FtPushStr writer);
+int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
 
@@ -526,6 +559,9 @@ void ft_error_message(FtError handle, FtPushStr writer);
 FtStr ft_log_level_name(uint32_t level);
 /** Check if a log level is enabled (everything above Off). */
 bool ft_log_level_is_enabled(uint32_t level);
+int32_t ft_optional_apply(FtOptionalWorker worker, int32_t input);
+FtStr ft_optional_mode_name(uint32_t mode);
+uint32_t ft_optional_merge_flags(uint32_t a, uint32_t b);
 /** Duplicate a file descriptor. */
 FtResult ft_clone_fd(int fd, int* result, FtError* err_out);
 /** Count the number of gadgets in a slice and return the sum of their values. */

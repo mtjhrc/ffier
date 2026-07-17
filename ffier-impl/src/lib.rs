@@ -3163,7 +3163,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         .entries
         .iter()
         .filter_map(|e| {
-            if let LibraryEntry::TaggedTrait(path, _) = e {
+            if let LibraryEntry::TaggedTrait(path, _) = &e.entry {
                 let is_external = path.segments.len() > 1
                     && path.segments.first().is_none_or(|seg| seg.ident != "crate");
                 if is_external {
@@ -3181,7 +3181,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
     let handle_type_idents: Vec<syn::Ident> = parsed
         .entries
         .iter()
-        .filter_map(|e| match e {
+        .filter_map(|e| match &e.entry {
             LibraryEntry::Tagged(path, _) => Some(path_last_ident(path).clone()),
             LibraryEntry::TaggedTrait(path, _) => {
                 let trait_name = path_last_ident(path);
@@ -3192,7 +3192,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         .collect();
 
     for entry in &parsed.entries {
-        match entry {
+        let cfg = entry.cfg.as_ref();
+        match &entry.entry {
             LibraryEntry::Tagged(path, tag) => {
                 let last_ident = path_last_ident(path);
                 let full_tag = (library_tag << 24) | tag;
@@ -3201,32 +3202,34 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let alias = meta_alias_for_type(path);
                 let alias_chain = to_chain_path(&alias);
                 let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{last_ident}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, #full_tag, $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        #alias_chain! { $prefix, #full_tag, $callback $(, $($rest)*)? }
+                    },
+                ));
 
                 shim_names.push(shim_name.clone());
 
                 // @on_library_export generates FfiHandle + FfiType impls
-                reexport_invocations.push(
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
                     quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
-                );
+                ));
 
                 // Helper module re-export for qualified paths
                 let helper_mod_name =
                     format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
                 if path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
             }
             LibraryEntry::TaggedTrait(path, tag) => {
@@ -3245,29 +3248,38 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // user types that share the same last segment (e.g. crate::Error
                 // and trait ffier_builtins::Error).
                 let upstream_alias = format_ident!("__ffier_upstream_trait_{last_ident}");
-                reexport_invocations.push(quote! {
-                    #[doc(hidden)]
-                    pub use #alias as #upstream_alias;
-                });
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
+                    quote! {
+                        #[doc(hidden)]
+                        pub use #alias as #upstream_alias;
+                    },
+                ));
 
                 let is_external = path.segments.len() > 1
                     && path.segments.first().is_none_or(|seg| seg.ident != "crate");
                 let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
 
                 if is_external {
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #path as #trait_reexport;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #path as #trait_reexport;
+                        },
+                    ));
 
                     // Helper module re-export for external traits
                     let trait_snake = camel_to_snake(&last_ident.to_string());
                     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
 
                 // Shim paths: wrapper and trait are at the library root (from @on_library_export)
@@ -3279,23 +3291,22 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_wrapper = quote! { $crate::#wrapper_ident };
 
                 let shim_name = format_ident!("__ffier_tagged_trait_{prefix_str}_{last_ident}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            $crate::#upstream_alias! { $prefix, #full_tag,
-                                (#shim_wrapper),
-                                (#shim_trait),
-                                $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        $crate::#upstream_alias! { $prefix, #full_tag,
+                            (#shim_wrapper),
+                            (#shim_trait),
+                            $callback $(, $($rest)*)? }
+                    },
+                ));
 
                 // @on_library_export generates the vtable struct + wrapper type + impls.
-                reexport_invocations.push(
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
                     quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
-                );
+                ));
                 shim_names.push(shim_name.clone());
             }
             LibraryEntry::Enum(path) => {
@@ -3305,20 +3316,19 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 // Shim macro — no type tag needed for enums
                 let shim_name = format_ident!("__ffier_enum_{prefix_str}_{last_ident}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                    },
+                ));
 
                 // @on_library_export generates the FfiType impl for the enum
-                reexport_invocations.push(
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
                     quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
-                );
+                ));
                 shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
@@ -3326,10 +3336,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
                 if path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
             }
             LibraryEntry::Bitflags(path) => {
@@ -3339,20 +3352,19 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 // Shim macro — no type tag needed for bitflags
                 let shim_name = format_ident!("__ffier_bitflags_{prefix_str}_{last_ident}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                    },
+                ));
 
                 // @on_library_export generates the FfiType impl for the bitflags type
-                reexport_invocations.push(
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
                     quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
-                );
+                ));
                 shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
@@ -3360,10 +3372,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     format_ident!("_ffier_{}", camel_to_snake(&last_ident.to_string()));
                 if path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
             }
             LibraryEntry::FreeFn(path) => {
@@ -3373,15 +3388,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 // Shim macro — no type tag needed for free functions
                 let shim_name = format_ident!("__ffier_fn_{prefix_str}_{last_ident}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                    },
+                ));
 
                 shim_names.push(shim_name.clone());
 
@@ -3389,10 +3402,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let helper_mod_name = format_ident!("_ffier_fn_{}", last_ident);
                 if path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
             }
             LibraryEntry::TraitImpl {
@@ -3429,16 +3445,14 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // trait_impl metadata macro.
                 let shim_name =
                     format_ident!("__ffier_trait_impl_{prefix_str}_{trait_name}_for_{struct_name}");
-                shim_macros.push(quote! {
-                    #[doc(hidden)]
-                    #[macro_export]
-                    macro_rules! #shim_name {
-                        ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                            #alias_chain! { $prefix, (#resolved_trait_path),
-                                $callback $(, $($rest)*)? }
-                        };
-                    }
-                });
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    cfg,
+                    quote! {
+                        #alias_chain! { $prefix, (#resolved_trait_path),
+                            $callback $(, $($rest)*)? }
+                    },
+                ));
                 shim_names.push(shim_name.clone());
 
                 // Helper module re-export for qualified paths
@@ -3447,10 +3461,13 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let helper_mod_name = format_ident!("_ffier_impl_{trait_snake}_for_{struct_snake}");
                 if struct_path.segments.len() > 1 {
                     let helper_mod_path = replace_last_segment(struct_path, &helper_mod_name);
-                    reexport_invocations.push(quote! {
-                        #[doc(hidden)]
-                        pub use #helper_mod_path;
-                    });
+                    reexport_invocations.push(maybe_cfg_wrap(
+                        cfg,
+                        quote! {
+                            #[doc(hidden)]
+                            pub use #helper_mod_path;
+                        },
+                    ));
                 }
             }
         }
@@ -3682,6 +3699,23 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
+            // Skip recursive: forward without appending metadata.
+            (@skip, $prefix:literal, $chain:path, $final_cb:path,
+             $schema_output:literal,
+             [$($acc:tt)*], [$next:path $(, $($remaining:path),*)?]) => {
+                $next! { $prefix, $chain,
+                    $prefix, $chain, $final_cb,
+                    $schema_output,
+                    [$($acc)*],
+                    [$($($remaining),*)?]
+                }
+            };
+            // Skip base case: finalize with the metadata accumulated so far.
+            (@skip, $prefix:literal, $chain:path, $final_cb:path,
+             $schema_output:literal,
+             [$($acc:tt)*], []) => {
+                $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; @schema_output = $schema_output; $($acc)* }
+            };
             // Recursive: append metadata, call next shim
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              $schema_output:literal,
@@ -3792,7 +3826,38 @@ struct LibraryInput {
     /// For example, `primitives_prefix = "krun"` produces `KrunStr` even if the
     /// library prefix is `"krun_init"`.
     primitives_prefix: Option<LitStr>,
-    entries: Vec<LibraryEntry>,
+    entries: Vec<ConditionalLibraryEntry>,
+}
+
+struct ConditionalLibraryEntry {
+    cfg: Option<LibraryEntryCfg>,
+    entry: LibraryEntry,
+}
+
+struct LibraryEntryCfg {
+    predicates: Vec<syn::Meta>,
+}
+
+impl LibraryEntryCfg {
+    fn enabled_attr(&self) -> proc_macro2::TokenStream {
+        let predicate = self.predicate_tokens();
+        quote! { #[cfg(#predicate)] }
+    }
+
+    fn disabled_attr(&self) -> proc_macro2::TokenStream {
+        let predicate = self.predicate_tokens();
+        quote! { #[cfg(not(#predicate))] }
+    }
+
+    fn predicate_tokens(&self) -> proc_macro2::TokenStream {
+        if self.predicates.len() == 1 {
+            let predicate = &self.predicates[0];
+            quote! { #predicate }
+        } else {
+            let predicates = &self.predicates;
+            quote! { all(#(#predicates),*) }
+        }
+    }
 }
 
 enum LibraryEntry {
@@ -3834,6 +3899,81 @@ fn parse_type_tag(input: syn::parse::ParseStream) -> syn::Result<u32> {
         ));
     }
     Ok(tag)
+}
+
+fn parse_library_entry_cfg(input: syn::parse::ParseStream) -> syn::Result<Option<LibraryEntryCfg>> {
+    let mut predicates = Vec::new();
+
+    for attr in input.call(syn::Attribute::parse_outer)? {
+        if !attr.path().is_ident("cfg") {
+            return Err(syn::Error::new_spanned(
+                attr,
+                "library_definition! entries only support outer #[cfg(...)] attributes",
+            ));
+        }
+        predicates.push(attr.parse_args::<syn::Meta>()?);
+    }
+
+    if predicates.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(LibraryEntryCfg { predicates }))
+    }
+}
+
+fn maybe_cfg_wrap(
+    cfg: Option<&LibraryEntryCfg>,
+    tokens: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some(cfg) = cfg {
+        let attr = cfg.enabled_attr();
+        quote! {
+            #attr
+            #tokens
+        }
+    } else {
+        tokens
+    }
+}
+
+fn emit_library_shim(
+    shim_name: &syn::Ident,
+    cfg: Option<&LibraryEntryCfg>,
+    on_body: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    if let Some(cfg) = cfg {
+        let enabled_attr = cfg.enabled_attr();
+        let disabled_attr = cfg.disabled_attr();
+        quote! {
+            #enabled_attr
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #shim_name {
+                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                    #on_body
+                };
+            }
+
+            #disabled_attr
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #shim_name {
+                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                    $callback! { @skip $(, $($rest)*)? }
+                };
+            }
+        }
+    } else {
+        quote! {
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #shim_name {
+                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                    #on_body
+                };
+            }
+        }
+    }
 }
 
 impl Parse for LibraryInput {
@@ -3889,17 +4029,18 @@ impl Parse for LibraryInput {
 
         let mut entries = Vec::new();
         while !input.is_empty() {
-            if input.peek(Token![trait]) {
+            let cfg = parse_library_entry_cfg(input)?;
+            let entry = if input.peek(Token![trait]) {
                 // `trait Path = N`
                 input.parse::<Token![trait]>()?;
                 let path: syn::Path = input.parse()?;
                 let tag = parse_type_tag(input)?;
-                entries.push(LibraryEntry::TaggedTrait(path, tag));
+                LibraryEntry::TaggedTrait(path, tag)
             } else if input.peek(Token![enum]) {
                 // `enum Path`
                 input.parse::<Token![enum]>()?;
                 let path: syn::Path = input.parse()?;
-                entries.push(LibraryEntry::Enum(path));
+                LibraryEntry::Enum(path)
             } else if input.peek(syn::Ident)
                 && input
                     .fork()
@@ -3909,28 +4050,29 @@ impl Parse for LibraryInput {
                 // `bitflags Path`
                 let _: syn::Ident = input.parse()?;
                 let path: syn::Path = input.parse()?;
-                entries.push(LibraryEntry::Bitflags(path));
+                LibraryEntry::Bitflags(path)
             } else if input.peek(Token![fn]) {
                 // `fn Path`
                 input.parse::<Token![fn]>()?;
                 let path: syn::Path = input.parse()?;
-                entries.push(LibraryEntry::FreeFn(path));
+                LibraryEntry::FreeFn(path)
             } else {
                 let first: syn::Path = input.parse()?;
                 if input.peek(Token![for]) {
                     // `TraitPath for StructPath`
                     input.parse::<Token![for]>()?;
                     let second: syn::Path = input.parse()?;
-                    entries.push(LibraryEntry::TraitImpl {
+                    LibraryEntry::TraitImpl {
                         trait_path: first,
                         struct_path: second,
-                    });
+                    }
                 } else {
                     // `Path = N`
                     let tag = parse_type_tag(input)?;
-                    entries.push(LibraryEntry::Tagged(first, tag));
+                    LibraryEntry::Tagged(first, tag)
                 }
-            }
+            };
+            entries.push(ConditionalLibraryEntry { cfg, entry });
             if !input.is_empty() {
                 input.parse::<Token![,]>()?;
             }

@@ -7,9 +7,10 @@ edition = "2024"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["fruit-label", "ffi"]
+default = ["fruit-label", "ffi", "optional-entry"]
 fruit-label = []
 ffi = []
+optional-entry = []
 
 [dependencies]
 ffier = { path = "../../ffier" }

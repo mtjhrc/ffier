@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-header check-generated-client check-generated-foreign-client valgrind miri consumer compat cargo-test
+default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -101,6 +101,12 @@ compat: build
 # all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
 no-codegen:
     cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
+
+# Verify cfg-gated library_definition! entries disappear cleanly when the
+# feature is off but FFI codegen is still enabled.
+check-cfg-library-entry:
+    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features --features ffi,fruit-label
+    python3 -c 'from pathlib import Path; text = Path("{{schema}}").read_text(); forbidden = ["OptionalWidget", "OptionalWorker", "OptionalMode", "OptionalFlags", "ft_optional_apply", "ft_optional_mode_name", "ft_optional_merge_flags"]; missing = [name for name in forbidden if name in text]; assert not missing, f"optional-entry items leaked into schema: {missing}"'
 
 # Run all Rust tests
 cargo-test: build
