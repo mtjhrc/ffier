@@ -86,7 +86,9 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        emit_vtable_section(&mut out, tr, lib);
+        if !tr.no_vtable {
+            emit_vtable_section(&mut out, tr, lib);
+        }
         emit_dispatch_section(&mut out, tr, lib, opts);
     }
 
@@ -343,12 +345,14 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
             .push(implementor_c);
     }
 
-    // For exported traits, also add the VtableXxx wrapper as an implementor
+    // For exported traits with vtables, also add the VtableXxx wrapper as an implementor
     for tr in &lib.traits {
-        trait_implementors
-            .entry(tr.name.clone())
-            .or_default()
-            .push(tr.wrapper_c_name.clone());
+        if !tr.no_vtable {
+            trait_implementors
+                .entry(tr.name.clone())
+                .or_default()
+                .push(tr.wrapper_c_name.clone());
+        }
     }
 
     // Collect all trait names that need typedefs (from both implementables and trait_impls)

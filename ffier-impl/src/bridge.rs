@@ -88,16 +88,21 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             let wrapper_path = meta.wrapper_name.clone();
             let methods = meta.methods;
             let own_method_count = meta.own_method_count;
+            let no_vtable = meta.no_vtable;
 
             let info = map.entry(trait_name).or_insert_with(|| TraitDispatchInfo {
                 variants: Vec::new(),
                 implementable: None,
             });
-            info.variants.push(TraitVariant {
-                name: wrapper_name,
-                bridge_type: wrapper_path.clone(),
-                kind: TraitVariantKind::Wrapper,
-            });
+            // no_vtable traits have no VtableWrapper type — C callers can't
+            // implement them, only concrete Rust types are dispatched.
+            if !no_vtable {
+                info.variants.push(TraitVariant {
+                    name: wrapper_name,
+                    bridge_type: wrapper_path.clone(),
+                    kind: TraitVariantKind::Wrapper,
+                });
+            }
             info.implementable = Some(ImplementableInfo {
                 trait_path: meta.trait_path,
                 methods,
@@ -2621,7 +2626,9 @@ fn build_schema(
             set.insert(e.struct_name.to_string());
         }
         for i in &implementables_parsed {
-            set.insert(format!("Vtable{}", i.trait_name));
+            if !i.no_vtable {
+                set.insert(format!("Vtable{}", i.trait_name));
+            }
         }
         set
     };
@@ -3133,6 +3140,7 @@ fn convert_implementable(
             .collect(),
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
+        no_vtable: meta.no_vtable,
     }
 }
 

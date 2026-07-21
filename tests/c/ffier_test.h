@@ -28,6 +28,7 @@ typedef void* FtMixer;
 typedef void* FtSprocket;
 typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
+typedef void* FtCategorizable; /* FtApple | FtOrange */
 typedef void* FtError; /* FtTestError | FtError | FtVtableError */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
@@ -470,6 +471,10 @@ typedef struct {
 int32_t ft_weighable_weight_grams(FtWeighable handle);
 void ft_weighable_destroy(FtWeighable handle);
 
+/* Categorizable (dispatch) ------------------------------------------ */
+
+void ft_categorizable_destroy(FtCategorizable handle);
+
 /* FtPushStrVtable --------------------------------------------------- */
 
 #define FT_PUSH_STR_TYPE_TAG 16777240
@@ -562,6 +567,8 @@ bool ft_log_level_is_enabled(uint32_t level);
 int32_t ft_optional_apply(FtOptionalWorker worker, int32_t input);
 FtStr ft_optional_mode_name(uint32_t mode);
 uint32_t ft_optional_merge_flags(uint32_t a, uint32_t b);
+/** Accepts only categorizable fruits (not all fruits). */
+int32_t ft_categorizable_value(FtCategorizable fruit);
 /** Duplicate a file descriptor. */
 FtResult ft_clone_fd(int fd, int* result, FtError* err_out);
 /** Count the number of gadgets in a slice and return the sum of their values. */

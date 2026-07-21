@@ -461,6 +461,9 @@ pub struct MetaImplementable {
     /// Highest vtable slot index (including reserved/retired slots).
     /// Used by code generators to pad the vtable struct up to this slot.
     pub max_vtable_slot: usize,
+    /// If true, no vtable wrapper type is generated. C callers cannot
+    /// implement this trait — only concrete Rust implementors are dispatched.
+    pub no_vtable: bool,
 }
 
 impl HasPrefix for MetaImplementable {
@@ -1194,6 +1197,20 @@ impl syn::parse::Parse for MetaImplementable {
         };
         parse_comma(input)?;
 
+        expect_key(input, "no_vtable")?;
+        let no_vtable_ident: syn::Ident = input.parse()?;
+        let no_vtable = if no_vtable_ident == "yes" {
+            true
+        } else if no_vtable_ident == "no" {
+            false
+        } else {
+            return Err(syn::Error::new(
+                no_vtable_ident.span(),
+                "expected `yes` or `no`",
+            ));
+        };
+        parse_comma(input)?;
+
         Ok(MetaImplementable {
             trait_name,
             trait_path,
@@ -1205,6 +1222,7 @@ impl syn::parse::Parse for MetaImplementable {
             own_method_count,
             max_vtable_slot,
             bless,
+            no_vtable,
         })
     }
 }

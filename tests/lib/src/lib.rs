@@ -882,6 +882,28 @@ impl Default for Mixer {
 }
 
 // ---------------------------------------------------------------------------
+// Marker trait with supertrait — tests no_vtable (C can't implement, no
+// VtableCategorizable generated, but concrete dispatch still works)
+// ---------------------------------------------------------------------------
+
+/// A marker trait: implementors are `Fruit`s that can be categorized.
+/// Has no methods of its own — used purely as a type bound.
+#[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
+pub trait Categorizable: Fruit {}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl Categorizable for Apple {}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl Categorizable for Orange {}
+
+/// Accepts only categorizable fruits (not all fruits).
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn categorizable_value(fruit: impl Categorizable) -> i32 {
+    fruit.value()
+}
+
+// ---------------------------------------------------------------------------
 // Trait with non-FFI-able methods — tests #[ffier(skip)]
 // ---------------------------------------------------------------------------
 
@@ -1307,6 +1329,9 @@ ffier::library_definition!("ft", library_tag = 1,
     Snapshot for Gadget,
     trait Weighable = 23,
     Weighable for Apple,
+    trait Categorizable = 29,
+    Categorizable for Apple,
+    Categorizable for Orange,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
@@ -1332,6 +1357,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn crate::optional_api::optional_mode_name,
     #[cfg(feature = "optional-entry")]
     fn crate::optional_api::optional_merge_flags,
+    fn categorizable_value,
     fn clone_fd,
     fn sum_gadget_values,
     fn opaque_round_trip,
@@ -2966,6 +2992,27 @@ mod tests {
             let ptr = &val as *const i32 as *const core::ffi::c_void;
             let addr = ft_opaque_ptr_to_int(ptr);
             assert_eq!(addr, ptr as usize);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // no_vtable marker trait — dispatch through concrete types only
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn no_vtable_dispatch_apple() {
+        unsafe {
+            // impl Categorizable is by-value — consumes the handle
+            let a = ft_apple_new(7);
+            assert_eq!(ft_categorizable_value(a), 7);
+        }
+    }
+
+    #[test]
+    fn no_vtable_dispatch_orange() {
+        unsafe {
+            let o = ft_orange_new(13);
+            assert_eq!(ft_categorizable_value(o), 13);
         }
     }
 }

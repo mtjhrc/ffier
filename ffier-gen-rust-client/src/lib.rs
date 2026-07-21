@@ -384,6 +384,12 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             defined_traits.insert(tr.name.clone());
             continue;
         }
+        // no_vtable traits have no vtable/wrapper — let emit_trait_impl
+        // define the trait via emit_simple_trait_def when concrete impls
+        // are encountered.
+        if tr.no_vtable {
+            continue;
+        }
         emit_implementable_trait(&mut out, tr, lib, weak, &mut symbols);
         defined_traits.insert(tr.name.clone());
     }

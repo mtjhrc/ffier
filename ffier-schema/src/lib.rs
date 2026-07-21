@@ -634,6 +634,10 @@ pub struct ImplementableTrait {
     pub own_method_count: usize,
     /// Highest vtable slot index (including reserved/retired slots).
     pub max_vtable_slot: usize,
+    /// If true, no vtable wrapper type exists. C callers cannot implement
+    /// this trait — only concrete Rust implementors are dispatched.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_vtable: bool,
 }
 
 // ---------------------------------------------------------------------------

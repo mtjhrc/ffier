@@ -3467,6 +3467,27 @@ impl Weighable for Apple {
     }
 }
 
+pub trait Categorizable {
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+}
+
+impl Categorizable for Apple {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Categorizable for Orange {
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
 unsafe extern "C" {
     pub fn ft_optional_widget_amplify(
         handle: *mut core::ffi::c_void,
@@ -3547,6 +3568,16 @@ pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags
         )
     };
     unsafe { <OptionalFlags as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_categorizable_value(fruit: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+#[doc = " Accepts only categorizable fruits (not all fruits)."]
+pub fn categorizable_value(fruit: impl Categorizable) -> i32 {
+    let __raw = unsafe { ft_categorizable_value(fruit.__into_raw_handle()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {
