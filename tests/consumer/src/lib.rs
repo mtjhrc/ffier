@@ -398,6 +398,51 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_maybe_owned_fd_some() {
+        let w = make_widget();
+        let result = w.maybe_owned_fd(1);
+        let fd = result.unwrap().unwrap();
+        // Should be a dup of stdin — valid fd, not fd 0 itself
+        assert!(fd.as_raw_fd() >= 0);
+    }
+
+    #[test]
+    fn test_maybe_owned_fd_none() {
+        let w = make_widget();
+        let result = w.maybe_owned_fd(0);
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_maybe_owned_fd_error() {
+        let w = make_widget();
+        let result = w.maybe_owned_fd(-1);
+        assert!(matches!(
+            result.unwrap_err(),
+            api::TestError::InvalidInput(..)
+        ));
+    }
+
+    #[test]
+    fn test_maybe_dup_fd_some() {
+        use std::os::fd::BorrowedFd;
+        let w = make_widget();
+        // Pass stdin as Some
+        let stdin = unsafe { BorrowedFd::borrow_raw(0) };
+        let result = w.maybe_dup_fd(Some(stdin));
+        let fd = result.unwrap().unwrap();
+        assert!(fd.as_raw_fd() >= 0);
+        assert_ne!(fd.as_raw_fd(), 0); // should be a new fd
+    }
+
+    #[test]
+    fn test_maybe_dup_fd_none() {
+        let w = make_widget();
+        let result = w.maybe_dup_fd(None);
+        assert!(result.unwrap().is_none());
+    }
+
     // -----------------------------------------------------------------------
     // ForeignSlice / &[T] handle array returns
     // -----------------------------------------------------------------------

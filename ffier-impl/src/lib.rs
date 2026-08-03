@@ -3694,6 +3694,20 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd) }) }
                 }
             }
+            impl FfiType for Option<OwnedFd> {
+                type CRepr = i32;
+                const C_TYPE_NAME: &'static str = "int";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> i32 {
+                    match self {
+                        Some(fd) => fd.into_raw_fd(),
+                        None => -1,
+                    }
+                }
+                unsafe fn from_c(fd: i32) -> Self {
+                    if fd < 0 { None } else { Some(unsafe { OwnedFd::from_raw_fd(fd) }) }
+                }
+            }
         };
 
         impl<T: FfiHandle + 'static> FfiType for &T {

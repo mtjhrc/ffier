@@ -126,6 +126,26 @@ impl FfiType for OwnedFd {
     }
 }
 
+impl FfiType for Option<OwnedFd> {
+    type CRepr = RawFd;
+    const C_TYPE_NAME: &'static str = "int";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> RawFd {
+        use std::os::unix::io::IntoRawFd;
+        match self {
+            Some(fd) => fd.into_raw_fd() as RawFd,
+            None => -1,
+        }
+    }
+    unsafe fn from_c(fd: RawFd) -> Self {
+        if fd < 0 {
+            None
+        } else {
+            Some(unsafe { OwnedFd::from_raw_fd(fd as _) })
+        }
+    }
+}
+
 impl<'fd> FfiType for BorrowedFd<'fd> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -676,6 +696,18 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         fd: <BorrowedFd<'static> as FfiType>::CRepr,
     ) -> <OwnedFd as FfiType>::CRepr;
+    pub fn ft_widget_maybe_dup_fd(
+        handle: *mut core::ffi::c_void,
+        fd: <Option<BorrowedFd<'static>> as FfiType>::CRepr,
+        result: *mut <Option<OwnedFd> as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_maybe_owned_fd(
+        handle: *mut core::ffi::c_void,
+        selector: <i32 as FfiType>::CRepr,
+        result: *mut <Option<OwnedFd> as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
     pub fn ft_widget_apply_config(
         handle: *mut core::ffi::c_void,
         config: <&'static ForeignConfig as FfiType>::CRepr,
@@ -1012,6 +1044,43 @@ impl Widget {
     pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {
         let __raw = unsafe { ft_widget_dup_fd(self.0, <BorrowedFd<'_> as FfiType>::into_c(fd)) };
         unsafe { <OwnedFd as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Maybe duplicate a file descriptor; returns None if input is None."]
+    pub fn maybe_dup_fd(&self, fd: Option<BorrowedFd<'_>>) -> Result<Option<OwnedFd>, TestError> {
+        let mut __out = std::mem::MaybeUninit::uninit();
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe {
+            ft_widget_maybe_dup_fd(
+                self.0,
+                <Option<BorrowedFd<'_>> as FfiType>::into_c(fd),
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <Option<OwnedFd> as FfiType>::from_c(__out.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    #[doc = " Optionally return an owned fd depending on `selector`:"]
+    #[doc = " < 0 → error, 0 → Ok(None), > 0 → Ok(Some(dup(stdin)))."]
+    pub fn maybe_owned_fd(&self, selector: i32) -> Result<Option<OwnedFd>, TestError> {
+        let mut __out = std::mem::MaybeUninit::uninit();
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe {
+            ft_widget_maybe_owned_fd(
+                self.0,
+                <i32 as FfiType>::into_c(selector),
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <Option<OwnedFd> as FfiType>::from_c(__out.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
     }
     #[doc = " Apply a foreign config to this widget (tests foreign param on a method)."]
     pub fn apply_config(&mut self, config: &ForeignConfig) {

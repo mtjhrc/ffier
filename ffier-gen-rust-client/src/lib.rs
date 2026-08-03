@@ -2505,6 +2505,14 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         .unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+
+        // Option<OwnedFd>
+        writeln!(out, "impl FfiType for Option<OwnedFd> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; match self {{ Some(fd) => fd.into_raw_fd() as {repr}, None => -1 }} }}").unwrap();
+        writeln!(out, "    unsafe fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ OwnedFd::from_raw_fd(fd as _) }}) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
 
     if let Some((_, entry)) = lib.blessed(Blessing::BorrowedFd) {

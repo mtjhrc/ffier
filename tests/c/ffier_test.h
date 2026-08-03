@@ -251,6 +251,13 @@ int32_t ft_widget_fd_number_optional(FtWidget handle, int fd);
 FtResult ft_widget_maybe_fd(FtWidget handle, int32_t selector, int* result, FtError* err_out);
 /** Duplicate a file descriptor (returns owned fd). */
 int ft_widget_dup_fd(FtWidget handle, int fd);
+/** Maybe duplicate a file descriptor; returns None if input is None. */
+FtResult ft_widget_maybe_dup_fd(FtWidget handle, int fd, int* result, FtError* err_out);
+/**
+ * Optionally return an owned fd depending on `selector`:
+ * < 0 → error, 0 → Ok(None), > 0 → Ok(Some(dup(stdin))).
+ */
+FtResult ft_widget_maybe_owned_fd(FtWidget handle, int32_t selector, int* result, FtError* err_out);
 /** Apply a foreign config to this widget (tests foreign param on a method). */
 void ft_widget_apply_config(FtWidget handle, FlForeignConfig config);
 void ft_widget_destroy(FtWidget handle);

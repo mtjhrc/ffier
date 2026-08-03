@@ -271,6 +271,34 @@ impl Widget {
         fd.try_clone_to_owned().expect("dup failed")
     }
 
+    /// Maybe duplicate a file descriptor; returns None if input is None.
+    pub fn maybe_dup_fd(&self, fd: Option<BorrowedFd<'_>>) -> Result<Option<OwnedFd>, TestError> {
+        match fd {
+            Some(f) => f
+                .try_clone_to_owned()
+                .map(Some)
+                .map_err(|_| TestError::InvalidInput()),
+            None => Ok(None),
+        }
+    }
+
+    /// Optionally return an owned fd depending on `selector`:
+    /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(dup(stdin))).
+    pub fn maybe_owned_fd(&self, selector: i32) -> Result<Option<OwnedFd>, TestError> {
+        if selector < 0 {
+            Err(TestError::InvalidInput())
+        } else if selector == 0 {
+            Ok(None)
+        } else {
+            // Safety: fd 0 (stdin) exists for the process lifetime
+            let stdin = unsafe { BorrowedFd::borrow_raw(0) };
+            stdin
+                .try_clone_to_owned()
+                .map(Some)
+                .map_err(|_| TestError::InvalidInput())
+        }
+    }
+
     /// Apply a foreign config to this widget (tests foreign param on a method).
     pub fn apply_config(
         &mut self,
@@ -1615,6 +1643,69 @@ mod tests {
             assert!(new_fd >= 0);
             assert_ne!(new_fd, 1);
             drop(std::os::unix::io::OwnedFd::from_raw_fd(new_fd));
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn method_with_optional_owned_fd_return_some() {
+        unsafe {
+            use std::os::unix::io::FromRawFd;
+            let w = ft_widget_new();
+            let mut result: i32 = -1;
+            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
+            let r = ft_widget_maybe_owned_fd(w, 1, &mut result, &mut err_out);
+            assert_eq!(r, 0, "should succeed");
+            assert!(result >= 0, "should return a valid fd");
+            drop(std::os::unix::io::OwnedFd::from_raw_fd(result));
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn method_with_optional_owned_fd_return_none() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut result: i32 = -1;
+            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
+            let r = ft_widget_maybe_owned_fd(w, 0, &mut result, &mut err_out);
+            assert_eq!(r, 0, "should succeed");
+            assert_eq!(result, -1, "None should map to -1");
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn method_with_optional_borrowed_fd_param_dup_some() {
+        unsafe {
+            use std::os::unix::io::FromRawFd;
+            let w = ft_widget_new();
+            let mut result: i32 = -1;
+            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
+            // Pass stdout (fd 1) as Some
+            let r = ft_widget_maybe_dup_fd(w, 1, &mut result, &mut err_out);
+            assert_eq!(r, 0, "should succeed");
+            assert!(result >= 0, "should return a valid fd");
+            assert_ne!(result, 1, "should be a new fd, not the original");
+            drop(std::os::unix::io::OwnedFd::from_raw_fd(result));
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn method_with_optional_borrowed_fd_param_dup_none() {
+        unsafe {
+            let w = ft_widget_new();
+            let mut result: i32 = -1;
+            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
+            // Pass -1 as None
+            let r = ft_widget_maybe_dup_fd(w, -1, &mut result, &mut err_out);
+            assert_eq!(r, 0, "should succeed");
+            assert_eq!(result, -1, "None input should produce None output (-1)");
             ft_widget_destroy(w);
         }
     }
