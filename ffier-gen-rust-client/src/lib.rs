@@ -911,7 +911,15 @@ fn emit_exported_type(
     // Methods
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
+        emit_method_wrapper(
+            out,
+            m,
+            &m.ffi_name,
+            ty.is_builder_type,
+            has_lifetimes,
+            lib,
+            weak,
+        );
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -954,7 +962,13 @@ fn emit_method_wrapper(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
+    weak: bool,
 ) {
+    // Cfg gate (strong client only — weak bindings are unconditional)
+    if !weak && let Some(cfg) = &m.cfg {
+        writeln!(out, "    #[cfg({cfg})]").unwrap();
+    }
+
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1894,6 +1908,8 @@ struct ExternFn {
     ret: String,
     /// Whether to emit as `pub fn` (true) or `fn` (false) in extern blocks.
     public: bool,
+    /// `#[cfg(...)]` predicate string. `None` = unconditional.
+    cfg: Option<String>,
 }
 
 /// Build a `pub` `ExternFn` from a name, param list, and return string.
@@ -1903,6 +1919,18 @@ fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         params,
         ret,
         public: true,
+        cfg: None,
+    }
+}
+
+/// Build a `pub` `ExternFn` with an optional cfg predicate.
+fn extern_fn_cfg(name: &str, params: Vec<String>, ret: String, cfg: Option<String>) -> ExternFn {
+    ExternFn {
+        name: name.to_string(),
+        params,
+        ret,
+        public: true,
+        cfg,
     }
 }
 
@@ -1913,6 +1941,7 @@ fn extern_fn_private(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         params,
         ret,
         public: false,
+        cfg: None,
     }
 }
 
@@ -1928,7 +1957,7 @@ fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn 
     }
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, is_builder);
-    extern_fn(ffi_name, params, ret)
+    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a dispatch method signature.
@@ -1936,7 +1965,7 @@ fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, false);
-    extern_fn(ffi_name, params, ret)
+    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a free function.
@@ -1944,7 +1973,7 @@ fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
     let mut params = Vec::new();
     push_extern_params(&f.params, &mut params);
     let ret = push_return_and_out_params(&f.ret, &mut params, false);
-    extern_fn(&f.ffi_name, params, ret)
+    extern_fn_cfg(&f.ffi_name, params, ret, f.cfg.clone())
 }
 
 /// Emit one or more extern "C" functions — either as a traditional
@@ -1968,6 +1997,9 @@ fn emit_extern_fns(
         for f in fns {
             let vis = if f.public { "pub " } else { "" };
             let params_str = f.params.join(", ");
+            if let Some(cfg) = &f.cfg {
+                writeln!(out, "    #[cfg({cfg})]").unwrap();
+            }
             writeln!(out, "    {vis}fn {}({params_str}){};", f.name, f.ret).unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -2645,7 +2677,10 @@ fn emit_free_function(
     // Extern declaration
     emit_extern_fns(out, &[extern_fn_from_free(f)], weak, symbols);
 
-    // Safe wrapper
+    // Safe wrapper (strong client only — weak bindings are unconditional)
+    if !weak && let Some(cfg) = &f.cfg {
+        writeln!(out, "#[cfg({cfg})]").unwrap();
+    }
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();

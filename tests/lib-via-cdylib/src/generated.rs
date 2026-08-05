@@ -2256,6 +2256,7 @@ unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
+    #[cfg(feature = "fruit-label")]
     pub fn ft_mixer_fruit_label_len(
         handle: *mut core::ffi::c_void,
         fruit: *mut core::ffi::c_void,
@@ -2338,6 +2339,7 @@ impl Mixer {
         };
         Self(__handle)
     }
+    #[cfg(feature = "fruit-label")]
     #[doc = " Returns the length of a fruit's label. Used to test that vtable"]
     #[doc = " default method detection works for custom client types crossing FFI."]
     pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {

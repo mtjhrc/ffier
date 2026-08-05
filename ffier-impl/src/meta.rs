@@ -209,6 +209,8 @@ pub struct MetaMethod {
     pub ret: MetaReturn,
     pub rust_ret: TokenStream,
     pub context: MetaMethodContext,
+    /// `#[cfg(...)]` predicate string (e.g. `"feature = \"x\""`). `None` = unconditional.
+    pub cfg: Option<String>,
 }
 
 /// Context-specific fields that are always present together.
@@ -288,6 +290,13 @@ impl MetaMethod {
 
     pub fn is_mut(&self) -> bool {
         self.receiver == MetaReceiver::Mut
+    }
+
+    /// Return `#[cfg(PRED)]` token stream if this method has a cfg predicate.
+    pub fn cfg_attr(&self) -> Option<TokenStream> {
+        let cfg_str = self.cfg.as_deref()?;
+        let pred: TokenStream = cfg_str.parse().ok()?;
+        Some(quote! { #[cfg(#pred)] })
     }
 }
 
@@ -717,6 +726,22 @@ impl syn::parse::Parse for MetaMethod {
         let rust_ret = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
+        // Optional: cfg = "predicate string",
+        let cfg = if !input.is_empty() && input.peek(Ident) {
+            let fork = input.fork();
+            if fork.parse::<Ident>().is_ok_and(|id| id == "cfg") {
+                input.parse::<Ident>()?; // cfg
+                input.parse::<Token![=]>()?;
+                let s = parse_string(input)?;
+                parse_comma(input)?;
+                Some(s)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(MetaMethod {
             name,
             receiver,
@@ -726,6 +751,7 @@ impl syn::parse::Parse for MetaMethod {
             ret,
             rust_ret,
             context,
+            cfg,
         })
     }
 }

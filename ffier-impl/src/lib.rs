@@ -178,6 +178,10 @@ struct MethodInfo {
     index: usize,
     /// Raw handle method (receives `*const FfierHandle<Self>` instead of `&self`).
     raw_handle: bool,
+    /// `#[cfg(...)]` predicates from the method's attributes. When present,
+    /// the bridge function is gated behind this predicate and the schema
+    /// records it so generators can emit conditional code.
+    cfg_predicates: Vec<syn::Meta>,
 }
 
 impl ParamInfo {
@@ -1779,6 +1783,38 @@ fn extract_impl_trait_info(ty: &Type) -> Option<(String, Vec<String>)> {
 }
 
 /// Extract `/// doc` comments from attributes.
+/// Extract `#[cfg(...)]` predicates from a list of attributes.
+/// Also unwraps `#[cfg_attr(PRED, ...)]` — the PRED is the cfg condition.
+/// Returns the predicates (e.g. `feature = "x"`) as `syn::Meta` values.
+fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("cfg") {
+                attr.parse_args::<syn::Meta>().ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Format cfg predicates as a single string for the schema.
+/// Multiple predicates are combined with `all(...)`.
+fn cfg_predicates_to_string(predicates: &[syn::Meta]) -> Option<String> {
+    match predicates.len() {
+        0 => None,
+        1 => Some(predicates[0].to_token_stream().to_string()),
+        _ => {
+            let parts: Vec<_> = predicates
+                .iter()
+                .map(|p| p.to_token_stream().to_string())
+                .collect();
+            Some(format!("all({})", parts.join(", ")))
+        }
+    }
+}
+
 fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs
         .iter()
@@ -2272,6 +2308,7 @@ fn parse_method_sig(
         has_default,
         index: 0,
         raw_handle,
+        cfg_predicates: extract_cfg_predicates(attrs),
     }))
 }
 
@@ -2425,6 +2462,14 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         }
     };
 
+    let cfg_tokens = if m.cfg_predicates.is_empty() {
+        quote! {}
+    } else {
+        let cfg_str = cfg_predicates_to_string(&m.cfg_predicates)
+            .expect("non-empty predicates must produce a string");
+        quote! { cfg = #cfg_str, }
+    };
+
     quote! {
         {
             name = #mname,
@@ -2435,6 +2480,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             params = [#(#param_tokens),*],
             ret = #ret_tokens,
             #rust_ret_tokens
+            #cfg_tokens
         }
     }
 }

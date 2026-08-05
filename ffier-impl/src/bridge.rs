@@ -889,7 +889,9 @@ fn generate_exportable_bridge(
             lib_crate,
         );
 
+        let cfg_attr = m.cfg_attr();
         ffi_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(
                 #(#sig_names: #sig_types),*
@@ -1350,7 +1352,9 @@ fn generate_free_fn_bridge(
         lib_crate,
     );
 
+    let cfg_attr = m.cfg_attr();
     quote! {
+        #cfg_attr
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #ffi_name(
             #(#sig_names: #sig_types),*
@@ -2107,7 +2111,9 @@ fn generate_self_dispatch_bridge(
             .collect();
 
         let expected_str = format!("{trait_name} implementor");
+        let cfg_attr = m.cfg_attr();
         bridge_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#vtable_pre_bindings)*
@@ -2229,7 +2235,9 @@ fn generate_trait_impl_bridge(
 
         let pre_bindings = &cp.pre_bindings;
         let vtable_pre_bindings = &cp.vtable_pre_bindings;
+        let cfg_attr = m.cfg_attr();
         bridge_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#vtable_pre_bindings)*
@@ -3018,6 +3026,7 @@ fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
                 }
             })
             .collect(),
+        cfg: None,
     }
 }
 
@@ -3041,6 +3050,7 @@ fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::Enu
                 }
             })
             .collect(),
+        cfg: None,
     }
 }
 
@@ -3062,6 +3072,7 @@ fn convert_free_fn(
             .map(|p| convert_param(p, r, type_registry))
             .collect(),
         ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
+        cfg: m.cfg.clone(),
     }
 }
 
@@ -3086,6 +3097,7 @@ fn convert_exportable(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
+        cfg: None,
     }
 }
 
@@ -3141,6 +3153,7 @@ fn convert_implementable(
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
         no_vtable: meta.no_vtable,
+        cfg: None,
     }
 }
 
@@ -3161,6 +3174,7 @@ fn convert_trait_impl(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
+        cfg: None,
     }
 }
 
@@ -3215,6 +3229,7 @@ fn convert_method(
         ret,
         ffi_name,
         trait_definition,
+        cfg: meta.cfg.clone(),
     }
 }
 

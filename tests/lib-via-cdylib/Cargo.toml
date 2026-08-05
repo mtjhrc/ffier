@@ -3,6 +3,10 @@ name = "ffier-test-lib-via-cdylib"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["fruit-label"]
+fruit-label = []
+
 [dependencies]
 bitflags = "2"
 ffier = { path = "../../ffier" }
