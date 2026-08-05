@@ -334,6 +334,10 @@ pub struct ExportedType {
     /// can update the handle in place.
     pub is_builder_type: bool,
     pub methods: Vec<Method>,
+    /// `#[cfg(...)]` predicate gating this type (e.g. `"feature = \"x\""`,
+    /// `"all(feature = \"a\", feature = \"b\")"`). `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -359,6 +363,10 @@ pub struct Method {
     /// Present only for trait definition methods (from `#[ffier::export]` on a trait).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trait_definition: Option<TraitMethodDefinition>,
+    /// `#[cfg(...)]` predicate gating this method (e.g. `"feature = \"x\""`).
+    /// `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 /// Extra fields that only exist on trait *definition* methods
@@ -575,6 +583,9 @@ pub struct EnumType {
     /// Rust enum name — key into `type_registry`.
     pub name: String,
     pub variants: Vec<EnumVariant>,
+    /// `#[cfg(...)]` predicate gating this enum. `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 /// A variant of an enum constant.
@@ -604,6 +615,9 @@ pub struct FreeFunction {
     pub doc: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Return,
+    /// `#[cfg(...)]` predicate gating this function. `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -638,6 +652,9 @@ pub struct ImplementableTrait {
     /// this trait — only concrete Rust implementors are dispatched.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_vtable: bool,
+    /// `#[cfg(...)]` predicate gating this trait. `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +678,9 @@ pub struct TraitImpl {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub struct_lifetime_args: Vec<String>,
     pub methods: Vec<Method>,
+    /// `#[cfg(...)]` predicate gating this trait impl. `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

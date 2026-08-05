@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = ["via-cdylib"]
 native = ["dep:ffier-test-lib"]
-via-cdylib = ["dep:ffier-test-lib-via-cdylib"]
+via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib?/optional-entry"]
 
 [dependencies]
 ffier-test-lib = { path = "../lib", optional = true }

@@ -178,6 +178,10 @@ struct MethodInfo {
     index: usize,
     /// Raw handle method (receives `*const FfierHandle<Self>` instead of `&self`).
     raw_handle: bool,
+    /// `#[cfg(...)]` predicates from the method's attributes. When present,
+    /// the bridge function is gated behind this predicate and the schema
+    /// records it so generators can emit conditional code.
+    cfg_predicates: Vec<syn::Meta>,
 }
 
 impl ParamInfo {
@@ -325,6 +329,8 @@ fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
 /// #[ffier::export(reserved(1, 3), foreign, bless = "error_trait")]
 /// trait Foo { ... }
 /// ```
+///
+/// All item kinds also accept `cfg = "predicate"` — see [`ExportCfg`].
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item2: proc_macro2::TokenStream = item.clone().into();
@@ -339,37 +345,82 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         return implementable_inner(args, trait_item);
     }
 
-    // Non-trait items must not have attribute arguments.
-    if !attr.is_empty() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "#[ffier::export] does not accept arguments on this item kind",
-        )
-        .to_compile_error()
-        .into();
-    }
+    // Parse common args (cfg = "...")
+    let export_cfg = match syn::parse2::<ExportCfg>(attr2) {
+        Ok(a) => a,
+        Err(e) => return e.to_compile_error().into(),
+    };
 
     // 2. Enum
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
-        return exportable_enum(enum_item);
+        return exportable_enum(enum_item, &export_cfg);
     }
 
     // 3. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
-        return exportable_free_fn(fn_item);
+        return exportable_free_fn(fn_item, &export_cfg);
     }
 
     // 4. Impl block — trait impl or inherent impl
     let input = parse_macro_input!(item as ItemImpl);
     if input.trait_.is_some() {
-        return trait_impl_inner(input);
+        return trait_impl_inner(input, &export_cfg);
     }
-    exportable_struct_impl(input)
+    exportable_struct_impl(input, &export_cfg)
 }
 
-fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
+/// Common export arguments accepted by all item kinds: `cfg = "predicate"`.
+/// Trait definitions accept additional args (reserved, foreign, etc.) via
+/// `ImplementableArgs`.
+struct ExportCfg {
+    /// `#[cfg(...)]` predicate tokens. When set, the proc macro emits the
+    /// predicate as `#[cfg(PRED)]` on generated code that references the
+    /// gated type, while metadata (for schema/bridge) is emitted unconditionally.
+    cfg: Option<proc_macro2::TokenStream>,
+}
+
+impl Parse for ExportCfg {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let mut cfg = None;
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            if key == "cfg" {
+                input.parse::<Token![=]>()?;
+                let lit: LitStr = input.parse()?;
+                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    format!("unknown #[ffier::export] argument `{key}`; expected `cfg`"),
+                ));
+            }
+            let _ = input.parse::<Token![,]>();
+        }
+        Ok(ExportCfg { cfg })
+    }
+}
+
+impl ExportCfg {
+    /// Emit `#[cfg(PRED)]` token stream if cfg is set.
+    fn cfg_attr(&self) -> proc_macro2::TokenStream {
+        match &self.cfg {
+            Some(pred) => quote! { #[cfg(#pred)] },
+            None => quote! {},
+        }
+    }
+
+    /// Emit `cfg_predicate = (...),` for metadata blobs if cfg is set.
+    fn meta_tokens(&self) -> proc_macro2::TokenStream {
+        match &self.cfg {
+            Some(pred) => quote! { cfg_predicate = (#pred), },
+            None => quote! {},
+        }
+    }
+}
+
+fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
@@ -512,11 +563,16 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
         quote! { #struct_ident<#(#elided_lifetimes),*> }
     };
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #impl_block
 
         #(#warnings)*
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
             #(#local_type_aliases)*
@@ -551,6 +607,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
                     type_tag = $type_tag,
                     lifetimes = (#(#lifetime_idents),*),
                     methods = [#(#method_meta_tokens),*],
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
@@ -571,7 +628,7 @@ fn exportable_struct_impl(input: ItemImpl) -> TokenStream {
 /// Extracts the repr type and variant discriminants, emits a metadata macro
 /// that bridges to the schema generator. Also generates a `FfiType` impl
 /// so the enum can be used as a parameter/return type in exported methods.
-fn exportable_enum(input: DeriveInput) -> TokenStream {
+fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> TokenStream {
     let name = &input.ident;
     let Data::Enum(data_enum) = &input.data else {
         unreachable!();
@@ -651,9 +708,14 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
     let helper_mod_name = format_ident!("_ffier_{enum_snake}");
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #input
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {}
 
@@ -687,6 +749,7 @@ fn exportable_enum(input: DeriveInput) -> TokenStream {
                     prefix = $prefix,
                     repr = #repr_str,
                     variants = [#(#variants_meta),*],
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
@@ -752,6 +815,9 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let name = &parsed.name;
     let repr_ident = &parsed.repr;
     let repr_str = repr_ident.to_string();
+    let export_cfg = ExportCfg {
+        cfg: combine_cfg_predicates(&parsed.cfg_predicates),
+    };
 
     let mut variants_meta = Vec::new();
     for (flag_name, value) in &parsed.flags {
@@ -766,7 +832,11 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
     let helper_mod_name = format_ident!("_ffier_{bf_snake}");
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #bitflags_call
 
         // macro_rules! cannot be gated with #[cfg] directly and
@@ -796,10 +866,12 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
                     prefix = $prefix,
                     repr = #repr_str,
                     variants = [#(#variants_meta),*],
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {}
 
@@ -817,7 +889,19 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
 ///     pub struct Name: repr { const FLAG = val; ... }
 /// }
 /// ```
+///
+/// An optional `#[cfg(...)]` attribute may precede the `bitflags!` call to
+/// gate the type behind a Cargo feature while keeping the FFI metadata
+/// unconditionally available:
+/// ```ignore
+/// ffier::export_bitflags! {
+///     #[cfg(feature = "optional")]
+///     bitflags::bitflags! { ... }
+/// }
+/// ```
 struct ExportBitflagsInput {
+    /// `#[cfg(...)]` predicates extracted from before the `bitflags!` call.
+    cfg_predicates: Vec<syn::Meta>,
     /// The complete `bitflags! { ... }` or `bitflags::bitflags! { ... }`
     /// invocation, preserved verbatim for re-emission.
     bitflags_call: proc_macro2::TokenStream,
@@ -831,6 +915,22 @@ struct ExportBitflagsInput {
 
 impl Parse for ExportBitflagsInput {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        // Parse optional leading #[cfg(...)] attributes.
+        let mut cfg_predicates = Vec::new();
+        while input.peek(Token![#]) && input.peek2(syn::token::Bracket) {
+            let attrs = input.call(syn::Attribute::parse_outer)?;
+            for attr in attrs {
+                if attr.path().is_ident("cfg") {
+                    cfg_predicates.push(attr.parse_args::<syn::Meta>()?);
+                } else {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "export_bitflags! only supports #[cfg(...)] attributes before the bitflags! call",
+                    ));
+                }
+            }
+        }
+
         // Capture the remaining tokens as the bitflags! call.
         // We need to parse them to extract name/repr/flags, but also
         // preserve the original tokens for verbatim re-emission.
@@ -845,6 +945,7 @@ impl Parse for ExportBitflagsInput {
         let body = parse_bitflags_body(remaining)?;
 
         Ok(ExportBitflagsInput {
+            cfg_predicates,
             bitflags_call,
             name: body.name,
             repr: body.repr,
@@ -978,7 +1079,7 @@ impl Parse for BitflagsStructBody {
 // ---------------------------------------------------------------------------
 
 /// Handle `#[ffier::export]` on a free (non-method) function.
-fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
+fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream {
     let fn_name = &input.sig.ident;
     let fn_name_str = fn_name.to_string();
 
@@ -1049,9 +1150,14 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
         f
     };
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #clean_fn
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
             #(#local_type_aliases)*
@@ -1069,6 +1175,7 @@ fn exportable_free_fn(input: syn::ItemFn) -> TokenStream {
                     ffi_name = #fn_name_str,
                     doc = [#(#doc_lines),*],
                     methods = [#(#method_meta_tokens),*],
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
@@ -1778,7 +1885,33 @@ fn extract_impl_trait_info(ty: &Type) -> Option<(String, Vec<String>)> {
     None
 }
 
-/// Extract `/// doc` comments from attributes.
+/// Extract `#[cfg(...)]` predicates from a list of attributes.
+/// Only matches direct `#[cfg(...)]` attributes — does not unwrap
+/// `#[cfg_attr(PRED, ...)]`.
+/// Returns the predicates (e.g. `feature = "x"`) as `syn::Meta` values.
+fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
+    attrs
+        .iter()
+        .filter_map(|attr| {
+            if attr.path().is_ident("cfg") {
+                attr.parse_args::<syn::Meta>().ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Combine cfg predicates into a single token stream.
+/// Multiple predicates are combined with `all(...)`.
+fn combine_cfg_predicates(predicates: &[syn::Meta]) -> Option<proc_macro2::TokenStream> {
+    match predicates {
+        [] => None,
+        [p] => Some(p.to_token_stream()),
+        preds => Some(quote! { all(#(#preds),*) }),
+    }
+}
+
 fn extract_doc_comments(attrs: &[syn::Attribute]) -> Vec<String> {
     attrs
         .iter()
@@ -1817,6 +1950,8 @@ struct ImplementableArgs {
     /// implement this trait — only concrete Rust implementors are dispatched.
     /// Useful for marker traits and traits with supertrait bounds.
     no_vtable: bool,
+    /// `#[cfg(...)]` predicate for conditional compilation.
+    export_cfg: ExportCfg,
 }
 
 impl Parse for ImplementableArgs {
@@ -1825,6 +1960,7 @@ impl Parse for ImplementableArgs {
         let mut foreign = false;
         let mut bless = None;
         let mut no_vtable = false;
+        let mut cfg = None;
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
@@ -1848,10 +1984,14 @@ impl Parse for ImplementableArgs {
                 bless = Some(lit.value());
             } else if ident == "no_vtable" {
                 no_vtable = true;
+            } else if ident == "cfg" {
+                input.parse::<Token![=]>()?;
+                let lit: LitStr = input.parse()?;
+                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
-                    "expected `prefix`, `reserved`, `foreign`, `bless`, or `no_vtable`",
+                    "expected `prefix`, `reserved`, `foreign`, `bless`, `no_vtable`, or `cfg`",
                 ));
             }
             let _ = input.parse::<Token![,]>();
@@ -1862,6 +2002,7 @@ impl Parse for ImplementableArgs {
             foreign,
             bless,
             no_vtable,
+            export_cfg: ExportCfg { cfg },
         })
     }
 }
@@ -2272,6 +2413,7 @@ fn parse_method_sig(
         has_default,
         index: 0,
         raw_handle,
+        cfg_predicates: extract_cfg_predicates(attrs),
     }))
 }
 
@@ -2425,6 +2567,11 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         }
     };
 
+    let cfg_tokens = match combine_cfg_predicates(&m.cfg_predicates) {
+        Some(pred) => quote! { cfg = (#pred), },
+        None => quote! {},
+    };
+
     quote! {
         {
             name = #mname,
@@ -2435,6 +2582,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             params = [#(#param_tokens),*],
             ret = #ret_tokens,
             #rust_ret_tokens
+            #cfg_tokens
         }
     }
 }
@@ -2502,6 +2650,7 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
 fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenStream {
     let is_foreign = args.foreign;
     let original_trait = trait_item.clone();
+    let export_cfg = &args.export_cfg;
 
     let trait_name = &trait_item.ident;
     let trait_name_str = trait_name.to_string();
@@ -2883,13 +3032,20 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         }
     };
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #(#default_helpers)*
 
+        #cfg_attr
         #trait_tokens
 
+        #cfg_attr
         #boxdyn_impl
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
             #(#local_type_aliases)*
@@ -2930,6 +3086,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     max_vtable_slot = #max_vtable_slot_val,
                     bless = #bless_tokens,
                     no_vtable = #no_vtable_tokens,
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
@@ -2945,7 +3102,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 // #[ffier::export] on trait impl blocks — export trait method impls as C functions
 // ===========================================================================
 
-fn trait_impl_inner(input: ItemImpl) -> TokenStream {
+fn trait_impl_inner(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
     // Build the output impl block with #[ffier(skip)] attributes stripped.
     let mut clean_impl = input.clone();
     for item in &mut clean_impl.items {
@@ -3069,9 +3226,14 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
     let meta_alias_name = format_ident!("__ffier_meta_{trait_name}_for_{struct_ident}");
     let struct_path_tokens = quote! { $crate::#struct_ident };
 
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+    let cfg_attr = export_cfg.cfg_attr();
+
     let output = quote! {
+        #cfg_attr
         #clean_impl
 
+        #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
             #(#local_type_aliases)*
@@ -3094,6 +3256,7 @@ fn trait_impl_inner(input: ItemImpl) -> TokenStream {
                     trait_lifetime_args = [#(#trait_lt_args),*],
                     struct_lifetime_args = [#(#struct_lt_args),*],
                     methods = [#(#method_meta),*],
+                    #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
         }
@@ -3229,7 +3392,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_name = format_ident!("__ffier_tagged_{prefix_str}_{last_ident}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         #alias_chain! { $prefix, #full_tag, $callback $(, $($rest)*)? }
                     },
@@ -3237,7 +3399,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
                 shim_names.push(shim_name.clone());
 
-                // @on_library_export generates FfiHandle + FfiType impls
+                // @on_library_export generates FfiHandle + FfiType impls — must be
+                // gated because these reference the concrete type which may not exist.
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
                     quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
@@ -3272,29 +3435,26 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // Use `_trait_` in internal names to avoid collisions with
                 // user types that share the same last segment (e.g. crate::Error
                 // and trait ffier_builtins::Error).
+                // Upstream alias — unconditional because the shim references
+                // it during chain expansion regardless of whether the feature is on.
                 let upstream_alias = format_ident!("__ffier_upstream_trait_{last_ident}");
-                reexport_invocations.push(maybe_cfg_wrap(
-                    cfg,
-                    quote! {
-                        #[doc(hidden)]
-                        pub use #alias as #upstream_alias;
-                    },
-                ));
+                reexport_invocations.push(quote! {
+                    #[doc(hidden)]
+                    pub use #alias as #upstream_alias;
+                });
 
                 let is_external = path.segments.len() > 1
                     && path.segments.first().is_none_or(|seg| seg.ident != "crate");
                 let trait_reexport = format_ident!("__ffier_reexport_trait_{last_ident}");
 
                 if is_external {
-                    reexport_invocations.push(maybe_cfg_wrap(
-                        cfg,
-                        quote! {
-                            #[doc(hidden)]
-                            pub use #path as #trait_reexport;
-                        },
-                    ));
+                    // Trait reexport — unconditional (chain needs it).
+                    reexport_invocations.push(quote! {
+                        #[doc(hidden)]
+                        pub use #path as #trait_reexport;
+                    });
 
-                    // Helper module re-export for external traits
+                    // Helper module re-export — cfg-gated (only exists when feature is on).
                     let trait_snake = camel_to_snake(&last_ident.to_string());
                     let helper_mod_name = format_ident!("_ffier_vtable_{trait_snake}");
                     let helper_mod_path = replace_last_segment(path, &helper_mod_name);
@@ -3318,7 +3478,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_name = format_ident!("__ffier_tagged_trait_{prefix_str}_{last_ident}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         $crate::#upstream_alias! { $prefix, #full_tag,
                             (#shim_wrapper),
@@ -3343,7 +3502,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_name = format_ident!("__ffier_enum_{prefix_str}_{last_ident}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
                     },
@@ -3379,7 +3537,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_name = format_ident!("__ffier_bitflags_{prefix_str}_{last_ident}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
                     },
@@ -3415,7 +3572,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let shim_name = format_ident!("__ffier_fn_{prefix_str}_{last_ident}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
                     },
@@ -3472,7 +3628,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     format_ident!("__ffier_trait_impl_{prefix_str}_{trait_name}_for_{struct_name}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
-                    cfg,
                     quote! {
                         #alias_chain! { $prefix, (#resolved_trait_path),
                             $callback $(, $($rest)*)? }
@@ -3738,23 +3893,6 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! __ffier_chain {
-            // Skip recursive: forward without appending metadata.
-            (@skip, $prefix:literal, $chain:path, $final_cb:path,
-             $schema_output:literal,
-             [$($acc:tt)*], [$next:path $(, $($remaining:path),*)?]) => {
-                $next! { $prefix, $chain,
-                    $prefix, $chain, $final_cb,
-                    $schema_output,
-                    [$($acc)*],
-                    [$($($remaining),*)?]
-                }
-            };
-            // Skip base case: finalize with the metadata accumulated so far.
-            (@skip, $prefix:literal, $chain:path, $final_cb:path,
-             $schema_output:literal,
-             [$($acc:tt)*], []) => {
-                $final_cb! { @lib_crate = $crate; @primitives_prefix = #primitives_prefix_lit; @schema_output = $schema_output; $($acc)* }
-            };
             // Recursive: append metadata, call next shim
             ({ $($meta:tt)* }, $prefix:literal, $chain:path, $final_cb:path,
              $schema_output:literal,
@@ -3883,11 +4021,6 @@ impl LibraryEntryCfg {
         quote! { #[cfg(#predicate)] }
     }
 
-    fn disabled_attr(&self) -> proc_macro2::TokenStream {
-        let predicate = self.predicate_tokens();
-        quote! { #[cfg(not(#predicate))] }
-    }
-
     fn predicate_tokens(&self) -> proc_macro2::TokenStream {
         if self.predicates.len() == 1 {
             let predicate = &self.predicates[0];
@@ -3977,40 +4110,20 @@ fn maybe_cfg_wrap(
 
 fn emit_library_shim(
     shim_name: &syn::Ident,
-    cfg: Option<&LibraryEntryCfg>,
     on_body: proc_macro2::TokenStream,
 ) -> proc_macro2::TokenStream {
-    if let Some(cfg) = cfg {
-        let enabled_attr = cfg.enabled_attr();
-        let disabled_attr = cfg.disabled_attr();
-        quote! {
-            #enabled_attr
-            #[doc(hidden)]
-            #[macro_export]
-            macro_rules! #shim_name {
-                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                    #on_body
-                };
-            }
-
-            #disabled_attr
-            #[doc(hidden)]
-            #[macro_export]
-            macro_rules! #shim_name {
-                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                    $callback! { @skip $(, $($rest)*)? }
-                };
-            }
-        }
-    } else {
-        quote! {
-            #[doc(hidden)]
-            #[macro_export]
-            macro_rules! #shim_name {
-                ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
-                    #on_body
-                };
-            }
+    // The shim always forwards unconditionally. The metadata macro
+    // always exists (emitted by the proc macro regardless of #[cfg]).
+    // The cfg predicate is carried inside the metadata blob, not on the shim.
+    // The @on_library_export invocations (FfiType impls, vtable generation)
+    // are separately gated via maybe_cfg_wrap in library_definition!.
+    quote! {
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #shim_name {
+            ($prefix:literal, $callback:path $(, $($rest:tt)*)?) => {
+                #on_body
+            };
         }
     }
 }

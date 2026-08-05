@@ -12,7 +12,8 @@ use crate::meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
     MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    extract_result_ok_type, is_result_ok_handle, peek_meta_field, peek_meta_tag,
+    cfg_predicate_attr, extract_result_ok_type, is_result_ok_handle, peek_meta_field,
+    peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -44,6 +45,8 @@ struct TraitVariant {
     pub name: String,
     pub bridge_type: TokenStream2,
     pub kind: TraitVariantKind,
+    /// `#[cfg(...)]` predicate. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream2>,
 }
 
 struct ImplementableInfo {
@@ -54,6 +57,8 @@ struct ImplementableInfo {
     /// Only the first `own_method_count` methods are dispatched in self-dispatch
     /// functions. Supertrait methods need separate dispatch through their own trait.
     pub own_method_count: usize,
+    /// `#[cfg(...)]` predicate for the entire trait. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream2>,
 }
 
 /// Build the trait-to-impls map from parsed `@implementable` and `@trait_impl` metadata.
@@ -66,6 +71,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             let trait_name = meta.trait_name.to_string();
             let struct_name = meta.struct_name.to_string();
             let struct_path = meta.struct_path;
+            let cfg_predicate = meta.cfg_predicate;
             map.entry(trait_name)
                 .or_insert_with(|| TraitDispatchInfo {
                     variants: Vec::new(),
@@ -76,6 +82,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
                     name: struct_name,
                     bridge_type: struct_path,
                     kind: TraitVariantKind::Concrete,
+                    cfg_predicate,
                 });
         }
     }
@@ -101,17 +108,29 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
                     name: wrapper_name,
                     bridge_type: wrapper_path.clone(),
                     kind: TraitVariantKind::Wrapper,
+                    cfg_predicate: meta.cfg_predicate.clone(),
                 });
             }
             info.implementable = Some(ImplementableInfo {
                 trait_path: meta.trait_path,
                 methods,
                 own_method_count,
+                cfg_predicate: meta.cfg_predicate,
             });
         }
     }
 
     map
+}
+
+/// Wrap a multi-item token stream in `#[cfg(PRED)] const _: () = { ... };`
+/// so all items are gated as a unit. Returns `code` unchanged if `cfg_attr`
+/// is empty (no cfg predicate).
+fn wrap_cfg(cfg_attr: Option<TokenStream2>, code: TokenStream2) -> TokenStream2 {
+    match cfg_attr {
+        Some(attr) => quote! { #attr const _: () = { #code }; },
+        None => code,
+    }
 }
 
 fn generate_one(
@@ -128,7 +147,10 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate)
+            let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
+            let code =
+                generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            wrap_cfg(cfg_attr, code)
         }
         "exported_error" => {
             let meta: MetaError = match syn::parse2(item) {
@@ -142,14 +164,19 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_implementable_bridge(meta, lib_crate)
+            let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
+            let code = generate_implementable_bridge(meta, lib_crate);
+            wrap_cfg(cfg_attr, code)
         }
         "exported_trait_impl" => {
             let meta: MetaTraitImpl = match syn::parse2(item) {
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate)
+            let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
+            let code =
+                generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            wrap_cfg(cfg_attr, code)
         }
         "exported_enum" | "exported_bitflags" => {
             // No bridge code needed — enums/bitflags are value types passed by value.
@@ -160,7 +187,9 @@ fn generate_one(
                 Ok(m) => m,
                 Err(e) => return e.to_compile_error(),
             };
-            generate_free_fn_bridge(meta, error_map, handle_types, trait_map, lib_crate)
+            let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
+            let code = generate_free_fn_bridge(meta, error_map, handle_types, trait_map, lib_crate);
+            wrap_cfg(cfg_attr, code)
         }
         _ => {
             let msg = format!("unknown metadata tag `@{tag}`");
@@ -535,7 +564,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // For each trait with an @implementable entry, generate per-trait dispatching
     // C functions that read the type tag and dispatch to the concrete implementor.
     for (trait_name, info) in &trait_map {
-        if info.implementable.is_some() {
+        if let Some(impl_info) = &info.implementable {
+            let cfg_attr = cfg_predicate_attr(impl_info.cfg_predicate.as_ref());
             let code = generate_self_dispatch_bridge(
                 trait_name,
                 info,
@@ -545,7 +575,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 &handle_types,
                 &lib_crate,
             );
-            all_code.push(code);
+            all_code.push(wrap_cfg(cfg_attr, code));
         }
     }
 
@@ -889,7 +919,9 @@ fn generate_exportable_bridge(
             lib_crate,
         );
 
+        let cfg_attr = m.cfg_attr();
         ffi_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(
                 #(#sig_names: #sig_types),*
@@ -949,7 +981,8 @@ struct ImplTraitParam {
     dispatch: crate::meta::DispatchMode,
     ref_kind: crate::meta::ImplTraitRefKind,
     trait_name: String,
-    variants: Vec<(String, TokenStream2)>,
+    /// (name, bridge_type, cfg_predicate) for each concrete dispatch variant.
+    variants: Vec<(String, TokenStream2, Option<TokenStream2>)>,
 }
 
 /// Intermediate result of converting method/function params into bridge code.
@@ -1002,7 +1035,13 @@ fn convert_params(
                         .map(|i| {
                             i.variants
                                 .iter()
-                                .map(|v| (v.name.clone(), v.bridge_type.clone()))
+                                .map(|v| {
+                                    (
+                                        v.name.clone(),
+                                        v.bridge_type.clone(),
+                                        v.cfg_predicate.clone(),
+                                    )
+                                })
                                 .collect()
                         })
                         .unwrap_or_default(),
@@ -1169,19 +1208,20 @@ fn convert_params(
                 let mut branches = Vec::new();
                 for v in &info.variants {
                     let ty = &v.bridge_type;
+                    let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
+                        #vcfg
                         if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                             let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
-                            Box::new(__val) as Box<dyn #trait_ident>
+                            break 'dispatch (Box::new(__val) as Box<dyn #trait_ident>);
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
-                    let mut #dyn_box_id: Box<dyn #trait_ident> = {
+                    let mut #dyn_box_id: Box<dyn #trait_ident> = 'dispatch: {
                         let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                        #(#branches else)* {
-                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                        }
+                        #(#branches)*
+                        __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
                     let #dyn_id: &mut dyn #trait_ident = &mut *#dyn_box_id;
                 });
@@ -1191,18 +1231,19 @@ fn convert_params(
                 let mut branches = Vec::new();
                 for v in &info.variants {
                     let ty = &v.bridge_type;
+                    let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
+                        #vcfg
                         if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
-                            unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id) as &mut dyn #trait_ident }
+                            break 'dispatch (unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id) as &mut dyn #trait_ident });
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
-                    let #borrow_id: &mut dyn #trait_ident = {
+                    let #borrow_id: &mut dyn #trait_ident = 'dispatch: {
                         let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                        #(#branches else)* {
-                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                        }
+                        #(#branches)*
+                        __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
                     let #dyn_id: &mut dyn #trait_ident = #borrow_id;
                 });
@@ -1212,18 +1253,19 @@ fn convert_params(
                 let mut branches = Vec::new();
                 for v in &info.variants {
                     let ty = &v.bridge_type;
+                    let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
+                        #vcfg
                         if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
-                            unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id) as &dyn #trait_ident }
+                            break 'dispatch (unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id) as &dyn #trait_ident });
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
-                    let #borrow_id: &dyn #trait_ident = {
+                    let #borrow_id: &dyn #trait_ident = 'dispatch: {
                         let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                        #(#branches else)* {
-                            __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                        }
+                        #(#branches)*
+                        __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
                     let #dyn_id: &dyn #trait_ident = #borrow_id;
                 });
@@ -1261,10 +1303,15 @@ fn wrap_concrete_dispatch(
         .fold(base_call, |inner, p| {
             let dyn_id = &p.name;
             let variants = &p.variants;
+            let label = syn::Lifetime::new(
+                &format!("'__dispatch_{}", p.name),
+                proc_macro2::Span::call_site(),
+            );
             use crate::meta::ImplTraitRefKind;
             let if_branches: Vec<_> = variants
                 .iter()
-                .map(|(_, ty_tokens)| {
+                .map(|(_, ty_tokens, vcfg)| {
+                    let vcfg_attr = cfg_predicate_attr(vcfg.as_ref());
                     let binding = match p.ref_kind {
                         ImplTraitRefKind::Value => quote! {
                             let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
@@ -1277,9 +1324,10 @@ fn wrap_concrete_dispatch(
                         },
                     };
                     quote! {
+                        #vcfg_attr
                         if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
                             #binding
-                            #inner
+                            break #label { #inner };
                         }
                     }
                 })
@@ -1288,11 +1336,10 @@ fn wrap_concrete_dispatch(
             let expected_msg = format!("impl {}", p.trait_name);
             let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
-            quote! {{
+            quote! { #label: {
                 let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
-                #(#if_branches else)* {
-                    __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
-                }
+                #(#if_branches)*
+                __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
             }}
         })
 }
@@ -1350,7 +1397,9 @@ fn generate_free_fn_bridge(
         lib_crate,
     );
 
+    let cfg_attr = m.cfg_attr();
     quote! {
+        #cfg_attr
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #ffi_name(
             #(#sig_names: #sig_types),*
@@ -2096,7 +2145,9 @@ fn generate_self_dispatch_bridge(
                     lib_crate,
                 );
 
+                let variant_cfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                 quote! {
+                    #variant_cfg
                     if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                         #metadata_guard
                         #pre_binding
@@ -2107,15 +2158,16 @@ fn generate_self_dispatch_bridge(
             .collect();
 
         let expected_str = format!("{trait_name} implementor");
+        let cfg_attr = m.cfg_attr();
         bridge_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#vtable_pre_bindings)*
                 #(#pre_bindings)*
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
-                #(#dispatch_branches else)* {
-                    __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
-                }
+                #(#dispatch_branches)*
+                __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
             }
         });
     }
@@ -2129,9 +2181,12 @@ fn generate_self_dispatch_bridge(
         .iter()
         .map(|v| {
             let ty = &v.bridge_type;
+            let variant_cfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
             quote! {
+                #variant_cfg
                 if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                     unsafe { ffier::ffier_handle_drop::<#ty>(handle) };
+                    return;
                 }
             }
         })
@@ -2143,9 +2198,8 @@ fn generate_self_dispatch_bridge(
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
                 let __type_tag = unsafe { ffier::handle_type_tag(handle) };
-                #(#destroy_branches else)* {
-                    __ffier_dispatch_panic(#destroy_name_str, #destroy_expected, #accepted_const, __type_tag);
-                }
+                #(#destroy_branches)*
+                __ffier_dispatch_panic(#destroy_name_str, #destroy_expected, #accepted_const, __type_tag);
             }
         }
     });
@@ -2229,7 +2283,9 @@ fn generate_trait_impl_bridge(
 
         let pre_bindings = &cp.pre_bindings;
         let vtable_pre_bindings = &cp.vtable_pre_bindings;
+        let cfg_attr = m.cfg_attr();
         bridge_fns.push(quote! {
+            #cfg_attr
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#vtable_pre_bindings)*
@@ -3000,6 +3056,13 @@ fn build_schema(
     library
 }
 
+/// Render a cfg predicate to a string for the JSON schema — the schema is a
+/// serialized artifact read by separate generator processes, so this is the
+/// one legitimate point where the predicate is turned into text.
+fn cfg_to_schema_string(cfg: Option<&TokenStream2>) -> Option<String> {
+    cfg.map(|ts| ts.to_string())
+}
+
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
     let name = meta.name.to_string();
     let stripped = name.as_str();
@@ -3018,6 +3081,7 @@ fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
                 }
             })
             .collect(),
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3041,6 +3105,7 @@ fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::Enu
                 }
             })
             .collect(),
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3052,6 +3117,8 @@ fn convert_free_fn(
 ) -> ffier_schema::FreeFunction {
     // A free function has exactly one "method" in its methods list.
     let m = &meta.methods[0];
+    // Use type-level cfg_predicate if set, otherwise fall back to method-level cfg.
+    let cfg = meta.cfg_predicate.as_ref().or(m.cfg.as_ref());
     ffier_schema::FreeFunction {
         name: meta.name.to_string(),
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
@@ -3062,6 +3129,7 @@ fn convert_free_fn(
             .map(|p| convert_param(p, r, type_registry))
             .collect(),
         ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
+        cfg: cfg_to_schema_string(cfg),
     }
 }
 
@@ -3086,6 +3154,7 @@ fn convert_exportable(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3141,6 +3210,7 @@ fn convert_implementable(
         own_method_count: meta.own_method_count,
         max_vtable_slot: meta.max_vtable_slot,
         no_vtable: meta.no_vtable,
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3161,6 +3231,7 @@ fn convert_trait_impl(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3215,6 +3286,7 @@ fn convert_method(
         ret,
         ffi_name,
         trait_definition,
+        cfg: cfg_to_schema_string(meta.cfg.as_ref()),
     }
 }
 

@@ -312,6 +312,7 @@ impl FfiType for LogLevel {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
 pub enum OptionalMode {
@@ -319,6 +320,7 @@ pub enum OptionalMode {
     Advanced = 2,
 }
 
+#[cfg(feature = "optional-entry")]
 impl FfiType for OptionalMode {
     type CRepr = u32;
     const C_TYPE_NAME: &'static str = "OptionalMode";
@@ -334,6 +336,7 @@ impl FfiType for OptionalMode {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct OptionalFlags: u32 {
@@ -342,6 +345,7 @@ bitflags::bitflags! {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl FfiType for OptionalFlags {
     type CRepr = u32;
     const C_TYPE_NAME: &'static str = "OptionalFlags";
@@ -2256,6 +2260,7 @@ unsafe extern "C" {
     pub fn ft_mixer_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_mixer_new() -> <Mixer as FfiType>::CRepr;
     pub fn ft_mixer_add(handle: *mut core::ffi::c_void, fruit: *mut core::ffi::c_void);
+    #[cfg(feature = "fruit-label")]
     pub fn ft_mixer_fruit_label_len(
         handle: *mut core::ffi::c_void,
         fruit: *mut core::ffi::c_void,
@@ -2338,6 +2343,7 @@ impl Mixer {
         };
         Self(__handle)
     }
+    #[cfg(feature = "fruit-label")]
     #[doc = " Returns the length of a fruit's label. Used to test that vtable"]
     #[doc = " default method detection works for custom client types crossing FFI."]
     pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
@@ -2456,6 +2462,7 @@ impl Drop for Sprocket {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 unsafe extern "C" {
     pub fn ft_optional_widget_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_optional_widget_new(
@@ -2464,8 +2471,10 @@ unsafe extern "C" {
     pub fn ft_optional_widget_base(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
+#[cfg(feature = "optional-entry")]
 pub struct OptionalWidget(*mut core::ffi::c_void);
 
+#[cfg(feature = "optional-entry")]
 impl OptionalWidget {
     #[doc(hidden)]
     pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
@@ -2478,6 +2487,7 @@ impl OptionalWidget {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl FfiHandle for OptionalWidget {
     const C_HANDLE_NAME: &'static str = "FtOptionalWidget";
     const TYPE_TAG: u32 = 16777243u32;
@@ -2489,6 +2499,7 @@ impl FfiHandle for OptionalWidget {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl FfiType for OptionalWidget {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = "OptionalWidget";
@@ -2500,12 +2511,14 @@ impl FfiType for OptionalWidget {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl std::fmt::Debug for OptionalWidget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("OptionalWidget").field(&self.0).finish()
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl OptionalWidget {
     pub fn new(base: i32) -> OptionalWidget {
         let __raw = unsafe { ft_optional_widget_new(<i32 as FfiType>::into_c(base)) };
@@ -2517,6 +2530,7 @@ impl OptionalWidget {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 impl Drop for OptionalWidget {
     fn drop(&mut self) {
         unsafe { ft_optional_widget_destroy(self.0) }
@@ -3557,6 +3571,7 @@ impl Categorizable for Orange {
     }
 }
 
+#[cfg(feature = "optional-entry")]
 unsafe extern "C" {
     pub fn ft_optional_widget_amplify(
         handle: *mut core::ffi::c_void,
@@ -3564,6 +3579,7 @@ unsafe extern "C" {
     ) -> <i32 as FfiType>::CRepr;
 }
 
+#[cfg(feature = "optional-entry")]
 impl OptionalWorker for OptionalWidget {
     fn amplify(&self, input: i32) -> i32 {
         let __raw = unsafe { ft_optional_widget_amplify(self.0, <i32 as FfiType>::into_c(input)) };
@@ -3599,12 +3615,14 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 }
 
 unsafe extern "C" {
+    #[cfg(feature = "optional-entry")]
     pub fn ft_optional_apply(
         worker: *mut core::ffi::c_void,
         input: <i32 as FfiType>::CRepr,
     ) -> <i32 as FfiType>::CRepr;
 }
 
+#[cfg(feature = "optional-entry")]
 pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
     let __raw =
         unsafe { ft_optional_apply(worker.__into_raw_handle(), <i32 as FfiType>::into_c(input)) };
@@ -3612,23 +3630,27 @@ pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
 }
 
 unsafe extern "C" {
+    #[cfg(feature = "optional-entry")]
     pub fn ft_optional_mode_name(
         mode: <OptionalMode as FfiType>::CRepr,
     ) -> <&'static str as FfiType>::CRepr;
 }
 
+#[cfg(feature = "optional-entry")]
 pub fn optional_mode_name(mode: OptionalMode) -> &'static str {
     let __raw = unsafe { ft_optional_mode_name(<OptionalMode as FfiType>::into_c(mode)) };
     unsafe { <&'static str as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {
+    #[cfg(feature = "optional-entry")]
     pub fn ft_optional_merge_flags(
         a: <OptionalFlags as FfiType>::CRepr,
         b: <OptionalFlags as FfiType>::CRepr,
     ) -> <OptionalFlags as FfiType>::CRepr;
 }
 
+#[cfg(feature = "optional-entry")]
 pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags {
     let __raw = unsafe {
         ft_optional_merge_flags(

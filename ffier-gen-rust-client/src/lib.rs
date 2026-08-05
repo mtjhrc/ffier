@@ -24,6 +24,14 @@ pub struct Options {
     pub weak: bool,
 }
 
+/// Emit `#[cfg(pred)]` before a top-level item when `cfg` is set and
+/// we're generating a strong (non-weak) client.
+fn emit_cfg_attr(out: &mut String, cfg: Option<&str>, weak: bool) {
+    if !weak && let Some(pred) = cfg {
+        writeln!(out, "#[cfg({pred})]").unwrap();
+    }
+}
+
 /// Generate complete Rust client source from a library schema.
 pub fn generate(lib: &Library) -> String {
     generate_with_options(lib, &Options::default())
@@ -320,18 +328,18 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    let weak = opts.weak;
+    let mut symbols = Vec::new();
+
     // 0. Enum constants (FfiType impls + constant values)
     for en in &lib.enum_constants {
-        emit_enum_type(&mut out, en, lib);
+        emit_enum_type(&mut out, en, lib, weak);
     }
 
     // 0b. Bitflags constants (bitflags! invocations + FfiType impls)
     for bf in &lib.bitflags_constants {
-        emit_bitflags_type(&mut out, bf, lib);
+        emit_bitflags_type(&mut out, bf, lib, weak);
     }
-
-    let weak = opts.weak;
-    let mut symbols = Vec::new();
 
     // 1. Error enums
     // Emit ft_error_payload extern once (shared by all error types).
@@ -415,6 +423,8 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
 
     // 5. Free functions
     for f in &lib.free_functions {
+        // Free functions already handle their own cfg in emit_free_function;
+        // type-level cfg is propagated to the schema's FreeFunction.cfg field.
         emit_free_function(&mut out, f, lib, weak, &mut symbols);
     }
 
@@ -789,9 +799,11 @@ fn emit_exported_type(
     for m in &ty.methods {
         fns.push(extern_fn_from_method(&m.ffi_name, m, lib));
     }
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     emit_extern_fns(out, &fns, weak, symbols);
 
     // Struct definition
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     if has_lifetimes {
         let phantom = if lifetimes.len() == 1 {
             format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
@@ -817,6 +829,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // __from_raw, __into_raw
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     if has_lifetimes {
@@ -834,6 +847,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiHandle
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(
         out,
         "impl{lt_params} FfiHandle for {}{lt_params} {{",
@@ -865,6 +879,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiType
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
     writeln!(
@@ -887,6 +902,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Debug
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(
         out,
         "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
@@ -909,9 +925,18 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Methods
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
+        emit_method_wrapper(
+            out,
+            m,
+            &m.ffi_name,
+            ty.is_builder_type,
+            has_lifetimes,
+            lib,
+            weak,
+        );
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
@@ -925,6 +950,7 @@ fn emit_exported_type(
                 && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
         });
     if has_default_new {
+        emit_cfg_attr(out, ty.cfg.as_deref(), weak);
         writeln!(
             out,
             "impl Default for {} {{ fn default() -> Self {{ Self::new() }} }}",
@@ -935,6 +961,7 @@ fn emit_exported_type(
     }
 
     // Drop
+    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    fn drop(&mut self) {{").unwrap();
     writeln!(out, "        unsafe {{ {}(self.0) }}", ty.destroy_ffi_name).unwrap();
@@ -954,7 +981,13 @@ fn emit_method_wrapper(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
+    weak: bool,
 ) {
+    // Cfg gate (strong client only — weak bindings are unconditional)
+    if !weak && let Some(cfg) = &m.cfg {
+        writeln!(out, "    #[cfg({cfg})]").unwrap();
+    }
+
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
@@ -1752,6 +1785,7 @@ fn emit_trait_impl(
     }
 
     // Extern block
+    emit_cfg_attr(out, ti.cfg.as_deref(), weak);
     let fns: Vec<ExternFn> = ti
         .methods
         .iter()
@@ -1795,6 +1829,7 @@ fn emit_trait_impl(
         String::new()
     };
 
+    emit_cfg_attr(out, ti.cfg.as_deref(), weak);
     writeln!(
         out,
         "impl{impl_generics} {}{trait_args} for {}{struct_args} {{",
@@ -1894,6 +1929,8 @@ struct ExternFn {
     ret: String,
     /// Whether to emit as `pub fn` (true) or `fn` (false) in extern blocks.
     public: bool,
+    /// `#[cfg(...)]` predicate string. `None` = unconditional.
+    cfg: Option<String>,
 }
 
 /// Build a `pub` `ExternFn` from a name, param list, and return string.
@@ -1903,6 +1940,18 @@ fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         params,
         ret,
         public: true,
+        cfg: None,
+    }
+}
+
+/// Build a `pub` `ExternFn` with an optional cfg predicate.
+fn extern_fn_cfg(name: &str, params: Vec<String>, ret: String, cfg: Option<String>) -> ExternFn {
+    ExternFn {
+        name: name.to_string(),
+        params,
+        ret,
+        public: true,
+        cfg,
     }
 }
 
@@ -1913,6 +1962,7 @@ fn extern_fn_private(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         params,
         ret,
         public: false,
+        cfg: None,
     }
 }
 
@@ -1928,7 +1978,7 @@ fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn 
     }
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, is_builder);
-    extern_fn(ffi_name, params, ret)
+    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a dispatch method signature.
@@ -1936,7 +1986,7 @@ fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, false);
-    extern_fn(ffi_name, params, ret)
+    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a free function.
@@ -1944,7 +1994,7 @@ fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
     let mut params = Vec::new();
     push_extern_params(&f.params, &mut params);
     let ret = push_return_and_out_params(&f.ret, &mut params, false);
-    extern_fn(&f.ffi_name, params, ret)
+    extern_fn_cfg(&f.ffi_name, params, ret, f.cfg.clone())
 }
 
 /// Emit one or more extern "C" functions — either as a traditional
@@ -1968,6 +2018,9 @@ fn emit_extern_fns(
         for f in fns {
             let vis = if f.public { "pub " } else { "" };
             let params_str = f.params.join(", ");
+            if let Some(cfg) = &f.cfg {
+                writeln!(out, "    #[cfg({cfg})]").unwrap();
+            }
             writeln!(out, "    {vis}fn {}({params_str}){};", f.name, f.ret).unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -2546,7 +2599,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
 // Enum type generation
 // ===========================================================================
 
-fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
+fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library, weak: bool) {
     let entry = lib.type_entry(&en.name).unwrap();
     let repr = match &entry.kind {
         TypeKind::Enum { alias_of } => alias_of.as_str(),
@@ -2554,6 +2607,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     };
 
     // Enum definition
+    emit_cfg_attr(out, en.cfg.as_deref(), weak);
     writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
     writeln!(out, "#[repr({repr})]").unwrap();
     writeln!(out, "pub enum {} {{", en.name).unwrap();
@@ -2564,6 +2618,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     writeln!(out).unwrap();
 
     // FfiType impl
+    emit_cfg_attr(out, en.cfg.as_deref(), weak);
     writeln!(out, "impl FfiType for {} {{", en.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -2594,7 +2649,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
 // Bitflags type generation
 // ===========================================================================
 
-fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
+fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library, weak: bool) {
     let entry = lib.type_entry(&bf.name).unwrap();
     let repr = match &entry.kind {
         TypeKind::Bitflags { alias_of } => alias_of.as_str(),
@@ -2602,6 +2657,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     };
 
     // bitflags! invocation
+    emit_cfg_attr(out, bf.cfg.as_deref(), weak);
     writeln!(out, "bitflags::bitflags! {{").unwrap();
     writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
     writeln!(out, "    pub struct {}: {repr} {{", bf.name).unwrap();
@@ -2613,6 +2669,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     writeln!(out).unwrap();
 
     // FfiType impl
+    emit_cfg_attr(out, bf.cfg.as_deref(), weak);
     writeln!(out, "impl FfiType for {} {{", bf.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -2645,7 +2702,10 @@ fn emit_free_function(
     // Extern declaration
     emit_extern_fns(out, &[extern_fn_from_free(f)], weak, symbols);
 
-    // Safe wrapper
+    // Safe wrapper (strong client only — weak bindings are unconditional)
+    if !weak && let Some(cfg) = &f.cfg {
+        writeln!(out, "#[cfg({cfg})]").unwrap();
+    }
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();

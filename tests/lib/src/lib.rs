@@ -1116,19 +1116,26 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
         .map_err(|_| TestError::InvalidInput())
 }
 
-#[cfg(feature = "optional-entry")]
 pub mod optional_api {
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    // The cfg predicate is passed via ffier::export(cfg = "...") so the proc
+    // macro emits metadata unconditionally while gating the generated code.
+    // When ffi is off, #[cfg_attr(not(feature = "ffi"), cfg(...))] gates the
+    // item directly.
+
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     pub trait OptionalWorker {
         #[cfg_attr(feature = "ffi", ffier(index = 0))]
         fn amplify(&self, input: i32) -> i32;
     }
 
+    #[cfg(feature = "optional-entry")]
     pub struct OptionalWidget {
         base: i32,
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     impl OptionalWidget {
         pub fn new(base: i32) -> Self {
             Self { base }
@@ -1139,20 +1146,23 @@ pub mod optional_api {
         }
     }
 
+    #[cfg(feature = "optional-entry")]
     impl Default for OptionalWidget {
         fn default() -> Self {
             Self::new(0)
         }
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     impl OptionalWorker for OptionalWidget {
         fn amplify(&self, input: i32) -> i32 {
             self.base * input
         }
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     #[repr(u32)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum OptionalMode {
@@ -1161,6 +1171,7 @@ pub mod optional_api {
     }
 
     ffier::export_bitflags! {
+        #[cfg(feature = "optional-entry")]
         bitflags::bitflags! {
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub struct OptionalFlags: u32 {
@@ -1170,12 +1181,14 @@ pub mod optional_api {
         }
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
         worker.amplify(input)
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     pub fn optional_mode_name(mode: OptionalMode) -> &'static str {
         match mode {
             OptionalMode::Basic => "basic",
@@ -1183,7 +1196,8 @@ pub mod optional_api {
         }
     }
 
-    #[cfg_attr(feature = "ffi", ffier::export)]
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
     pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags {
         a | b
     }

@@ -141,6 +141,12 @@ pub fn erase_lifetimes(ty: &syn::Type) -> syn::Type {
 // Shared prefix helpers
 // ---------------------------------------------------------------------------
 
+/// Return `#[cfg(PRED)]` token stream from a cfg predicate, if present.
+pub fn cfg_predicate_attr(cfg: Option<&TokenStream>) -> Option<TokenStream> {
+    let pred = cfg?;
+    Some(quote! { #[cfg(#pred)] })
+}
+
 /// Common prefix formatting for metadata types with a `prefix` field.
 pub trait HasPrefix {
     fn prefix(&self) -> &str;
@@ -163,6 +169,9 @@ pub struct MetaExportable {
     pub type_tag: u32,
     pub lifetimes: Vec<Ident>,
     pub methods: Vec<MetaMethod>,
+    /// `#[cfg(...)]` predicate for the entire type (e.g. `feature = "x"`).
+    /// `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaExportable {
@@ -209,6 +218,8 @@ pub struct MetaMethod {
     pub ret: MetaReturn,
     pub rust_ret: TokenStream,
     pub context: MetaMethodContext,
+    /// `#[cfg(...)]` predicate tokens (e.g. `feature = "x"`). `None` = unconditional.
+    pub cfg: Option<TokenStream>,
 }
 
 /// Context-specific fields that are always present together.
@@ -288,6 +299,11 @@ impl MetaMethod {
 
     pub fn is_mut(&self) -> bool {
         self.receiver == MetaReceiver::Mut
+    }
+
+    /// Return `#[cfg(PRED)]` token stream if this method has a cfg predicate.
+    pub fn cfg_attr(&self) -> Option<TokenStream> {
+        cfg_predicate_attr(self.cfg.as_ref())
     }
 }
 
@@ -385,6 +401,8 @@ pub struct MetaEnum {
     /// The `#[repr(...)]` integer type (e.g. "u32", "u64").
     pub repr: String,
     pub variants: Vec<MetaEnumVariant>,
+    /// `#[cfg(...)]` predicate for the entire enum. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaEnum {
@@ -411,6 +429,8 @@ pub struct MetaBitflags {
     /// The underlying integer type (e.g. "u32", "u64").
     pub repr: String,
     pub variants: Vec<MetaEnumVariant>,
+    /// `#[cfg(...)]` predicate for the entire bitflags type. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaBitflags {
@@ -430,6 +450,8 @@ pub struct MetaFreeFunction {
     pub ffi_name: String,
     pub doc: Vec<String>,
     pub methods: Vec<MetaMethod>,
+    /// `#[cfg(...)]` predicate for the entire free function. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaFreeFunction {
@@ -463,7 +485,10 @@ pub struct MetaImplementable {
     pub max_vtable_slot: usize,
     /// If true, no vtable wrapper type is generated. C callers cannot
     /// implement this trait — only concrete Rust implementors are dispatched.
+    /// Useful for marker traits and traits with supertrait bounds.
     pub no_vtable: bool,
+    /// `#[cfg(...)]` predicate for the entire trait. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaImplementable {
@@ -492,6 +517,8 @@ pub struct MetaTraitImpl {
     /// in generated impl blocks — only the struct's own lifetimes, not the impl block's.
     pub struct_lifetime_args: Vec<String>,
     pub methods: Vec<MetaMethod>,
+    /// `#[cfg(...)]` predicate for the entire trait impl. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
 }
 
 impl HasPrefix for MetaTraitImpl {
@@ -538,6 +565,22 @@ fn parse_bool(input: ParseStream) -> syn::Result<bool> {
 fn parse_string(input: ParseStream) -> syn::Result<String> {
     let lit: LitStr = input.parse()?;
     Ok(lit.value())
+}
+
+/// Parse an optional `cfg_predicate = (predicate tokens),` field from the end
+/// of a metadata blob.
+fn parse_optional_cfg_predicate(input: ParseStream) -> syn::Result<Option<TokenStream>> {
+    if !input.is_empty() && input.peek(Ident) {
+        let fork = input.fork();
+        if fork.parse::<Ident>().is_ok_and(|id| id == "cfg_predicate") {
+            input.parse::<Ident>()?; // cfg_predicate
+            input.parse::<Token![=]>()?;
+            let tokens = parse_parenthesized_tokens(input)?;
+            parse_comma(input)?;
+            return Ok(Some(tokens));
+        }
+    }
+    Ok(None)
 }
 
 /// Parse a comma-separated list inside the given delimiter.
@@ -610,6 +653,8 @@ impl syn::parse::Parse for MetaExportable {
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaExportable {
             struct_name,
             struct_path,
@@ -617,6 +662,7 @@ impl syn::parse::Parse for MetaExportable {
             type_tag,
             lifetimes,
             methods,
+            cfg_predicate,
         })
     }
 }
@@ -717,6 +763,22 @@ impl syn::parse::Parse for MetaMethod {
         let rust_ret = parse_parenthesized_tokens(input)?;
         parse_comma(input)?;
 
+        // Optional: cfg = (predicate tokens),
+        let cfg = if !input.is_empty() && input.peek(Ident) {
+            let fork = input.fork();
+            if fork.parse::<Ident>().is_ok_and(|id| id == "cfg") {
+                input.parse::<Ident>()?; // cfg
+                input.parse::<Token![=]>()?;
+                let tokens = parse_parenthesized_tokens(input)?;
+                parse_comma(input)?;
+                Some(tokens)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         Ok(MetaMethod {
             name,
             receiver,
@@ -726,6 +788,7 @@ impl syn::parse::Parse for MetaMethod {
             ret,
             rust_ret,
             context,
+            cfg,
         })
     }
 }
@@ -1023,11 +1086,14 @@ impl syn::parse::Parse for MetaEnum {
         })?;
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaEnum {
             name,
             prefix,
             repr,
             variants,
+            cfg_predicate,
         })
     }
 }
@@ -1072,11 +1138,14 @@ impl syn::parse::Parse for MetaBitflags {
         })?;
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaBitflags {
             name,
             prefix,
             repr,
             variants,
+            cfg_predicate,
         })
     }
 }
@@ -1118,6 +1187,8 @@ impl syn::parse::Parse for MetaFreeFunction {
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaFreeFunction {
             name,
             fn_path,
@@ -1125,6 +1196,7 @@ impl syn::parse::Parse for MetaFreeFunction {
             ffi_name,
             doc,
             methods,
+            cfg_predicate,
         })
     }
 }
@@ -1211,6 +1283,8 @@ impl syn::parse::Parse for MetaImplementable {
         };
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaImplementable {
             trait_name,
             trait_path,
@@ -1223,6 +1297,7 @@ impl syn::parse::Parse for MetaImplementable {
             max_vtable_slot,
             bless,
             no_vtable,
+            cfg_predicate,
         })
     }
 }
@@ -1279,6 +1354,8 @@ impl syn::parse::Parse for MetaTraitImpl {
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
 
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
         Ok(MetaTraitImpl {
             trait_name,
             struct_name,
@@ -1289,6 +1366,7 @@ impl syn::parse::Parse for MetaTraitImpl {
             trait_lifetime_args,
             struct_lifetime_args,
             methods,
+            cfg_predicate,
         })
     }
 }
