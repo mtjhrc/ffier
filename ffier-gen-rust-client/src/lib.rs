@@ -229,21 +229,37 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     for (name, entry) in &lib.type_registry {
         if let TypeKind::ForeignHandle { foreign_crate, .. } = &entry.kind {
             let fc = foreign_crate;
-            writeln!(out, "impl FfiHandle for {name} {{").unwrap();
-            writeln!(out, "    const C_HANDLE_NAME: &'static str = <{name} as {fc}::FfiHandle>::C_HANDLE_NAME;").unwrap();
+            let lifetime_args = entry
+                .lifetime_params
+                .iter()
+                .map(|lt| format!("'{lt}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let impl_generics = if lifetime_args.is_empty() {
+                String::new()
+            } else {
+                format!("<{lifetime_args}>")
+            };
+            let type_name = if lifetime_args.is_empty() {
+                name.clone()
+            } else {
+                format!("{name}<{lifetime_args}>")
+            };
+            writeln!(out, "impl{impl_generics} FfiHandle for {type_name} {{").unwrap();
+            writeln!(out, "    const C_HANDLE_NAME: &'static str = <{type_name} as {fc}::FfiHandle>::C_HANDLE_NAME;").unwrap();
             writeln!(
                 out,
-                "    const TYPE_TAG: u32 = <{name} as {fc}::FfiHandle>::TYPE_TAG;"
+                "    const TYPE_TAG: u32 = <{type_name} as {fc}::FfiHandle>::TYPE_TAG;"
             )
             .unwrap();
             writeln!(out, "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ unsafe {{ {fc}::FfiHandle::as_handle(self) }} }}").unwrap();
-            writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ <{name} as {fc}::FfiHandle>::__from_raw(handle) }}").unwrap();
+            writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ <{type_name} as {fc}::FfiHandle>::__from_raw(handle) }}").unwrap();
             writeln!(out, "}}").unwrap();
-            writeln!(out, "impl FfiType for {name} {{").unwrap();
+            writeln!(out, "impl{impl_generics} FfiType for {type_name} {{").unwrap();
             writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
             writeln!(
                 out,
-                "    const C_TYPE_NAME: &'static str = <{name} as {fc}::FfiHandle>::C_HANDLE_NAME;"
+                "    const C_TYPE_NAME: &'static str = <{type_name} as {fc}::FfiHandle>::C_HANDLE_NAME;"
             )
             .unwrap();
             writeln!(
@@ -251,7 +267,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                 "    fn into_c(self) -> *mut core::ffi::c_void {{ {fc}::FfiType::into_c(self) }}"
             )
             .unwrap();
-            writeln!(out, "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ <{name} as {fc}::FfiHandle>::__from_raw(repr) }}").unwrap();
+            writeln!(out, "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ <{type_name} as {fc}::FfiHandle>::__from_raw(repr) }}").unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }

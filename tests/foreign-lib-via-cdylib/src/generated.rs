@@ -415,6 +415,75 @@ impl Drop for ForeignConfig {
     }
 }
 
+unsafe extern "C" {
+    pub fn fl_foreign_borrowed_destroy(handle: *mut core::ffi::c_void);
+    pub fn fl_foreign_borrowed_new(
+        value: <&'static str as FfiType>::CRepr,
+    ) -> <ForeignBorrowed<'static> as FfiType>::CRepr;
+    pub fn fl_foreign_borrowed_value(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static str as FfiType>::CRepr;
+}
+
+pub struct ForeignBorrowed<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+
+impl<'a> ForeignBorrowed<'a> {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr, std::marker::PhantomData)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl<'a> FfiHandle for ForeignBorrowed<'a> {
+    const C_HANDLE_NAME: &'static str = "FlForeignBorrowed";
+    const TYPE_TAG: u32 = 33554438u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle, std::marker::PhantomData)
+    }
+}
+
+impl<'a> FfiType for ForeignBorrowed<'a> {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "ForeignBorrowed";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+
+impl<'a> std::fmt::Debug for ForeignBorrowed<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ForeignBorrowed").field(&self.0).finish()
+    }
+}
+
+impl<'a> ForeignBorrowed<'a> {
+    pub fn new(value: &'a str) -> ForeignBorrowed<'a> {
+        let __raw = unsafe { fl_foreign_borrowed_new(<&'a str as FfiType>::into_c(value)) };
+        unsafe { <ForeignBorrowed<'a> as FfiType>::from_c(__raw) }
+    }
+    pub fn value(&self) -> &str {
+        let __raw = unsafe { fl_foreign_borrowed_value(self.0) };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+}
+
+impl<'a> Drop for ForeignBorrowed<'a> {
+    fn drop(&mut self) {
+        unsafe { fl_foreign_borrowed_destroy(self.0) }
+    }
+}
+
 pub trait PushStr {
     fn push(&mut self, s: &str) -> bool;
     #[doc(hidden)]

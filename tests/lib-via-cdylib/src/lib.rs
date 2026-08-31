@@ -467,4 +467,12 @@ mod tests {
         assert_eq!(w.name(), "method");
         assert_eq!(w.get_count(), 77);
     }
+
+    #[test]
+    fn foreign_lifetime_handle_param() {
+        let text = String::from("borrowed");
+        let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
+        let w = Widget::new();
+        assert_eq!(w.read_foreign_borrowed(&value), text.len() as i32);
+    }
 }

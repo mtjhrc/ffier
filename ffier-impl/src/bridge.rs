@@ -2963,16 +2963,19 @@ fn build_schema(
     // references and register them so generators know they are opaque handles
     // from another ffier library.
     {
-        // Map type_name → (foreign_crate, c_name).
+        // Map type_name → (foreign_crate, c_name, lifetime_params).
         let mut foreign_types =
-            std::collections::HashMap::<String, (String, Option<String>)>::new();
+            std::collections::HashMap::<String, (String, Option<String>, Vec<String>)>::new();
         let mut record_foreign = |tp: &MetaTypePair| {
             if let Some(fc) = &tp.foreign_crate {
-                let type_name = resolver.type_ref_from_tokens(&tp.rust_type).type_name;
+                let type_ref = resolver.type_ref_from_tokens(&tp.rust_type);
+                let type_name = type_ref.type_name;
                 let crate_path = fc.to_string().replace(' ', "");
-                foreign_types
-                    .entry(type_name)
-                    .or_insert((crate_path, tp.foreign_c_name.clone()));
+                foreign_types.entry(type_name).or_insert((
+                    crate_path,
+                    tp.foreign_c_name.clone(),
+                    type_ref.type_args,
+                ));
             }
         };
         let all_methods = free_fns_parsed
@@ -2993,7 +2996,7 @@ fn build_schema(
                 _ => {}
             }
         }
-        for (name, (crate_path, c_name)) in foreign_types {
+        for (name, (crate_path, c_name, lifetime_params)) in foreign_types {
             type_registry
                 .entry(name.clone())
                 .or_insert_with(|| ffier_schema::TypeEntry {
@@ -3005,7 +3008,7 @@ fn build_schema(
                     },
                     type_tag: None,
                     bless: None,
-                    lifetime_params: vec![],
+                    lifetime_params,
                 });
         }
     }

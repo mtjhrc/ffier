@@ -308,6 +308,15 @@ impl Widget {
         self.name = config.name().to_owned();
         self.count = config.value();
     }
+
+    /// Read a lifetime-bearing foreign handle.
+    pub fn read_foreign_borrowed<'a>(
+        &self,
+        #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignBorrowed"))]
+        value: &ffier_test_foreign_lib_via_cdylib::ForeignBorrowed<'a>,
+    ) -> i32 {
+        value.value().len() as i32
+    }
 }
 
 impl Default for Widget {
