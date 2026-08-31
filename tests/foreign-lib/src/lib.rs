@@ -53,6 +53,25 @@ pub struct ForeignConfig {
     pub value: i32,
 }
 
+// ---------------------------------------------------------------------------
+// ForeignBorrowed — a handle carrying a borrowed lifetime
+// ---------------------------------------------------------------------------
+
+pub struct ForeignBorrowed<'a> {
+    value: &'a str,
+}
+
+#[ffier::export]
+impl<'a> ForeignBorrowed<'a> {
+    pub fn new(value: &'a str) -> Self {
+        Self { value }
+    }
+
+    pub fn value(&self) -> &str {
+        self.value
+    }
+}
+
 #[ffier::export]
 impl ForeignConfig {
     pub fn new(name: &str, value: i32) -> Self {
@@ -79,6 +98,7 @@ ffier::library_definition!("fl", library_tag = 2,
     ForeignError = 1,
     ForeignItem = 2,
     ForeignConfig = 3,
+    ForeignBorrowed = 6,
     trait ffier_builtins::PushStr = 4,
     trait ffier_builtins::Error = 5,
     Error for ForeignError,

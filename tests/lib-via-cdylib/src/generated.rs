@@ -1,6 +1,6 @@
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
-use ffier_test_foreign_lib_via_cdylib::{ForeignConfig, ForeignItem};
+use ffier_test_foreign_lib_via_cdylib::{ForeignBorrowed, ForeignConfig, ForeignItem};
 
 /// Marker trait for types exported as opaque C handles.
 pub trait FfiHandle {
@@ -197,6 +197,30 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
     }
     unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {
         unimplemented!("&mut T from_c")
+    }
+}
+
+impl<'a> FfiHandle for ForeignBorrowed<'a> {
+    const C_HANDLE_NAME: &'static str =
+        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    const TYPE_TAG: u32 =
+        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    }
+}
+impl<'a> FfiType for ForeignBorrowed<'a> {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str =
+        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    fn into_c(self) -> *mut core::ffi::c_void {
+        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
     }
 }
 
@@ -716,6 +740,10 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         config: <&'static ForeignConfig as FfiType>::CRepr,
     );
+    pub fn ft_widget_read_foreign_borrowed(
+        handle: *mut core::ffi::c_void,
+        value: <&'static ForeignBorrowed<'static> as FfiType>::CRepr,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 pub struct Widget(*mut core::ffi::c_void);
@@ -1089,6 +1117,11 @@ impl Widget {
     #[doc = " Apply a foreign config to this widget (tests foreign param on a method)."]
     pub fn apply_config(&mut self, config: &ForeignConfig) {
         unsafe { ft_widget_apply_config(self.0, FfiHandle::as_handle(config)) }
+    }
+    #[doc = " Read a lifetime-bearing foreign handle."]
+    pub fn read_foreign_borrowed<'a>(&self, value: &ForeignBorrowed<'a>) -> i32 {
+        let __raw = unsafe { ft_widget_read_foreign_borrowed(self.0, FfiHandle::as_handle(value)) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
     }
 }
 

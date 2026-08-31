@@ -36,6 +36,7 @@ typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
+typedef void* FlForeignBorrowed;
 typedef void* FlForeignConfig;
 typedef void* FlForeignItem;
 
@@ -260,6 +261,8 @@ FtResult ft_widget_maybe_dup_fd(FtWidget handle, int fd, int* result, FtError* e
 FtResult ft_widget_maybe_owned_fd(FtWidget handle, int32_t selector, int* result, FtError* err_out);
 /** Apply a foreign config to this widget (tests foreign param on a method). */
 void ft_widget_apply_config(FtWidget handle, FlForeignConfig config);
+/** Read a lifetime-bearing foreign handle. */
+int32_t ft_widget_read_foreign_borrowed(FtWidget handle, FlForeignBorrowed value);
 void ft_widget_destroy(FtWidget handle);
 
 /* Gadget ------------------------------------------------------------ */
