@@ -105,7 +105,7 @@ no-codegen:
 # even when the feature is off but FFI codegen is still enabled.
 check-cfg-library-entry: build-foreign
     cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features --features ffi,fruit-label
-    python3 -c 'import json, sys; d = json.load(open("{{schema}}")); text = json.dumps(d); expected = ["OptionalWidget", "OptionalWorker", "OptionalMode", "OptionalFlags", "ft_optional_apply", "ft_optional_mode_name", "ft_optional_merge_flags"]; missing = [n for n in expected if n not in text]; assert not missing, f"cfg-gated items missing from schema: {missing}"; sections = ["exported_types", "traits", "trait_impls", "enum_constants", "bitflags_constants", "free_functions"]; all_items = sum((d.get(s, []) for s in sections), []); cfg_items = [i for i in all_items if i.get("cfg")]; n = len(cfg_items); assert n >= 8, f"expected >=8 cfg-gated items, got {n}"'
+    python3 check_schema.py "{{schema}}"
 
 # Run all Rust tests
 cargo-test: build
