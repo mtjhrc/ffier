@@ -5,6 +5,7 @@
 // The bindings below are generated source code, NOT macro invocations.
 // Regenerate with: just gen-rust-client
 #![allow(clippy::should_implement_trait)]
+#![cfg(unix)]
 
 include!("generated.rs");
 
