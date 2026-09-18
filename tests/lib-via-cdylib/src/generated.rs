@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use ffier_test_foreign_lib_via_cdylib::{ForeignBorrowed, ForeignConfig, ForeignItem};
@@ -113,6 +114,7 @@ impl FfiType for &[u8] {
     }
 }
 
+#[cfg(unix)]
 impl FfiType for OwnedFd {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -126,6 +128,7 @@ impl FfiType for OwnedFd {
     }
 }
 
+#[cfg(unix)]
 impl FfiType for Option<OwnedFd> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -146,6 +149,7 @@ impl FfiType for Option<OwnedFd> {
     }
 }
 
+#[cfg(unix)]
 impl<'fd> FfiType for BorrowedFd<'fd> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -158,6 +162,7 @@ impl<'fd> FfiType for BorrowedFd<'fd> {
     }
 }
 
+#[cfg(unix)]
 impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -336,6 +341,28 @@ impl FfiType for LogLevel {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum InputEventKind {
+    Key = 1,
+    Absolute = 3,
+}
+
+impl FfiType for InputEventKind {
+    type CRepr = u32;
+    const C_TYPE_NAME: &'static str = "InputEventKind";
+    fn into_c(self) -> u32 {
+        self as u32
+    }
+    unsafe fn from_c(repr: u32) -> Self {
+        match repr {
+            1 => Self::Key,
+            3 => Self::Absolute,
+            unknown => panic!("invalid InputEventKind discriminant: {}", unknown),
+        }
+    }
+}
+
 #[cfg(feature = "optional-entry")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
@@ -362,6 +389,7 @@ impl FfiType for OptionalMode {
 
 #[cfg(feature = "optional-entry")]
 bitflags::bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct OptionalFlags: u32 {
         const READ = 1;
@@ -382,6 +410,7 @@ impl FfiType for OptionalFlags {
 }
 
 bitflags::bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Permissions: u32 {
         const READ = 1;
@@ -399,6 +428,86 @@ impl FfiType for Permissions {
     }
     unsafe fn from_c(repr: u32) -> Self {
         Self::from_bits_retain(repr)
+    }
+}
+
+bitflags::bitflags! {
+    #[repr(transparent)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct InputEventFlags: u32 {
+        const REPEAT = 1;
+        const SYNTHETIC = 2;
+    }
+}
+
+impl FfiType for InputEventFlags {
+    type CRepr = u32;
+    const C_TYPE_NAME: &'static str = "InputEventFlags";
+    fn into_c(self) -> u32 {
+        self.bits()
+    }
+    unsafe fn from_c(repr: u32) -> Self {
+        Self::from_bits_retain(repr)
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputDeviceIds {
+    pub bus: u16,
+    pub vendor: u16,
+    pub product: u16,
+    pub version: u16,
+}
+impl FfiType for InputDeviceIds {
+    type CRepr = Self;
+    const C_TYPE_NAME: &'static str = "FtInputDeviceIds";
+    fn into_c(self) -> Self {
+        self
+    }
+    unsafe fn from_c(repr: Self) -> Self {
+        repr
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputAbsInfo {
+    pub value: i32,
+    pub minimum: i32,
+    pub maximum: i32,
+    pub fuzz: i32,
+    pub flat: i32,
+    pub resolution: i32,
+}
+impl FfiType for InputAbsInfo {
+    type CRepr = Self;
+    const C_TYPE_NAME: &'static str = "FtInputAbsInfo";
+    fn into_c(self) -> Self {
+        self
+    }
+    unsafe fn from_c(repr: Self) -> Self {
+        repr
+    }
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputEvent {
+    pub device: InputDeviceIds,
+    pub kind: InputEventKind,
+    pub code: u16,
+    pub flags: InputEventFlags,
+    pub value: i32,
+}
+impl FfiType for InputEvent {
+    type CRepr = Self;
+    const C_TYPE_NAME: &'static str = "FtInputEvent";
+    fn into_c(self) -> Self {
+        self
+    }
+    unsafe fn from_c(repr: Self) -> Self {
+        repr
     }
 }
 
@@ -2495,6 +2604,181 @@ impl Drop for Sprocket {
     }
 }
 
+unsafe extern "C" {
+    pub fn ft_event_queue_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_event_queue_new() -> <EventQueue as FfiType>::CRepr;
+    pub fn ft_event_queue_pop_event(
+        handle: *mut core::ffi::c_void,
+        result: *mut <InputEvent as FfiType>::CRepr,
+    ) -> bool;
+    pub fn ft_event_queue_echo_event(
+        handle: *mut core::ffi::c_void,
+        event: <InputEvent as FfiType>::CRepr,
+    ) -> <InputEvent as FfiType>::CRepr;
+    pub fn ft_event_queue_ids(
+        handle: *mut core::ffi::c_void,
+    ) -> *const <InputDeviceIds as FfiType>::CRepr;
+    pub fn ft_event_queue_ids_mut(
+        handle: *mut core::ffi::c_void,
+    ) -> *mut <InputDeviceIds as FfiType>::CRepr;
+    pub fn ft_event_queue_maybe_ids(
+        handle: *mut core::ffi::c_void,
+        available: <bool as FfiType>::CRepr,
+    ) -> *const <InputDeviceIds as FfiType>::CRepr;
+    pub fn ft_event_queue_set_ids(
+        handle: *mut core::ffi::c_void,
+        ids: *const <InputDeviceIds as FfiType>::CRepr,
+    );
+    pub fn ft_event_queue_copy_ids_to(
+        handle: *mut core::ffi::c_void,
+        ids: *mut <InputDeviceIds as FfiType>::CRepr,
+    );
+    pub fn ft_event_queue_optional_ids_vendor(
+        handle: *mut core::ffi::c_void,
+        ids: *const <InputDeviceIds as FfiType>::CRepr,
+    ) -> <u16 as FfiType>::CRepr;
+    pub fn ft_event_queue_optional_ids_mut(
+        handle: *mut core::ffi::c_void,
+        ids: *mut <InputDeviceIds as FfiType>::CRepr,
+    );
+    pub fn ft_event_queue_event_or_error(
+        handle: *mut core::ffi::c_void,
+        result: *mut <InputEvent as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_event_queue_fail_next(handle: *mut core::ffi::c_void);
+}
+
+pub struct EventQueue(*mut core::ffi::c_void);
+
+impl EventQueue {
+    #[doc(hidden)]
+    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl FfiHandle for EventQueue {
+    const C_HANDLE_NAME: &'static str = "FtEventQueue";
+    const TYPE_TAG: u32 = 16777246u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
+}
+
+impl FfiType for EventQueue {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "EventQueue";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        Self::__from_raw(repr)
+    }
+}
+
+impl std::fmt::Debug for EventQueue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("EventQueue").field(&self.0).finish()
+    }
+}
+
+impl EventQueue {
+    pub fn new() -> EventQueue {
+        let __raw = unsafe { ft_event_queue_new() };
+        unsafe { <EventQueue as FfiType>::from_c(__raw) }
+    }
+    pub fn pop_event(&mut self) -> Option<InputEvent> {
+        let mut __out = std::mem::MaybeUninit::<<InputEvent as FfiType>::CRepr>::uninit();
+        let __is_some = unsafe { ft_event_queue_pop_event(self.0, __out.as_mut_ptr()) };
+        if __is_some {
+            Some(unsafe { <InputEvent as FfiType>::from_c(__out.assume_init()) })
+        } else {
+            None
+        }
+    }
+    pub fn echo_event(&self, event: InputEvent) -> InputEvent {
+        let __raw =
+            unsafe { ft_event_queue_echo_event(self.0, <InputEvent as FfiType>::into_c(event)) };
+        unsafe { <InputEvent as FfiType>::from_c(__raw) }
+    }
+    pub fn ids(&self) -> &InputDeviceIds {
+        let __raw = unsafe { ft_event_queue_ids(self.0) };
+        unsafe { &*__raw }
+    }
+    pub fn ids_mut(&mut self) -> &mut InputDeviceIds {
+        let __raw = unsafe { ft_event_queue_ids_mut(self.0) };
+        unsafe { &mut *__raw }
+    }
+    pub fn maybe_ids(&self, available: bool) -> Option<&InputDeviceIds> {
+        let __raw =
+            unsafe { ft_event_queue_maybe_ids(self.0, <bool as FfiType>::into_c(available)) };
+        unsafe { __raw.as_ref() }
+    }
+    pub fn set_ids(&mut self, ids: &InputDeviceIds) {
+        unsafe { ft_event_queue_set_ids(self.0, ids as *const InputDeviceIds) }
+    }
+    pub fn copy_ids_to(&self, ids: &mut InputDeviceIds) {
+        unsafe { ft_event_queue_copy_ids_to(self.0, ids as *mut InputDeviceIds) }
+    }
+    pub fn optional_ids_vendor(&self, ids: Option<&InputDeviceIds>) -> u16 {
+        let __raw = unsafe {
+            ft_event_queue_optional_ids_vendor(
+                self.0,
+                ids.map_or(core::ptr::null(), |value| value as *const InputDeviceIds),
+            )
+        };
+        unsafe { <u16 as FfiType>::from_c(__raw) }
+    }
+    pub fn optional_ids_mut(&self, ids: Option<&mut InputDeviceIds>) {
+        unsafe {
+            ft_event_queue_optional_ids_mut(
+                self.0,
+                ids.map_or(core::ptr::null_mut(), |value| value as *mut InputDeviceIds),
+            )
+        }
+    }
+    pub fn event_or_error(&mut self) -> Result<InputEvent, TestError> {
+        let mut __out = std::mem::MaybeUninit::uninit();
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe {
+            ft_event_queue_event_or_error(
+                self.0,
+                __out.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <InputEvent as FfiType>::from_c(__out.assume_init()) })
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    pub fn fail_next(&mut self) {
+        unsafe { ft_event_queue_fail_next(self.0) }
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for EventQueue {
+    fn drop(&mut self) {
+        unsafe { ft_event_queue_destroy(self.0) }
+    }
+}
+
 #[cfg(feature = "optional-entry")]
 unsafe extern "C" {
     pub fn ft_optional_widget_destroy(handle: *mut core::ffi::c_void);
@@ -2888,6 +3172,252 @@ impl VtableWeighable {
 }
 
 impl Drop for VtableWeighable {
+    fn drop(&mut self) {}
+}
+
+pub trait InputSource {
+    fn poll_event(&mut self) -> Option<InputEvent>;
+    fn device_ids(&self) -> InputDeviceIds;
+    fn abs_info(&self) -> &InputAbsInfo;
+    fn abs_info_mut(&mut self) -> &mut InputAbsInfo;
+    fn optional_abs_info(&self, available: bool) -> Option<&InputAbsInfo>;
+    fn submit_event(&mut self, event: InputEvent);
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static InputSourceVtable
+    where
+        Self: Sized,
+    {
+        &InputSourceVtable {
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+            poll_event: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                    result: *mut <InputEvent as FfiType>::CRepr,
+                ) -> bool {
+                    let __val = unsafe { &mut *(__ud as *mut __T) };
+                    let __result = __val.poll_event();
+                    match __result {
+                        Some(__value) => {
+                            unsafe { result.write(<InputEvent as FfiType>::into_c(__value)) };
+                            true
+                        }
+                        None => false,
+                    }
+                }
+                __trampoline::<Self>
+            }),
+            device_ids: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> <InputDeviceIds as FfiType>::CRepr {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.device_ids();
+                    <InputDeviceIds as FfiType>::into_c(__result)
+                }
+                __trampoline::<Self>
+            }),
+            abs_info: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> *const <InputAbsInfo as FfiType>::CRepr {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.abs_info();
+                    __result as *const _
+                }
+                __trampoline::<Self>
+            }),
+            abs_info_mut: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                ) -> *mut <InputAbsInfo as FfiType>::CRepr {
+                    let __val = unsafe { &mut *(__ud as *mut __T) };
+                    let __result = __val.abs_info_mut();
+                    __result as *mut _
+                }
+                __trampoline::<Self>
+            }),
+            optional_abs_info: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                    available: <bool as FfiType>::CRepr,
+                ) -> *const <InputAbsInfo as FfiType>::CRepr {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result =
+                        __val.optional_abs_info(unsafe { <bool as FfiType>::from_c(available) });
+                    __result.map_or(core::ptr::null(), |value| value as *const _)
+                }
+                __trampoline::<Self>
+            }),
+            submit_event: Some({
+                unsafe extern "C" fn __trampoline<__T: InputSource>(
+                    __ud: *mut core::ffi::c_void,
+                    event: <InputEvent as FfiType>::CRepr,
+                ) {
+                    let __val = unsafe { &mut *(__ud as *mut __T) };
+                    __val.submit_event(unsafe { <InputEvent as FfiType>::from_c(event) });
+                }
+                __trampoline::<Self>
+            }),
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static InputSourceVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        let vtable_size: u16 = core::mem::size_of::<InputSourceVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            16777247u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const InputSourceVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct InputSourceVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub poll_event: Option<
+        unsafe extern "C" fn(*mut core::ffi::c_void, *mut <InputEvent as FfiType>::CRepr) -> bool,
+    >,
+    pub device_ids:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <InputDeviceIds as FfiType>::CRepr>,
+    pub abs_info: Option<
+        unsafe extern "C" fn(*mut core::ffi::c_void) -> *const <InputAbsInfo as FfiType>::CRepr,
+    >,
+    pub abs_info_mut: Option<
+        unsafe extern "C" fn(*mut core::ffi::c_void) -> *mut <InputAbsInfo as FfiType>::CRepr,
+    >,
+    pub optional_abs_info: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <bool as FfiType>::CRepr,
+        ) -> *const <InputAbsInfo as FfiType>::CRepr,
+    >,
+    pub submit_event:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void, <InputEvent as FfiType>::CRepr)>,
+}
+
+pub struct VtableInputSource(*mut core::ffi::c_void);
+
+impl VtableInputSource {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableInputSource {
+    fn drop(&mut self) {}
+}
+
+pub trait InputBackend {
+    fn next_event(&mut self) -> Result<Option<InputEvent>, TestError>;
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static InputBackendVtable
+    where
+        Self: Sized,
+    {
+        &InputBackendVtable {
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+            next_event: Some({
+                unsafe extern "C" fn __trampoline<__T: InputBackend>(
+                    __ud: *mut core::ffi::c_void,
+                    result_is_some: *mut bool,
+                    result: *mut <InputEvent as FfiType>::CRepr,
+                    err_out: *mut *mut core::ffi::c_void,
+                ) -> ffier::FfierResult {
+                    let __val = unsafe { &mut *(__ud as *mut __T) };
+                    let __result = __val.next_event();
+                    match __result {
+                        Ok(Some(__ok)) => {
+                            unsafe {
+                                result_is_some.write(true);
+                                result.write(<InputEvent as FfiType>::into_c(__ok));
+                            }
+                            0
+                        }
+                        Ok(None) => {
+                            unsafe { result_is_some.write(false) };
+                            0
+                        }
+                        Err(__e) => {
+                            unsafe {
+                                *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void
+                            };
+                            ffier::ffier_result(16777217, 1)
+                        }
+                    }
+                }
+                __trampoline::<Self>
+            }),
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static InputBackendVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        let vtable_size: u16 = core::mem::size_of::<InputBackendVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            16777248u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const InputBackendVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct InputBackendVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub next_event: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *mut bool,
+            *mut <InputEvent as FfiType>::CRepr,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult,
+    >,
+}
+
+pub struct VtableInputBackend(*mut core::ffi::c_void);
+
+impl VtableInputBackend {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableInputBackend {
     fn drop(&mut self) {}
 }
 
@@ -3604,6 +4134,102 @@ impl Categorizable for Orange {
     }
 }
 
+unsafe extern "C" {
+    pub fn ft_event_queue_poll_event(
+        handle: *mut core::ffi::c_void,
+        result: *mut <InputEvent as FfiType>::CRepr,
+    ) -> bool;
+    pub fn ft_event_queue_device_ids(
+        handle: *mut core::ffi::c_void,
+    ) -> <InputDeviceIds as FfiType>::CRepr;
+    pub fn ft_event_queue_abs_info(
+        handle: *mut core::ffi::c_void,
+    ) -> *const <InputAbsInfo as FfiType>::CRepr;
+    pub fn ft_event_queue_abs_info_mut(
+        handle: *mut core::ffi::c_void,
+    ) -> *mut <InputAbsInfo as FfiType>::CRepr;
+    pub fn ft_event_queue_optional_abs_info(
+        handle: *mut core::ffi::c_void,
+        available: <bool as FfiType>::CRepr,
+    ) -> *const <InputAbsInfo as FfiType>::CRepr;
+    pub fn ft_event_queue_submit_event(
+        handle: *mut core::ffi::c_void,
+        event: <InputEvent as FfiType>::CRepr,
+    );
+}
+
+impl InputSource for EventQueue {
+    fn poll_event(&mut self) -> Option<InputEvent> {
+        let mut __result = core::mem::MaybeUninit::<<InputEvent as FfiType>::CRepr>::uninit();
+        let __is_some = unsafe { ft_event_queue_poll_event(self.0, __result.as_mut_ptr()) };
+        if __is_some {
+            Some(unsafe { <InputEvent as FfiType>::from_c(__result.assume_init()) })
+        } else {
+            None
+        }
+    }
+    fn device_ids(&self) -> InputDeviceIds {
+        let __raw = unsafe { ft_event_queue_device_ids(self.0) };
+        unsafe { <InputDeviceIds as FfiType>::from_c(__raw) }
+    }
+    fn abs_info(&self) -> &InputAbsInfo {
+        let __raw = unsafe { ft_event_queue_abs_info(self.0) };
+        unsafe { &*__raw }
+    }
+    fn abs_info_mut(&mut self) -> &mut InputAbsInfo {
+        let __raw = unsafe { ft_event_queue_abs_info_mut(self.0) };
+        unsafe { &mut *__raw }
+    }
+    fn optional_abs_info(&self, available: bool) -> Option<&InputAbsInfo> {
+        let __raw = unsafe {
+            ft_event_queue_optional_abs_info(self.0, <bool as FfiType>::into_c(available))
+        };
+        unsafe { __raw.as_ref() }
+    }
+    fn submit_event(&mut self, event: InputEvent) {
+        unsafe { ft_event_queue_submit_event(self.0, <InputEvent as FfiType>::into_c(event)) }
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_event_queue_next_event(
+        handle: *mut core::ffi::c_void,
+        result_is_some: *mut bool,
+        result: *mut <InputEvent as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+}
+
+impl InputBackend for EventQueue {
+    fn next_event(&mut self) -> Result<Option<InputEvent>, TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __is_some = false;
+        let mut __result = core::mem::MaybeUninit::<<InputEvent as FfiType>::CRepr>::uninit();
+        let __r = unsafe {
+            ft_event_queue_next_event(self.0, &mut __is_some, __result.as_mut_ptr(), &mut __err)
+        };
+        if __r == 0 {
+            if __is_some {
+                Ok(Some(unsafe {
+                    <InputEvent as FfiType>::from_c(__result.assume_init())
+                }))
+            } else {
+                Ok(None)
+            }
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
 #[cfg(feature = "optional-entry")]
 unsafe extern "C" {
     pub fn ft_optional_widget_amplify(
@@ -3770,6 +4396,40 @@ unsafe extern "C" {
 pub fn opaque_ptr_to_int(ptr: *const core::ffi::c_void) -> usize {
     let __raw = unsafe { ft_opaque_ptr_to_int(<*const core::ffi::c_void as FfiType>::into_c(ptr)) };
     unsafe { <usize as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_drain_input_backend(
+        backend: *mut core::ffi::c_void,
+        result: *mut <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+}
+
+pub fn drain_input_backend(backend: impl InputBackend) -> Result<i32, TestError> {
+    let mut __out = std::mem::MaybeUninit::uninit();
+    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+    let __r = unsafe {
+        ft_drain_input_backend(
+            backend.__into_raw_handle(),
+            __out.as_mut_ptr(),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
+    if __r == 0 {
+        Ok(unsafe { <i32 as FfiType>::from_c(__out.assume_init()) })
+    } else {
+        Err(TestError::from_ffi(__r, __err))
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_probe_input_source(source: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn probe_input_source(source: impl InputSource) -> i32 {
+    let __raw = unsafe { ft_probe_input_source(source.__into_raw_handle()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {

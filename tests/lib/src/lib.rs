@@ -1042,6 +1042,185 @@ impl<'a> Snapshot<'a> for Gadget {
 // Foreign trait — tests `extern trait` for traits from external crates
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use foreign_trait_crate::{
+    InputAbsInfo, InputDeviceIds, InputEvent, InputEventFlags, InputEventKind, InputSource,
+};
+
+pub struct EventQueue {
+    events: Vec<InputEvent>,
+    ids: InputDeviceIds,
+    abs: InputAbsInfo,
+    fail_next: bool,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl EventQueue {
+    pub fn new() -> Self {
+        let ids = InputDeviceIds {
+            bus: 3,
+            vendor: 0x1af4,
+            product: 0x0012,
+            version: 1,
+        };
+        Self {
+            events: vec![
+                InputEvent {
+                    device: ids,
+                    kind: InputEventKind::Key,
+                    code: 30,
+                    flags: InputEventFlags::empty(),
+                    value: 1,
+                },
+                InputEvent {
+                    device: ids,
+                    kind: InputEventKind::Absolute,
+                    code: 0,
+                    flags: InputEventFlags::SYNTHETIC,
+                    value: 42,
+                },
+            ],
+            ids,
+            abs: InputAbsInfo {
+                value: 42,
+                minimum: 0,
+                maximum: 255,
+                fuzz: 1,
+                flat: 0,
+                resolution: 4,
+            },
+            fail_next: false,
+        }
+    }
+
+    pub fn pop_event(&mut self) -> Option<InputEvent> {
+        self.events.pop()
+    }
+
+    pub fn echo_event(&self, event: InputEvent) -> InputEvent {
+        event
+    }
+
+    pub fn ids(&self) -> &InputDeviceIds {
+        &self.ids
+    }
+
+    pub fn ids_mut(&mut self) -> &mut InputDeviceIds {
+        &mut self.ids
+    }
+
+    pub fn maybe_ids(&self, available: bool) -> Option<&InputDeviceIds> {
+        available.then_some(&self.ids)
+    }
+
+    pub fn set_ids(&mut self, ids: &InputDeviceIds) {
+        self.ids = *ids;
+    }
+
+    pub fn copy_ids_to(&self, ids: &mut InputDeviceIds) {
+        *ids = self.ids;
+    }
+
+    pub fn optional_ids_vendor(&self, ids: Option<&InputDeviceIds>) -> u16 {
+        ids.map_or(0, |value| value.vendor)
+    }
+
+    pub fn optional_ids_mut(&self, ids: Option<&mut InputDeviceIds>) {
+        if let Some(ids) = ids {
+            ids.vendor = self.ids.vendor;
+        }
+    }
+
+    pub fn event_or_error(&mut self) -> Result<InputEvent, TestError> {
+        self.events.pop().ok_or(TestError::InvalidInput())
+    }
+
+    pub fn fail_next(&mut self) {
+        self.fail_next = true;
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputSource for EventQueue {
+    fn poll_event(&mut self) -> Option<InputEvent> {
+        self.events.pop()
+    }
+
+    fn device_ids(&self) -> InputDeviceIds {
+        self.ids
+    }
+
+    fn abs_info(&self) -> &InputAbsInfo {
+        &self.abs
+    }
+
+    fn abs_info_mut(&mut self) -> &mut InputAbsInfo {
+        &mut self.abs
+    }
+
+    fn optional_abs_info(&self, available: bool) -> Option<&InputAbsInfo> {
+        available.then_some(&self.abs)
+    }
+
+    fn submit_event(&mut self, event: InputEvent) {
+        self.events.push(event);
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait InputBackend {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn next_event(&mut self) -> Result<Option<InputEvent>, TestError>;
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputBackend for EventQueue {
+    fn next_event(&mut self) -> Result<Option<InputEvent>, TestError> {
+        if std::mem::take(&mut self.fail_next) {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.events.pop())
+        }
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn drain_input_backend(mut backend: impl InputBackend) -> Result<i32, TestError> {
+    let mut total = 0;
+    for _ in 0..3 {
+        if let Some(event) = backend.next_event()? {
+            total += event.value;
+        }
+    }
+    Ok(total)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_source(mut source: impl InputSource) -> i32 {
+    let vendor = i32::from(source.device_ids().vendor);
+    let before = source.abs_info().value;
+    source.abs_info_mut().value += 1;
+    let after = source.optional_abs_info(true).map_or(0, |info| info.value);
+    let missing = source.optional_abs_info(false).is_none();
+    source.submit_event(InputEvent {
+        device: source.device_ids(),
+        kind: InputEventKind::Key,
+        code: 12,
+        flags: InputEventFlags::REPEAT,
+        value: 7,
+    });
+    let event = source.poll_event().map_or(0, |event| event.value);
+    let _ = source.poll_event();
+    let _ = source.poll_event();
+    vendor + before + after + event + i32::from(missing)
+}
+
 pub use foreign_trait_crate::Weighable;
 
 #[cfg(feature = "ffi")]
@@ -1384,6 +1563,11 @@ ffier::library_definition!("ft", library_tag = 1,
     trait Categorizable = 29,
     Categorizable for Apple,
     Categorizable for Orange,
+    EventQueue = 30,
+    trait InputSource = 31,
+    InputSource for EventQueue,
+    trait InputBackend = 32,
+    InputBackend for EventQueue,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
@@ -1396,11 +1580,16 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(feature = "optional-entry")]
     crate::optional_api::OptionalWorker for crate::optional_api::OptionalWidget,
     enum LogLevel,
+    enum InputEventKind,
     #[cfg(feature = "optional-entry")]
     enum crate::optional_api::OptionalMode,
     #[cfg(feature = "optional-entry")]
     bitflags crate::optional_api::OptionalFlags,
     bitflags Permissions,
+    bitflags InputEventFlags,
+    value InputDeviceIds,
+    value InputAbsInfo,
+    value InputEvent,
     fn log_level_name,
     fn log_level_is_enabled,
     #[cfg(feature = "optional-entry")]
@@ -1414,6 +1603,8 @@ ffier::library_definition!("ft", library_tag = 1,
     fn sum_gadget_values,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
+    fn drain_input_backend,
+    fn probe_input_source,
     fn apply_foreign_config,
     fn read_foreign_item_score,
     fn double_foreign_item_score,

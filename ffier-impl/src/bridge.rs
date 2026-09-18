@@ -11,9 +11,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
     MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    cfg_predicate_attr, extract_result_ok_type, is_result_ok_handle, peek_meta_field,
-    peek_meta_tag,
+    MetaReturn, MetaTraitImpl, MetaTypePair, MetaValueStruct, ValueTypeUse, camel_to_snake,
+    camel_to_upper_snake, cfg_predicate_attr, classify_value_type, extract_result_ok_type,
+    is_result_ok_handle, peek_meta_field, peek_meta_tag, value_inner_type,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -138,6 +138,7 @@ fn generate_one(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
@@ -148,8 +149,14 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code =
-                generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            let code = generate_exportable_bridge(
+                meta,
+                trait_map,
+                error_map,
+                handle_types,
+                value_types,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
         "exported_error" => {
@@ -174,11 +181,17 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code =
-                generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            let code = generate_trait_impl_bridge(
+                meta,
+                trait_map,
+                error_map,
+                handle_types,
+                value_types,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
-        "exported_enum" | "exported_bitflags" => {
+        "exported_enum" | "exported_bitflags" | "exported_value" => {
             // No bridge code needed — enums/bitflags are value types passed by value.
             quote! {}
         }
@@ -188,7 +201,14 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code = generate_free_fn_bridge(meta, error_map, handle_types, trait_map, lib_crate);
+            let code = generate_free_fn_bridge(
+                meta,
+                error_map,
+                handle_types,
+                value_types,
+                trait_map,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
         _ => {
@@ -220,6 +240,87 @@ fn unwrap_literal(tt: Option<proc_macro2::TokenTree>) -> Option<String> {
 /// Input: `{ @tag, ... } { @tag, ... } ...` — multiple brace-delimited items.
 /// Sorts into errors → exportables → implementables → trait_impls, generates
 /// bridge code for each.
+fn type_has_value(ty: &syn::Type, value_names: &HashSet<String>) -> bool {
+    match ty {
+        syn::Type::Path(path) => path.path.segments.iter().any(|segment| {
+            value_names.contains(&segment.ident.to_string())
+                || match &segment.arguments {
+                    syn::PathArguments::AngleBracketed(args) => args.args.iter().any(|arg| {
+                        matches!(arg, syn::GenericArgument::Type(inner) if type_has_value(inner, value_names))
+                    }),
+                    _ => false,
+                }
+        }),
+        syn::Type::Reference(reference) => type_has_value(&reference.elem, value_names),
+        syn::Type::Slice(slice) => type_has_value(&slice.elem, value_names),
+        syn::Type::Array(array) => type_has_value(&array.elem, value_names),
+        _ => false,
+    }
+}
+
+fn type_contains_value(tokens: &TokenStream2, value_names: &HashSet<String>) -> bool {
+    syn::parse2::<syn::Type>(tokens.clone())
+        .ok()
+        .is_some_and(|ty| type_has_value(&ty, value_names))
+}
+
+fn option_inner_type(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    match args.args.first()? {
+        syn::GenericArgument::Type(inner) => Some(inner),
+        _ => None,
+    }
+}
+
+fn invalid_value_shape(
+    tokens: &TokenStream2,
+    value_names: &HashSet<String>,
+    return_position: bool,
+) -> Option<&'static str> {
+    fn inspect(
+        ty: &syn::Type,
+        value_names: &HashSet<String>,
+        return_position: bool,
+    ) -> Option<&'static str> {
+        if let Some(inner) = option_inner_type(ty) {
+            if option_inner_type(inner).is_some() && type_has_value(inner, value_names) {
+                return Some(
+                    "nested Option<Option<ValueStruct>> is not supported; use a single return-only optional value",
+                );
+            }
+            if !return_position
+                && matches!(inner, syn::Type::Path(path) if path.path.segments.last().is_some_and(|segment| value_names.contains(&segment.ident.to_string())))
+            {
+                return Some(
+                    "Option<ValueStruct> is supported only in return positions; pass a reference or nullable Option<&ValueStruct> instead",
+                );
+            }
+            return inspect(inner, value_names, return_position);
+        }
+        match ty {
+            syn::Type::Reference(reference) => {
+                inspect(&reference.elem, value_names, return_position)
+            }
+            syn::Type::Slice(slice) if type_has_value(&slice.elem, value_names) => Some(
+                "value-struct slices are not supported; pass a value struct by reference or return an optional value",
+            ),
+            _ => None,
+        }
+    }
+
+    let ty = syn::parse2::<syn::Type>(tokens.clone()).ok()?;
+    inspect(&ty, value_names, return_position)
+}
+
 pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Parse @lib_crate = path; @primitives_prefix = "..."; from chain macro
     let mut iter = input.into_iter().peekable();
@@ -312,6 +413,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let mut trait_impls = Vec::new();
     let mut enum_constants = Vec::new();
     let mut bitflags_constants = Vec::new();
+    let mut value_structs = Vec::new();
     let mut free_fns = Vec::new();
 
     for item in &items {
@@ -322,11 +424,137 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             "exported_trait_impl" => trait_impls.push(item.clone()),
             "exported_enum" => enum_constants.push(item.clone()),
             "exported_bitflags" => bitflags_constants.push(item.clone()),
+            "exported_value" => value_structs.push(item.clone()),
             "exported_fn" => free_fns.push(item.clone()),
             tag => {
                 let msg = format!("unknown metadata tag `@{tag}` in batch");
                 return quote! { compile_error!(#msg); };
             }
+        }
+    }
+
+    // Value-struct fields must themselves have a stable inline ABI.
+    let value_names: HashSet<String> = value_structs
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaValueStruct>(item.clone()).ok())
+        .map(|meta| meta.name.to_string())
+        .collect();
+    let enum_names: HashSet<String> = enum_constants
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaEnum>(item.clone()).ok())
+        .map(|meta| meta.name.to_string())
+        .collect();
+    let bitflags_names: HashSet<String> = bitflags_constants
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaBitflags>(item.clone()).ok())
+        .map(|meta| meta.name.to_string())
+        .collect();
+    const VALUE_SCALARS: &[&str] = &[
+        "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "isize", "usize",
+        "bool",
+    ];
+    for item in &value_structs {
+        let meta: MetaValueStruct = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        for field in &meta.fields {
+            let ty: syn::Type = match syn::parse2(field.rust_type.clone()) {
+                Ok(ty) => ty,
+                Err(error) => return error.to_compile_error(),
+            };
+            let type_name = match ty {
+                syn::Type::Path(ref path) => path
+                    .path
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident.to_string())
+                    .unwrap_or_default(),
+                _ => String::new(),
+            };
+            let allowed = VALUE_SCALARS.contains(&type_name.as_str())
+                || value_names.contains(&type_name)
+                || enum_names.contains(&type_name)
+                || bitflags_names.contains(&type_name);
+            if !allowed {
+                let struct_name = meta.name.to_string();
+                let field_name = field.name.to_string();
+                let msg = format!(
+                    "ffier value struct `{struct_name}` field `{field_name}` has unsupported type `{type_name}`; expected an FFI scalar or a registered enum, bitflags, or value struct"
+                );
+                return quote! { compile_error!(#msg); };
+            }
+        }
+    }
+
+    // Validate all uses before emitting signatures. This keeps unsupported
+    // value-struct shapes from surfacing as unrelated missing-FfiType errors.
+    let validate_methods = |methods: &[MetaMethod]| -> Option<TokenStream2> {
+        for method in methods {
+            for param in &method.params {
+                let (tokens, is_slice) = match &param.kind {
+                    MetaParamKind::Regular(pair) => (&pair.rust_type, false),
+                    MetaParamKind::HandleSlice(pair) | MetaParamKind::PrimitiveSlice(pair) => {
+                        (&pair.rust_type, true)
+                    }
+                    _ => continue,
+                };
+                if is_slice && type_contains_value(tokens, &value_names) {
+                    return Some(
+                        quote! { compile_error!("value-struct slices are not supported; pass a value struct by reference or return an optional value"); },
+                    );
+                }
+                if let Some(message) = invalid_value_shape(tokens, &value_names, false) {
+                    return Some(quote! { compile_error!(#message); });
+                }
+            }
+            let ret_pair = match &method.ret {
+                MetaReturn::Value(pair) | MetaReturn::HandleSlice { types: pair, .. } => Some(pair),
+                MetaReturn::Result { ok, .. } => ok.as_ref(),
+                MetaReturn::Void => None,
+            };
+            if let Some(pair) = ret_pair
+                && let Some(message) = invalid_value_shape(&pair.rust_type, &value_names, true)
+            {
+                return Some(quote! { compile_error!(#message); });
+            }
+        }
+        None
+    };
+    for item in &exportables {
+        let meta: MetaExportable = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        if let Some(error) = validate_methods(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &implementables {
+        let meta: MetaImplementable = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        if let Some(error) = validate_methods(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &trait_impls {
+        let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        if let Some(error) = validate_methods(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &free_fns {
+        let meta: MetaFreeFunction = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        if let Some(error) = validate_methods(&meta.methods) {
+            return error;
         }
     }
 
@@ -515,6 +743,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
         .chain(bitflags_constants.iter())
+        .chain(value_structs.iter())
         .chain(free_fns.iter())
     {
         all_code.push(generate_one(
@@ -522,6 +751,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             &trait_map,
             &error_map,
             &handle_types,
+            &value_names,
             &lib_crate,
         ));
     }
@@ -534,6 +764,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
         .chain(bitflags_constants.iter())
+        .chain(value_structs.iter())
         .chain(free_fns.iter())
         .next()
         .map(|item| peek_meta_field(item, "prefix"))
@@ -573,6 +804,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 &trait_map,
                 &error_map,
                 &handle_types,
+                &value_names,
                 &lib_crate,
             );
             all_code.push(wrap_cfg(cfg_attr, code));
@@ -603,6 +835,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         &trait_impls,
         &enum_constants,
         &bitflags_constants,
+        &value_structs,
         &free_fns,
     );
 
@@ -794,6 +1027,7 @@ fn generate_exportable_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
@@ -824,7 +1058,7 @@ fn generate_exportable_bridge(
         let is_builder = m.is_builder();
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
@@ -874,7 +1108,14 @@ fn generate_exportable_bridge(
         };
 
         // Shared param conversion + impl Trait dispatch.
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            value_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };
@@ -914,6 +1155,7 @@ fn generate_exportable_bridge(
             &m.ret,
             &m.rust_ret,
             handle_types,
+            value_types,
             error_map,
             builder_ctx.as_ref(),
             lib_crate,
@@ -1009,6 +1251,7 @@ fn convert_params(
     c_sig: &CExternSignature,
     ffi_name_str: &str,
     trait_map: &TraitMap,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> Result<ConvertedParams, TokenStream2> {
     // Collect all impl Trait params with their dispatch info.
@@ -1108,7 +1351,8 @@ fn convert_params(
                         .find(|cp| cp.name == len_name)
                         .expect("Slice param must have _len param in c_sig")
                         .name;
-                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
+                    let binding =
+                        meta_param_conversion(id, &p.kind, Some(len_id), value_types, lib_crate);
                     let vec_id = format_ident!("__{id}_vec");
                     pre_bindings.push(quote! { let #vec_id = #binding; });
                     quote! { &#vec_id }
@@ -1121,14 +1365,15 @@ fn convert_params(
                         .find(|cp| cp.name == len_name)
                         .expect("Slice param must have _len param in c_sig")
                         .name;
-                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
+                    let binding =
+                        meta_param_conversion(id, &p.kind, Some(len_id), value_types, lib_crate);
                     let slice_id = format_ident!("__{id}_slice");
                     pre_bindings.push(quote! { let #slice_id = #binding; });
                     // Already &[T] from from_raw_parts, pass directly.
                     quote! { #slice_id }
                 }
                 MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
-                    let binding = meta_param_conversion(id, &p.kind, None, lib_crate);
+                    let binding = meta_param_conversion(id, &p.kind, None, value_types, lib_crate);
                     let foreign_id = format_ident!("__{id}_foreign");
                     pre_bindings.push(binding);
                     // Check if the bridge_type is a reference — if so, borrow the
@@ -1143,7 +1388,7 @@ fn convert_params(
                         _ => quote! { #foreign_id },
                     }
                 }
-                other => meta_param_conversion(id, other, None, lib_crate),
+                other => meta_param_conversion(id, other, None, value_types, lib_crate),
             }
         })
         .collect();
@@ -1352,6 +1597,7 @@ fn generate_free_fn_bridge(
     meta: MetaFreeFunction,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     trait_map: &TraitMap,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
@@ -1364,10 +1610,17 @@ fn generate_free_fn_bridge(
     let ffi_name = format_ident!("{}", ffi_name_str);
 
     // Use the same signature builder as methods.
-    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
     // Shared param conversion + impl Trait dispatch.
-    let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+    let cp = match convert_params(
+        &m.params,
+        &c_sig,
+        &ffi_name_str,
+        trait_map,
+        value_types,
+        lib_crate,
+    ) {
         Ok(cp) => cp,
         Err(err) => return err,
     };
@@ -1392,6 +1645,7 @@ fn generate_free_fn_bridge(
         &m.ret,
         &m.rust_ret,
         handle_types,
+        value_types,
         error_map,
         None,
         lib_crate,
@@ -1457,11 +1711,13 @@ struct BuilderCtx<'a> {
 /// This is the single source of truth for "given an expression that evaluates
 /// to the Rust return type, produce tokens that convert it to the C return".
 /// Used by exported methods, free functions, and trait dispatch.
+#[allow(clippy::too_many_arguments)]
 fn wrap_return(
     call_expr: TokenStream2,
     ret: &MetaReturn,
     rust_ret: &TokenStream2,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     error_map: &ErrorMap,
     builder: Option<&BuilderCtx>,
     lib_crate: &TokenStream2,
@@ -1481,6 +1737,44 @@ fn wrap_return(
             }
         }
         MetaReturn::Value(tp) => {
+            if let Some(value_use) = classify_value_type(&tp.rust_type, value_types) {
+                let inner = value_inner_type(&tp.bridge_type).expect("value return has inner type");
+                return match value_use {
+                    ValueTypeUse::Value => quote! {
+                        let value = #call_expr;
+                        value
+                    },
+                    ValueTypeUse::SharedRef => {
+                        quote! { (#call_expr) as *const #inner }
+                    }
+                    ValueTypeUse::MutRef => {
+                        quote! { (#call_expr) as *mut #inner }
+                    }
+                    ValueTypeUse::OptionalSharedRef => quote! {
+                        match #call_expr {
+                            Some(value) => value as *const #inner,
+                            None => core::ptr::null(),
+                        }
+                    },
+                    ValueTypeUse::OptionalMutRef => quote! {
+                        match #call_expr {
+                            Some(value) => value as *mut #inner,
+                            None => core::ptr::null_mut(),
+                        }
+                    },
+                    ValueTypeUse::OptionalValue => quote! {
+                        match #call_expr {
+                            Some(value) => {
+                                unsafe {
+                                    result.write(value);
+                                }
+                                true
+                            }
+                            None => false,
+                        }
+                    },
+                };
+            }
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
             let rust_ty = syn::parse2::<syn::Type>(rust_ret.clone()).ok();
@@ -1550,6 +1844,9 @@ fn wrap_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
+            let ok_value_use = ok
+                .as_ref()
+                .and_then(|tp| classify_value_type(&tp.rust_type, value_types));
             // A foreign ok type is always a handle.
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle =
@@ -1585,7 +1882,31 @@ fn wrap_return(
                 .map(|tp| resolve_trait_crate(tp, lib_crate))
                 .unwrap_or(lib_crate);
 
-            if ok_is_handle && !ok_is_borrowed_handle {
+            if ok_value_use == Some(ValueTypeUse::OptionalValue) {
+                quote! {
+                    match #call_expr {
+                        Ok(Some(value)) => {
+                            unsafe {
+                                result_is_some.write(true);
+                                result.write(value);
+                            }
+                            ffier::FFIER_RESULT_SUCCESS
+                        }
+                        Ok(None) => {
+                            unsafe { result_is_some.write(false) };
+                            ffier::FFIER_RESULT_SUCCESS
+                        }
+                        Err(e) => {
+                            let __r = ffier::ffier_result(
+                                #err_type_tag,
+                                #lib_crate::FfiError::code(&e),
+                            );
+                            #box_expr
+                            __r
+                        }
+                    }
+                }
+            } else if ok_is_handle && !ok_is_borrowed_handle {
                 // Return owned handle directly, NULL on error.
                 quote! {
                     match #call_expr {
@@ -1618,12 +1939,67 @@ fn wrap_return(
             } else {
                 let ok_branch = match ok {
                     Some(tp) => {
+                        let value_use = classify_value_type(&tp.rust_type, value_types);
                         let bridge_type = &tp.bridge_type;
-                        quote! {
-                            Ok(ok_val) => {
-                                unsafe { result.write(<#bridge_type as #ok_tc::FfiType>::into_c(ok_val)) };
-                                ffier::FFIER_RESULT_SUCCESS
+                        match value_use {
+                            Some(ValueTypeUse::SharedRef) => {
+                                let inner = value_inner_type(bridge_type).unwrap();
+                                quote! {
+                                    Ok(ok_val) => {
+                                        unsafe { result.write(ok_val as *const #inner) };
+                                        ffier::FFIER_RESULT_SUCCESS
+                                    }
+                                }
                             }
+                            Some(ValueTypeUse::MutRef) => {
+                                let inner = value_inner_type(bridge_type).unwrap();
+                                quote! {
+                                    Ok(ok_val) => {
+                                        unsafe { result.write(ok_val as *mut #inner) };
+                                        ffier::FFIER_RESULT_SUCCESS
+                                    }
+                                }
+                            }
+                            Some(ValueTypeUse::OptionalSharedRef) => {
+                                let inner = value_inner_type(bridge_type).unwrap();
+                                quote! {
+                                    Ok(ok_val) => {
+                                        unsafe {
+                                            result.write(ok_val.map_or(
+                                                core::ptr::null(),
+                                                |value| value as *const #inner,
+                                            ))
+                                        };
+                                        ffier::FFIER_RESULT_SUCCESS
+                                    }
+                                }
+                            }
+                            Some(ValueTypeUse::OptionalMutRef) => {
+                                let inner = value_inner_type(bridge_type).unwrap();
+                                quote! {
+                                    Ok(ok_val) => {
+                                        unsafe {
+                                            result.write(ok_val.map_or(
+                                                core::ptr::null_mut(),
+                                                |value| value as *mut #inner,
+                                            ))
+                                        };
+                                        ffier::FFIER_RESULT_SUCCESS
+                                    }
+                                }
+                            }
+                            Some(ValueTypeUse::Value) => quote! {
+                                Ok(ok_val) => {
+                                    unsafe { result.write(ok_val) };
+                                    ffier::FFIER_RESULT_SUCCESS
+                                }
+                            },
+                            _ => quote! {
+                                Ok(ok_val) => {
+                                    unsafe { result.write(<#bridge_type as #ok_tc::FfiType>::into_c(ok_val)) };
+                                    ffier::FFIER_RESULT_SUCCESS
+                                }
+                            },
                         }
                     }
                     None if builder.is_some_and(|b| b.is_by_value) => {
@@ -1699,6 +2075,7 @@ fn c_signature_for_method(
     method: &MetaMethod,
     prefix: &str,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name());
@@ -1727,7 +2104,7 @@ fn c_signature_for_method(
         ) {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, lib_crate),
+                c_type: c_param_type(&p.kind, value_types, lib_crate),
             });
             params.push(CExternParam {
                 name: format_ident!("{}_len", p.name),
@@ -1736,7 +2113,7 @@ fn c_signature_for_method(
         } else {
             params.push(CExternParam {
                 name: p.name.clone(),
-                c_type: c_param_type(&p.kind, lib_crate),
+                c_type: c_param_type(&p.kind, value_types, lib_crate),
             });
         }
     }
@@ -1744,17 +2121,30 @@ fn c_signature_for_method(
     // Return type + out-param for handle returns or Result
     let ret = match &method.ret {
         MetaReturn::Void => quote! {},
-        MetaReturn::Value(_vk) => {
-            // All values (handles and primitives) returned directly.
-            // Handles return *mut c_void, primitives return their CRepr.
-            let ty = c_return_type(_vk, lib_crate);
-            quote! { -> #ty }
+        MetaReturn::Value(vk) => {
+            if classify_value_type(&vk.rust_type, value_types) == Some(ValueTypeUse::OptionalValue)
+            {
+                let inner = value_inner_type(&vk.bridge_type).expect("optional value has inner");
+                params.push(CExternParam {
+                    name: format_ident!("result"),
+                    c_type: quote! { *mut #inner },
+                });
+                quote! { -> bool }
+            } else {
+                // All values (handles and primitives) returned directly.
+                // Handles return *mut c_void, primitives return their CRepr.
+                let ty = c_return_type(vk, value_types, lib_crate);
+                quote! { -> #ty }
+            }
         }
         MetaReturn::HandleSlice { .. } => {
             // &[&T] or &[T] where T is a handle — return FfierObjectArray by value.
             quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
+            let optional_value = ok.as_ref().is_some_and(|tp| {
+                classify_value_type(&tp.rust_type, value_types) == Some(ValueTypeUse::OptionalValue)
+            });
             // Foreign ok types are always handles (handle-or-null).
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle = ok_is_foreign
@@ -1772,7 +2162,23 @@ fn c_signature_for_method(
             let is_builder_self_result =
                 method.is_builder() && method.receiver == MetaReceiver::Value;
 
-            if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
+            if optional_value {
+                let value = ok.as_ref().expect("optional value result has ok type");
+                let inner = value_inner_type(&value.bridge_type).expect("optional value has inner");
+                params.push(CExternParam {
+                    name: format_ident!("result_is_some"),
+                    c_type: quote! { *mut bool },
+                });
+                params.push(CExternParam {
+                    name: format_ident!("result"),
+                    c_type: quote! { *mut #inner },
+                });
+                params.push(CExternParam {
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
+                });
+                quote! { -> ffier::FfierResult }
+            } else if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
                 // Handle-or-null: return handle directly (NULL on error).
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
@@ -1787,7 +2193,7 @@ fn c_signature_for_method(
                 if !is_builder_self_result && let Some(vk) = ok {
                     params.push(CExternParam {
                         name: format_ident!("result"),
-                        c_type: c_out_param_type(vk, lib_crate),
+                        c_type: c_out_param_type(vk, value_types, lib_crate),
                     });
                 }
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
@@ -1814,9 +2220,30 @@ fn resolve_trait_crate<'a>(tp: &'a MetaTypePair, lib_crate: &'a TokenStream2) ->
 }
 
 /// Produce the C type tokens for a parameter kind.
-fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 {
+fn c_param_type(
+    kind: &MetaParamKind,
+    value_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
     match kind {
         MetaParamKind::Regular(tp) => {
+            if let Some(value_use) = classify_value_type(&tp.rust_type, value_types) {
+                let inner = value_inner_type(&tp.bridge_type).expect("value type has inner type");
+                return match value_use {
+                    ValueTypeUse::SharedRef | ValueTypeUse::OptionalSharedRef => {
+                        quote! { *const #inner }
+                    }
+                    ValueTypeUse::MutRef | ValueTypeUse::OptionalMutRef => {
+                        quote! { *mut #inner }
+                    }
+                    ValueTypeUse::OptionalValue => {
+                        quote! { compile_error!("Option<ValueStruct> is supported only in return position") }
+                    }
+                    ValueTypeUse::Value => {
+                        quote! { #inner }
+                    }
+                };
+            }
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
             quote! { <#bridge_type as #tc::FfiType>::CRepr }
@@ -1833,15 +2260,37 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
 }
 
 /// Produce the C return type tokens for a value kind.
-fn c_return_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
+fn c_return_type(
+    kind: &MetaTypePair,
+    value_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    if let Some(value_use) = classify_value_type(&kind.rust_type, value_types) {
+        let inner = value_inner_type(&kind.bridge_type).expect("value type has inner");
+        return match value_use {
+            ValueTypeUse::SharedRef | ValueTypeUse::OptionalSharedRef => {
+                quote! { *const #inner }
+            }
+            ValueTypeUse::MutRef | ValueTypeUse::OptionalMutRef => {
+                quote! { *mut #inner }
+            }
+            ValueTypeUse::Value | ValueTypeUse::OptionalValue => {
+                quote! { #inner }
+            }
+        };
+    }
     let bridge_type = &kind.bridge_type;
     let tc = resolve_trait_crate(kind, lib_crate);
     quote! { <#bridge_type as #tc::FfiType>::CRepr }
 }
 
 /// Produce the C type for a Result ok-value out-parameter.
-fn c_out_param_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
-    let inner = c_return_type(kind, lib_crate);
+fn c_out_param_type(
+    kind: &MetaTypePair,
+    value_types: &HashSet<String>,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    let inner = c_return_type(kind, value_types, lib_crate);
     quote! { *mut #inner }
 }
 
@@ -1849,6 +2298,7 @@ fn meta_param_conversion(
     id: &syn::Ident,
     kind: &MetaParamKind,
     len_ident: Option<&syn::Ident>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match kind {
@@ -1913,6 +2363,24 @@ fn meta_param_conversion(
             }
         }
         MetaParamKind::Regular(tp) => {
+            if let Some(value_use) = classify_value_type(&tp.rust_type, value_types) {
+                return match value_use {
+                    ValueTypeUse::Value => {
+                        quote! { #id }
+                    }
+                    ValueTypeUse::SharedRef => quote! { unsafe { &*#id } },
+                    ValueTypeUse::MutRef => quote! { unsafe { &mut *#id } },
+                    ValueTypeUse::OptionalSharedRef => quote! {
+                        if #id.is_null() { None } else { Some(unsafe { &*#id }) }
+                    },
+                    ValueTypeUse::OptionalMutRef => quote! {
+                        if #id.is_null() { None } else { Some(unsafe { &mut *#id }) }
+                    },
+                    ValueTypeUse::OptionalValue => quote! {
+                        compile_error!("Option<ValueStruct> is supported only in return position")
+                    },
+                };
+            }
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
             quote! { unsafe { <#bridge_type as #tc::FfiType>::from_c(#id) } }
@@ -1990,6 +2458,7 @@ fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
 /// int32_t ft_fruit_value(void* handle);
 /// void ft_fruit_destroy(void* handle);
 /// ```
+#[allow(clippy::too_many_arguments)]
 fn generate_self_dispatch_bridge(
     trait_name: &str,
     info: &TraitDispatchInfo,
@@ -1997,6 +2466,7 @@ fn generate_self_dispatch_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let imp = info
@@ -2028,7 +2498,7 @@ fn generate_self_dispatch_bridge(
         // methods that have MetaReceiver::None) because the dispatcher reads
         // the type tag from it. c_signature_for_method only adds handle for
         // methods with a receiver, so prepend it when missing.
-        let c_sig = c_signature_for_method(m, prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, prefix, handle_types, value_types, lib_crate);
         let has_receiver = m.receiver != MetaReceiver::None;
         let mut all_params: Vec<(&syn::Ident, &TokenStream2)> = Vec::new();
         let handle_name = format_ident!("handle");
@@ -2044,7 +2514,14 @@ fn generate_self_dispatch_bridge(
         let sig_ret = &c_sig.ret;
 
         // Shared param conversion (same as exported methods / free functions).
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            value_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };
@@ -2091,6 +2568,7 @@ fn generate_self_dispatch_bridge(
                                 &m.ret,
                                 &m.rust_ret,
                                 handle_types,
+                                value_types,
                                 error_map,
                                 None,
                                 lib_crate,
@@ -2140,6 +2618,7 @@ fn generate_self_dispatch_bridge(
                     &m.ret,
                     &m.rust_ret,
                     handle_types,
+                    value_types,
                     error_map,
                     None,
                     lib_crate,
@@ -2218,6 +2697,7 @@ fn generate_trait_impl_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
@@ -2243,13 +2723,20 @@ fn generate_trait_impl_bridge(
         let ffi_name = format_ident!("{ffi_name_str}");
 
         // Use shared signature builder + return wrapper
-        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
         let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
         let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
         let sig_ret = &c_sig.ret;
 
         // Shared param conversion
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            value_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };
@@ -2276,6 +2763,7 @@ fn generate_trait_impl_bridge(
             &m.ret,
             &m.rust_ret,
             handle_types,
+            value_types,
             error_map,
             None,
             lib_crate,
@@ -2318,6 +2806,7 @@ fn emit_json(
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
+    value_structs: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) {
     let path = std::path::PathBuf::from(schema_output);
@@ -2340,6 +2829,7 @@ fn emit_json(
         trait_impls,
         enum_constants,
         bitflags_constants,
+        value_structs,
         free_fns,
     );
     let json = library.to_json();
@@ -2621,6 +3111,7 @@ fn build_schema(
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
+    value_structs: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) -> ffier_schema::Library {
     let errors_parsed: Vec<_> = errors
@@ -2662,6 +3153,13 @@ fn build_schema(
         .map(|item| {
             syn::parse2::<MetaBitflags>(item.clone())
                 .expect("failed to parse @exported_bitflags metadata")
+        })
+        .collect();
+    let value_structs_parsed: Vec<_> = value_structs
+        .iter()
+        .map(|item| {
+            syn::parse2::<MetaValueStruct>(item.clone())
+                .expect("failed to parse @exported_value metadata")
         })
         .collect();
     let free_fns_parsed: Vec<_> = free_fns
@@ -2904,6 +3402,22 @@ fn build_schema(
         );
     }
 
+    // Fixed-layout value structs.
+    for value in &value_structs_parsed {
+        let name = value.name.to_string();
+        type_registry.insert(
+            name.clone(),
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::ValueStruct {
+                    c_name: resolver.handle_c_name(&name),
+                },
+                type_tag: None,
+                bless: None,
+                lifetime_params: vec![],
+            },
+        );
+    }
+
     // Handles (exported types)
     for e in &exportables_parsed {
         let name = e.struct_name.to_string();
@@ -3051,6 +3565,10 @@ fn build_schema(
         .iter()
         .map(|e| convert_exportable(e, &resolver, &handle_types, &type_registry))
         .collect();
+    let value_structs: Vec<_> = value_structs_parsed
+        .iter()
+        .map(|value| convert_value_struct(value, &resolver))
+        .collect();
     let errors: Vec<_> = errors_parsed
         .iter()
         .map(|e| convert_error(e, &resolver))
@@ -3081,6 +3599,7 @@ fn build_schema(
         primitives_prefix: primitives_prefix.map(|s| s.to_string()),
         type_registry,
         exported_types,
+        value_structs,
         errors,
         enum_constants,
         bitflags_constants,
@@ -3097,6 +3616,23 @@ fn build_schema(
 /// one legitimate point where the predicate is turned into text.
 fn cfg_to_schema_string(cfg: Option<&TokenStream2>) -> Option<String> {
     cfg.map(|ts| ts.to_string())
+}
+
+fn convert_value_struct(meta: &MetaValueStruct, r: &CTypeResolver) -> ffier_schema::ValueStruct {
+    let name = meta.name.to_string();
+    ffier_schema::ValueStruct {
+        c_name: r.handle_c_name(&name),
+        name,
+        fields: meta
+            .fields
+            .iter()
+            .map(|field| ffier_schema::ValueField {
+                name: field.name.to_string(),
+                type_ref: r.type_ref_from_tokens(&field.rust_type),
+            })
+            .collect(),
+        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+    }
 }
 
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
@@ -3164,7 +3700,7 @@ fn convert_free_fn(
             .iter()
             .map(|p| convert_param(p, r, type_registry))
             .collect(),
-        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
+        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types, type_registry),
         cfg: cfg_to_schema_string(cfg),
     }
 }
@@ -3303,6 +3839,7 @@ fn convert_method(
         r,
         meta.is_builder(),
         handle_types,
+        type_registry,
     );
 
     ffier_schema::Method {
@@ -3466,6 +4003,7 @@ fn convert_return(
     r: &CTypeResolver,
     is_builder: bool,
     handle_types: &HashSet<String>,
+    type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
 ) -> ffier_schema::Return {
     match ret {
         MetaReturn::Void if is_builder => {
@@ -3473,7 +4011,20 @@ fn convert_return(
             ffier_schema::Return::Value(builder_self_type_ref())
         }
         MetaReturn::Void => ffier_schema::Return::Void,
-        MetaReturn::Value(tp) => ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)),
+        MetaReturn::Value(tp) => {
+            let mut value = r.type_ref_from_tokens(&tp.rust_type);
+            let is_optional_value = value.optional
+                && value.ref_kind == ffier_schema::RefKind::None
+                && type_registry.get(&value.type_name).is_some_and(|entry| {
+                    matches!(entry.kind, ffier_schema::TypeKind::ValueStruct { .. })
+                });
+            if is_optional_value {
+                value.optional = false;
+                ffier_schema::Return::OptionalValue { value }
+            } else {
+                ffier_schema::Return::Value(value)
+            }
+        }
         MetaReturn::HandleSlice { types, .. } => {
             // &[&T] or &[T] → returns FfierObjectArray with element type info.
             ffier_schema::Return::ObjectArray {
@@ -3500,6 +4051,13 @@ fn convert_return(
         }
         MetaReturn::Result { ok, err_ident } => {
             let ok_ref = ok.as_ref().map(|tp| r.type_ref_from_tokens(&tp.rust_type));
+            let optional_value = ok_ref.as_ref().is_some_and(|value| {
+                value.optional
+                    && value.ref_kind == ffier_schema::RefKind::None
+                    && type_registry.get(&value.type_name).is_some_and(|entry| {
+                        matches!(entry.kind, ffier_schema::TypeKind::ValueStruct { .. })
+                    })
+            });
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle =
                 ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
@@ -3512,7 +4070,9 @@ fn convert_return(
             ffier_schema::Return::Result {
                 ok: ok_ref,
                 err_type: err_ident.clone(),
-                c_convention: if ok_is_handle || ok_is_borrowed_handle {
+                c_convention: if optional_value {
+                    ffier_schema::CResultConvention::OptionalValueOutParam
+                } else if ok_is_handle || ok_is_borrowed_handle {
                     ffier_schema::CResultConvention::HandleOrNull
                 } else {
                     ffier_schema::CResultConvention::OutParam
