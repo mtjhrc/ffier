@@ -17,6 +17,137 @@ mod tests {
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
     };
 
+    fn input_event(value: i32) -> api::InputEvent {
+        api::InputEvent {
+            device: api::InputDeviceIds {
+                bus: 3,
+                vendor: 0x1af4,
+                product: 0x12,
+                version: 1,
+            },
+            kind: api::InputEventKind::Key,
+            code: 30,
+            flags: api::InputEventFlags::REPEAT,
+            value,
+        }
+    }
+
+    #[test]
+    fn test_value_struct_roundtrip_and_references() {
+        let mut queue = api::EventQueue::new();
+        let event = input_event(19);
+        assert_eq!(queue.echo_event(event), event);
+        assert_eq!(queue.ids().vendor, 0x1af4);
+        assert!(queue.maybe_ids(false).is_none());
+        assert_eq!(queue.maybe_ids(true).unwrap().product, 0x12);
+
+        let mut ids = event.device;
+        ids.vendor = 2;
+        queue.set_ids(&ids);
+        assert_eq!(queue.ids().vendor, 2);
+        queue.ids_mut().vendor = 5;
+        queue.copy_ids_to(&mut ids);
+        assert_eq!(ids.vendor, 5);
+        assert_eq!(queue.optional_ids_vendor(None), 0);
+        assert_eq!(queue.optional_ids_vendor(Some(&ids)), 5);
+        queue.optional_ids_mut(None);
+        ids.vendor = 0;
+        queue.optional_ids_mut(Some(&mut ids));
+        assert_eq!(ids.vendor, 5);
+    }
+
+    #[test]
+    fn test_optional_value_and_result_paths() {
+        use api::{InputBackend as _, InputSource as _};
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.pop_event().unwrap().value, 42);
+        assert_eq!(queue.pop_event().unwrap().value, 1);
+        assert!(queue.pop_event().is_none());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.poll_event().unwrap().value, 42);
+        assert_eq!(queue.poll_event().unwrap().value, 1);
+        assert!(queue.poll_event().is_none());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.next_event().unwrap().unwrap().value, 42);
+        assert_eq!(queue.next_event().unwrap().unwrap().value, 1);
+        assert!(queue.next_event().unwrap().is_none());
+        queue.fail_next();
+        assert!(queue.next_event().is_err());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.event_or_error().unwrap().value, 42);
+        assert_eq!(queue.event_or_error().unwrap().value, 1);
+        assert!(queue.event_or_error().is_err());
+    }
+
+    struct CallbackBackend {
+        events: Vec<api::InputEvent>,
+    }
+
+    impl api::InputBackend for CallbackBackend {
+        fn next_event(&mut self) -> Result<Option<api::InputEvent>, api::TestError> {
+            Ok(self.events.pop())
+        }
+    }
+
+    struct CallbackSource {
+        events: Vec<api::InputEvent>,
+        ids: api::InputDeviceIds,
+        abs: api::InputAbsInfo,
+    }
+
+    impl api::InputSource for CallbackSource {
+        fn poll_event(&mut self) -> Option<api::InputEvent> {
+            self.events.pop()
+        }
+
+        fn device_ids(&self) -> api::InputDeviceIds {
+            self.ids
+        }
+
+        fn abs_info(&self) -> &api::InputAbsInfo {
+            &self.abs
+        }
+
+        fn abs_info_mut(&mut self) -> &mut api::InputAbsInfo {
+            &mut self.abs
+        }
+
+        fn optional_abs_info(&self, available: bool) -> Option<&api::InputAbsInfo> {
+            available.then_some(&self.abs)
+        }
+
+        fn submit_event(&mut self, event: api::InputEvent) {
+            self.events.push(event);
+        }
+    }
+
+    #[test]
+    fn test_value_struct_vtable_callbacks() {
+        let event = input_event(42);
+        let backend = CallbackBackend {
+            events: vec![input_event(1), event],
+        };
+        assert_eq!(api::drain_input_backend(backend).unwrap(), 43);
+
+        let source = CallbackSource {
+            events: vec![input_event(3)],
+            ids: event.device,
+            abs: api::InputAbsInfo {
+                value: 42,
+                minimum: 0,
+                maximum: 255,
+                fuzz: 0,
+                flat: 0,
+                resolution: 1,
+            },
+        };
+        assert_eq!(api::probe_input_source(source), 6993);
+    }
+
     fn make_widget() -> Widget {
         Widget::new()
     }

@@ -1,8 +1,9 @@
 [package]
-name = "foreign-trait-crate"
+name = "ffier-test-compile-fail"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+
 [dependencies]
-bitflags = "2"
 ffier = { path = "../../ffier" }

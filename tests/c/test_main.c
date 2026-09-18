@@ -5,6 +5,25 @@
 #include <unistd.h>
 #include "ffier_test.h"
 
+_Static_assert(sizeof(FtInputDeviceIds) == 8, "InputDeviceIds size");
+_Static_assert(offsetof(FtInputDeviceIds, bus) == 0, "InputDeviceIds.bus");
+_Static_assert(offsetof(FtInputDeviceIds, vendor) == 2, "InputDeviceIds.vendor");
+_Static_assert(offsetof(FtInputDeviceIds, product) == 4, "InputDeviceIds.product");
+_Static_assert(offsetof(FtInputDeviceIds, version) == 6, "InputDeviceIds.version");
+_Static_assert(sizeof(FtInputAbsInfo) == 24, "InputAbsInfo size");
+_Static_assert(offsetof(FtInputAbsInfo, value) == 0, "InputAbsInfo.value");
+_Static_assert(offsetof(FtInputAbsInfo, minimum) == 4, "InputAbsInfo.minimum");
+_Static_assert(offsetof(FtInputAbsInfo, maximum) == 8, "InputAbsInfo.maximum");
+_Static_assert(offsetof(FtInputAbsInfo, fuzz) == 12, "InputAbsInfo.fuzz");
+_Static_assert(offsetof(FtInputAbsInfo, flat) == 16, "InputAbsInfo.flat");
+_Static_assert(offsetof(FtInputAbsInfo, resolution) == 20, "InputAbsInfo.resolution");
+_Static_assert(sizeof(FtInputEvent) == 24, "InputEvent size");
+_Static_assert(offsetof(FtInputEvent, device) == 0, "InputEvent.device");
+_Static_assert(offsetof(FtInputEvent, kind) == 8, "InputEvent.kind");
+_Static_assert(offsetof(FtInputEvent, code) == 12, "InputEvent.code");
+_Static_assert(offsetof(FtInputEvent, flags) == 16, "InputEvent.flags");
+_Static_assert(offsetof(FtInputEvent, value) == 20, "InputEvent.value");
+
 static int test_count = 0;
 #define RUN_TEST(fn) do { \
     printf("  %s ... ", #fn); \
@@ -507,6 +526,171 @@ void vtable_drop_callback(void) {
 }
 
 /* ===================================================================== */
+/* Fixed-layout values and optional return out-pointers                 */
+/* ===================================================================== */
+
+void value_struct_bridge_roundtrip(void) {
+    FtEventQueue queue = ft_event_queue_new();
+    FtInputEvent event = {
+        .device = { .bus = 3, .vendor = 0x1af4, .product = 0x12, .version = 1 },
+        .kind = FT_INPUT_EVENT_KIND_KEY,
+        .code = 30,
+        .flags = FT_INPUT_EVENT_FLAGS_REPEAT,
+        .value = 19,
+    };
+    FtInputEvent echoed = ft_event_queue_echo_event(queue, event);
+    assert(echoed.device.vendor == 0x1af4);
+    assert(echoed.kind == FT_INPUT_EVENT_KIND_KEY);
+    assert(echoed.flags == FT_INPUT_EVENT_FLAGS_REPEAT);
+    assert(echoed.value == 19);
+
+    const FtInputDeviceIds* ids = ft_event_queue_ids(queue);
+    assert(ids->vendor == 0x1af4);
+    FtInputDeviceIds replacement = *ids;
+    replacement.vendor = 7;
+    ft_event_queue_set_ids(queue, &replacement);
+    assert(ft_event_queue_ids(queue)->vendor == 7);
+    ft_event_queue_ids_mut(queue)->vendor = 9;
+    ft_event_queue_copy_ids_to(queue, &replacement);
+    assert(replacement.vendor == 9);
+    assert(ft_event_queue_maybe_ids(queue, false) == NULL);
+    assert(ft_event_queue_maybe_ids(queue, true)->vendor == 9);
+    assert(ft_event_queue_optional_ids_vendor(queue, NULL) == 0);
+    assert(ft_event_queue_optional_ids_vendor(queue, &replacement) == 9);
+    replacement.vendor = 0;
+    ft_event_queue_optional_ids_mut(queue, &replacement);
+    assert(replacement.vendor == 9);
+    ft_event_queue_optional_ids_mut(queue, NULL);
+
+    FtInputEvent out = { .value = -1 };
+    assert(ft_event_queue_pop_event(queue, &out));
+    assert(out.value == 42);
+    assert(ft_event_queue_pop_event(queue, &out));
+    assert(out.value == 1);
+    assert(!ft_event_queue_pop_event(queue, &out));
+    assert(out.value == 1); /* None leaves the output untouched. */
+    ft_event_queue_destroy(queue);
+}
+
+void optional_value_result_bridge(void) {
+    FtEventQueue queue = ft_event_queue_new();
+    bool is_some = false;
+    FtInputEvent out = { .value = -1 };
+    FtError error = NULL;
+    FtResult status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status == FT_RESULT_SUCCESS && is_some && out.value == 42);
+    status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status == FT_RESULT_SUCCESS && is_some && out.value == 1);
+    status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status == FT_RESULT_SUCCESS && !is_some && out.value == 1);
+    ft_event_queue_fail_next(queue);
+    status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status != FT_RESULT_SUCCESS && error != NULL);
+    ft_error_destroy(error);
+    ft_event_queue_destroy(queue);
+}
+
+typedef struct {
+    int calls;
+    FtInputDeviceIds ids;
+    FtInputAbsInfo abs;
+    FtInputEvent submitted;
+} InputCallbackState;
+
+static FtResult callback_next_event(void* data, bool* is_some, FtInputEvent* result, FtError* error) {
+    (void)error;
+    InputCallbackState* state = data;
+    if (state->calls++ == 0) {
+        *is_some = true;
+        *result = (FtInputEvent) { .device = state->ids, .kind = FT_INPUT_EVENT_KIND_KEY,
+            .code = 30, .flags = 0, .value = 42 };
+    } else if (state->calls == 2) {
+        *is_some = true;
+        *result = (FtInputEvent) { .device = state->ids, .kind = FT_INPUT_EVENT_KIND_KEY,
+            .code = 31, .flags = 0, .value = 1 };
+    } else {
+        *is_some = false;
+    }
+    return FT_RESULT_SUCCESS;
+}
+
+static bool callback_poll_event(void* data, FtInputEvent* result) {
+    InputCallbackState* state = data;
+    if (state->calls++ == 0) {
+        *result = state->submitted;
+        return true;
+    }
+    return false;
+}
+
+static FtInputDeviceIds callback_device_ids(void* data) {
+    return ((InputCallbackState*)data)->ids;
+}
+
+static const FtInputAbsInfo* callback_abs_info(void* data) {
+    return &((InputCallbackState*)data)->abs;
+}
+
+static FtInputAbsInfo* callback_abs_info_mut(void* data) {
+    return &((InputCallbackState*)data)->abs;
+}
+
+static const FtInputAbsInfo* callback_optional_abs_info(void* data, bool available) {
+    return available ? &((InputCallbackState*)data)->abs : NULL;
+}
+
+static void callback_submit_event(void* data, FtInputEvent event) {
+    ((InputCallbackState*)data)->submitted = event;
+}
+
+static void* make_input_handle(uint32_t tag, const void* vtable, size_t vtable_size, void* data) {
+    struct {
+        uint32_t type_tag;
+        uint32_t metadata;
+        const void* vtable_ptr;
+        const void* user_data;
+        uint16_t vtable_size;
+    } *handle = malloc(sizeof(*handle));
+    assert(handle != NULL);
+    handle->type_tag = tag;
+    handle->metadata = 0;
+    handle->vtable_ptr = vtable;
+    handle->user_data = data;
+    handle->vtable_size = (uint16_t)vtable_size;
+    return handle;
+}
+
+void value_struct_vtable_callbacks(void) {
+    InputCallbackState state = {
+        .ids = { .bus = 3, .vendor = 0x1af4, .product = 0x12, .version = 1 },
+        .abs = { .value = 42, .minimum = 0, .maximum = 255, .resolution = 1 },
+    };
+    const FtInputBackendVtable backend_vtable = { .next_event = callback_next_event };
+    FtInputBackend backend = make_input_handle(
+        FT_INPUT_BACKEND_TYPE_TAG, &backend_vtable, sizeof(backend_vtable), &state);
+    int32_t total = 0;
+    FtResult status = ft_drain_input_backend(backend, &total, NULL);
+    assert(status == FT_RESULT_SUCCESS && total == 43);
+    assert(state.calls == 3);
+
+    state.calls = 0;
+    const FtInputSourceVtable source_vtable = {
+        .poll_event = callback_poll_event,
+        .device_ids = callback_device_ids,
+        .abs_info = callback_abs_info,
+        .abs_info_mut = callback_abs_info_mut,
+        .optional_abs_info = callback_optional_abs_info,
+        .submit_event = callback_submit_event,
+    };
+    FtInputSource source = make_input_handle(
+        FT_INPUT_SOURCE_TYPE_TAG, &source_vtable, sizeof(source_vtable), &state);
+    assert(ft_probe_input_source(source) == 6993);
+    assert(state.calls == 3);
+    assert(state.abs.value == 43);
+    assert(state.submitted.value == 7);
+}
+
+/* ===================================================================== */
 /* Lifetime-parameterized types                                          */
 /* ===================================================================== */
 
@@ -653,6 +837,11 @@ int main(void) {
     RUN_TEST(vtable_dyn_dispatch_process);
 
     RUN_TEST(vtable_drop_callback);
+
+    printf("\n[value structs]\n");
+    RUN_TEST(value_struct_bridge_roundtrip);
+    RUN_TEST(optional_value_result_bridge);
+    RUN_TEST(value_struct_vtable_callbacks);
 
     printf("\n[lifetime types]\n");
     RUN_TEST(lifetime_type_borrowing_handle);

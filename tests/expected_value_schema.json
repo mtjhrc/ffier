@@ -1,0 +1,47 @@
+{
+  "value_structs": [
+    {
+      "name": "InputDeviceIds",
+      "c_name": "FtInputDeviceIds",
+      "fields": [
+        { "name": "bus", "type": "u16" },
+        { "name": "vendor", "type": "u16" },
+        { "name": "product", "type": "u16" },
+        { "name": "version", "type": "u16" }
+      ]
+    },
+    {
+      "name": "InputAbsInfo",
+      "c_name": "FtInputAbsInfo",
+      "fields": [
+        { "name": "value", "type": "i32" },
+        { "name": "minimum", "type": "i32" },
+        { "name": "maximum", "type": "i32" },
+        { "name": "fuzz", "type": "i32" },
+        { "name": "flat", "type": "i32" },
+        { "name": "resolution", "type": "i32" }
+      ]
+    },
+    {
+      "name": "InputEvent",
+      "c_name": "FtInputEvent",
+      "fields": [
+        { "name": "device", "type": "InputDeviceIds" },
+        { "name": "kind", "type": "InputEventKind" },
+        { "name": "code", "type": "u16" },
+        { "name": "flags", "type": "InputEventFlags" },
+        { "name": "value", "type": "i32" }
+      ]
+    }
+  ],
+  "event_queue_pop_event": {
+    "return_kind": "optional_value",
+    "value": { "type": "InputEvent" }
+  },
+  "input_backend_next_event": {
+    "return_kind": "result",
+    "ok": { "type": "InputEvent", "optional": true },
+    "err_type": "TestError",
+    "c_convention": "optional_value_out_param"
+  }
+}
