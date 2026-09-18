@@ -72,6 +72,12 @@ pub enum Blessing {
     BorrowedFd,
     /// Owned file descriptor (transfers ownership).
     OwnedFd,
+    /// Raw Windows handle (platform-level pointer).
+    RawHandle,
+    /// Borrowed Windows handle (non-owning).
+    BorrowedHandle,
+    /// Owned Windows handle (transfers ownership).
+    OwnedHandle,
     /// Builder method return — `void` at C level, `-> Self` in Rust.
     ReplacesSelf,
     /// Streaming string writer trait (PushStr).

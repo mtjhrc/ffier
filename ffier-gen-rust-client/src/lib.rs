@@ -46,13 +46,13 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     // emitted as a single `use` statement to avoid duplicates.
     {
         use ffier_schema::Blessing;
-        let blessing_symbols: &[(Blessing, &[&str])] = &[
+        let fd_blessing_symbols: &[(Blessing, &[&str])] = &[
             (Blessing::RawFd, &["RawFd"]),
             (Blessing::BorrowedFd, &["AsRawFd", "BorrowedFd", "RawFd"]),
             (Blessing::OwnedFd, &["FromRawFd", "OwnedFd", "RawFd"]),
         ];
         let mut symbols: Vec<&str> = Vec::new();
-        for (blessing, syms) in blessing_symbols {
+        for (blessing, syms) in fd_blessing_symbols {
             if lib.blessed(*blessing).is_some() {
                 for sym in *syms {
                     if !symbols.contains(sym) {
@@ -64,7 +64,37 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         if !symbols.is_empty() {
             symbols.sort();
             let list = symbols.join(", ");
+            writeln!(out, "#[cfg(unix)]").unwrap();
             writeln!(out, "use std::os::unix::io::{{{list}}};").unwrap();
+            writeln!(out).unwrap();
+        }
+
+        let handle_blessing_symbols: &[(Blessing, &[&str])] = &[
+            (Blessing::RawHandle, &["RawHandle"]),
+            (
+                Blessing::BorrowedHandle,
+                &["AsRawHandle", "BorrowedHandle", "RawHandle"],
+            ),
+            (
+                Blessing::OwnedHandle,
+                &["FromRawHandle", "OwnedHandle", "RawHandle"],
+            ),
+        ];
+        let mut symbols: Vec<&str> = Vec::new();
+        for (blessing, syms) in handle_blessing_symbols {
+            if lib.blessed(*blessing).is_some() {
+                for sym in *syms {
+                    if !symbols.contains(sym) {
+                        symbols.push(sym);
+                    }
+                }
+            }
+        }
+        if !symbols.is_empty() {
+            symbols.sort();
+            let list = symbols.join(", ");
+            writeln!(out, "#[cfg(windows)]").unwrap();
+            writeln!(out, "use std::os::windows::io::{{{list}}};").unwrap();
             writeln!(out).unwrap();
         }
     }
@@ -2564,6 +2594,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
 
     if let Some((_, entry)) = lib.blessed(Blessing::OwnedFd) {
         let repr = fd_repr(entry, lib);
+        writeln!(out, "#[cfg(unix)]").unwrap();
         writeln!(out, "impl FfiType for OwnedFd {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; self.into_raw_fd() as {repr} }}").unwrap();
@@ -2576,6 +2607,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         writeln!(out).unwrap();
 
         // Option<OwnedFd>
+        writeln!(out, "#[cfg(unix)]").unwrap();
         writeln!(out, "impl FfiType for Option<OwnedFd> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::unix::io::IntoRawFd; match self {{ Some(fd) => fd.into_raw_fd() as {repr}, None => -1 }} }}").unwrap();
@@ -2586,6 +2618,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
 
     if let Some((_, entry)) = lib.blessed(Blessing::BorrowedFd) {
         let repr = fd_repr(entry, lib);
+        writeln!(out, "#[cfg(unix)]").unwrap();
         writeln!(out, "impl<'fd> FfiType for BorrowedFd<'fd> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(
@@ -2602,10 +2635,58 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
         writeln!(out).unwrap();
 
         // Option<BorrowedFd>
+        writeln!(out, "#[cfg(unix)]").unwrap();
         writeln!(out, "impl<'fd> FfiType for Option<BorrowedFd<'fd>> {{").unwrap();
         writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"int\"; const IS_HANDLE: bool = false;").unwrap();
         writeln!(out, "    fn into_c(self) -> {repr} {{ match self {{ Some(fd) => fd.as_raw_fd() as {repr}, None => -1 }} }}").unwrap();
         writeln!(out, "    unsafe fn from_c(fd: {repr}) -> Self {{ if fd < 0 {{ None }} else {{ Some(unsafe {{ BorrowedFd::borrow_raw(fd as _) }}) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    if let Some((_, entry)) = lib.blessed(Blessing::OwnedHandle) {
+        let repr = fd_repr(entry, lib);
+        writeln!(out, "#[cfg(windows)]").unwrap();
+        writeln!(out, "impl FfiType for OwnedHandle {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"void *\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::windows::io::IntoRawHandle; self.into_raw_handle() as {repr} }}").unwrap();
+        writeln!(out, "    unsafe fn from_c(handle: {repr}) -> Self {{ unsafe {{ OwnedHandle::from_raw_handle(handle as _) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+
+        writeln!(out, "#[cfg(windows)]").unwrap();
+        writeln!(out, "impl FfiType for Option<OwnedHandle> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"void *\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ use std::os::windows::io::IntoRawHandle; self.map_or(core::ptr::null_mut(), |handle| handle.into_raw_handle() as {repr}) }}").unwrap();
+        writeln!(out, "    unsafe fn from_c(handle: {repr}) -> Self {{ if handle.is_null() {{ None }} else {{ Some(unsafe {{ OwnedHandle::from_raw_handle(handle as _) }}) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    if let Some((_, entry)) = lib.blessed(Blessing::BorrowedHandle) {
+        let repr = fd_repr(entry, lib);
+        writeln!(out, "#[cfg(windows)]").unwrap();
+        writeln!(out, "impl<'handle> FfiType for BorrowedHandle<'handle> {{").unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"void *\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "#[cfg(windows)]").unwrap();
+        writeln!(
+            out,
+            "    fn into_c(self) -> {repr} {{ self.as_raw_handle() as {repr} }}"
+        )
+        .unwrap();
+        writeln!(out, "    unsafe fn from_c(handle: {repr}) -> Self {{ unsafe {{ BorrowedHandle::borrow_raw(handle as _) }} }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+
+        writeln!(out, "#[cfg(windows)]").unwrap();
+        writeln!(
+            out,
+            "impl<'handle> FfiType for Option<BorrowedHandle<'handle>> {{"
+        )
+        .unwrap();
+        writeln!(out, "    type CRepr = {repr}; const C_TYPE_NAME: &'static str = \"void *\"; const IS_HANDLE: bool = false;").unwrap();
+        writeln!(out, "    fn into_c(self) -> {repr} {{ self.map_or(core::ptr::null_mut(), |handle| handle.as_raw_handle() as {repr}) }}").unwrap();
+        writeln!(out, "    unsafe fn from_c(handle: {repr}) -> Self {{ if handle.is_null() {{ None }} else {{ Some(unsafe {{ BorrowedHandle::borrow_raw(handle as _) }}) }} }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }

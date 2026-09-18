@@ -2838,6 +2838,39 @@ fn build_schema(
             lifetime_params: vec![],
         },
     );
+    type_registry.insert(
+        "RawHandle".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Primitive {
+                c_type: "void *".to_string(),
+            },
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::RawHandle),
+            lifetime_params: vec![],
+        },
+    );
+    type_registry.insert(
+        "BorrowedHandle".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Alias {
+                alias_of: "RawHandle".to_string(),
+            },
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::BorrowedHandle),
+            lifetime_params: vec!["handle".to_string()],
+        },
+    );
+    type_registry.insert(
+        "OwnedHandle".to_string(),
+        ffier_schema::TypeEntry {
+            kind: ffier_schema::TypeKind::Alias {
+                alias_of: "RawHandle".to_string(),
+            },
+            type_tag: None,
+            bless: Some(ffier_schema::Blessing::OwnedHandle),
+            lifetime_params: vec![],
+        },
+    );
 
     // Enum constants
     for e in &enums_parsed {
