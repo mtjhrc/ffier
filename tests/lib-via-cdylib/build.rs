@@ -1,3 +1,4 @@
+#[cfg(unix)]
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let workspace_root = std::path::Path::new(&manifest_dir)
@@ -9,3 +10,6 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", target_dir.display());
     println!("cargo:rustc-link-lib=dylib=ffier_test_lib");
 }
+
+#[cfg(not(unix))]
+fn main() {}

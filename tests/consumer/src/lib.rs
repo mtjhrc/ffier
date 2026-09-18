@@ -2,13 +2,13 @@
 //   cargo test -p ffier-test-consumer --features native
 //   cargo test -p ffier-test-consumer --no-default-features --features via-cdylib
 
-#[cfg(all(test, feature = "native"))]
+#[cfg(all(test, unix, feature = "native"))]
 use ffier_test_lib as api;
 
-#[cfg(all(test, feature = "via-cdylib"))]
+#[cfg(all(test, unix, feature = "via-cdylib"))]
 use ffier_test_lib_via_cdylib as api;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use std::os::fd::AsRawFd;
 

@@ -1,4 +1,5 @@
 #![recursion_limit = "512"]
+#![cfg(unix)]
 
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
