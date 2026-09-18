@@ -9,7 +9,7 @@ while IFS='|' read -r case_name expected; do
         printf 'compile-fail/%s unexpectedly compiled\n' "$case_name" >&2
         exit 1
     }
-    if ! rg --fixed-strings --quiet "$expected" <<<"$output"; then
+    if ! grep -Fq -- "$expected" <<<"$output"; then
         printf 'compile-fail/%s did not produce expected diagnostic: %s\n' "$case_name" "$expected" >&2
         printf '%s\n' "$output" >&2
         exit 1
