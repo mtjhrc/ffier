@@ -1,0 +1,12 @@
+[package]
+name = "ffier-test-windows-handles-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ffier = { path = "../../ffier" }
+
+[build-dependencies]
+ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
+ffier-test-windows-handles = { path = "../windows-handles" }

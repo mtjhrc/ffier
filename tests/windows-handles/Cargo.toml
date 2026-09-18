@@ -1,0 +1,8 @@
+[package]
+name = "ffier-test-windows-handles"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ffier = { path = "../../ffier" }

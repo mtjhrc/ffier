@@ -237,6 +237,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-test-windows-handles"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+]
+
+[[package]]
+name = "ffier-test-windows-handles-client"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+ "ffier-gen-rust-client",
+ "ffier-test-windows-handles",
+]
+
+[[package]]
 name = "foreign-trait-crate"
 version = "0.1.0"
 

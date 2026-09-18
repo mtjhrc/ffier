@@ -1351,6 +1351,14 @@ impl AliasContext {
                 quote! { Option<#inner> }
             }
             Type::Path(tp) if is_box_str(tp) => quote! { Box<str> },
+            Type::Path(tp) if is_std_fd_type(tp) => {
+                let erased = erase_lifetimes(ty);
+                quote! { std::os::fd::#erased }
+            }
+            Type::Path(tp) if is_std_handle_type(tp) => {
+                let erased = erase_lifetimes(ty);
+                quote! { std::os::windows::io::#erased }
+            }
             _ => self.alias_tokens(ty),
         }
     }
@@ -1395,6 +1403,24 @@ impl AliasContext {
             })
             .collect()
     }
+}
+
+fn is_std_fd_type(tp: &syn::TypePath) -> bool {
+    tp.qself.is_none()
+        && tp.path.segments.len() == 1
+        && matches!(
+            tp.path.segments[0].ident.to_string().as_str(),
+            "RawFd" | "BorrowedFd" | "OwnedFd"
+        )
+}
+
+fn is_std_handle_type(tp: &syn::TypePath) -> bool {
+    tp.qself.is_none()
+        && tp.path.segments.len() == 1
+        && matches!(
+            tp.path.segments[0].ident.to_string().as_str(),
+            "RawHandle" | "BorrowedHandle" | "OwnedHandle"
+        )
 }
 
 fn is_primitive(ty: &Type) -> bool {
@@ -3861,6 +3887,61 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 }
                 unsafe fn from_c(fd: i32) -> Self {
                     if fd < 0 { None } else { Some(unsafe { OwnedFd::from_raw_fd(fd) }) }
+                }
+            }
+        };
+
+        #[cfg(windows)]
+        const _: () = {
+            use std::os::windows::io::{
+                AsRawHandle, BorrowedHandle, FromRawHandle, IntoRawHandle, OwnedHandle, RawHandle,
+            };
+            impl FfiType for OwnedHandle {
+                type CRepr = RawHandle;
+                const C_TYPE_NAME: &'static str = "void *";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> RawHandle { self.into_raw_handle() }
+                unsafe fn from_c(handle: RawHandle) -> Self {
+                    unsafe { OwnedHandle::from_raw_handle(handle) }
+                }
+            }
+            impl<'a> FfiType for BorrowedHandle<'a> {
+                type CRepr = RawHandle;
+                const C_TYPE_NAME: &'static str = "void *";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> RawHandle { self.as_raw_handle() }
+                unsafe fn from_c(handle: RawHandle) -> Self {
+                    unsafe { BorrowedHandle::borrow_raw(handle) }
+                }
+            }
+            impl<'a> FfiType for Option<BorrowedHandle<'a>> {
+                type CRepr = RawHandle;
+                const C_TYPE_NAME: &'static str = "void *";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> RawHandle {
+                    self.map_or(core::ptr::null_mut(), |handle| handle.as_raw_handle())
+                }
+                unsafe fn from_c(handle: RawHandle) -> Self {
+                    if handle.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { BorrowedHandle::borrow_raw(handle) })
+                    }
+                }
+            }
+            impl FfiType for Option<OwnedHandle> {
+                type CRepr = RawHandle;
+                const C_TYPE_NAME: &'static str = "void *";
+                const IS_HANDLE: bool = false;
+                fn into_c(self) -> RawHandle {
+                    self.map_or(core::ptr::null_mut(), IntoRawHandle::into_raw_handle)
+                }
+                unsafe fn from_c(handle: RawHandle) -> Self {
+                    if handle.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { OwnedHandle::from_raw_handle(handle) })
+                    }
                 }
             }
         };
