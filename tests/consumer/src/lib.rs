@@ -17,6 +17,188 @@ mod tests {
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
     };
 
+    fn input_event(value: i32) -> api::InputEvent {
+        api::InputEvent {
+            device: api::InputDeviceIds {
+                bus: 3,
+                vendor: 0x1af4,
+                product: 0x12,
+                version: 1,
+            },
+            kind: api::InputEventKind::Key,
+            code: 30,
+            flags: api::InputEventFlags::REPEAT,
+            value,
+            pressure: 1.5,
+            scale: 2.5,
+        }
+    }
+
+    #[test]
+    fn test_value_struct_rejects_invalid_enum() {
+        use api::FfiType as _;
+
+        let mut raw = input_event(0).into_c();
+        raw.kind = 999;
+        assert!(
+            std::panic::catch_unwind(|| unsafe { <api::InputEvent as api::FfiType>::from_c(raw) })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn test_value_struct_roundtrip_and_references() {
+        use api::InputSource as _;
+
+        let mut queue = api::EventQueue::new();
+        let event = input_event(19);
+        assert_eq!(queue.echo_event(event), event);
+        assert_eq!(queue.peek_ids().vendor, 0x1af4);
+        assert!(queue.maybe_peek_ids(false).is_none());
+        assert_eq!(queue.maybe_peek_ids(true).unwrap().product, 0x12);
+
+        let mut ids = event.device;
+        ids.vendor = 2;
+        queue.set_ids(&ids);
+        assert_eq!(queue.peek_ids().vendor, 2);
+        queue.edit_ids().vendor = 5;
+        queue.copy_ids_to(&mut ids);
+        assert_eq!(ids.vendor, 5);
+        assert_eq!(queue.optional_ids_vendor(None), 0);
+        assert_eq!(queue.optional_ids_vendor(Some(&ids)), 5);
+        queue.optional_ids_mut(None);
+        ids.vendor = 0;
+        queue.optional_ids_mut(Some(&mut ids));
+        assert_eq!(ids.vendor, 5);
+        assert_eq!(queue.try_peek_ids(true).unwrap().vendor, 5);
+        assert!(queue.try_peek_ids(false).is_err());
+        queue.try_edit_ids(true).unwrap().vendor = 7;
+        assert!(queue.try_edit_ids(false).is_err());
+        assert_eq!(queue.peek_ids().vendor, 7);
+        assert_eq!(api::borrow_input_ids(&ids).vendor, 5);
+        api::borrow_input_ids_mut(&mut ids).vendor = 6;
+        assert_eq!(ids.vendor, 6);
+    }
+
+    #[test]
+    fn test_optional_value_and_result_paths() {
+        use api::{InputBackend as _, InputSource as _};
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.pop_event().unwrap().value, 42);
+        assert!(queue.pop_event().is_none());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.poll_event().unwrap().value, 42);
+        assert!(queue.poll_event().is_none());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.next_event().unwrap().unwrap().value, 42);
+        assert!(queue.next_event().unwrap().is_none());
+        queue.fail_next();
+        assert!(queue.next_event().is_err());
+
+        let mut queue = api::EventQueue::new();
+        assert_eq!(queue.event_or_error().unwrap().value, 42);
+        assert!(queue.event_or_error().is_err());
+    }
+
+    struct CallbackBackend {
+        events: Vec<api::InputEvent>,
+        error: Option<api::TestError>,
+        ids: api::InputDeviceIds,
+    }
+
+    impl api::InputBackend for CallbackBackend {
+        fn next_event(&mut self) -> Result<Option<api::InputEvent>, api::TestError> {
+            if let Some(error) = self.error.take() {
+                Err(error)
+            } else {
+                Ok(self.events.pop())
+            }
+        }
+
+        fn current_ids(&self) -> Result<api::InputDeviceIds, api::TestError> {
+            Ok(self.ids)
+        }
+
+        fn peek_ids_result(&self) -> Result<&api::InputDeviceIds, api::TestError> {
+            Ok(&self.ids)
+        }
+
+        fn edit_ids_result(&mut self) -> Result<&mut api::InputDeviceIds, api::TestError> {
+            Ok(&mut self.ids)
+        }
+    }
+
+    struct CallbackSource {
+        events: Vec<api::InputEvent>,
+        ids: api::InputDeviceIds,
+    }
+
+    impl api::InputSource for CallbackSource {
+        fn poll_event(&mut self) -> Option<api::InputEvent> {
+            self.events.pop()
+        }
+
+        fn device_ids(&self) -> api::InputDeviceIds {
+            self.ids
+        }
+
+        fn peek_ids(&self) -> &api::InputDeviceIds {
+            &self.ids
+        }
+
+        fn edit_ids(&mut self) -> &mut api::InputDeviceIds {
+            &mut self.ids
+        }
+
+        fn maybe_peek_ids(&self, available: bool) -> Option<&api::InputDeviceIds> {
+            available.then_some(&self.ids)
+        }
+
+        fn submit_event(&mut self, event: api::InputEvent) {
+            self.events.push(event);
+        }
+    }
+
+    #[test]
+    fn test_value_struct_vtable_callbacks() {
+        let event = input_event(42);
+        let backend = CallbackBackend {
+            events: vec![input_event(1), event],
+            error: None,
+            ids: event.device,
+        };
+        assert_eq!(api::drain_input_backend(backend).unwrap(), 43);
+
+        let backend = CallbackBackend {
+            events: Vec::new(),
+            error: None,
+            ids: event.device,
+        };
+        assert_eq!(api::probe_input_backend_values(backend).unwrap(), 20701);
+
+        let mut queue = api::EventQueue::new();
+        let _ = queue.pop_event();
+        let error = queue.event_or_error().err();
+        let backend = CallbackBackend {
+            events: Vec::new(),
+            error,
+            ids: event.device,
+        };
+        assert!(matches!(
+            api::drain_input_backend(backend),
+            Err(api::TestError::InvalidInput(..))
+        ));
+
+        let source = CallbackSource {
+            events: Vec::new(),
+            ids: event.device,
+        };
+        assert_eq!(api::probe_input_source(source), 13809);
+    }
+
     fn make_widget() -> Widget {
         Widget::new()
     }

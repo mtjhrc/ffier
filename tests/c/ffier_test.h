@@ -26,11 +26,14 @@ typedef void* FtGrape;
 typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtSprocket;
+typedef void* FtEventQueue;
 typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtCategorizable; /* FtApple | FtOrange */
 typedef void* FtError; /* FtTestError | FtError | FtVtableError */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
+typedef void* FtInputBackend; /* FtEventQueue | FtVtableInputBackend */
+typedef void* FtInputSource; /* FtEventQueue | FtVtableInputSource */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
@@ -43,7 +46,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtEventQueue | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -123,6 +126,26 @@ void ft_str_free(FtStr s);
 void ft_free_object_array(FtObjectArray a);
 
 
+/* Value structs ----------------------------------------------------- */
+
+typedef struct {
+    uint16_t bus;
+    uint16_t vendor;
+    uint16_t product;
+    uint16_t version;
+} FtInputDeviceIds;
+
+typedef struct {
+    FtInputDeviceIds device;
+    uint32_t kind;
+    uint16_t code;
+    uint32_t flags;
+    int32_t value;
+    float pressure;
+    double scale;
+} FtInputEvent;
+
+
 /* LogLevel ---------------------------------------------------------- */
 
 #define FT_LOG_LEVEL_OFF 0
@@ -131,6 +154,11 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_LOG_LEVEL_INFO 3
 #define FT_LOG_LEVEL_DEBUG 4
 #define FT_LOG_LEVEL_TRACE 5
+
+/* InputEventKind ---------------------------------------------------- */
+
+#define FT_INPUT_EVENT_KIND_KEY 1
+#define FT_INPUT_EVENT_KIND_ABSOLUTE 3
 
 /* OptionalMode ------------------------------------------------------ */
 
@@ -148,6 +176,11 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_PERMISSIONS_WRITE 2
 #define FT_PERMISSIONS_EXECUTE 4
 #define FT_PERMISSIONS_DELETE 8
+
+/* InputEventFlags --------------------------------------------------- */
+
+#define FT_INPUT_EVENT_FLAGS_REPEAT 1
+#define FT_INPUT_EVENT_FLAGS_SYNTHETIC 2
 
 /* TestError --------------------------------------------------------- */
 
@@ -419,6 +452,21 @@ FtSprocket ft_sprocket_new(FtStr name);
 FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
+/* EventQueue -------------------------------------------------------- */
+
+FtEventQueue ft_event_queue_new();
+bool ft_event_queue_pop_event(FtEventQueue handle, FtInputEvent* result);
+FtInputEvent ft_event_queue_echo_event(FtEventQueue handle, FtInputEvent event);
+void ft_event_queue_set_ids(FtEventQueue handle, const FtInputDeviceIds* ids);
+void ft_event_queue_copy_ids_to(FtEventQueue handle, FtInputDeviceIds* ids);
+uint16_t ft_event_queue_optional_ids_vendor(FtEventQueue handle, const FtInputDeviceIds* ids);
+void ft_event_queue_optional_ids_mut(FtEventQueue handle, FtInputDeviceIds* ids);
+FtResult ft_event_queue_event_or_error(FtEventQueue handle, FtInputEvent* result, FtError* err_out);
+FtResult ft_event_queue_try_peek_ids(FtEventQueue handle, bool available, const FtInputDeviceIds** result, FtError* err_out);
+FtResult ft_event_queue_try_edit_ids(FtEventQueue handle, bool available, FtInputDeviceIds** result, FtError* err_out);
+void ft_event_queue_fail_next(FtEventQueue handle);
+void ft_event_queue_destroy(FtEventQueue handle);
+
 /* OptionalWidget ---------------------------------------------------- */
 
 FtOptionalWidget ft_optional_widget_new(int32_t base);
@@ -484,6 +532,50 @@ void ft_weighable_destroy(FtWeighable handle);
 /* Categorizable (dispatch) ------------------------------------------ */
 
 void ft_categorizable_destroy(FtCategorizable handle);
+
+/* FtInputSourceVtable ----------------------------------------------- */
+
+#define FT_INPUT_SOURCE_TYPE_TAG 16777247
+
+typedef struct {
+    void (*drop)(void* self_data);
+    bool (*poll_event)(void* self_data, FtInputEvent* result);
+    FtInputDeviceIds (*device_ids)(void* self_data);
+    const FtInputDeviceIds* (*peek_ids)(void* self_data);
+    FtInputDeviceIds* (*edit_ids)(void* self_data);
+    const FtInputDeviceIds* (*maybe_peek_ids)(void* self_data, bool available);
+    void (*submit_event)(void* self_data, FtInputEvent event);
+} FtInputSourceVtable;
+
+/* InputSource (dispatch) -------------------------------------------- */
+
+bool ft_input_source_poll_event(FtInputSource handle, FtInputEvent* result);
+FtInputDeviceIds ft_input_source_device_ids(FtInputSource handle);
+const FtInputDeviceIds* ft_input_source_peek_ids(FtInputSource handle);
+FtInputDeviceIds* ft_input_source_edit_ids(FtInputSource handle);
+const FtInputDeviceIds* ft_input_source_maybe_peek_ids(FtInputSource handle, bool available);
+void ft_input_source_submit_event(FtInputSource handle, FtInputEvent event);
+void ft_input_source_destroy(FtInputSource handle);
+
+/* FtInputBackendVtable ---------------------------------------------- */
+
+#define FT_INPUT_BACKEND_TYPE_TAG 16777248
+
+typedef struct {
+    void (*drop)(void* self_data);
+    FtResult (*next_event)(void* self_data, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+    FtResult (*current_ids)(void* self_data, FtInputDeviceIds* result, FtError* err_out);
+    FtResult (*peek_ids_result)(void* self_data, const FtInputDeviceIds** result, FtError* err_out);
+    FtResult (*edit_ids_result)(void* self_data, FtInputDeviceIds** result, FtError* err_out);
+} FtInputBackendVtable;
+
+/* InputBackend (dispatch) ------------------------------------------- */
+
+FtResult ft_input_backend_next_event(FtInputBackend handle, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+FtResult ft_input_backend_current_ids(FtInputBackend handle, FtInputDeviceIds* result, FtError* err_out);
+FtResult ft_input_backend_peek_ids_result(FtInputBackend handle, const FtInputDeviceIds** result, FtError* err_out);
+FtResult ft_input_backend_edit_ids_result(FtInputBackend handle, FtInputDeviceIds** result, FtError* err_out);
+void ft_input_backend_destroy(FtInputBackend handle);
 
 /* FtPushStrVtable --------------------------------------------------- */
 
@@ -562,6 +654,16 @@ int32_t ft_widget_snap_source_count(FtWidget handle);
 FtStr ft_gadget_snap_description(FtGadget handle);
 int32_t ft_gadget_snap_source_count(FtGadget handle);
 int32_t ft_apple_weight_grams(FtApple handle);
+bool ft_event_queue_poll_event(FtEventQueue handle, FtInputEvent* result);
+FtInputDeviceIds ft_event_queue_device_ids(FtEventQueue handle);
+const FtInputDeviceIds* ft_event_queue_peek_ids(FtEventQueue handle);
+FtInputDeviceIds* ft_event_queue_edit_ids(FtEventQueue handle);
+const FtInputDeviceIds* ft_event_queue_maybe_peek_ids(FtEventQueue handle, bool available);
+void ft_event_queue_submit_event(FtEventQueue handle, FtInputEvent event);
+FtResult ft_event_queue_next_event(FtEventQueue handle, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+FtResult ft_event_queue_current_ids(FtEventQueue handle, FtInputDeviceIds* result, FtError* err_out);
+FtResult ft_event_queue_peek_ids_result(FtEventQueue handle, const FtInputDeviceIds** result, FtError* err_out);
+FtResult ft_event_queue_edit_ids_result(FtEventQueue handle, FtInputDeviceIds** result, FtError* err_out);
 uint32_t ft_test_error_code(FtTestError handle);
 void ft_test_error_message(FtTestError handle, FtPushStr writer);
 uint32_t ft_error_code(FtError handle);
@@ -590,6 +692,11 @@ int32_t ft_sum_gadget_values(const FtGadget* gadgets, size_t gadgets_len);
 void* ft_opaque_round_trip(void* ptr);
 /** Accept an opaque const pointer and return its address as an integer. */
 size_t ft_opaque_ptr_to_int(const void* ptr);
+FtResult ft_drain_input_backend(FtInputBackend backend, int32_t* result, FtError* err_out);
+FtResult ft_probe_input_backend_values(FtInputBackend backend, uint16_t* result, FtError* err_out);
+const FtInputDeviceIds* ft_borrow_input_ids(const FtInputDeviceIds* ids);
+FtInputDeviceIds* ft_borrow_input_ids_mut(FtInputDeviceIds* ids);
+int32_t ft_probe_input_source(FtInputSource source);
 /** Apply a foreign config: extract the name and value, set them on the widget. */
 void ft_apply_foreign_config(FtWidget widget, FlForeignConfig config);
 /** Read a foreign item's score. */

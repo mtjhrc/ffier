@@ -32,6 +32,9 @@ pub struct Library {
     /// errors (`"TestError"`), and traits (`"Fruit"`).
     pub type_registry: BTreeMap<String, TypeEntry>,
     pub exported_types: Vec<ExportedType>,
+    /// Fixed-layout structs passed across FFI by value or pointer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_structs: Vec<ValueStruct>,
     pub errors: Vec<ErrorType>,
     /// Plain enums exported as C `#define` constants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -160,6 +163,11 @@ pub enum TypeKind {
     Bitflags {
         /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
         alias_of: std::string::String,
+    },
+    /// Fixed-layout \`#[repr(C)]\` struct passed inline or by pointer.
+    ValueStruct {
+        /// Library-prefixed C struct name (e.g. \`FtInputEvent\`).
+        c_name: std::string::String,
     },
     /// Handle type from a foreign ffier library. Passed as `*mut c_void`
     /// across the C ABI but the type definition lives in the foreign
@@ -328,6 +336,28 @@ impl TypeRef {
 // Exported types (structs with #[ffier::export] methods)
 // ---------------------------------------------------------------------------
 
+/// A fixed-layout struct exported by value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValueStruct {
+    /// Rust struct name — key into the type registry.
+    pub name: String,
+    /// Library-prefixed C typedef name.
+    pub c_name: String,
+    /// Fields in source declaration order.
+    pub fields: Vec<ValueField>,
+    /// Conditional compilation predicate gating this type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<String>,
+}
+
+/// One field of an exported value struct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueField {
+    pub name: String,
+    #[serde(flatten)]
+    pub type_ref: TypeRef,
+}
+
 /// A struct exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedType {
@@ -458,6 +488,8 @@ pub enum Return {
     Void,
     /// Returns a single value.
     Value(TypeRef),
+    /// Returns `Option<ValueStruct>` using a presence return and value out-pointer.
+    OptionalValue { value: TypeRef },
     /// Returns `Result<T, E>`.
     Result {
         /// The Ok type. `None` when `Result<(), E>`.
@@ -491,6 +523,9 @@ pub enum CResultConvention {
     /// Error handle via out-param (`*mut *mut c_void`).
     /// Used for `Result<HandleType, E>`.
     HandleOrNull,
+    /// Return `FfierResult`; successful presence and value are written
+    /// through separate out-pointers.
+    OptionalValueOutParam,
 }
 
 /// Well-known type name for builder methods that return `Self`.
@@ -528,6 +563,7 @@ impl Return {
             Return::Void => "()".to_string(),
             Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
             Return::Value(tr) => tr.to_rust_type(),
+            Return::OptionalValue { value } => format!("Option<{}>", value.to_rust_type()),
             Return::Result { ok, err_type, .. } => {
                 let ok_str = match ok {
                     Some(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
@@ -740,11 +776,30 @@ impl Library {
                 | TypeKind::Bytes { c_name }
                 | TypeKind::Handle { c_name }
                 | TypeKind::Error { c_name }
-                | TypeKind::Trait { c_name } => return c_name,
+                | TypeKind::Trait { c_name }
+                | TypeKind::ValueStruct { c_name } => return c_name,
                 TypeKind::ForeignHandle { c_name, .. } => return c_name,
             }
         }
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
+    }
+
+    /// Resolve a C type at a usage site. References to value structs become
+    /// typed pointers; opaque-handle references retain their typedef spelling.
+    pub fn c_type_of_ref(&self, type_ref: &TypeRef) -> String {
+        let base = self.c_type_of(&type_ref.type_name);
+        let is_value = self
+            .type_entry(&type_ref.type_name)
+            .is_some_and(|entry| matches!(entry.kind, TypeKind::ValueStruct { .. }));
+        if is_value {
+            match type_ref.ref_kind {
+                RefKind::Shared => format!("const {base}*"),
+                RefKind::Mut => format!("{base}*"),
+                RefKind::None => base.to_string(),
+            }
+        } else {
+            base.to_string()
+        }
     }
 
     /// Collect all type names referenced by methods, params, returns, errors,
@@ -777,6 +832,9 @@ impl Library {
                 Return::Value(tr) => {
                     refs.insert(&tr.type_name);
                 }
+                Return::OptionalValue { value } => {
+                    refs.insert(&value.type_name);
+                }
                 Return::Result { ok, err_type, .. } => {
                     if let Some(tr) = ok {
                         refs.insert(&tr.type_name);
@@ -802,6 +860,12 @@ impl Library {
         for ty in &self.exported_types {
             refs.insert(ty.name.as_str());
             collect_from_methods(&ty.methods, &mut refs);
+        }
+        for value in &self.value_structs {
+            refs.insert(value.name.as_str());
+            for field in &value.fields {
+                refs.insert(field.type_ref.type_name.as_str());
+            }
         }
         for err in &self.errors {
             refs.insert(err.name.as_str());
