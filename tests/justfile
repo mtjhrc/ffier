@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client valgrind miri consumer compat cargo-test
+default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -110,3 +110,7 @@ check-cfg-library-entry: build-foreign
 # Run all Rust tests
 cargo-test: build
     cargo test --manifest-path {{root}}/Cargo.toml
+
+# Verify diagnostics for unsupported value-struct layouts and uses.
+compile-fail:
+    bash compile-fail/check.sh

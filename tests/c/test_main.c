@@ -5,6 +5,10 @@
 #include <unistd.h>
 #include "ffier_test.h"
 
+_Static_assert(sizeof(FtInputDeviceIds) == 8, "InputDeviceIds size");
+_Static_assert(sizeof(FtInputEvent) == 40, "InputEvent size");
+_Static_assert(offsetof(FtInputEvent, flags) == 16, "InputEvent.flags");
+
 static int test_count = 0;
 #define RUN_TEST(fn) do { \
     printf("  %s ... ", #fn); \
@@ -459,9 +463,8 @@ static const FtProcessorVtable g_test_vtable = {
     .name = test_processor_name,
 };
 
-/* Construct a heap-allocated processor handle (same layout as FfierHandle<VtableHandle>).
- * In real usage this would be a library-provided macro or function. */
-static void* make_processor_handle(void* user_data) {
+/* Construct a heap-allocated handle with the FfierHandle<VtableHandle> layout. */
+static void* make_vtable_handle(uint32_t tag, const void* vtable, size_t vtable_size, void* user_data) {
     struct {
         uint32_t type_tag;
         uint32_t metadata;
@@ -469,12 +472,17 @@ static void* make_processor_handle(void* user_data) {
         const void* user_data;
         uint16_t vtable_size;
     } *handle = malloc(sizeof(*handle));
-    handle->type_tag = FT_PROCESSOR_TYPE_TAG;
+    assert(handle != NULL);
+    handle->type_tag = tag;
     handle->metadata = 0;
-    handle->vtable_ptr = &g_test_vtable;
+    handle->vtable_ptr = vtable;
     handle->user_data = user_data;
-    handle->vtable_size = sizeof(g_test_vtable);
+    handle->vtable_size = (uint16_t)vtable_size;
     return handle;
+}
+
+static void* make_processor_handle(void* user_data) {
+    return make_vtable_handle(FT_PROCESSOR_TYPE_TAG, &g_test_vtable, sizeof(g_test_vtable), user_data);
 }
 
 void vtable_constructor(void) {
@@ -504,6 +512,153 @@ void vtable_drop_callback(void) {
     ft_pipeline_run(p, proc, 1);
     assert(g_drop_called == 1);
     ft_pipeline_destroy(p);
+}
+
+/* ===================================================================== */
+/* Fixed-layout values and optional return out-pointers                 */
+/* ===================================================================== */
+
+void value_struct_bridge_roundtrip(void) {
+    FtEventQueue queue = ft_event_queue_new();
+    FtInputEvent event = {
+        .device = { .bus = 3, .vendor = 0x1af4, .product = 0x12, .version = 1 },
+        .kind = FT_INPUT_EVENT_KIND_KEY,
+        .code = 30,
+        .flags = FT_INPUT_EVENT_FLAGS_REPEAT,
+        .value = 19,
+        .pressure = 1.5f,
+        .scale = 2.5,
+    };
+    FtInputEvent echoed = ft_event_queue_echo_event(queue, event);
+    assert(echoed.device.vendor == 0x1af4);
+    assert(echoed.kind == FT_INPUT_EVENT_KIND_KEY);
+    assert(echoed.flags == FT_INPUT_EVENT_FLAGS_REPEAT);
+    assert(echoed.value == 19);
+    assert(echoed.pressure == 1.5f);
+    assert(echoed.scale == 2.5);
+
+    const FtInputDeviceIds* ids = ft_event_queue_peek_ids(queue);
+    assert(ids->vendor == 0x1af4);
+    FtInputDeviceIds replacement = *ids;
+    replacement.vendor = 7;
+    ft_event_queue_set_ids(queue, &replacement);
+    assert(ft_event_queue_peek_ids(queue)->vendor == 7);
+    ft_event_queue_edit_ids(queue)->vendor = 9;
+    ft_event_queue_copy_ids_to(queue, &replacement);
+    assert(replacement.vendor == 9);
+    assert(ft_event_queue_maybe_peek_ids(queue, false) == NULL);
+    assert(ft_event_queue_maybe_peek_ids(queue, true)->vendor == 9);
+    assert(ft_event_queue_optional_ids_vendor(queue, NULL) == 0);
+    assert(ft_event_queue_optional_ids_vendor(queue, &replacement) == 9);
+    replacement.vendor = 0;
+    ft_event_queue_optional_ids_mut(queue, &replacement);
+    assert(replacement.vendor == 9);
+    ft_event_queue_optional_ids_mut(queue, NULL);
+
+    FtInputEvent out = { .value = -1 };
+    assert(ft_event_queue_pop_event(queue, &out));
+    assert(out.value == 42);
+    assert(!ft_event_queue_pop_event(queue, &out));
+    assert(out.value == 42); /* None leaves the output untouched. */
+    ft_event_queue_destroy(queue);
+}
+
+void optional_value_result_bridge(void) {
+    FtEventQueue queue = ft_event_queue_new();
+    bool is_some = false;
+    FtInputEvent out = { .value = -1 };
+    FtError error = NULL;
+    FtResult status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status == FT_RESULT_SUCCESS && is_some && out.value == 42);
+    status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status == FT_RESULT_SUCCESS && !is_some && out.value == 42);
+    ft_event_queue_fail_next(queue);
+    status = ft_event_queue_next_event(queue, &is_some, &out, &error);
+    assert(status != FT_RESULT_SUCCESS && error != NULL);
+    ft_error_destroy(error);
+    ft_event_queue_destroy(queue);
+}
+
+typedef struct {
+    int calls;
+    FtInputDeviceIds ids;
+    FtInputEvent submitted;
+} InputCallbackState;
+
+static FtResult callback_next_event(void* data, bool* is_some, FtInputEvent* result, FtError* error) {
+    (void)error;
+    InputCallbackState* state = data;
+    if (state->calls++ == 0) {
+        *is_some = true;
+        *result = (FtInputEvent) { .device = state->ids, .kind = FT_INPUT_EVENT_KIND_KEY,
+            .code = 30, .flags = 0, .value = 42 };
+    } else if (state->calls == 2) {
+        *is_some = true;
+        *result = (FtInputEvent) { .device = state->ids, .kind = FT_INPUT_EVENT_KIND_KEY,
+            .code = 31, .flags = 0, .value = 1 };
+    } else {
+        *is_some = false;
+    }
+    return FT_RESULT_SUCCESS;
+}
+
+static bool callback_poll_event(void* data, FtInputEvent* result) {
+    InputCallbackState* state = data;
+    if (state->calls++ == 0) {
+        *result = state->submitted;
+        return true;
+    }
+    return false;
+}
+
+static FtInputDeviceIds callback_device_ids(void* data) {
+    return ((InputCallbackState*)data)->ids;
+}
+
+static const FtInputDeviceIds* callback_peek_ids(void* data) {
+    return &((InputCallbackState*)data)->ids;
+}
+
+static FtInputDeviceIds* callback_edit_ids(void* data) {
+    return &((InputCallbackState*)data)->ids;
+}
+
+static const FtInputDeviceIds* callback_maybe_peek_ids(void* data, bool available) {
+    return available ? &((InputCallbackState*)data)->ids : NULL;
+}
+
+static void callback_submit_event(void* data, FtInputEvent event) {
+    ((InputCallbackState*)data)->submitted = event;
+}
+
+void value_struct_vtable_callbacks(void) {
+    InputCallbackState state = {
+        .ids = { .bus = 3, .vendor = 0x1af4, .product = 0x12, .version = 1 },
+    };
+    const FtInputBackendVtable backend_vtable = { .next_event = callback_next_event };
+    FtInputBackend backend = make_vtable_handle(
+        FT_INPUT_BACKEND_TYPE_TAG, &backend_vtable, sizeof(backend_vtable), &state);
+    int32_t total = 0;
+    FtResult status = ft_drain_input_backend(backend, &total, NULL);
+    assert(status == FT_RESULT_SUCCESS && total == 43);
+    assert(state.calls == 3);
+
+    state.calls = 0;
+    const FtInputSourceVtable source_vtable = {
+        .poll_event = callback_poll_event,
+        .device_ids = callback_device_ids,
+        .peek_ids = callback_peek_ids,
+        .edit_ids = callback_edit_ids,
+        .maybe_peek_ids = callback_maybe_peek_ids,
+        .submit_event = callback_submit_event,
+    };
+    FtInputSource source = make_vtable_handle(
+        FT_INPUT_SOURCE_TYPE_TAG, &source_vtable, sizeof(source_vtable), &state);
+    assert(ft_probe_input_source(source) == 13809);
+    assert(state.calls == 2);
+    assert(state.ids.vendor == 0x1af5);
+    assert(state.submitted.device.vendor == 0x1af5);
+    assert(state.submitted.value == 7);
 }
 
 /* ===================================================================== */
@@ -653,6 +808,11 @@ int main(void) {
     RUN_TEST(vtable_dyn_dispatch_process);
 
     RUN_TEST(vtable_drop_callback);
+
+    printf("\n[value structs]\n");
+    RUN_TEST(value_struct_bridge_roundtrip);
+    RUN_TEST(optional_value_result_bridge);
+    RUN_TEST(value_struct_vtable_callbacks);
 
     printf("\n[lifetime types]\n");
     RUN_TEST(lifetime_type_borrowing_handle);

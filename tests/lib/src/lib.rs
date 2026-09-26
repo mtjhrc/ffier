@@ -1042,6 +1042,210 @@ impl<'a> Snapshot<'a> for Gadget {
 // Foreign trait — tests `extern trait` for traits from external crates
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use foreign_trait_crate::{
+    InputDeviceIds, InputEvent, InputEventFlags, InputEventKind, InputSource,
+};
+
+pub struct EventQueue {
+    event: Option<InputEvent>,
+    ids: InputDeviceIds,
+    fail_next: bool,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl EventQueue {
+    pub fn new() -> Self {
+        let ids = InputDeviceIds {
+            bus: 3,
+            vendor: 0x1af4,
+            product: 0x0012,
+            version: 1,
+        };
+        Self {
+            event: Some(InputEvent {
+                device: ids,
+                kind: InputEventKind::Absolute,
+                code: 0,
+                flags: InputEventFlags::SYNTHETIC,
+                value: 42,
+                pressure: 1.5,
+                scale: 2.5,
+            }),
+            ids,
+            fail_next: false,
+        }
+    }
+
+    pub fn pop_event(&mut self) -> std::option::Option<InputEvent> {
+        self.event.take()
+    }
+
+    pub fn echo_event(&self, event: InputEvent) -> InputEvent {
+        event
+    }
+
+    pub fn set_ids(&mut self, ids: &InputDeviceIds) {
+        self.ids = *ids;
+    }
+
+    pub fn copy_ids_to(&self, ids: &mut InputDeviceIds) {
+        *ids = self.ids;
+    }
+
+    pub fn optional_ids_vendor(&self, ids: Option<&InputDeviceIds>) -> u16 {
+        ids.map_or(0, |value| value.vendor)
+    }
+
+    pub fn optional_ids_mut(&self, ids: Option<&mut InputDeviceIds>) {
+        if let Some(ids) = ids {
+            ids.vendor = self.ids.vendor;
+        }
+    }
+
+    pub fn event_or_error(&mut self) -> Result<InputEvent, TestError> {
+        self.pop_event().ok_or(TestError::InvalidInput())
+    }
+
+    pub fn try_peek_ids(&self, available: bool) -> Result<&InputDeviceIds, TestError> {
+        available
+            .then_some(&self.ids)
+            .ok_or(TestError::InvalidInput())
+    }
+
+    pub fn try_edit_ids(&mut self, available: bool) -> Result<&mut InputDeviceIds, TestError> {
+        available
+            .then_some(&mut self.ids)
+            .ok_or(TestError::InvalidInput())
+    }
+
+    pub fn fail_next(&mut self) {
+        self.fail_next = true;
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputSource for EventQueue {
+    fn poll_event(&mut self) -> Option<InputEvent> {
+        self.pop_event()
+    }
+
+    fn device_ids(&self) -> InputDeviceIds {
+        self.ids
+    }
+
+    fn peek_ids(&self) -> &InputDeviceIds {
+        &self.ids
+    }
+
+    fn edit_ids(&mut self) -> &mut InputDeviceIds {
+        &mut self.ids
+    }
+
+    fn maybe_peek_ids(&self, available: bool) -> Option<&InputDeviceIds> {
+        available.then_some(&self.ids)
+    }
+
+    fn submit_event(&mut self, event: InputEvent) {
+        self.event = Some(event);
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait InputBackend {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn next_event(&mut self) -> Result<std::option::Option<InputEvent>, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn current_ids(&self) -> Result<InputDeviceIds, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
+    fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError>;
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputBackend for EventQueue {
+    fn next_event(&mut self) -> Result<std::option::Option<InputEvent>, TestError> {
+        if std::mem::take(&mut self.fail_next) {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.pop_event())
+        }
+    }
+
+    fn current_ids(&self) -> Result<InputDeviceIds, TestError> {
+        Ok(self.ids)
+    }
+
+    fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError> {
+        Ok(&self.ids)
+    }
+
+    fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError> {
+        Ok(&mut self.ids)
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn drain_input_backend(mut backend: impl InputBackend) -> Result<i32, TestError> {
+    let mut total = 0;
+    for _ in 0..3 {
+        if let Some(event) = backend.next_event()? {
+            total += event.value;
+        }
+    }
+    Ok(total)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_backend_values(mut backend: impl InputBackend) -> Result<u16, TestError> {
+    let original = backend.current_ids()?.vendor;
+    let borrowed = backend.peek_ids_result()?.vendor;
+    backend.edit_ids_result()?.vendor += 1;
+    Ok(original + borrowed + backend.peek_ids_result()?.vendor)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrow_input_ids(ids: &InputDeviceIds) -> &InputDeviceIds {
+    ids
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrow_input_ids_mut(ids: &mut InputDeviceIds) -> &mut InputDeviceIds {
+    ids
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_source(mut source: impl InputSource) -> i32 {
+    let before = i32::from(source.peek_ids().vendor);
+    source.edit_ids().vendor += 1;
+    let after = source
+        .maybe_peek_ids(true)
+        .map_or(0, |ids| i32::from(ids.vendor));
+    let missing = source.maybe_peek_ids(false).is_none();
+    source.submit_event(InputEvent {
+        device: source.device_ids(),
+        kind: InputEventKind::Key,
+        code: 12,
+        flags: InputEventFlags::REPEAT,
+        value: 7,
+        pressure: 0.5,
+        scale: 1.0,
+    });
+    let event = source.poll_event().map_or(0, |event| event.value);
+    let _ = source.poll_event();
+    before + after + event + i32::from(missing)
+}
+
 pub use foreign_trait_crate::Weighable;
 
 #[cfg(feature = "ffi")]
@@ -1384,6 +1588,11 @@ ffier::library_definition!("ft", library_tag = 1,
     trait Categorizable = 29,
     Categorizable for Apple,
     Categorizable for Orange,
+    EventQueue = 30,
+    trait InputSource = 31,
+    InputSource for EventQueue,
+    trait InputBackend = 32,
+    InputBackend for EventQueue,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
@@ -1396,11 +1605,15 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(feature = "optional-entry")]
     crate::optional_api::OptionalWorker for crate::optional_api::OptionalWidget,
     enum LogLevel,
+    enum InputEventKind,
     #[cfg(feature = "optional-entry")]
     enum crate::optional_api::OptionalMode,
     #[cfg(feature = "optional-entry")]
     bitflags crate::optional_api::OptionalFlags,
     bitflags Permissions,
+    bitflags InputEventFlags,
+    value InputDeviceIds,
+    value InputEvent,
     fn log_level_name,
     fn log_level_is_enabled,
     #[cfg(feature = "optional-entry")]
@@ -1414,6 +1627,11 @@ ffier::library_definition!("ft", library_tag = 1,
     fn sum_gadget_values,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
+    fn drain_input_backend,
+    fn probe_input_backend_values,
+    fn borrow_input_ids,
+    fn borrow_input_ids_mut,
+    fn probe_input_source,
     fn apply_foreign_config,
     fn read_foreign_item_score,
     fn double_foreign_item_score,
