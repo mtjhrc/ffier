@@ -4,9 +4,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
-    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemTrait, ItemUse, LitStr, Pat,
-    PathArguments, ReturnType, Token, TraitItem, Type, parse::Parse, parse_macro_input,
-    visit_mut::VisitMut,
+    Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemStruct, ItemTrait, ItemUse,
+    LitStr, Pat, PathArguments, ReturnType, Token, TraitItem, Type, parse::Parse, parse::Parser,
+    parse_macro_input, visit_mut::VisitMut,
 };
 
 mod bridge;
@@ -22,6 +22,39 @@ static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 // ---------------------------------------------------------------------------
 // cfg_attr unwrapping — #[cfg_attr(COND, ffier(...))] → #[ffier(...)]
 // ---------------------------------------------------------------------------
+
+/// Whether an attribute can remove a field, expressed as a cfg predicate.
+fn field_presence_predicate(meta: &syn::Meta) -> syn::Result<Option<proc_macro2::TokenStream>> {
+    if meta.path().is_ident("cfg") {
+        let syn::Meta::List(list) = meta else {
+            return Err(syn::Error::new_spanned(meta, "expected #[cfg(...)]"));
+        };
+        return Ok(Some(list.tokens.clone()));
+    }
+    if !meta.path().is_ident("cfg_attr") {
+        return Ok(None);
+    }
+    let syn::Meta::List(list) = meta else {
+        return Err(syn::Error::new_spanned(meta, "expected #[cfg_attr(...)]"));
+    };
+    let args = syn::punctuated::Punctuated::<syn::Meta, Token![,]>::parse_terminated
+        .parse2(list.tokens.clone())?;
+    let mut args = args.into_iter();
+    let condition = args
+        .next()
+        .ok_or_else(|| syn::Error::new_spanned(meta, "cfg_attr requires a condition"))?;
+    let inner = args
+        .map(|meta| field_presence_predicate(&meta))
+        .collect::<syn::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if inner.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(quote! { any(not(#condition), all(#(#inner),*)) }))
+    }
+}
 
 /// Extract `#[ffier(...)]` from an attribute — handles both plain
 /// `#[ffier(...)]` and `#[cfg_attr(COND, ffier(...))]`.
@@ -351,19 +384,24 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
 
-    // 2. Enum
+    // 2. Fixed-layout value struct.
+    if let Ok(struct_item) = syn::parse2::<ItemStruct>(item2.clone()) {
+        return exportable_value_struct(struct_item, &export_cfg);
+    }
+
+    // 3. Enum
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
         return exportable_enum(enum_item, &export_cfg);
     }
 
-    // 3. Free function
+    // 4. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
         return exportable_free_fn(fn_item, &export_cfg);
     }
 
-    // 4. Impl block — trait impl or inherent impl
+    // 5. Impl block — trait impl or inherent impl
     let input = parse_macro_input!(item as ItemImpl);
     if input.trait_.is_some() {
         return trait_impl_inner(input, &export_cfg);
@@ -418,6 +456,253 @@ impl ExportCfg {
             None => quote! {},
         }
     }
+}
+
+fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenStream {
+    let name = &input.ident;
+    if !matches!(input.vis, syn::Visibility::Public(_)) {
+        return syn::Error::new_spanned(&input.vis, "ffier value structs must be public")
+            .to_compile_error()
+            .into();
+    }
+    if !input.generics.params.is_empty() || input.generics.where_clause.is_some() {
+        return syn::Error::new_spanned(&input.generics, "ffier value structs cannot be generic")
+            .to_compile_error()
+            .into();
+    }
+
+    let mut has_repr_c = false;
+    for attr in &input.attrs {
+        if !attr.path().is_ident("repr") {
+            continue;
+        }
+        let result = attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("C") {
+                has_repr_c = true;
+                Ok(())
+            } else {
+                Err(meta.error("ffier value structs support only #[repr(C)] without packed or custom alignment"))
+            }
+        });
+        if let Err(error) = result {
+            return error.to_compile_error().into();
+        }
+    }
+    if !has_repr_c {
+        return syn::Error::new_spanned(name, "ffier value structs require #[repr(C)]")
+            .to_compile_error()
+            .into();
+    }
+
+    let syn::Fields::Named(fields) = &input.fields else {
+        return syn::Error::new_spanned(&input.fields, "ffier value structs require named fields")
+            .to_compile_error()
+            .into();
+    };
+    if fields.named.is_empty() {
+        return syn::Error::new_spanned(&input.fields, "ffier value structs cannot be empty")
+            .to_compile_error()
+            .into();
+    }
+
+    let mut field_meta = Vec::new();
+    let mut field_names = Vec::new();
+    let mut field_types = Vec::new();
+    let mut field_cfg_attrs = Vec::new();
+    let mut field_predicates = Vec::new();
+    for field in &fields.named {
+        if !matches!(field.vis, syn::Visibility::Public(_)) {
+            return syn::Error::new_spanned(field, "ffier value-struct fields must be public")
+                .to_compile_error()
+                .into();
+        }
+        let field_name = field.ident.as_ref().expect("named field");
+        if field_name.to_string().starts_with("r#") {
+            return syn::Error::new_spanned(
+                field_name,
+                "ffier value-struct fields cannot use raw identifiers",
+            )
+            .to_compile_error()
+            .into();
+        }
+        let field_ty = &field.ty;
+        match field_ty {
+            Type::Path(tp) if is_option(tp) => {
+                return syn::Error::new_spanned(
+                    field_ty,
+                    "Option<ValueStruct> is supported only as a return type; value-struct fields cannot be optional",
+                )
+                .to_compile_error()
+                .into();
+            }
+            Type::Path(_) => {}
+            _ => {
+                return syn::Error::new_spanned(
+                    field_ty,
+                    "unsupported value-struct field type; expected an FFI scalar, enum, bitflags, or nested value struct",
+                )
+                .to_compile_error()
+                .into();
+            }
+        }
+        field_meta.push(quote! { { name = #field_name, rust_type = (#field_ty), } });
+        field_names.push(field_name);
+        field_types.push(field_ty);
+        let predicates = match field
+            .attrs
+            .iter()
+            .map(|attr| field_presence_predicate(&attr.meta))
+            .collect::<syn::Result<Vec<_>>>()
+        {
+            Ok(predicates) => predicates.into_iter().flatten().collect::<Vec<_>>(),
+            Err(error) => return error.to_compile_error().into(),
+        };
+        if predicates.is_empty() {
+            field_cfg_attrs.push(None);
+            field_predicates.push(None);
+        } else {
+            let predicate = quote! { all(#(#predicates),*) };
+            field_cfg_attrs.push(Some(quote! { #[cfg(#predicate)] }));
+            field_predicates.push(Some(predicate));
+        }
+    }
+
+    let value_snake = camel_to_snake(&name.to_string());
+    let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let internal_macro_name = format_ident!("__ffier_internal_value_{value_snake}_{counter}");
+    let meta_alias_name = format_ident!("__ffier_meta_{name}");
+    let wire_name = format_ident!("__FfierCRepr{name}");
+    let cfg_attr = export_cfg.cfg_attr();
+    let cfg_pred_tokens = export_cfg.meta_tokens();
+
+    // Select the metadata fields with the same cfg predicates as the Rust
+    // struct. Each helper contributes one field, avoiding a branch for every
+    // combination of conditional fields.
+    let field_macros = (0..=field_names.len())
+        .map(|i| format_ident!("__ffier_value_field_{value_snake}_{counter}_{i}"))
+        .collect::<Vec<_>>();
+    let first_field_macro = &field_macros[0];
+    let mut field_macro_defs = Vec::new();
+    for (i, meta) in field_meta.iter().enumerate() {
+        let current = &field_macros[i];
+        let next = &field_macros[i + 1];
+        let include = quote! {
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! #current {
+                ($prefix:literal, $callback:path, [$($fields:tt)*] $(, $($rest:tt)*)?) => {
+                    $crate::#next! { $prefix, $callback, [$($fields)* #meta,] $(, $($rest)*)? }
+                };
+            }
+        };
+        if let Some(predicate) = &field_predicates[i] {
+            field_macro_defs.push(quote! {
+                #[cfg(#predicate)]
+                #include
+                #[cfg(not(#predicate))]
+                #[doc(hidden)]
+                #[macro_export]
+                macro_rules! #current {
+                    ($prefix:literal, $callback:path, [$($fields:tt)*] $(, $($rest:tt)*)?) => {
+                        $crate::#next! { $prefix, $callback, [$($fields)*] $(, $($rest)*)? }
+                    };
+                }
+            });
+        } else {
+            field_macro_defs.push(include);
+        }
+    }
+    let final_field_macro = field_macros.last().expect("field macro");
+    let wire_fields = field_names
+        .iter()
+        .zip(&field_types)
+        .zip(&field_cfg_attrs)
+        .map(|((name, ty), cfg)| quote! { #cfg pub #name: <#ty as FfiType>::CRepr, })
+        .collect::<Vec<_>>();
+    let into_fields = field_names
+        .iter()
+        .zip(&field_types)
+        .zip(&field_cfg_attrs)
+        .map(|((name, ty), cfg)| quote! { #cfg #name: <#ty as FfiType>::into_c(self.#name), })
+        .collect::<Vec<_>>();
+    let from_fields = field_names
+        .iter()
+        .zip(&field_types)
+        .zip(&field_cfg_attrs)
+        .map(|((name, ty), cfg)| {
+            quote! { #cfg #name: unsafe { <#ty as FfiType>::from_c(repr.#name) }, }
+        })
+        .collect::<Vec<_>>();
+    let offset_checks = field_names
+        .iter()
+        .zip(&field_cfg_attrs)
+        .map(|(field_name, cfg)| {
+            quote! { #cfg assert!(core::mem::offset_of!(#name, #field_name) == core::mem::offset_of!(#wire_name, #field_name)); }
+        })
+        .collect::<Vec<_>>();
+
+    quote! {
+        #cfg_attr
+        #input
+
+        #(#field_macro_defs)*
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #final_field_macro {
+            ($prefix:literal, $callback:path, [$($fields:tt)*] $(, $($rest:tt)*)?) => {
+                $callback! { {
+                    @exported_value,
+                    name = #name,
+                    path = ($crate::#name),
+                    prefix = $prefix,
+                    fields = [$($fields)*],
+                    #cfg_pred_tokens
+                } $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        #[macro_export]
+        macro_rules! #internal_macro_name {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
+                #[doc(hidden)]
+                #[repr(C)]
+                pub struct #wire_name {
+                    #(#wire_fields)*
+                }
+
+                impl FfiType for #name {
+                    type CRepr = #wire_name;
+                    const C_TYPE_NAME: &'static str = stringify!(#name);
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> Self::CRepr {
+                        #wire_name {
+                            #(#into_fields)*
+                        }
+                    }
+                    unsafe fn from_c(repr: Self::CRepr) -> Self {
+                        Self {
+                            #(#from_fields)*
+                        }
+                    }
+                }
+
+                const _: () = {
+                    assert!(core::mem::size_of::<#name>() == core::mem::size_of::<#wire_name>());
+                    assert!(core::mem::align_of::<#name>() == core::mem::align_of::<#wire_name>());
+                    #(#offset_checks)*
+                };
+            };
+            ($prefix:literal, $__type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
+                $crate::#first_field_macro! { $prefix, $callback, [] $(, $($rest)*)? }
+            };
+        }
+
+        #[doc(hidden)]
+        pub use #internal_macro_name as #meta_alias_name;
+    }
+    .into()
 }
 
 fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
@@ -2249,17 +2534,10 @@ fn parse_method_sig(
             }
 
             if is_handle_slice(&param_ty_bridge) {
-                // Extract the inner type T from &[&T] for bridge resolution
-                let Type::Reference(ref_ty) = &param_ty_bridge else {
-                    unreachable!()
-                };
-                let Type::Slice(sl) = &*ref_ty.elem else {
-                    unreachable!()
-                };
-                let Type::Reference(inner_ref) = &*sl.elem else {
-                    unreachable!()
-                };
-                let inner_ty = &*inner_ref.elem;
+                // Extract T from either &[&T] or &[T]. The batch validator
+                // rejects value-struct slices once registered types are known.
+                let inner_ty =
+                    handle_slice_elem(&param_ty_bridge).expect("checked by is_handle_slice");
                 let elem_bridge = ctx.bridge_tokens(inner_ty);
                 let elem_rust = match self_ty {
                     Some(sty) => {
@@ -3011,6 +3289,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 trait_generics = (#trait_ty_generics);
                 crate_path = ($crate);
                 handles = [$($__handle),*];
+                values = [$($__value),*];
                 reserved = [#(#reserved_lits),*];
                 own_method_count = #own_method_count;
                 methods = [#(#vtable_method_meta),*];
@@ -3087,7 +3366,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             // The vtable struct and wrapper type are emitted at the crate root of the
             // invoking crate, so orphan rules are satisfied even when the trait is
             // defined in an upstream crate.
-            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 #on_library_export_body
             };
             // Tagged invocation with path overrides (from library_definition!
@@ -3351,6 +3630,7 @@ fn trait_impl_inner(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
 /// - `Path = N` — exported struct or error enum with type tag
 /// - `trait Path = N` — exported trait with type tag
 /// - `TraitPath for StructPath` — trait impl bridge (uses the struct's tag)
+/// - `value Path` — fixed-layout value struct without a type tag
 ///
 /// Each annotated type generates a `__ffier_meta_*` alias macro next to the
 /// type via `pub use`. This macro resolves those aliases from the given paths
@@ -3401,6 +3681,14 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let trait_name = path_last_ident(path);
                 Some(format_ident!("Vtable{trait_name}"))
             }
+            _ => None,
+        })
+        .collect();
+    let value_type_idents: Vec<syn::Ident> = parsed
+        .entries
+        .iter()
+        .filter_map(|e| match &e.entry {
+            LibraryEntry::Value(path) => Some(path_last_ident(path).clone()),
             _ => None,
         })
         .collect();
@@ -3515,7 +3803,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // @on_library_export generates the vtable struct + wrapper type + impls.
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
                 shim_names.push(shim_name.clone());
             }
@@ -3588,6 +3876,23 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                         },
                     ));
                 }
+            }
+            LibraryEntry::Value(path) => {
+                let last_ident = path_last_ident(path);
+                let alias = meta_alias_for_type(path);
+                let alias_chain = to_chain_path(&alias);
+                let shim_name = format_ident!("__ffier_value_{prefix_str}_{last_ident}");
+                shim_macros.push(emit_library_shim(
+                    &shim_name,
+                    quote! {
+                        #alias_chain! { $prefix, 0, $callback $(, $($rest)*)? }
+                    },
+                ));
+                reexport_invocations.push(maybe_cfg_wrap(
+                    cfg,
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                ));
+                shim_names.push(shim_name);
             }
             LibraryEntry::FreeFn(path) => {
                 let last_ident = path_last_ident(path);
@@ -4128,6 +4433,8 @@ enum LibraryEntry {
     Enum(syn::Path),
     /// A bitflags type (no type tag, value type): `bitflags Path`
     Bitflags(syn::Path),
+    /// A fixed-layout value struct (no type tag): `value Path`
+    Value(syn::Path),
     /// A free function: `fn Path`
     FreeFn(syn::Path),
 }
@@ -4285,6 +4592,15 @@ impl Parse for LibraryInput {
                 let _: syn::Ident = input.parse()?;
                 let path: syn::Path = input.parse()?;
                 LibraryEntry::Bitflags(path)
+            } else if input.peek(syn::Ident)
+                && input
+                    .fork()
+                    .parse::<syn::Ident>()
+                    .is_ok_and(|id| id == "value")
+            {
+                let _: syn::Ident = input.parse()?;
+                let path: syn::Path = input.parse()?;
+                LibraryEntry::Value(path)
             } else if input.peek(Token![fn]) {
                 // `fn Path`
                 input.parse::<Token![fn]>()?;
@@ -4356,6 +4672,7 @@ struct GenerateVtableInput {
     trait_generics: proc_macro2::TokenStream,
     crate_path: proc_macro2::TokenStream,
     handles: Vec<syn::Ident>,
+    values: Vec<syn::Ident>,
     reserved: Vec<usize>,
     own_method_count: usize,
     methods: Vec<proc_macro2::TokenStream>,
@@ -4371,6 +4688,7 @@ impl Parse for GenerateVtableInput {
         let mut trait_generics = None;
         let mut crate_path = None;
         let mut handles = Vec::new();
+        let mut values = Vec::new();
         let mut own_method_count = 0usize;
         let mut reserved = Vec::new();
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
@@ -4412,6 +4730,17 @@ impl Parse for GenerateVtableInput {
                     syn::bracketed!(content in input);
                     while !content.is_empty() {
                         handles.push(content.parse::<syn::Ident>()?);
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
+                    }
+                    input.parse::<Token![;]>()?;
+                }
+                "values" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    while !content.is_empty() {
+                        values.push(content.parse::<syn::Ident>()?);
                         if !content.is_empty() {
                             content.parse::<Token![,]>()?;
                         }
@@ -4504,6 +4833,7 @@ impl Parse for GenerateVtableInput {
                 syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path")
             })?,
             handles,
+            values,
             reserved,
             own_method_count,
             methods,
@@ -4520,6 +4850,7 @@ impl Parse for GenerateVtableInput {
 fn vtable_c_fn_sig(
     m: &crate::meta::MetaMethod,
     handle_names: &std::collections::HashSet<String>,
+    value_names: &std::collections::HashSet<String>,
 ) -> (
     Vec<proc_macro2::TokenStream>,
     proc_macro2::TokenStream,
@@ -4546,7 +4877,30 @@ fn vtable_c_fn_sig(
             }
             crate::meta::MetaParamKind::Regular(tp) => {
                 let bt = &tp.bridge_type;
-                param_types.push(quote! { <#bt as FfiType>::CRepr });
+                let rt = &tp.rust_type;
+                match crate::meta::classify_value_type(rt, value_names) {
+                    Some(crate::meta::ValueTypeUse::SharedRef)
+                    | Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                        let inner = crate::meta::value_inner_type(bt)
+                            .expect("value reference has inner type");
+                        param_types.push(quote! { *const <#inner as FfiType>::CRepr });
+                    }
+                    Some(crate::meta::ValueTypeUse::MutRef)
+                    | Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                        let inner = crate::meta::value_inner_type(bt)
+                            .expect("value reference has inner type");
+                        param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                    }
+                    Some(crate::meta::ValueTypeUse::OptionalValue) => {
+                        param_types.push(quote! { compile_error!("Option<ValueStruct> is supported only in return positions") });
+                    }
+                    Some(crate::meta::ValueTypeUse::Value) => {
+                        let inner =
+                            crate::meta::value_inner_type(bt).expect("value has inner type");
+                        param_types.push(quote! { <#inner as FfiType>::CRepr });
+                    }
+                    _ => param_types.push(quote! { <#bt as FfiType>::CRepr }),
+                }
             }
         }
     }
@@ -4558,19 +4912,77 @@ fn vtable_c_fn_sig(
         crate::meta::MetaReturn::Void => quote! {},
         crate::meta::MetaReturn::Value(tp) => {
             let bt = &tp.bridge_type;
-            quote! { -> <#bt as FfiType>::CRepr }
+            match crate::meta::classify_value_type(&tp.rust_type, value_names) {
+                Some(crate::meta::ValueTypeUse::OptionalValue) => {
+                    let inner =
+                        crate::meta::value_inner_type(bt).expect("optional value has inner type");
+                    param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                    quote! { -> bool }
+                }
+                Some(crate::meta::ValueTypeUse::SharedRef)
+                | Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                    let inner =
+                        crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                    quote! { -> *const <#inner as FfiType>::CRepr }
+                }
+                Some(crate::meta::ValueTypeUse::MutRef)
+                | Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                    let inner =
+                        crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                    quote! { -> *mut <#inner as FfiType>::CRepr }
+                }
+                Some(crate::meta::ValueTypeUse::Value) => {
+                    let inner = crate::meta::value_inner_type(bt).expect("value has inner type");
+                    quote! { -> <#inner as FfiType>::CRepr }
+                }
+                _ => quote! { -> <#bt as FfiType>::CRepr },
+            }
         }
         crate::meta::MetaReturn::HandleSlice { .. } => {
             quote! { -> ffier::FfierObjectArray }
         }
         crate::meta::MetaReturn::Result { ok, .. } => {
+            let optional_value = ok.as_ref().is_some_and(|tp| {
+                crate::meta::classify_value_type(&tp.rust_type, value_names)
+                    == Some(crate::meta::ValueTypeUse::OptionalValue)
+            });
+            if optional_value {
+                let tp = ok.as_ref().expect("optional value result has ok type");
+                let inner = crate::meta::value_inner_type(&tp.bridge_type)
+                    .expect("optional value has inner type");
+                param_types.push(quote! { *mut bool });
+                param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                param_types.push(quote! { *mut *mut core::ffi::c_void });
+                return (param_types, quote! { -> ffier::FfierResult }, false);
+            }
             if ok_is_handle {
                 param_types.push(quote! { *mut *mut core::ffi::c_void });
                 quote! { -> *mut core::ffi::c_void }
             } else {
                 if let Some(ok_tp) = ok {
                     let bt = &ok_tp.bridge_type;
-                    param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
+                    let c_repr =
+                        match crate::meta::classify_value_type(&ok_tp.rust_type, value_names) {
+                            Some(crate::meta::ValueTypeUse::SharedRef)
+                            | Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                                let inner = crate::meta::value_inner_type(bt)
+                                    .expect("value reference has inner type");
+                                quote! { *const <#inner as FfiType>::CRepr }
+                            }
+                            Some(crate::meta::ValueTypeUse::MutRef)
+                            | Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                                let inner = crate::meta::value_inner_type(bt)
+                                    .expect("value reference has inner type");
+                                quote! { *mut <#inner as FfiType>::CRepr }
+                            }
+                            Some(crate::meta::ValueTypeUse::Value) => {
+                                let inner = crate::meta::value_inner_type(bt)
+                                    .expect("value has inner type");
+                                quote! { <#inner as FfiType>::CRepr }
+                            }
+                            _ => quote! { <#bt as FfiType>::CRepr },
+                        };
+                    param_types.push(quote! { *mut #c_repr });
                 }
                 param_types.push(quote! { *mut *mut core::ffi::c_void });
                 quote! { -> ffier::FfierResult }
@@ -4592,6 +5004,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let crate_path = &inp.crate_path;
     let handle_names: std::collections::HashSet<String> =
         inp.handles.iter().map(|h| h.to_string()).collect();
+    let value_names: std::collections::HashSet<String> =
+        inp.values.iter().map(|value| value.to_string()).collect();
 
     let default_helper_map: HashMap<String, &proc_macro2::TokenStream> = inp
         .default_helpers
@@ -4634,7 +5048,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         }
 
         let method_name = &m.name;
-        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names);
+        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
 
         vtable_fields.push(quote! {
             pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
@@ -4669,7 +5083,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
 
-            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) = vtable_c_fn_sig(m, &handle_names);
+            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) =
+                vtable_c_fn_sig(m, &handle_names, &value_names);
             let fn_ptr_type = quote! {
                 unsafe extern "C" fn(#(#fn_ptr_param_types),*) #fn_ptr_ret
             };
@@ -4714,7 +5129,35 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     }
                     crate::meta::MetaParamKind::Regular(tp) => {
                         let rt = &tp.rust_type;
-                        vtable_args.push(quote! { <#rt as FfiType>::into_c(#id) });
+                        match crate::meta::classify_value_type(rt, &value_names) {
+                            Some(crate::meta::ValueTypeUse::SharedRef) => {
+                                let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
+                                vtable_args.push(quote! { #id as *const #inner as *const <#inner as FfiType>::CRepr });
+                            }
+                            Some(crate::meta::ValueTypeUse::MutRef) => {
+                                let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
+                                vtable_args.push(quote! { #id as *mut #inner as *mut <#inner as FfiType>::CRepr });
+                            }
+                            Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                                let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
+                                vtable_args.push(quote! { #id.map_or(core::ptr::null(), |value| value as *const #inner as *const <#inner as FfiType>::CRepr) });
+                            }
+                            Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                                let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
+                                vtable_args.push(quote! { #id.map_or(core::ptr::null_mut(), |value| value as *mut #inner as *mut <#inner as FfiType>::CRepr) });
+                            }
+                            Some(crate::meta::ValueTypeUse::OptionalValue) => {
+                                vtable_args.push(quote! {{
+                                    compile_error!("Option<ValueStruct> is supported only in return positions");
+                                    unreachable!()
+                                }});
+                            }
+                            Some(crate::meta::ValueTypeUse::Value) => {
+                                let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
+                                vtable_args.push(quote! { <#inner as FfiType>::into_c(#id) });
+                            }
+                            _ => vtable_args.push(quote! { <#rt as FfiType>::into_c(#id) }),
+                        }
                     }
                 }
             }
@@ -4741,7 +5184,53 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     crate::meta::MetaReturn::Void => raw_call.clone(),
                     crate::meta::MetaReturn::Value(tp) => {
                         let bt = &tp.bridge_type;
-                        quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
+                        match crate::meta::classify_value_type(&tp.rust_type, &value_names) {
+                            Some(crate::meta::ValueTypeUse::OptionalValue) => {
+                                let inner = crate::meta::value_inner_type(bt)
+                                    .expect("optional value has inner type");
+                                quote! {{
+                                    #(#vtable_pre)*
+                                    let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
+                                    let __is_some = unsafe { __f(
+                                        self.value.user_data as *mut core::ffi::c_void,
+                                        #(#vtable_args,)*
+                                        __out.as_mut_ptr(),
+                                    ) };
+                                    if __is_some {
+                                        Some(unsafe { <#inner as FfiType>::from_c(__out.assume_init()) })
+                                    } else {
+                                        None
+                                    }
+                                }}
+                            }
+                            Some(crate::meta::ValueTypeUse::SharedRef) => {
+                                let inner = crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                                quote! { unsafe { &*(#raw_call as *const #inner) } }
+                            }
+                            Some(crate::meta::ValueTypeUse::MutRef) => {
+                                let inner = crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                                quote! { unsafe { &mut *(#raw_call as *mut #inner) } }
+                            }
+                            Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                                let inner = crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                                quote! {{
+                                    let __ptr = #raw_call;
+                                    unsafe { (__ptr as *const #inner).as_ref() }
+                                }}
+                            }
+                            Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                                let inner = crate::meta::value_inner_type(bt).expect("value reference has inner type");
+                                quote! {{
+                                    let __ptr = #raw_call;
+                                    unsafe { (__ptr as *mut #inner).as_mut() }
+                                }}
+                            }
+                            Some(crate::meta::ValueTypeUse::Value) => {
+                                let inner = crate::meta::value_inner_type(bt).expect("value has inner type");
+                                quote! { unsafe { <#inner as FfiType>::from_c(#raw_call) } }
+                            }
+                            _ => quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } },
+                        }
                     }
                     crate::meta::MetaReturn::HandleSlice { types: tp, .. } => {
                         // HandleSlice vtable dispatch: call __f which returns
@@ -4765,7 +5254,37 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     }
                     crate::meta::MetaReturn::Result { ok, err_ident, .. } => {
                         let err_ty = format_ident!("{err_ident}");
-                        if ok_is_handle {
+                        let optional_value = ok.as_ref().is_some_and(|tp| {
+                            crate::meta::classify_value_type(&tp.rust_type, &value_names)
+                                == Some(crate::meta::ValueTypeUse::OptionalValue)
+                        });
+                        if optional_value {
+                            let tp = ok.as_ref().expect("optional value result has ok type");
+                            let inner = crate::meta::value_inner_type(&tp.bridge_type)
+                                .expect("optional value has inner type");
+                            quote! {{
+                                #(#vtable_pre)*
+                                let mut __is_some = false;
+                                let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
+                                let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                                let __r = unsafe { __f(
+                                    self.value.user_data as *mut core::ffi::c_void,
+                                    #(#vtable_args,)*
+                                    &mut __is_some,
+                                    __out.as_mut_ptr(),
+                                    &mut __err,
+                                ) };
+                                if __r == ffier::FFIER_RESULT_SUCCESS {
+                                    if __is_some {
+                                        Ok(Some(unsafe { <#inner as FfiType>::from_c(__out.assume_init()) }))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                } else {
+                                    Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                }
+                            }}
+                        } else if ok_is_handle {
                             // GLib-style: __f returns handle or null, err through out-param
                             let ok_conversion = match ok {
                                 Some(tp) => {
@@ -4792,10 +5311,47 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                             let (ok_decl, ok_conversion) = match ok {
                                 Some(tp) => {
                                     let bt = &tp.bridge_type;
-                                    (
-                                        quote! { let mut __out = core::mem::MaybeUninit::<<#bt as FfiType>::CRepr>::uninit(); },
-                                        quote! { Ok(unsafe { <#bt as FfiType>::from_c(__out.assume_init()) }) },
-                                    )
+                                    match crate::meta::classify_value_type(&tp.rust_type, &value_names) {
+                                        Some(crate::meta::ValueTypeUse::SharedRef) => {
+                                            let inner = crate::meta::value_inner_type(bt).unwrap();
+                                            (
+                                                quote! { let mut __out = core::mem::MaybeUninit::<*const <#inner as FfiType>::CRepr>::uninit(); },
+                                                quote! { Ok(unsafe { &*__out.assume_init().cast::<#inner>() }) },
+                                            )
+                                        }
+                                        Some(crate::meta::ValueTypeUse::MutRef) => {
+                                            let inner = crate::meta::value_inner_type(bt).unwrap();
+                                            (
+                                                quote! { let mut __out = core::mem::MaybeUninit::<*mut <#inner as FfiType>::CRepr>::uninit(); },
+                                                quote! { Ok(unsafe { &mut *__out.assume_init().cast::<#inner>() }) },
+                                            )
+                                        }
+                                        Some(crate::meta::ValueTypeUse::OptionalSharedRef) => {
+                                            let inner = crate::meta::value_inner_type(bt).unwrap();
+                                            (
+                                                quote! { let mut __out = core::mem::MaybeUninit::<*const <#inner as FfiType>::CRepr>::uninit(); },
+                                                quote! { Ok(unsafe { __out.assume_init().cast::<#inner>().as_ref() }) },
+                                            )
+                                        }
+                                        Some(crate::meta::ValueTypeUse::OptionalMutRef) => {
+                                            let inner = crate::meta::value_inner_type(bt).unwrap();
+                                            (
+                                                quote! { let mut __out = core::mem::MaybeUninit::<*mut <#inner as FfiType>::CRepr>::uninit(); },
+                                                quote! { Ok(unsafe { __out.assume_init().cast::<#inner>().as_mut() }) },
+                                            )
+                                        }
+                                        Some(crate::meta::ValueTypeUse::Value) => {
+                                            let inner = crate::meta::value_inner_type(bt).unwrap();
+                                            (
+                                                quote! { let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit(); },
+                                                quote! { Ok(unsafe { <#inner as FfiType>::from_c(__out.assume_init()) }) },
+                                            )
+                                        }
+                                        _ => (
+                                            quote! { let mut __out = core::mem::MaybeUninit::<<#bt as FfiType>::CRepr>::uninit(); },
+                                            quote! { Ok(unsafe { <#bt as FfiType>::from_c(__out.assume_init()) }) },
+                                        ),
+                                    }
                                 }
                                 None => (quote! {}, quote! { Ok(()) })
                             };
@@ -4863,6 +5419,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         .iter()
         .filter_map(|m| {
             if let crate::meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
+                if crate::meta::classify_value_type(&tp.rust_type, &value_names).is_some() {
+                    return None;
+                }
                 let bt = &tp.bridge_type;
                 let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();
