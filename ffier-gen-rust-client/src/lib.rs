@@ -191,7 +191,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     .unwrap();
     writeln!(
         out,
-        "    isize => \"ssize_t\", usize => \"size_t\", bool => \"bool\","
+        "    isize => \"ssize_t\", usize => \"size_t\", bool => \"bool\", f32 => \"float\", f64 => \"double\","
     )
     .unwrap();
     writeln!(
