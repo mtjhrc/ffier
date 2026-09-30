@@ -10,7 +10,9 @@ pub trait FfiHandle {
     /// # Safety
     /// The caller must ensure the handle is not used after the object is dropped.
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
 }
 
 /// Maps Rust types to C-compatible representations.
@@ -232,8 +234,12 @@ impl<'a> FfiHandle for ForeignBorrowed<'a> {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        unsafe {
+            <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(
+                handle,
+            )
+        }
     }
 }
 impl<'a> FfiType for ForeignBorrowed<'a> {
@@ -244,7 +250,9 @@ impl<'a> FfiType for ForeignBorrowed<'a> {
         ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        unsafe {
+            <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        }
     }
 }
 
@@ -255,8 +263,10 @@ impl FfiHandle for ForeignConfig {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        unsafe {
+            <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+        }
     }
 }
 impl FfiType for ForeignConfig {
@@ -267,7 +277,7 @@ impl FfiType for ForeignConfig {
         ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        unsafe { <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr) }
     }
 }
 
@@ -278,8 +288,8 @@ impl FfiHandle for ForeignItem {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        unsafe { <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle) }
     }
 }
 impl FfiType for ForeignItem {
@@ -290,7 +300,7 @@ impl FfiType for ForeignItem {
         ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        unsafe { <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr) }
     }
 }
 
@@ -307,9 +317,9 @@ impl<T: FfiHandle> ForeignSlice<T> {
     fn from_raw(raw: ffier::FfierObjectArray) -> Self {
         let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)
             .map(|i| {
-                core::mem::ManuallyDrop::new(T::__from_raw(unsafe {
-                    ffier::ffier_object_array_get(raw, i)
-                }))
+                core::mem::ManuallyDrop::new(unsafe {
+                    T::__from_raw(ffier::ffier_object_array_get(raw, i))
+                })
             })
             .collect();
         Self { raw, elements }
@@ -742,7 +752,7 @@ impl std::fmt::Display for TestError {
             }
         }
         let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
-        let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
+        let __vtable: &'static PushStrVtable = __ffier_vtable_PushStr::<FmtWriter>();
         let mut __temp = ffier::FfierHandle {
             type_tag: 16777240u32,
             metadata: 0,
@@ -823,7 +833,7 @@ impl std::fmt::Display for Error {
             }
         }
         let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
-        let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
+        let __vtable: &'static PushStrVtable = __ffier_vtable_PushStr::<FmtWriter>();
         let mut __temp = ffier::FfierHandle {
             type_tag: 16777240u32,
             metadata: 0,
@@ -986,7 +996,9 @@ pub struct Widget(*mut core::ffi::c_void);
 
 impl Widget {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1002,7 +1014,7 @@ impl FfiHandle for Widget {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1014,7 +1026,7 @@ impl FfiType for Widget {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1200,7 +1212,7 @@ impl Widget {
     #[doc = " Return a borrowed reference to the widget's internal gadget."]
     pub fn gadget(&self) -> Gadget {
         let __raw = unsafe { ft_widget_gadget(self.0) };
-        <Gadget as FfiHandle>::__from_raw(__raw)
+        unsafe { <Gadget as FfiHandle>::__from_raw(__raw) }
     }
     #[doc = " Return a borrowed slice of the widget's gadgets (&[T] pattern)."]
     pub fn gadgets(&self) -> ForeignSlice<Gadget> {
@@ -1382,7 +1394,9 @@ pub struct Gadget(*mut core::ffi::c_void);
 
 impl Gadget {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1398,7 +1412,7 @@ impl FfiHandle for Gadget {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1410,7 +1424,7 @@ impl FfiType for Gadget {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1454,7 +1468,9 @@ pub struct Config(*mut core::ffi::c_void);
 
 impl Config {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1470,7 +1486,7 @@ impl FfiHandle for Config {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1482,7 +1498,7 @@ impl FfiType for Config {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1579,7 +1595,9 @@ pub struct Gizmo(*mut core::ffi::c_void);
 
 impl Gizmo {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1595,7 +1613,7 @@ impl FfiHandle for Gizmo {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1607,7 +1625,7 @@ impl FfiType for Gizmo {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1655,7 +1673,9 @@ pub struct GizmoBuilder(*mut core::ffi::c_void);
 
 impl GizmoBuilder {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1671,7 +1691,7 @@ impl FfiHandle for GizmoBuilder {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1683,7 +1703,7 @@ impl FfiType for GizmoBuilder {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1763,13 +1783,19 @@ unsafe extern "C" {
     );
     pub fn ft_view_label(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
     pub fn ft_view_copy_label(handle: *mut core::ffi::c_void, other: *mut core::ffi::c_void);
+    pub fn ft_view_snapshot_count(
+        handle: *mut core::ffi::c_void,
+        other: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
 }
 
 pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
 
 impl<'a> View<'a> {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr, std::marker::PhantomData)
     }
     #[doc(hidden)]
@@ -1785,7 +1811,7 @@ impl<'a> FfiHandle for View<'a> {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle, std::marker::PhantomData)
     }
 }
@@ -1797,7 +1823,7 @@ impl<'a> FfiType for View<'a> {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1842,7 +1868,13 @@ impl<'a> View<'a> {
     }
     #[doc = " Copy label from another snapshot (tests impl Trait auto-dispatch)."]
     pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
-        unsafe { ft_view_copy_label(self.0, other.__into_raw_handle()) }
+        unsafe { ft_view_copy_label(self.0, other.__into_callback_handle().into_raw()) }
+    }
+    #[doc = " Trait lifetime arguments do not imply value lifetime bounds."]
+    pub fn snapshot_count<'b>(&self, other: impl Snapshot<'a> + 'b) -> i32 {
+        let __raw =
+            unsafe { ft_view_snapshot_count(self.0, other.__into_callback_handle().into_raw()) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
     }
 }
 
@@ -1865,7 +1897,9 @@ pub struct ViewFactory(*mut core::ffi::c_void);
 
 impl ViewFactory {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1881,7 +1915,7 @@ impl FfiHandle for ViewFactory {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1893,7 +1927,7 @@ impl FfiType for ViewFactory {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -1955,7 +1989,9 @@ pub struct Pipeline(*mut core::ffi::c_void);
 
 impl Pipeline {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -1971,7 +2007,7 @@ impl FfiHandle for Pipeline {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -1983,7 +2019,7 @@ impl FfiType for Pipeline {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2004,7 +2040,7 @@ impl Pipeline {
         unsafe {
             ft_pipeline_run(
                 self.0,
-                proc.__into_raw_handle(),
+                proc.__into_callback_handle().into_raw(),
                 <i32 as FfiType>::into_c(input),
             )
         }
@@ -2054,7 +2090,9 @@ pub struct Apple(*mut core::ffi::c_void);
 
 impl Apple {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2070,7 +2108,7 @@ impl FfiHandle for Apple {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2082,7 +2120,7 @@ impl FfiType for Apple {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2114,7 +2152,9 @@ pub struct Orange(*mut core::ffi::c_void);
 
 impl Orange {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2130,7 +2170,7 @@ impl FfiHandle for Orange {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2142,7 +2182,7 @@ impl FfiType for Orange {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2174,7 +2214,9 @@ pub struct Banana(*mut core::ffi::c_void);
 
 impl Banana {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2190,7 +2232,7 @@ impl FfiHandle for Banana {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2202,7 +2244,7 @@ impl FfiType for Banana {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2234,7 +2276,9 @@ pub struct Mango(*mut core::ffi::c_void);
 
 impl Mango {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2250,7 +2294,7 @@ impl FfiHandle for Mango {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2262,7 +2306,7 @@ impl FfiType for Mango {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2294,7 +2338,9 @@ pub struct Peach(*mut core::ffi::c_void);
 
 impl Peach {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2310,7 +2356,7 @@ impl FfiHandle for Peach {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2322,7 +2368,7 @@ impl FfiType for Peach {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2354,7 +2400,9 @@ pub struct Plum(*mut core::ffi::c_void);
 
 impl Plum {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2370,7 +2418,7 @@ impl FfiHandle for Plum {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2382,7 +2430,7 @@ impl FfiType for Plum {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2414,7 +2462,9 @@ pub struct Grape(*mut core::ffi::c_void);
 
 impl Grape {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2430,7 +2480,7 @@ impl FfiHandle for Grape {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2442,7 +2492,7 @@ impl FfiType for Grape {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2474,7 +2524,9 @@ pub struct Lemon(*mut core::ffi::c_void);
 
 impl Lemon {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2490,7 +2542,7 @@ impl FfiHandle for Lemon {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2502,7 +2554,7 @@ impl FfiType for Lemon {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2556,7 +2608,9 @@ pub struct Mixer(*mut core::ffi::c_void);
 
 impl Mixer {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2572,7 +2626,7 @@ impl FfiHandle for Mixer {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2584,7 +2638,7 @@ impl FfiType for Mixer {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2607,7 +2661,7 @@ impl Mixer {
         unsafe {
             ft_mixer_add(
                 &mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
-                fruit.__into_raw_handle(),
+                fruit.__into_callback_handle().into_raw(),
             )
         };
         Self(__handle)
@@ -2616,26 +2670,41 @@ impl Mixer {
     #[doc = " Returns the length of a fruit's label. Used to test that vtable"]
     #[doc = " default method detection works for custom client types crossing FFI."]
     pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
-        let __raw = unsafe { ft_mixer_fruit_label_len(self.0, fruit.__into_raw_handle()) };
+        let __raw =
+            unsafe { ft_mixer_fruit_label_len(self.0, fruit.__into_callback_handle().into_raw()) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     #[doc = " Both concrete (9^2=81 > 64, override with annotation)."]
     pub fn blend_concrete(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
         let __raw = unsafe {
-            ft_mixer_blend_concrete(self.0, a.__into_raw_handle(), b.__into_raw_handle())
+            ft_mixer_blend_concrete(
+                self.0,
+                a.__into_callback_handle().into_raw(),
+                b.__into_callback_handle().into_raw(),
+            )
         };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     #[doc = " First concrete, second vtable (hybrid: 9+9=18 branches)."]
     pub fn blend_hybrid(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw =
-            unsafe { ft_mixer_blend_hybrid(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        let __raw = unsafe {
+            ft_mixer_blend_hybrid(
+                self.0,
+                a.__into_callback_handle().into_raw(),
+                b.__into_callback_handle().into_raw(),
+            )
+        };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     #[doc = " Both vtable (9+9=18 branches)."]
     pub fn blend_dynamic(&mut self, a: impl Fruit, b: impl Fruit) -> i32 {
-        let __raw =
-            unsafe { ft_mixer_blend_dynamic(self.0, a.__into_raw_handle(), b.__into_raw_handle()) };
+        let __raw = unsafe {
+            ft_mixer_blend_dynamic(
+                self.0,
+                a.__into_callback_handle().into_raw(),
+                b.__into_callback_handle().into_raw(),
+            )
+        };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
     pub fn total(&self) -> i32 {
@@ -2657,6 +2726,119 @@ impl Drop for Mixer {
 }
 
 unsafe extern "C" {
+    pub fn ft_retained_fruit_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_retained_fruit_new(
+        fruit: *mut core::ffi::c_void,
+    ) -> <RetainedFruit<'static> as FfiType>::CRepr;
+    pub fn ft_retained_fruit_new_dynamic(
+        fruit: *mut core::ffi::c_void,
+    ) -> <RetainedFruit<'static> as FfiType>::CRepr;
+    pub fn ft_retained_fruit_new_static(
+        fruit: *mut core::ffi::c_void,
+    ) -> <RetainedFruit<'static> as FfiType>::CRepr;
+    pub fn ft_retained_fruit_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_retained_fruit_borrowed_value(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_retained_fruit_borrowed_value_dynamic(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_retained_fruit_borrowed_mut_value(
+        handle: *mut core::ffi::c_void,
+        fruit: *mut core::ffi::c_void,
+    ) -> <i32 as FfiType>::CRepr;
+}
+
+pub struct RetainedFruit<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+
+impl<'a> RetainedFruit<'a> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr, std::marker::PhantomData)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl<'a> FfiHandle for RetainedFruit<'a> {
+    const C_HANDLE_NAME: &'static str = "FtRetainedFruit";
+    const TYPE_TAG: u32 = 16777249u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle, std::marker::PhantomData)
+    }
+}
+
+impl<'a> FfiType for RetainedFruit<'a> {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "RetainedFruit";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        unsafe { Self::__from_raw(repr) }
+    }
+}
+
+impl<'a> std::fmt::Debug for RetainedFruit<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RetainedFruit").field(&self.0).finish()
+    }
+}
+
+impl<'a> RetainedFruit<'a> {
+    pub fn new(fruit: impl Fruit + 'a) -> RetainedFruit<'a> {
+        let __raw = unsafe { ft_retained_fruit_new(fruit.__into_callback_handle().into_raw()) };
+        unsafe { <RetainedFruit<'a> as FfiType>::from_c(__raw) }
+    }
+    pub fn new_dynamic(fruit: impl Fruit + 'a) -> RetainedFruit<'a> {
+        let __raw =
+            unsafe { ft_retained_fruit_new_dynamic(fruit.__into_callback_handle().into_raw()) };
+        unsafe { <RetainedFruit<'a> as FfiType>::from_c(__raw) }
+    }
+    pub fn new_static(fruit: impl Fruit + 'static) -> RetainedFruit<'a> {
+        let __raw =
+            unsafe { ft_retained_fruit_new_static(fruit.__into_callback_handle().into_raw()) };
+        unsafe { <RetainedFruit<'a> as FfiType>::from_c(__raw) }
+    }
+    pub fn value(&self) -> i32 {
+        let __raw = unsafe { ft_retained_fruit_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    pub fn borrowed_value(&self, fruit: &(impl Fruit + 'a)) -> i32 {
+        let __ffi_fruit = fruit.__borrow_callback_handle();
+        let __raw = unsafe { ft_retained_fruit_borrowed_value(self.0, __ffi_fruit.as_raw()) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    pub fn borrowed_value_dynamic(&self, fruit: &'_ (impl Fruit + 'a)) -> i32 {
+        let __ffi_fruit = fruit.__borrow_callback_handle();
+        let __raw =
+            unsafe { ft_retained_fruit_borrowed_value_dynamic(self.0, __ffi_fruit.as_raw()) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    pub fn borrowed_mut_value(&self, fruit: &mut (impl Fruit + 'a)) -> i32 {
+        let __ffi_fruit = fruit.__borrow_callback_handle_mut();
+        let __raw = unsafe { ft_retained_fruit_borrowed_mut_value(self.0, __ffi_fruit.as_raw()) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl<'a> Drop for RetainedFruit<'a> {
+    fn drop(&mut self) {
+        unsafe { ft_retained_fruit_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
     pub fn ft_sprocket_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_sprocket_new(name: <&'static str as FfiType>::CRepr) -> <Sprocket as FfiType>::CRepr;
     pub fn ft_sprocket_try_spin(
@@ -2669,7 +2851,9 @@ pub struct Sprocket(*mut core::ffi::c_void);
 
 impl Sprocket {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2685,7 +2869,7 @@ impl FfiHandle for Sprocket {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2697,7 +2881,7 @@ impl FfiType for Sprocket {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2781,7 +2965,9 @@ pub struct EventQueue(*mut core::ffi::c_void);
 
 impl EventQueue {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2797,7 +2983,7 @@ impl FfiHandle for EventQueue {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2809,7 +2995,7 @@ impl FfiType for EventQueue {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -2958,7 +3144,9 @@ pub struct OptionalWidget(*mut core::ffi::c_void);
 #[cfg(feature = "optional-entry")]
 impl OptionalWidget {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -2975,7 +3163,7 @@ impl FfiHandle for OptionalWidget {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -2988,7 +3176,7 @@ impl FfiType for OptionalWidget {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -3018,63 +3206,90 @@ impl Drop for OptionalWidget {
     }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagProcessor {}
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
     fn name(&self) -> &str;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static ProcessorVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &ProcessorVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            process: Some({
-                unsafe extern "C" fn __trampoline<__T: Processor>(
-                    __ud: *mut core::ffi::c_void,
-                    input: <i32 as FfiType>::CRepr,
-                ) -> <i32 as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.process(unsafe { <i32 as FfiType>::from_c(input) });
-                    <i32 as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            name: Some({
-                unsafe extern "C" fn __trampoline<__T: Processor>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <&'static str as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.name();
-                    <&str as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagProcessor>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(ProcessorVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Processor::<Self>() as *const ProcessorVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ProcessorVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777226, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagProcessor, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static ProcessorVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<ProcessorVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777226u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Processor::<Self>() as *const ProcessorVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ProcessorVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777226, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagProcessor, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Processor::<Self>() as *const ProcessorVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ProcessorVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777226, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3091,27 +3306,72 @@ pub struct ProcessorVtable {
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
 }
 
-pub struct VtableProcessor(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_Processor<__T: Processor>() -> &'static ProcessorVtable {
+    &ProcessorVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        process: Some({
+            unsafe extern "C" fn __trampoline<__T: Processor>(
+                __ud: *mut core::ffi::c_void,
+                input: <i32 as FfiType>::CRepr,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.process(unsafe { <i32 as FfiType>::from_c(input) });
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        name: Some({
+            unsafe extern "C" fn __trampoline<__T: Processor>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.name();
+                <&str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_processor_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableProcessor {
+pub struct VtableProcessor<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableProcessor<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableProcessor {
-    fn drop(&mut self) {}
+impl Drop for VtableProcessor<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_processor_destroy(self.0) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagFruit {}
 pub trait Fruit {
     fn value(&self) -> i32;
     fn label(&self) -> &str
     where
         Self: Sized,
     {
-        let __vtable: &'static FruitVtable = Self::__ffier_vtable();
+        let __vtable: &'static FruitVtable = __ffier_vtable_Fruit::<Self>();
         let __metadata: u32 = ffier::default_dispatch_metadata(1);
         let mut __temp = ffier::FfierHandle {
             type_tag: 16777236u32,
@@ -3132,99 +3392,85 @@ pub trait Fruit {
     }
     fn try_count(&self, input: i32) -> Result<i32, TestError>;
     fn count_tags(&self, tags: &[&str]) -> i32;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static FruitVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &FruitVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            value: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <i32 as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.value();
-                    <i32 as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            label: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <&'static str as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.label();
-                    <&str as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            try_count: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
-                    __ud: *mut core::ffi::c_void,
-                    input: <i32 as FfiType>::CRepr,
-                    result: *mut <i32 as FfiType>::CRepr,
-                    err_out: *mut *mut core::ffi::c_void,
-                ) -> ffier::FfierResult {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.try_count(unsafe { <i32 as FfiType>::from_c(input) });
-                    match __result {
-                        Ok(__ok) => {
-                            unsafe { result.write(<i32 as FfiType>::into_c(__ok)) };
-                            0 // FFIER_RESULT_SUCCESS
-                        }
-                        Err(__e) => {
-                            let (__code, __handle) = __e.into_ffi();
-                            unsafe { *err_out = __handle };
-                            __code
-                        }
-                    }
-                }
-                __trampoline::<Self>
-            }),
-            count_tags: Some({
-                unsafe extern "C" fn __trampoline<__T: Fruit>(
-                    __ud: *mut core::ffi::c_void,
-                    tags: *const <&'static str as FfiType>::CRepr,
-                    tags_len: usize,
-                ) -> <i32 as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __slice_tags: Vec<&str> =
-                        unsafe { core::slice::from_raw_parts(tags, tags_len) }
-                            .iter()
-                            .map(|v| unsafe { <&str as FfiType>::from_c(*v) })
-                            .collect();
-                    let __result = __val.count_tags(&__slice_tags);
-                    <i32 as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(FruitVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Fruit::<Self>() as *const FruitVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<FruitVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777236, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static FruitVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<FruitVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777236u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Fruit::<Self>() as *const FruitVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<FruitVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777236, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Fruit::<Self>() as *const FruitVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<FruitVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777236, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3251,69 +3497,189 @@ pub struct FruitVtable {
     >,
 }
 
+#[allow(non_snake_case)]
+fn __ffier_vtable_Fruit<__T: Fruit>() -> &'static FruitVtable {
+    &FruitVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        value: Some({
+            unsafe extern "C" fn __trampoline<__T: Fruit>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.value();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        label: Some({
+            unsafe extern "C" fn __trampoline<__T: Fruit>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.label();
+                <&str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        try_count: Some({
+            unsafe extern "C" fn __trampoline<__T: Fruit>(
+                __ud: *mut core::ffi::c_void,
+                input: <i32 as FfiType>::CRepr,
+                result: *mut <i32 as FfiType>::CRepr,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.try_count(unsafe { <i32 as FfiType>::from_c(input) });
+                match __result {
+                    Ok(__ok) => {
+                        unsafe { result.write(<i32 as FfiType>::into_c(__ok)) };
+                        0 // FFIER_RESULT_SUCCESS
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+        count_tags: Some({
+            unsafe extern "C" fn __trampoline<__T: Fruit>(
+                __ud: *mut core::ffi::c_void,
+                tags: *const <&'static str as FfiType>::CRepr,
+                tags_len: usize,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __slice_tags: Vec<&str> =
+                    unsafe { core::slice::from_raw_parts(tags, tags_len) }
+                        .iter()
+                        .map(|v| unsafe { <&str as FfiType>::from_c(*v) })
+                        .collect();
+                let __result = __val.count_tags(&__slice_tags);
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
 unsafe extern "C" {
     pub fn ft_fruit_label(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
 }
 
-pub struct VtableFruit(*mut core::ffi::c_void);
+unsafe extern "C" {
+    pub fn ft_fruit_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableFruit {
+pub struct VtableFruit<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableFruit<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableFruit {
-    fn drop(&mut self) {}
+impl Drop for VtableFruit<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_fruit_destroy(self.0) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagWeighable {}
 pub trait Weighable {
     fn weight_grams(&self) -> i32;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static WeighableVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &WeighableVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            weight_grams: Some({
-                unsafe extern "C" fn __trampoline<__T: Weighable>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <i32 as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.weight_grams();
-                    <i32 as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagWeighable>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(WeighableVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Weighable::<Self>() as *const WeighableVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<WeighableVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777239, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagWeighable, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static WeighableVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<WeighableVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777239u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const WeighableVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Weighable::<Self>() as *const WeighableVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<WeighableVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777239, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagWeighable, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_Weighable::<Self>() as *const WeighableVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<WeighableVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777239, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3324,20 +3690,54 @@ pub struct WeighableVtable {
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
 }
 
-pub struct VtableWeighable(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_Weighable<__T: Weighable>() -> &'static WeighableVtable {
+    &WeighableVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        weight_grams: Some({
+            unsafe extern "C" fn __trampoline<__T: Weighable>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.weight_grams();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_weighable_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableWeighable {
+pub struct VtableWeighable<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableWeighable<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableWeighable {
-    fn drop(&mut self) {}
+impl Drop for VtableWeighable<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_weighable_destroy(self.0) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagInputSource {}
 pub trait InputSource {
     fn poll_event(&mut self) -> Option<InputEvent>;
     fn device_ids(&self) -> InputDeviceIds;
@@ -3345,110 +3745,85 @@ pub trait InputSource {
     fn edit_ids(&mut self) -> &mut InputDeviceIds;
     fn maybe_peek_ids(&self, available: bool) -> Option<&InputDeviceIds>;
     fn submit_event(&mut self, event: InputEvent);
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static InputSourceVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &InputSourceVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            poll_event: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                    result: *mut <InputEvent as FfiType>::CRepr,
-                ) -> bool {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.poll_event();
-                    match __result {
-                        Some(__value) => {
-                            unsafe { result.write(<InputEvent as FfiType>::into_c(__value)) };
-                            true
-                        }
-                        None => false,
-                    }
-                }
-                __trampoline::<Self>
-            }),
-            device_ids: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> <InputDeviceIds as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.device_ids();
-                    <InputDeviceIds as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
-            peek_ids: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> *const <InputDeviceIds as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.peek_ids();
-                    __result as *const InputDeviceIds as *const <InputDeviceIds as FfiType>::CRepr
-                }
-                __trampoline::<Self>
-            }),
-            edit_ids: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                ) -> *mut <InputDeviceIds as FfiType>::CRepr {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.edit_ids();
-                    __result as *mut InputDeviceIds as *mut <InputDeviceIds as FfiType>::CRepr
-                }
-                __trampoline::<Self>
-            }),
-            maybe_peek_ids: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                    available: <bool as FfiType>::CRepr,
-                ) -> *const <InputDeviceIds as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result =
-                        __val.maybe_peek_ids(unsafe { <bool as FfiType>::from_c(available) });
-                    __result.map_or(core::ptr::null(), |value| {
-                        value as *const InputDeviceIds as *const <InputDeviceIds as FfiType>::CRepr
-                    })
-                }
-                __trampoline::<Self>
-            }),
-            submit_event: Some({
-                unsafe extern "C" fn __trampoline<__T: InputSource>(
-                    __ud: *mut core::ffi::c_void,
-                    event: <InputEvent as FfiType>::CRepr,
-                ) {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    __val.submit_event(unsafe { <InputEvent as FfiType>::from_c(event) });
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagInputSource>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(InputSourceVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputSource::<Self>() as *const InputSourceVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputSourceVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777247, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputSource, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static InputSourceVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<InputSourceVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777247u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const InputSourceVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputSource::<Self>() as *const InputSourceVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputSourceVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777247, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputSource, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputSource::<Self>() as *const InputSourceVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputSourceVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777247, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3476,165 +3851,199 @@ pub struct InputSourceVtable {
         Option<unsafe extern "C" fn(*mut core::ffi::c_void, <InputEvent as FfiType>::CRepr)>,
 }
 
-pub struct VtableInputSource(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_InputSource<__T: InputSource>() -> &'static InputSourceVtable {
+    &InputSourceVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        poll_event: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+                result: *mut <InputEvent as FfiType>::CRepr,
+            ) -> bool {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.poll_event();
+                match __result {
+                    Some(__value) => {
+                        unsafe { result.write(<InputEvent as FfiType>::into_c(__value)) };
+                        true
+                    }
+                    None => false,
+                }
+            }
+            __trampoline::<__T>
+        }),
+        device_ids: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <InputDeviceIds as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.device_ids();
+                <InputDeviceIds as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        peek_ids: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+            ) -> *const <InputDeviceIds as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.peek_ids();
+                __result as *const InputDeviceIds as *const <InputDeviceIds as FfiType>::CRepr
+            }
+            __trampoline::<__T>
+        }),
+        edit_ids: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+            ) -> *mut <InputDeviceIds as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.edit_ids();
+                __result as *mut InputDeviceIds as *mut <InputDeviceIds as FfiType>::CRepr
+            }
+            __trampoline::<__T>
+        }),
+        maybe_peek_ids: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+                available: <bool as FfiType>::CRepr,
+            ) -> *const <InputDeviceIds as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result =
+                    __val.maybe_peek_ids(unsafe { <bool as FfiType>::from_c(available) });
+                __result.map_or(core::ptr::null(), |value| {
+                    value as *const InputDeviceIds as *const <InputDeviceIds as FfiType>::CRepr
+                })
+            }
+            __trampoline::<__T>
+        }),
+        submit_event: Some({
+            unsafe extern "C" fn __trampoline<__T: InputSource>(
+                __ud: *mut core::ffi::c_void,
+                event: <InputEvent as FfiType>::CRepr,
+            ) {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                __val.submit_event(unsafe { <InputEvent as FfiType>::from_c(event) });
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_input_source_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableInputSource {
+pub struct VtableInputSource<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableInputSource<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableInputSource {
-    fn drop(&mut self) {}
+impl Drop for VtableInputSource<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_input_source_destroy(self.0) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagInputBackend {}
 pub trait InputBackend {
     fn current_ids(&self) -> Result<InputDeviceIds, TestError>;
     fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError>;
     fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError>;
     fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError>;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static InputBackendVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &InputBackendVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            current_ids: Some({
-                unsafe extern "C" fn __trampoline<__T: InputBackend>(
-                    __ud: *mut core::ffi::c_void,
-                    result: *mut <InputDeviceIds as FfiType>::CRepr,
-                    err_out: *mut *mut core::ffi::c_void,
-                ) -> ffier::FfierResult {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.current_ids();
-                    match __result {
-                        Ok(__ok) => {
-                            unsafe { result.write(<InputDeviceIds as FfiType>::into_c(__ok)) };
-                            0 // FFIER_RESULT_SUCCESS
-                        }
-                        Err(__e) => {
-                            let (__code, __handle) = __e.into_ffi();
-                            unsafe { *err_out = __handle };
-                            __code
-                        }
-                    }
-                }
-                __trampoline::<Self>
-            }),
-            peek_ids_result: Some({
-                unsafe extern "C" fn __trampoline<__T: InputBackend>(
-                    __ud: *mut core::ffi::c_void,
-                    result: *mut *const <InputDeviceIds as FfiType>::CRepr,
-                    err_out: *mut *mut core::ffi::c_void,
-                ) -> ffier::FfierResult {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.peek_ids_result();
-                    match __result {
-                        Ok(__ok) => {
-                            unsafe {
-                                result.write(
-                                    __ok as *const InputDeviceIds
-                                        as *const <InputDeviceIds as FfiType>::CRepr,
-                                )
-                            };
-                            0 // FFIER_RESULT_SUCCESS
-                        }
-                        Err(__e) => {
-                            let (__code, __handle) = __e.into_ffi();
-                            unsafe { *err_out = __handle };
-                            __code
-                        }
-                    }
-                }
-                __trampoline::<Self>
-            }),
-            edit_ids_result: Some({
-                unsafe extern "C" fn __trampoline<__T: InputBackend>(
-                    __ud: *mut core::ffi::c_void,
-                    result: *mut *mut <InputDeviceIds as FfiType>::CRepr,
-                    err_out: *mut *mut core::ffi::c_void,
-                ) -> ffier::FfierResult {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.edit_ids_result();
-                    match __result {
-                        Ok(__ok) => {
-                            unsafe {
-                                result.write(
-                                    __ok as *mut InputDeviceIds
-                                        as *mut <InputDeviceIds as FfiType>::CRepr,
-                                )
-                            };
-                            0 // FFIER_RESULT_SUCCESS
-                        }
-                        Err(__e) => {
-                            let (__code, __handle) = __e.into_ffi();
-                            unsafe { *err_out = __handle };
-                            __code
-                        }
-                    }
-                }
-                __trampoline::<Self>
-            }),
-            next_event: Some({
-                unsafe extern "C" fn __trampoline<__T: InputBackend>(
-                    __ud: *mut core::ffi::c_void,
-                    fail: <bool as FfiType>::CRepr,
-                    result_is_some: *mut bool,
-                    result: *mut <InputEvent as FfiType>::CRepr,
-                    err_out: *mut *mut core::ffi::c_void,
-                ) -> ffier::FfierResult {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.next_event(unsafe { <bool as FfiType>::from_c(fail) });
-                    match __result {
-                        Ok(Some(__ok)) => {
-                            unsafe {
-                                result_is_some.write(true);
-                                result.write(<InputEvent as FfiType>::into_c(__ok));
-                            }
-                            0
-                        }
-                        Ok(None) => {
-                            unsafe { result_is_some.write(false) };
-                            0
-                        }
-                        Err(__e) => {
-                            let (__code, __handle) = __e.into_ffi();
-                            unsafe { *err_out = __handle };
-                            __code
-                        }
-                    }
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagInputBackend>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(InputBackendVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputBackend::<Self>() as *const InputBackendVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777248, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputBackend, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static InputBackendVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<InputBackendVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777248u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const InputBackendVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputBackend::<Self>() as *const InputBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777248, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputBackend, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_InputBackend::<Self>() as *const InputBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<InputBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777248, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3673,66 +4082,232 @@ pub struct InputBackendVtable {
     >,
 }
 
-pub struct VtableInputBackend(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_InputBackend<__T: InputBackend>() -> &'static InputBackendVtable {
+    &InputBackendVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        current_ids: Some({
+            unsafe extern "C" fn __trampoline<__T: InputBackend>(
+                __ud: *mut core::ffi::c_void,
+                result: *mut <InputDeviceIds as FfiType>::CRepr,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.current_ids();
+                match __result {
+                    Ok(__ok) => {
+                        unsafe { result.write(<InputDeviceIds as FfiType>::into_c(__ok)) };
+                        0 // FFIER_RESULT_SUCCESS
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+        peek_ids_result: Some({
+            unsafe extern "C" fn __trampoline<__T: InputBackend>(
+                __ud: *mut core::ffi::c_void,
+                result: *mut *const <InputDeviceIds as FfiType>::CRepr,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.peek_ids_result();
+                match __result {
+                    Ok(__ok) => {
+                        unsafe {
+                            result.write(
+                                __ok as *const InputDeviceIds
+                                    as *const <InputDeviceIds as FfiType>::CRepr,
+                            )
+                        };
+                        0 // FFIER_RESULT_SUCCESS
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+        edit_ids_result: Some({
+            unsafe extern "C" fn __trampoline<__T: InputBackend>(
+                __ud: *mut core::ffi::c_void,
+                result: *mut *mut <InputDeviceIds as FfiType>::CRepr,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.edit_ids_result();
+                match __result {
+                    Ok(__ok) => {
+                        unsafe {
+                            result.write(
+                                __ok as *mut InputDeviceIds
+                                    as *mut <InputDeviceIds as FfiType>::CRepr,
+                            )
+                        };
+                        0 // FFIER_RESULT_SUCCESS
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+        next_event: Some({
+            unsafe extern "C" fn __trampoline<__T: InputBackend>(
+                __ud: *mut core::ffi::c_void,
+                fail: <bool as FfiType>::CRepr,
+                result_is_some: *mut bool,
+                result: *mut <InputEvent as FfiType>::CRepr,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.next_event(unsafe { <bool as FfiType>::from_c(fail) });
+                match __result {
+                    Ok(Some(__ok)) => {
+                        unsafe {
+                            result_is_some.write(true);
+                            result.write(<InputEvent as FfiType>::into_c(__ok));
+                        }
+                        0
+                    }
+                    Ok(None) => {
+                        unsafe { result_is_some.write(false) };
+                        0
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_input_backend_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableInputBackend {
+pub struct VtableInputBackend<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableInputBackend<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableInputBackend {
-    fn drop(&mut self) {}
+impl Drop for VtableInputBackend<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_input_backend_destroy(self.0) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagPushStr {}
 pub trait PushStr {
     fn push(&mut self, s: &str) -> bool;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static PushStrVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &PushStrVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            push: Some({
-                unsafe extern "C" fn __trampoline<__T: PushStr>(
-                    __ud: *mut core::ffi::c_void,
-                    s: <&'static str as FfiType>::CRepr,
-                ) -> <bool as FfiType>::CRepr {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.push(unsafe { <&str as FfiType>::from_c(s) });
-                    <bool as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagPushStr>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(PushStrVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777240, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagPushStr, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static PushStrVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777240u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777240, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagPushStr, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777240, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3747,18 +4322,51 @@ pub struct PushStrVtable {
     >,
 }
 
-pub struct VtablePushStr(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_PushStr<__T: PushStr>() -> &'static PushStrVtable {
+    &PushStrVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        push: Some({
+            unsafe extern "C" fn __trampoline<__T: PushStr>(
+                __ud: *mut core::ffi::c_void,
+                s: <&'static str as FfiType>::CRepr,
+            ) -> <bool as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.push(unsafe { <&str as FfiType>::from_c(s) });
+                <bool as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_push_str_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtablePushStr {
+pub struct VtablePushStr<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtablePushStr<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtablePushStr {
-    fn drop(&mut self) {}
+impl Drop for VtablePushStr<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_push_str_destroy(self.0) }
+    }
 }
 
 unsafe extern "C" {
@@ -3768,52 +4376,89 @@ unsafe extern "C" {
     pub fn ft_error_destroy(handle: *mut core::ffi::c_void);
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagOptionalWorker {}
 pub trait OptionalWorker {
     fn amplify(&self, input: i32) -> i32;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static OptionalWorkerVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &OptionalWorkerVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            amplify: Some({
-                unsafe extern "C" fn __trampoline<__T: OptionalWorker>(
-                    __ud: *mut core::ffi::c_void,
-                    input: <i32 as FfiType>::CRepr,
-                ) -> <i32 as FfiType>::CRepr {
-                    let __val = unsafe { &*(__ud as *const __T) };
-                    let __result = __val.amplify(unsafe { <i32 as FfiType>::from_c(input) });
-                    <i32 as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagOptionalWorker>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(OptionalWorkerVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_OptionalWorker::<Self>() as *const OptionalWorkerVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<OptionalWorkerVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777244, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagOptionalWorker, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static OptionalWorkerVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<OptionalWorkerVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            16777244u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const OptionalWorkerVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_OptionalWorker::<Self>() as *const OptionalWorkerVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<OptionalWorkerVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777244, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagOptionalWorker, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_OptionalWorker::<Self>() as *const OptionalWorkerVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<OptionalWorkerVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777244, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -3828,18 +4473,51 @@ pub struct OptionalWorkerVtable {
     >,
 }
 
-pub struct VtableOptionalWorker(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_OptionalWorker<__T: OptionalWorker>() -> &'static OptionalWorkerVtable {
+    &OptionalWorkerVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        amplify: Some({
+            unsafe extern "C" fn __trampoline<__T: OptionalWorker>(
+                __ud: *mut core::ffi::c_void,
+                input: <i32 as FfiType>::CRepr,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.amplify(unsafe { <i32 as FfiType>::from_c(input) });
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_optional_worker_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtableOptionalWorker {
+pub struct VtableOptionalWorker<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableOptionalWorker<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtableOptionalWorker {
-    fn drop(&mut self) {}
+impl Drop for VtableOptionalWorker<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_optional_worker_destroy(self.0) }
+    }
 }
 
 unsafe extern "C" {
@@ -3889,9 +4567,31 @@ impl Fruit for Apple {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Apple as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -3942,9 +4642,31 @@ impl Fruit for Orange {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Orange as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -3995,9 +4717,31 @@ impl Fruit for Banana {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Banana as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4048,9 +4792,31 @@ impl Fruit for Mango {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Mango as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4101,9 +4867,31 @@ impl Fruit for Peach {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Peach as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4154,9 +4942,31 @@ impl Fruit for Plum {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Plum as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4207,9 +5017,31 @@ impl Fruit for Grape {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Grape as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4260,16 +5092,60 @@ impl Fruit for Lemon {
         let __raw = unsafe { ft_fruit_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagFruit>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Lemon as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<false>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagFruit, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagAttachment {}
 pub trait Attachment {
     fn label(&self) -> &str;
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    /// # Safety
+    /// Callee must destroy this handle exactly once before borrowed data expires.
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagAttachment>
+    where
+        Self: Sized + 'callback;
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagAttachment, ffier::BorrowedCallback<false>>
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagAttachment, ffier::BorrowedCallback<true>>
     where
         Self: Sized;
 }
@@ -4283,17 +5159,65 @@ impl Attachment for Sprocket {
         let __raw = unsafe { ft_sprocket_label(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagAttachment>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Sprocket as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagAttachment, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagAttachment, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
 }
 
+#[doc(hidden)]
+pub struct __FfierCallbackTagSnapshot<'a> {
+    lifetime_0: core::marker::PhantomData<*mut &'a ()>,
+}
 pub trait Snapshot<'a> {
     fn snap_description(&self) -> &str;
     fn snap_source_count(&self) -> i32;
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    /// # Safety
+    /// Callee must destroy this handle exactly once before borrowed data expires.
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagSnapshot<'a>>
+    where
+        Self: Sized + 'callback;
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<false>>
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<true>>
     where
         Self: Sized;
 }
@@ -4314,9 +5238,33 @@ impl<'a> Snapshot<'a> for View<'a> {
         let __raw = unsafe { ft_view_snap_source_count(self.0) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagSnapshot<'a>>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<View<'_> as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4336,9 +5284,36 @@ impl Snapshot<'static> for Widget {
         let __raw = unsafe { ft_widget_snap_source_count(self.0) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagSnapshot<'static>>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Widget as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSnapshot<'static>,
+        ffier::BorrowedCallback<false>,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'static>, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4358,9 +5333,33 @@ impl<'a> Snapshot<'a> for Gadget {
         let __raw = unsafe { ft_gadget_snap_source_count(self.0) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagSnapshot<'a>>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Gadget as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagSnapshot<'a>, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4373,30 +5372,123 @@ impl Weighable for Apple {
         let __raw = unsafe { ft_apple_weight_grams(self.0) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagWeighable>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Apple as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagWeighable, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagWeighable, ffier::BorrowedCallback<true>> {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagCategorizable {}
 pub trait Categorizable {
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    /// # Safety
+    /// Callee must destroy this handle exactly once before borrowed data expires.
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagCategorizable>
+    where
+        Self: Sized + 'callback;
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<false>>
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<true>>
     where
         Self: Sized;
 }
 
 impl Categorizable for Apple {
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagCategorizable>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Apple as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
 impl Categorizable for Orange {
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagCategorizable>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Orange as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagCategorizable, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4458,9 +5550,33 @@ impl InputSource for EventQueue {
     fn submit_event(&mut self, event: InputEvent) {
         unsafe { ft_event_queue_submit_event(self.0, <InputEvent as FfiType>::into_c(event)) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagInputSource>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<EventQueue as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputSource, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputSource, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4567,9 +5683,33 @@ impl InputBackend for EventQueue {
             Err(TestError::from_ffi(__r, __err))
         }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagInputBackend>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<EventQueue as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputBackend, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagInputBackend, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4587,9 +5727,33 @@ impl OptionalWorker for OptionalWidget {
         let __raw = unsafe { ft_optional_widget_amplify(self.0, <i32 as FfiType>::into_c(input)) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
     }
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagOptionalWorker>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<OptionalWidget as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagOptionalWorker, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagOptionalWorker, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -4626,8 +5790,12 @@ unsafe extern "C" {
 
 #[cfg(feature = "optional-entry")]
 pub fn optional_apply(worker: impl OptionalWorker, input: i32) -> i32 {
-    let __raw =
-        unsafe { ft_optional_apply(worker.__into_raw_handle(), <i32 as FfiType>::into_c(input)) };
+    let __raw = unsafe {
+        ft_optional_apply(
+            worker.__into_callback_handle().into_raw(),
+            <i32 as FfiType>::into_c(input),
+        )
+    };
     unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 
@@ -4669,7 +5837,7 @@ unsafe extern "C" {
 
 #[doc = " Accepts only categorizable fruits (not all fruits)."]
 pub fn categorizable_value(fruit: impl Categorizable) -> i32 {
-    let __raw = unsafe { ft_categorizable_value(fruit.__into_raw_handle()) };
+    let __raw = unsafe { ft_categorizable_value(fruit.__into_callback_handle().into_raw()) };
     unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 
@@ -4754,7 +5922,7 @@ pub fn probe_input_backend_values(backend: impl InputBackend) -> Result<u16, Tes
     let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
     let __r = unsafe {
         ft_probe_input_backend_values(
-            backend.__into_raw_handle(),
+            backend.__into_callback_handle().into_raw(),
             __out.as_mut_ptr(),
             &mut __err as *mut *mut core::ffi::c_void,
         )
@@ -4764,6 +5932,45 @@ pub fn probe_input_backend_values(backend: impl InputBackend) -> Result<u16, Tes
     } else {
         Err(TestError::from_ffi(__r, __err))
     }
+}
+
+unsafe extern "C" {
+    pub fn ft_probe_borrowed_input_backend_values(
+        backend: *mut core::ffi::c_void,
+        result: *mut <u16 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+}
+
+pub fn probe_borrowed_input_backend_values(
+    backend: &mut impl InputBackend,
+) -> Result<u16, TestError> {
+    let __ffi_backend = backend.__borrow_callback_handle_mut();
+    let mut __out = std::mem::MaybeUninit::uninit();
+    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+    let __r = unsafe {
+        ft_probe_borrowed_input_backend_values(
+            __ffi_backend.as_raw(),
+            __out.as_mut_ptr(),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
+    if __r == 0 {
+        Ok(unsafe { <u16 as FfiType>::from_c(__out.assume_init()) })
+    } else {
+        Err(TestError::from_ffi(__r, __err))
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_retain_fruit(
+        fruit: *mut core::ffi::c_void,
+    ) -> <RetainedFruit<'static> as FfiType>::CRepr;
+}
+
+pub fn retain_fruit<'a>(fruit: impl Fruit + 'a) -> RetainedFruit<'a> {
+    let __raw = unsafe { ft_retain_fruit(fruit.__into_callback_handle().into_raw()) };
+    unsafe { <RetainedFruit<'a> as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {
@@ -4801,7 +6008,7 @@ unsafe extern "C" {
 }
 
 pub fn probe_input_source(source: impl InputSource) -> i32 {
-    let __raw = unsafe { ft_probe_input_source(source.__into_raw_handle()) };
+    let __raw = unsafe { ft_probe_input_source(source.__into_callback_handle().into_raw()) };
     unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 

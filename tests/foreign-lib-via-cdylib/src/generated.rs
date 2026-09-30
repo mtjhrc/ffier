@@ -5,7 +5,9 @@ pub trait FfiHandle {
     /// # Safety
     /// The caller must ensure the handle is not used after the object is dropped.
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void;
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self;
 }
 
 /// Maps Rust types to C-compatible representations.
@@ -164,9 +166,9 @@ impl<T: FfiHandle> ForeignSlice<T> {
     fn from_raw(raw: ffier::FfierObjectArray) -> Self {
         let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)
             .map(|i| {
-                core::mem::ManuallyDrop::new(T::__from_raw(unsafe {
-                    ffier::ffier_object_array_get(raw, i)
-                }))
+                core::mem::ManuallyDrop::new(unsafe {
+                    T::__from_raw(ffier::ffier_object_array_get(raw, i))
+                })
             })
             .collect();
         Self { raw, elements }
@@ -257,7 +259,7 @@ impl std::fmt::Display for ForeignError {
             }
         }
         let mut __writer = FmtWriter(f as *mut std::fmt::Formatter<'_> as *mut core::ffi::c_void);
-        let __vtable: &'static PushStrVtable = FmtWriter::__ffier_vtable();
+        let __vtable: &'static PushStrVtable = __ffier_vtable_PushStr::<FmtWriter>();
         let mut __temp = ffier::FfierHandle {
             type_tag: 33554436u32,
             metadata: 0,
@@ -296,7 +298,9 @@ pub struct ForeignItem(*mut core::ffi::c_void);
 
 impl ForeignItem {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -312,7 +316,7 @@ impl FfiHandle for ForeignItem {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -324,7 +328,7 @@ impl FfiType for ForeignItem {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -379,7 +383,9 @@ pub struct ForeignConfig(*mut core::ffi::c_void);
 
 impl ForeignConfig {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
     #[doc(hidden)]
@@ -395,7 +401,7 @@ impl FfiHandle for ForeignConfig {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle)
     }
 }
@@ -407,7 +413,7 @@ impl FfiType for ForeignConfig {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -457,7 +463,9 @@ pub struct ForeignBorrowed<'a>(*mut core::ffi::c_void, std::marker::PhantomData<
 
 impl<'a> ForeignBorrowed<'a> {
     #[doc(hidden)]
-    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr, std::marker::PhantomData)
     }
     #[doc(hidden)]
@@ -473,7 +481,7 @@ impl<'a> FfiHandle for ForeignBorrowed<'a> {
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
         self.0
     }
-    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
         Self(handle, std::marker::PhantomData)
     }
 }
@@ -485,7 +493,7 @@ impl<'a> FfiType for ForeignBorrowed<'a> {
         self.__into_raw()
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        Self::__from_raw(repr)
+        unsafe { Self::__from_raw(repr) }
     }
 }
 
@@ -512,52 +520,89 @@ impl<'a> Drop for ForeignBorrowed<'a> {
     }
 }
 
+#[doc(hidden)]
+pub enum __FfierCallbackTagPushStr {}
 pub trait PushStr {
     fn push(&mut self, s: &str) -> bool;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
-    fn __ffier_vtable() -> &'static PushStrVtable
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
     where
         Self: Sized,
     {
-        &PushStrVtable {
-            drop: Some({
-                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
-                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
-                }
-                __drop_trampoline::<Self>
-            }),
-            push: Some({
-                unsafe extern "C" fn __trampoline<__T: PushStr>(
-                    __ud: *mut core::ffi::c_void,
-                    s: <&'static str as FfiType>::CRepr,
-                ) -> <bool as FfiType>::CRepr {
-                    let __val = unsafe { &mut *(__ud as *mut __T) };
-                    let __result = __val.push(unsafe { <&str as FfiType>::from_c(s) });
-                    <bool as FfiType>::into_c(__result)
-                }
-                __trampoline::<Self>
-            }),
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagPushStr>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(PushStrVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(33554436, value), destroy)
         }
     }
     #[doc(hidden)]
-    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagPushStr, ffier::BorrowedCallback<false>>
     where
         Self: Sized,
     {
-        let __vtable: &'static PushStrVtable = Self::__ffier_vtable();
-        let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
-        ffier::ffier_handle_new_with_metadata(
-            33554436u32,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
-                user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
-            },
-        )
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(33554436, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagPushStr, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_PushStr::<Self>() as *const PushStrVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<PushStrVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(33554436, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
     }
 }
 
@@ -572,18 +617,51 @@ pub struct PushStrVtable {
     >,
 }
 
-pub struct VtablePushStr(*mut core::ffi::c_void);
+#[allow(non_snake_case)]
+fn __ffier_vtable_PushStr<__T: PushStr>() -> &'static PushStrVtable {
+    &PushStrVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        push: Some({
+            unsafe extern "C" fn __trampoline<__T: PushStr>(
+                __ud: *mut core::ffi::c_void,
+                s: <&'static str as FfiType>::CRepr,
+            ) -> <bool as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.push(unsafe { <&str as FfiType>::from_c(s) });
+                <bool as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn fl_push_str_destroy(handle: *mut core::ffi::c_void);
+}
 
-impl VtablePushStr {
+pub struct VtablePushStr<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtablePushStr<'_> {
     #[doc(hidden)]
-    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
     }
 }
 
-impl Drop for VtablePushStr {
-    fn drop(&mut self) {}
+impl Drop for VtablePushStr<'_> {
+    fn drop(&mut self) {
+        unsafe { fl_push_str_destroy(self.0) }
+    }
 }
 
 unsafe extern "C" {

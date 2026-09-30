@@ -144,7 +144,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     .unwrap();
     writeln!(
         out,
-        "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self;"
+        "    /// # Safety\n    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.\n    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self;"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();
@@ -327,7 +327,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             )
             .unwrap();
             writeln!(out, "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ unsafe {{ {fc}::FfiHandle::as_handle(self) }} }}").unwrap();
-            writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ <{type_name} as {fc}::FfiHandle>::__from_raw(handle) }}").unwrap();
+            writeln!(out, "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ unsafe {{ <{type_name} as {fc}::FfiHandle>::__from_raw(handle) }} }}").unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out, "impl{impl_generics} FfiType for {type_name} {{").unwrap();
             writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
@@ -341,7 +341,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                 "    fn into_c(self) -> *mut core::ffi::c_void {{ {fc}::FfiType::into_c(self) }}"
             )
             .unwrap();
-            writeln!(out, "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ <{type_name} as {fc}::FfiHandle>::__from_raw(repr) }}").unwrap();
+            writeln!(out, "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ unsafe {{ <{type_name} as {fc}::FfiHandle>::__from_raw(repr) }} }}").unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
@@ -382,12 +382,12 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     .unwrap();
     writeln!(
         out,
-        "            .map(|i| core::mem::ManuallyDrop::new(T::__from_raw("
+        "            .map(|i| core::mem::ManuallyDrop::new(unsafe {{ T::__from_raw("
     )
     .unwrap();
     writeln!(
         out,
-        "                unsafe {{ ffier::ffier_object_array_get(raw, i) }})))"
+        "                ffier::ffier_object_array_get(raw, i)) }}))"
     )
     .unwrap();
     writeln!(out, "            .collect();").unwrap();
@@ -794,7 +794,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(
         out,
-        "        let __vtable: &'static {} = FmtWriter::__ffier_vtable();",
+        "        let __vtable: &'static {} = __ffier_vtable_PushStr::<FmtWriter>();",
         push_str_info.vtable_name
     )
     .unwrap();
@@ -967,12 +967,18 @@ fn emit_exported_type(
     emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    /// # Safety").unwrap();
+    writeln!(
+        out,
+        "    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self."
+    )
+    .unwrap();
     if has_lifetimes {
-        writeln!(out, "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
+        writeln!(out, "    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
     } else {
         writeln!(
             out,
-            "    pub fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
+            "    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
         )
         .unwrap();
     }
@@ -1002,11 +1008,11 @@ fn emit_exported_type(
     )
     .unwrap();
     if has_lifetimes {
-        writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}").unwrap();
+        writeln!(out, "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}").unwrap();
     } else {
         writeln!(
             out,
-            "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
+            "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
         )
         .unwrap();
     }
@@ -1030,7 +1036,7 @@ fn emit_exported_type(
     .unwrap();
     writeln!(
         out,
-        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ Self::__from_raw(repr) }}"
+        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ unsafe {{ Self::__from_raw(repr) }} }}"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();
@@ -1130,18 +1136,7 @@ fn emit_method_wrapper(
     }
 
     // Method-level lifetime generics
-    let method_lt = if !m.method_lifetimes.is_empty() {
-        format!(
-            "<{}>",
-            m.method_lifetimes
-                .iter()
-                .map(|lt| format!("'{lt}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    } else {
-        String::new()
-    };
+    let method_lt = lifetime_generics(&m.method_lifetimes);
 
     // Signature: receiver + params + return type
     let receiver_str = match m.receiver {
@@ -1228,7 +1223,7 @@ fn emit_method_body(
         .unwrap();
     }
 
-    emit_slice_pre_bindings(out, &m.params, "        ");
+    emit_param_pre_bindings(out, &m.params, "        ");
 
     // Build the FFI call argument list
     let mut ffi_args = Vec::new();
@@ -1299,7 +1294,11 @@ fn emit_method_body(
             if borrowed_handle_return_type(&m.ret, lib).is_some() {
                 // Borrowed handle: wrap raw pointer in owned struct directly.
                 let bare_name = &tr.type_name;
-                writeln!(out, "        <{bare_name} as FfiHandle>::__from_raw(__raw)").unwrap();
+                writeln!(
+                    out,
+                    "        unsafe {{ <{bare_name} as FfiHandle>::__from_raw(__raw) }}"
+                )
+                .unwrap();
             } else if let Some(value) = borrowed_value_from_c(tr, "__raw", lib) {
                 writeln!(out, "        {value}").unwrap();
             } else {
@@ -1403,7 +1402,7 @@ fn emit_method_body(
                 let bare_name = &ok_tr.type_name;
                 writeln!(
                     out,
-                    "            Ok(<{bare_name} as FfiHandle>::__from_raw(__raw))"
+                    "            Ok(unsafe {{ <{bare_name} as FfiHandle>::__from_raw(__raw) }})"
                 )
                 .unwrap();
             } else {
@@ -1513,6 +1512,12 @@ fn emit_implementable_trait(
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
     let wrapper_name = &tr.wrapper_name;
+    writeln!(
+        out,
+        "#[doc(hidden)]\npub enum __FfierCallbackTag{} {{}}",
+        tr.name
+    )
+    .unwrap();
     // Trait definition
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
@@ -1532,58 +1537,42 @@ fn emit_implementable_trait(
         }
     }
 
-    // __ffier_vtable
+    // Raw transfers cannot encode callback lifetimes.
+    writeln!(out, "    /// # Safety").unwrap();
+    writeln!(out, "    /// Callee must destroy this handle exactly once before any borrowed callback data expires.").unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     writeln!(
         out,
-        "    fn __ffier_vtable() -> &'static {vtable_name} where Self: Sized {{"
+        "    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {{"
     )
     .unwrap();
-    emit_vtable_constructor(out, tr, lib);
+    writeln!(
+        out,
+        "        unsafe {{ self.__into_callback_handle().into_raw() }}"
+    )
+    .unwrap();
     writeln!(out, "    }}").unwrap();
 
-    // __into_raw_handle
-    writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(
+    emit_callback_handle_methods(
         out,
-        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {{"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        let __user_data = Box::into_raw(Box::new(self));"
-    )
-    .unwrap();
-    writeln!(out, "        let vtable_size: u16 = core::mem::size_of::<{vtable_name}>().try_into().expect(\"vtable_size exceeds u16::MAX\");").unwrap();
-    writeln!(
-        out,
-        "        ffier::ffier_handle_new_with_metadata({type_tag}u32, 0, ffier::VtableHandle {{"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            vtable_ptr: __vtable as *const {vtable_name} as *const core::ffi::c_void,"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            user_data: __user_data as *const core::ffi::c_void,"
-    )
-    .unwrap();
-    writeln!(out, "            vtable_size,").unwrap();
-    writeln!(out, "        }})").unwrap();
-    writeln!(out, "    }}").unwrap();
+        &format!("__FfierCallbackTag{}", tr.name),
+        Some((type_tag, tr.name.as_str(), vtable_name)),
+    );
 
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
     // Vtable struct
     emit_vtable_struct(out, tr, lib, vtable_name);
+    writeln!(out, "#[allow(non_snake_case)]").unwrap();
+    writeln!(
+        out,
+        "fn __ffier_vtable_{}<__T: {}>() -> &'static {vtable_name} {{",
+        tr.name, tr.name
+    )
+    .unwrap();
+    emit_vtable_constructor(out, tr, lib);
+    writeln!(out, "}}").unwrap();
 
     // Self-dispatch externs for defaulted methods
     let default_fns: Vec<ExternFn> = tr
@@ -1600,19 +1589,96 @@ fn emit_implementable_trait(
     if !default_fns.is_empty() {
         emit_extern_fns(out, &default_fns, weak, symbols);
     }
+    emit_extern_fns(
+        out,
+        &[extern_fn(
+            &tr.destroy_ffi_name,
+            vec!["handle: *mut core::ffi::c_void".to_string()],
+            String::new(),
+        )],
+        weak,
+        symbols,
+    );
 
     // Wrapper struct
-    writeln!(out, "pub struct {wrapper_name}(*mut core::ffi::c_void);").unwrap();
+    writeln!(out, "pub struct {wrapper_name}<'callback>(*mut core::ffi::c_void, core::marker::PhantomData<&'callback mut ()>);").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "impl {wrapper_name} {{").unwrap();
+    writeln!(out, "impl {wrapper_name}<'_> {{").unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
+    writeln!(out, "    /// # Safety").unwrap();
+    writeln!(
+        out,
+        "    /// Callee must destroy this handle exactly once within its callback lifetime."
+    )
+    .unwrap();
+    writeln!(out, "    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "impl Drop for {wrapper_name} {{").unwrap();
-    writeln!(out, "    fn drop(&mut self) {{}}").unwrap();
+    writeln!(out, "impl Drop for {wrapper_name}<'_> {{").unwrap();
+    writeln!(
+        out,
+        "    fn drop(&mut self) {{ unsafe {{ {}(self.0) }} }}",
+        tr.destroy_ffi_name
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+}
+
+/// Keep raw extraction unsafe; safe handles carry the value's borrow lifetime.
+fn emit_callback_handle_methods(
+    out: &mut String,
+    callback_tag: &str,
+    vtable: Option<(u32, &str, &str)>,
+) {
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    if let Some((type_tag, trait_name, vtable_name)) = vtable {
+        writeln!(out, "    fn __into_callback_handle<'callback>(self) -> ffier::CallbackHandle<'callback, {callback_tag}> where Self: Sized + 'callback {{").unwrap();
+        writeln!(
+            out,
+            "        unsafe fn destroy(raw: *mut core::ffi::c_void) {{"
+        )
+        .unwrap();
+        writeln!(out, "        let handle = unsafe {{ ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) }};").unwrap();
+        writeln!(out, "        let drop_callback: Option<unsafe extern \"C\" fn(*mut core::ffi::c_void)> = unsafe {{ handle.field_or_none(core::mem::offset_of!({vtable_name}, drop)) }};").unwrap();
+        writeln!(out, "        if let Some(drop_callback) = drop_callback {{ unsafe {{ drop_callback(handle.user_data as *mut core::ffi::c_void) }} }}").unwrap();
+        writeln!(out, "        }}").unwrap();
+        writeln!(out, "        let value = ffier::VtableHandle {{ vtable_ptr: __ffier_vtable_{trait_name}::<Self>() as *const {vtable_name} as *const core::ffi::c_void, user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void, vtable_size: core::mem::size_of::<{vtable_name}>().try_into().expect(\"vtable_size exceeds u16::MAX\") }};").unwrap();
+        writeln!(out, "        unsafe {{ ffier::CallbackHandle::from_raw(ffier::ffier_handle_new({type_tag}, value), destroy) }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+    } else {
+        writeln!(out, "    fn __into_callback_handle<'callback>(self) -> ffier::CallbackHandle<'callback, {callback_tag}> where Self: Sized + 'callback;").unwrap();
+    }
+    for (method, reference) in [
+        ("__borrow_callback_handle", "&self"),
+        ("__borrow_callback_handle_mut", "&mut self"),
+    ] {
+        writeln!(out, "    #[doc(hidden)]").unwrap();
+        if let Some((type_tag, trait_name, vtable_name)) = vtable {
+            let mutable = reference == "&mut self";
+            let pointer = if reference == "&mut self" {
+                "self as *mut Self"
+            } else {
+                "self as *const Self"
+            };
+            writeln!(
+                out,
+                "    fn {method}({reference}) -> ffier::CallbackHandle<'_, {callback_tag}, ffier::BorrowedCallback<{mutable}>> where Self: Sized {{"
+            )
+            .unwrap();
+            writeln!(out, "        let value = ffier::VtableHandle {{ vtable_ptr: __ffier_vtable_{trait_name}::<Self>() as *const {vtable_name} as *const core::ffi::c_void, user_data: {pointer} as *const core::ffi::c_void, vtable_size: core::mem::size_of::<{vtable_name}>().try_into().expect(\"vtable_size exceeds u16::MAX\") }};").unwrap();
+            // Only the shell belongs to this guard. Never run the callback drop.
+            writeln!(out, "        unsafe {{ ffier::CallbackHandle::from_raw(ffier::ffier_handle_new({type_tag}, value), ffier::ffier_handle_drop::<ffier::VtableHandle>) }}").unwrap();
+            writeln!(out, "    }}").unwrap();
+        } else {
+            let mutable = reference == "&mut self";
+            writeln!(
+                out,
+                "    fn {method}({reference}) -> ffier::CallbackHandle<'_, {callback_tag}, ffier::BorrowedCallback<{mutable}>> where Self: Sized;"
+            )
+            .unwrap();
+        }
+    }
 }
 
 fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
@@ -1631,7 +1697,8 @@ fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
         _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
     };
 
-    format!("fn {}({receiver_str}{params_str}){ret}", m.name)
+    let lifetimes = lifetime_generics(&m.method_lifetimes);
+    format!("fn {}{lifetimes}({receiver_str}{params_str}){ret}", m.name)
 }
 
 fn emit_default_dispatch_body(
@@ -1646,7 +1713,8 @@ fn emit_default_dispatch_body(
 
     writeln!(
         out,
-        "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
+        "        let __vtable: &'static {vtable_name} = __ffier_vtable_{}::<Self>();",
+        vtable_name.trim_end_matches("Vtable")
     )
     .unwrap();
     writeln!(
@@ -1677,7 +1745,7 @@ fn emit_default_dispatch_body(
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
 
-    emit_slice_pre_bindings(out, &m.params, "        ");
+    emit_param_pre_bindings(out, &m.params, "        ");
 
     let mut call_args = vec![
         "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
@@ -1744,7 +1812,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
     )
     .unwrap();
     writeln!(out, "                }}").unwrap();
-    writeln!(out, "                __drop_trampoline::<Self>").unwrap();
+    writeln!(out, "                __drop_trampoline::<__T>").unwrap();
     writeln!(out, "            }}),").unwrap();
 
     let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
@@ -1948,7 +2016,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
             }
 
             writeln!(out, "                }}").unwrap();
-            writeln!(out, "                __trampoline::<Self>").unwrap();
+            writeln!(out, "                __trampoline::<__T>").unwrap();
             writeln!(out, "            }}),").unwrap();
         } else {
             writeln!(out, "            __reserved_{slot}: None,").unwrap();
@@ -2037,7 +2105,7 @@ fn emit_trait_impl(
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
-        emit_slice_pre_bindings(out, &m.params, "        ");
+        emit_param_pre_bindings(out, &m.params, "        ");
         let mut ffi_args = vec!["self.0".to_string()];
         ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
@@ -2055,7 +2123,7 @@ fn emit_trait_impl(
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
-            emit_slice_pre_bindings(out, &dm.params, "        ");
+            emit_param_pre_bindings(out, &dm.params, "        ");
             let mut ffi_args = vec!["self.0".to_string()];
             ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
@@ -2068,11 +2136,60 @@ fn emit_trait_impl(
     // __into_raw_handle for known types (simple: extract raw pointer)
     writeln!(
         out,
-        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void {{"
+        "    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {{"
     )
     .unwrap();
     writeln!(out, "        let this = std::mem::ManuallyDrop::new(self);").unwrap();
     writeln!(out, "        this.0").unwrap();
+    writeln!(out, "    }}").unwrap();
+
+    let callback_tag = format!("__FfierCallbackTag{}{trait_args}", ti.trait_name);
+    writeln!(out, "    fn __into_callback_handle<'callback>(self) -> ffier::CallbackHandle<'callback, {callback_tag}> where Self: Sized + 'callback {{").unwrap();
+    writeln!(
+        out,
+        "        unsafe fn destroy(raw: *mut core::ffi::c_void) {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "            unsafe {{ drop(<{}{} as FfiType>::from_c(raw)) }};",
+        ti.struct_name,
+        if ti.struct_lifetime_args.is_empty() {
+            String::new()
+        } else {
+            format!("<{}>", vec!["'_"; ti.struct_lifetime_args.len()].join(", "))
+        }
+    )
+    .unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        let this = std::mem::ManuallyDrop::new(self);").unwrap();
+    writeln!(
+        out,
+        "        unsafe {{ ffier::CallbackHandle::from_raw(this.0, destroy) }}"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(
+        out,
+        "    fn __borrow_callback_handle(&self) -> ffier::CallbackHandle<'_, {callback_tag}, ffier::BorrowedCallback<false>> {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        unsafe {{ ffier::CallbackHandle::from_raw(self.0, |_| {{}}) }}"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(
+        out,
+        "    fn __borrow_callback_handle_mut(&mut self) -> ffier::CallbackHandle<'_, {callback_tag}, ffier::BorrowedCallback<true>> {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        unsafe {{ ffier::CallbackHandle::from_raw(self.0, |_| {{}}) }}"
+    )
+    .unwrap();
     writeln!(out, "    }}").unwrap();
 
     writeln!(out, "}}").unwrap();
@@ -2093,17 +2210,40 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
         format!("<{}>", trait_lt_params.join(", "))
     };
 
+    let callback_tag = format!("__FfierCallbackTag{}{trait_generics}", ti.trait_name);
+    writeln!(out, "#[doc(hidden)]").unwrap();
+    if trait_lt_params.is_empty() {
+        writeln!(out, "pub enum {callback_tag} {{}}").unwrap();
+    } else {
+        writeln!(out, "pub struct {callback_tag} {{").unwrap();
+        for (index, lifetime) in trait_lt_params.iter().enumerate() {
+            writeln!(
+                out,
+                "    lifetime_{index}: core::marker::PhantomData<*mut &{lifetime} ()>,"
+            )
+            .unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+    }
+
     writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
     for m in &ti.methods {
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig};").unwrap();
     }
     writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    /// # Safety").unwrap();
     writeln!(
         out,
-        "    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;"
+        "    /// Callee must destroy this handle exactly once before borrowed data expires."
     )
     .unwrap();
+    writeln!(
+        out,
+        "    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized;"
+    )
+    .unwrap();
+    emit_callback_handle_methods(out, &callback_tag, None);
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -2741,7 +2881,7 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
             ParamType::Slice { element, .. } => {
                 if element.ref_kind != ffier_schema::RefKind::None {
                     // Ref elements (str, handles) were converted into a Vec
-                    // by emit_slice_pre_bindings — use the converted Vec.
+                    // by emit_param_pre_bindings — use the converted Vec.
                     args.push(format!("__ffi_{}.as_ptr()", p.name));
                     args.push(format!("__ffi_{}.len()", p.name));
                 } else {
@@ -2751,19 +2891,30 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                     args.push(format!("{}.len()", p.name));
                 }
             }
-            ParamType::ImplTrait { .. } => {
-                args.push(format!("{}.__into_raw_handle()", p.name));
+            ParamType::ImplTrait { ref_kind, .. } => {
+                args.push(match ref_kind {
+                    ffier_schema::RefKind::None => {
+                        format!("{}.__into_callback_handle().into_raw()", p.name)
+                    }
+                    _ => format!("__ffi_{}.as_raw()", p.name),
+                });
             }
         }
     }
     args
 }
 
-/// Emit slice pre-bindings for ref-element slices (converting each element
-/// via `into_c()` into a `Vec<CRepr>`). Non-ref element slices (primitives)
-/// are layout-compatible and need no pre-binding.
-fn emit_slice_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
+/// Emit borrowed callback guards and ref-element slice conversions.
+fn emit_param_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
     for p in params {
+        if let ParamType::ImplTrait { ref_kind, .. } = &p.param_type {
+            let method = match ref_kind {
+                ffier_schema::RefKind::None => continue,
+                ffier_schema::RefKind::Shared => "__borrow_callback_handle",
+                ffier_schema::RefKind::Mut => "__borrow_callback_handle_mut",
+            };
+            writeln!(out, "{indent}let __ffi_{} = {}.{method}();", p.name, p.name).unwrap();
+        }
         if let ParamType::Slice { element, .. } = &p.param_type
             && element.ref_kind != ffier_schema::RefKind::None
         {
@@ -3246,9 +3397,15 @@ fn emit_free_function(
         }
     };
 
-    writeln!(out, "pub fn {}({params_str}){ret_type} {{", f.name).unwrap();
+    let lifetimes = lifetime_generics(&f.lifetimes);
+    writeln!(
+        out,
+        "pub fn {}{lifetimes}({params_str}){ret_type} {{",
+        f.name
+    )
+    .unwrap();
 
-    emit_slice_pre_bindings(out, &f.params, "    ");
+    emit_param_pre_bindings(out, &f.params, "    ");
     let ffi_args = build_ffi_param_args(&f.params, lib);
     let args_str = ffi_args.join(", ");
     let sep = if args_str.is_empty() { "" } else { ", " };
@@ -3389,6 +3546,21 @@ fn emit_free_function(
     writeln!(out).unwrap();
 }
 
+fn lifetime_generics(lifetimes: &[String]) -> String {
+    if lifetimes.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<{}>",
+            lifetimes
+                .iter()
+                .map(|lt| format!("'{lt}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 fn format_param_sig(p: &ffier_schema::Param) -> String {
     match &p.param_type {
         ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
@@ -3398,18 +3570,77 @@ fn format_param_sig(p: &ffier_schema::Param) -> String {
         ParamType::ImplTrait {
             trait_name,
             type_args,
-            ..
+            lifetime_bounds,
+            ref_kind,
+            ref_lifetime,
         } => {
-            if type_args.is_empty() {
-                format!("{}: impl {trait_name}", p.name)
+            let mut ty = if type_args.is_empty() {
+                format!("impl {trait_name}")
             } else {
                 let args = type_args
                     .iter()
                     .map(|lt| format!("'{lt}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                format!("{}: impl {trait_name}<{args}>", p.name)
+                format!("impl {trait_name}<{args}>")
+            };
+            for lt in lifetime_bounds {
+                write!(ty, " + '{lt}").unwrap();
             }
+            if *ref_kind != ffier_schema::RefKind::None {
+                if !lifetime_bounds.is_empty() {
+                    ty = format!("({ty})");
+                }
+                let lifetime = ref_lifetime
+                    .as_ref()
+                    .map(|lt| format!("'{lt} "))
+                    .unwrap_or_default();
+                let mutability = if *ref_kind == ffier_schema::RefKind::Mut {
+                    "mut "
+                } else {
+                    ""
+                };
+                ty = format!("&{lifetime}{mutability}{ty}");
+            }
+            format!("{}: {ty}", p.name)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ffier_schema::{Param, RefKind};
+
+    #[test]
+    fn callback_lifetimes_remain_distinct() {
+        let mut param = Param {
+            name: "backend".into(),
+            param_type: ParamType::ImplTrait {
+                trait_name: "Backend".into(),
+                type_args: vec!["trait_data".into()],
+                lifetime_bounds: vec!["value_data".into(), "static".into()],
+                ref_kind: RefKind::Mut,
+                ref_lifetime: Some("reference".into()),
+            },
+        };
+        assert_eq!(
+            format_param_sig(&param),
+            "backend: &'reference mut (impl Backend<'trait_data> + 'value_data + 'static)"
+        );
+        let ParamType::ImplTrait {
+            ref_kind,
+            ref_lifetime,
+            ..
+        } = &mut param.param_type
+        else {
+            unreachable!()
+        };
+        *ref_kind = RefKind::None;
+        *ref_lifetime = None;
+        assert_eq!(
+            format_param_sig(&param),
+            "backend: impl Backend<'trait_data> + 'value_data + 'static"
+        );
     }
 }

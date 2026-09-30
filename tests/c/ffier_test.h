@@ -28,6 +28,7 @@ typedef void* FtPlum;
 typedef void* FtGrape;
 typedef void* FtLemon;
 typedef void* FtMixer;
+typedef void* FtRetainedFruit;
 typedef void* FtSprocket;
 typedef void* FtEventQueue;
 typedef void* FtOptionalWidget;
@@ -49,7 +50,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtEventQueue | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSprocket | FtEventQueue | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -81,6 +82,15 @@ typedef struct {
 /**
  * Stack-allocated temporary handle for passing vtable-based objects.
  * Only valid for the duration of the call — the callee borrows, not owns.
+ * Use only for borrowed callback parameters. Never pass it to an owned parameter.
+ * Borrowed callbacks cannot be retained, destroyed, or used after the call.
+ * Owned callbacks require a heap handle with ffier's owned layout and transfer ownership.
+ * Allocation must be compatible with Rust's allocator; never transfer a stack handle.
+ * The caller must not use or destroy a transferred handle. The callee destroys
+ * it exactly once when released, calling the vtable drop callback once if present.
+ * Keep vtable and user_data valid until that destruction, not merely call return.
+ * A + 'static API requires callback data with no expiring borrows. Other lifetime
+ * bounds require release before borrowed data expires. C must enforce these bounds.
  */
 typedef struct {
     uint32_t type_tag;
@@ -363,7 +373,9 @@ void ft_view_set_label(FtView handle, FtStr label);
 /** Get the view label. */
 FtStr ft_view_label(FtView handle);
 /** Copy label from another snapshot (tests impl Trait auto-dispatch). */
-void ft_view_copy_label(FtView handle, FtSnapshot other);
+void ft_view_copy_label(FtView handle, FtSnapshot other /* owned callback; valid until release; trait arguments: 'a */);
+/** Trait lifetime arguments do not imply value lifetime bounds. */
+int32_t ft_view_snapshot_count(FtView handle, FtSnapshot other /* owned callback; valid until release; trait arguments: 'a; value bounds: 'b */);
 void ft_view_destroy(FtView handle);
 
 /* ViewFactory ------------------------------------------------------- */
@@ -383,7 +395,7 @@ void ft_view_factory_destroy(FtViewFactory handle);
 /** Create a new pipeline. */
 FtPipeline ft_pipeline_new();
 /** Run a processor on the given input. */
-void ft_pipeline_run(FtPipeline handle, FtProcessor proc, int32_t input);
+void ft_pipeline_run(FtPipeline handle, FtProcessor proc /* owned callback; valid until release */, int32_t input);
 /** Get the number of results. */
 int32_t ft_pipeline_result_count(FtPipeline handle);
 /** Get the last result, or error if empty. */
@@ -433,20 +445,31 @@ void ft_lemon_destroy(FtLemon handle);
 /* Mixer ------------------------------------------------------------- */
 
 FtMixer ft_mixer_new();
-void ft_mixer_add(FtMixer* handle, FtFruit fruit);
+void ft_mixer_add(FtMixer* handle, FtFruit fruit /* owned callback; valid until release */);
 /**
  * Returns the length of a fruit's label. Used to test that vtable
  * default method detection works for custom client types crossing FFI.
  */
-int32_t ft_mixer_fruit_label_len(FtMixer handle, FtFruit fruit);
+int32_t ft_mixer_fruit_label_len(FtMixer handle, FtFruit fruit /* owned callback; valid until release */);
 /** Both concrete (9^2=81 > 64, override with annotation). */
-int32_t ft_mixer_blend_concrete(FtMixer handle, FtFruit a, FtFruit b);
+int32_t ft_mixer_blend_concrete(FtMixer handle, FtFruit a /* owned callback; valid until release */, FtFruit b /* owned callback; valid until release */);
 /** First concrete, second vtable (hybrid: 9+9=18 branches). */
-int32_t ft_mixer_blend_hybrid(FtMixer handle, FtFruit a, FtFruit b);
+int32_t ft_mixer_blend_hybrid(FtMixer handle, FtFruit a /* owned callback; valid until release */, FtFruit b /* owned callback; valid until release */);
 /** Both vtable (9+9=18 branches). */
-int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a, FtFruit b);
+int32_t ft_mixer_blend_dynamic(FtMixer handle, FtFruit a /* owned callback; valid until release */, FtFruit b /* owned callback; valid until release */);
 int32_t ft_mixer_total(FtMixer handle);
 void ft_mixer_destroy(FtMixer handle);
+
+/* RetainedFruit ----------------------------------------------------- */
+
+FtRetainedFruit ft_retained_fruit_new(FtFruit fruit /* owned callback; valid until release; value bounds: 'a */);
+FtRetainedFruit ft_retained_fruit_new_dynamic(FtFruit fruit /* owned callback; valid until release; value bounds: 'a */);
+FtRetainedFruit ft_retained_fruit_new_static(FtFruit fruit /* owned callback; valid until release; value bounds: 'static */);
+int32_t ft_retained_fruit_value(FtRetainedFruit handle);
+int32_t ft_retained_fruit_borrowed_value(FtRetainedFruit handle, FtFruit fruit /* shared borrowed callback; call-scoped; value bounds: 'a */);
+int32_t ft_retained_fruit_borrowed_value_dynamic(FtRetainedFruit handle, FtFruit fruit /* shared borrowed callback; call-scoped; value bounds: 'a; reference lifetime: '_ */);
+int32_t ft_retained_fruit_borrowed_mut_value(FtRetainedFruit handle, FtFruit fruit /* mutable borrowed callback; call-scoped; value bounds: 'a */);
+void ft_retained_fruit_destroy(FtRetainedFruit handle);
 
 /* Sprocket ---------------------------------------------------------- */
 
@@ -480,6 +503,7 @@ void ft_optional_widget_destroy(FtOptionalWidget handle);
 #define FT_PROCESSOR_TYPE_TAG 16777226
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     int32_t (*process)(void* self_data, int32_t input);
     FtStr (*name)(void* self_data);
@@ -496,6 +520,7 @@ void ft_processor_destroy(FtProcessor handle);
 #define FT_FRUIT_TYPE_TAG 16777236
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     int32_t (*value)(void* self_data);
     FtStr (*label)(void* self_data);
@@ -522,6 +547,7 @@ void ft_fruit_destroy(FtFruit handle);
 #define FT_WEIGHABLE_TYPE_TAG 16777239
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     int32_t (*weight_grams)(void* self_data);
 } FtWeighableVtable;
@@ -540,6 +566,7 @@ void ft_categorizable_destroy(FtCategorizable handle);
 #define FT_INPUT_SOURCE_TYPE_TAG 16777247
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     bool (*poll_event)(void* self_data, FtInputEvent* result);
     FtInputDeviceIds (*device_ids)(void* self_data);
@@ -564,6 +591,7 @@ void ft_input_source_destroy(FtInputSource handle);
 #define FT_INPUT_BACKEND_TYPE_TAG 16777248
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     FtResult (*current_ids)(void* self_data, FtInputDeviceIds* result, FtError* err_out);
     FtResult (*peek_ids_result)(void* self_data, const FtInputDeviceIds** result, FtError* err_out);
@@ -584,6 +612,7 @@ void ft_input_backend_destroy(FtInputBackend handle);
 #define FT_PUSH_STR_TYPE_TAG 16777240
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     bool (*push)(void* self_data, FtStr s);
 } FtPushStrVtable;
@@ -598,16 +627,17 @@ void ft_push_str_destroy(FtPushStr handle);
 #define FT_ERROR_TYPE_TAG 16777241
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     uint32_t (*code)(void* self_data);
-    void (*message)(void* self_data, FtPushStr writer);
+    void (*message)(void* self_data, FtPushStr writer /* mutable borrowed callback; call-scoped */);
     uint64_t (*result)(void* self_data);
 } FtErrorVtable;
 
 /* Error (dispatch) -------------------------------------------------- */
 
 uint32_t ft_error_code(FtError handle);
-void ft_error_message(FtError handle, FtPushStr writer);
+void ft_error_message(FtError handle, FtPushStr writer /* mutable borrowed callback; call-scoped */);
 uint64_t ft_error_result(FtError handle);
 void ft_error_destroy(FtError handle);
 
@@ -616,6 +646,7 @@ void ft_error_destroy(FtError handle);
 #define FT_OPTIONAL_WORKER_TYPE_TAG 16777244
 
 typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
     void (*drop)(void* self_data);
     int32_t (*amplify)(void* self_data, int32_t input);
 } FtOptionalWorkerVtable;
@@ -667,9 +698,9 @@ FtResult ft_event_queue_peek_ids_result(FtEventQueue handle, const FtInputDevice
 FtResult ft_event_queue_edit_ids_result(FtEventQueue handle, FtInputDeviceIds** result, FtError* err_out);
 FtResult ft_event_queue_next_event(FtEventQueue handle, bool fail, bool* result_is_some, FtInputEvent* result, FtError* err_out);
 uint32_t ft_test_error_code(FtTestError handle);
-void ft_test_error_message(FtTestError handle, FtPushStr writer);
+void ft_test_error_message(FtTestError handle, FtPushStr writer /* mutable borrowed callback; call-scoped */);
 uint32_t ft_error_code(FtError handle);
-void ft_error_message(FtError handle, FtPushStr writer);
+void ft_error_message(FtError handle, FtPushStr writer /* mutable borrowed callback; call-scoped */);
 int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
@@ -678,11 +709,11 @@ int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 FtStr ft_log_level_name(uint32_t level);
 /** Check if a log level is enabled (everything above Off). */
 bool ft_log_level_is_enabled(uint32_t level);
-int32_t ft_optional_apply(FtOptionalWorker worker, int32_t input);
+int32_t ft_optional_apply(FtOptionalWorker worker /* owned callback; valid until release */, int32_t input);
 FtStr ft_optional_mode_name(uint32_t mode);
 uint32_t ft_optional_merge_flags(uint32_t a, uint32_t b);
 /** Accepts only categorizable fruits (not all fruits). */
-int32_t ft_categorizable_value(FtCategorizable fruit);
+int32_t ft_categorizable_value(FtCategorizable fruit /* owned callback; valid until release */);
 /** Duplicate a file descriptor. */
 FtResult ft_clone_fd(int fd, int* result, FtError* err_out);
 /** Count the number of gadgets in a slice and return the sum of their values. */
@@ -694,10 +725,12 @@ int32_t ft_sum_gadget_values(const FtGadget* gadgets, size_t gadgets_len);
 void* ft_opaque_round_trip(void* ptr);
 /** Accept an opaque const pointer and return its address as an integer. */
 size_t ft_opaque_ptr_to_int(const void* ptr);
-FtResult ft_probe_input_backend_values(FtInputBackend backend, uint16_t* result, FtError* err_out);
+FtResult ft_probe_input_backend_values(FtInputBackend backend /* owned callback; valid until release */, uint16_t* result, FtError* err_out);
+FtResult ft_probe_borrowed_input_backend_values(FtInputBackend backend /* mutable borrowed callback; call-scoped */, uint16_t* result, FtError* err_out);
+FtRetainedFruit ft_retain_fruit(FtFruit fruit /* owned callback; valid until release; value bounds: 'a */);
 const FtInputDeviceIds* ft_borrow_input_ids(const FtInputDeviceIds* ids);
 FtInputDeviceIds* ft_borrow_input_ids_mut(FtInputDeviceIds* ids);
-int32_t ft_probe_input_source(FtInputSource source);
+int32_t ft_probe_input_source(FtInputSource source /* owned callback; valid until release */);
 /** Apply a foreign config: extract the name and value, set them on the widget. */
 void ft_apply_foreign_config(FtWidget widget, FlForeignConfig config);
 /** Read a foreign item's score. */

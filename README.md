@@ -203,6 +203,45 @@ allocation, no copy, no ownership transfer.
 A convenience macro (`PREFIX_STR(s)`, e.g. `MYLIB_STR(s)`) is generated in
 the C header to construct these from string literals.
 
+## Callback ownership and lifetimes
+
+`impl Backend + 'static` transfers an owned callback and requires a value
+without expiring borrows. `impl Backend + 'a` can own borrowed data; any
+retaining object must remain within `'a`. Trait arguments (`Backend<'a>`),
+value bounds (`+ 'a`), and reference lifetimes are separate schema fields.
+Generated Rust clients preserve supported bounds and track callback handle
+lifetimes. Raw ownership transfer is unsafe.
+Callback handles carry trait tags and ownership kinds. Safe factory overrides
+cannot substitute borrowed handles for owned handles or shared handles for
+mutable handles.
+
+`&impl Backend` and `&mut impl Backend` borrow a callback for the call.
+Generated clients keep temporary callback handles alive until return and
+destroy only their shells. They never destroy the borrowed callback value.
+Explicit named reference lifetimes are currently rejected because these
+temporary handles cannot support retention beyond the call. Borrowed callbacks
+with lifetime-bearing returns are rejected too. Callback vtables with trait
+lifetime parameters are also rejected; lifetime-parameterized
+traits remain usable through concrete dispatch. Higher-ranked bounds,
+additional trait bounds, and method lifetime bounds/where clauses are rejected
+instead of discarded. Foreign traits and unsupported dynamic forwarding
+require concrete dispatch.
+
+C callers must enforce lifetimes themselves:
+
+- Pass stack `PREFIX_VTABLE_HANDLE` values only to borrowed parameters.
+- Owned parameters consume a heap handle with ffier's owned handle layout.
+  Allocation must be compatible with Rust's allocator. Do not pass stack
+  handles or borrowed shells as owned callbacks.
+- After ownership transfer, do not use or destroy the transferred handle.
+  Library destroys it exactly once when released, not necessarily at return.
+- Keep `vtable_ptr`, `user_data`, and borrowed callback data valid until release.
+  Library calls the vtable `drop` callback exactly once if present. That callback
+  releases `user_data`; it must not free the consumed handle shell again.
+- Borrowed callbacks must not be retained, destroyed, or used after call return.
+- `+ 'static` forbids expiring borrows. Other bounds require release before
+  borrowed data expires. These rules add no Send/Sync support.
+
 ## How it works
 
 The pipeline has two phases:

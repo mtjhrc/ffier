@@ -1,6 +1,62 @@
 use std::ffi::CStr;
 
 use core::ffi::c_void;
+use core::marker::PhantomData;
+
+/// Lifetime-tracked callback handle. Dropping it destroys its handle exactly once.
+/// Raw ownership transfer is unsafe because raw pointers cannot track lifetimes.
+pub struct CallbackHandle<'a, TraitTag, Ownership = OwnedCallback> {
+    raw: *mut c_void,
+    destroy: unsafe fn(*mut c_void),
+    lifetime: PhantomData<&'a mut ()>,
+    trait_tag: PhantomData<fn() -> TraitTag>,
+    ownership: PhantomData<Ownership>,
+}
+
+/// Owned callback handles may transfer ownership across FFI.
+pub enum OwnedCallback {}
+
+/// Borrowed callback handles only lend their raw pointer during a call.
+pub enum BorrowedCallback<const MUTABLE: bool = false> {}
+
+impl<'a, TraitTag, Ownership> CallbackHandle<'a, TraitTag, Ownership> {
+    /// # Safety
+    /// `raw` must match `TraitTag` and `Ownership` and remain valid for `'a`.
+    /// `destroy` must release the owned handle or borrowed shell exactly once.
+    /// Borrowed handles must not destroy callback data. Mutable borrowed handles
+    /// require exclusive access to that data until the handle is dropped.
+    pub unsafe fn from_raw(raw: *mut c_void, destroy: unsafe fn(*mut c_void)) -> Self {
+        Self {
+            raw,
+            destroy,
+            lifetime: PhantomData,
+            trait_tag: PhantomData,
+            ownership: PhantomData,
+        }
+    }
+
+    pub fn as_raw(&self) -> *mut c_void {
+        self.raw
+    }
+}
+
+impl<'a, TraitTag> CallbackHandle<'a, TraitTag> {
+    /// Transfer ownership to the callee.
+    ///
+    /// # Safety
+    /// The callee must destroy the handle exactly once, before `'a` ends.
+    /// It must never use callback data after its permitted lifetime.
+    pub unsafe fn into_raw(self) -> *mut c_void {
+        let this = core::mem::ManuallyDrop::new(self);
+        this.raw
+    }
+}
+
+impl<TraitTag, Ownership> Drop for CallbackHandle<'_, TraitTag, Ownership> {
+    fn drop(&mut self) {
+        unsafe { (self.destroy)(self.raw) };
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Handle layout — heap-allocated box with RTTI header

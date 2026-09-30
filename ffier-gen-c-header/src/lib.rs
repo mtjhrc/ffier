@@ -281,6 +281,31 @@ fn emit_shared_types(
     out.push_str("/**\n");
     out.push_str(" * Stack-allocated temporary handle for passing vtable-based objects.\n");
     out.push_str(" * Only valid for the duration of the call — the callee borrows, not owns.\n");
+    out.push_str(
+        " * Use only for borrowed callback parameters. Never pass it to an owned parameter.\n",
+    );
+    out.push_str(" * Borrowed callbacks cannot be retained, destroyed, or used after the call.\n");
+    out.push_str(
+        " * Owned callbacks require a heap handle with ffier's owned layout and transfer ownership.\n",
+    );
+    out.push_str(
+        " * Allocation must be compatible with Rust's allocator; never transfer a stack handle.\n",
+    );
+    out.push_str(
+        " * The caller must not use or destroy a transferred handle. The callee destroys\n",
+    );
+    out.push_str(
+        " * it exactly once when released, calling the vtable drop callback once if present.\n",
+    );
+    out.push_str(
+        " * Keep vtable and user_data valid until that destruction, not merely call return.\n",
+    );
+    out.push_str(
+        " * A + 'static API requires callback data with no expiring borrows. Other lifetime\n",
+    );
+    out.push_str(
+        " * bounds require release before borrowed data expires. C must enforce these bounds.\n",
+    );
     out.push_str(" */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    uint32_t type_tag;\n");
@@ -441,6 +466,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     out.push_str("typedef struct {\n");
 
     // Slot 0 is always drop
+    out.push_str("    /* Releases transferred user_data exactly once; never called for borrowed parameters. */\n");
     out.push_str("    void (*drop)(void* self_data);\n");
 
     // Build a map of index → method for gap detection
@@ -607,9 +633,42 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
                     out.push(format!("{} {}", cp.c_type, cp.name));
                 }
             }
-            ParamType::ImplTrait { trait_name, .. } => {
+            ParamType::ImplTrait {
+                trait_name,
+                type_args,
+                lifetime_bounds,
+                ref_kind,
+                ref_lifetime,
+            } => {
                 let c_type = lib.c_type_of(trait_name);
-                out.push(format!("{} {}", c_type, p.name));
+                let ownership = match ref_kind {
+                    ffier_schema::RefKind::None => "owned callback; valid until release",
+                    ffier_schema::RefKind::Shared => "shared borrowed callback; call-scoped",
+                    ffier_schema::RefKind::Mut => "mutable borrowed callback; call-scoped",
+                };
+                let mut requirements = vec![ownership.to_string()];
+                for (label, lifetimes) in [
+                    ("trait arguments", type_args),
+                    ("value bounds", lifetime_bounds),
+                ] {
+                    if !lifetimes.is_empty() {
+                        let lifetimes = lifetimes
+                            .iter()
+                            .map(|lt| format!("'{lt}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        requirements.push(format!("{label}: {lifetimes}"));
+                    }
+                }
+                if let Some(lifetime) = ref_lifetime {
+                    requirements.push(format!("reference lifetime: '{lifetime}"));
+                }
+                out.push(format!(
+                    "{} {} /* {} */",
+                    c_type,
+                    p.name,
+                    requirements.join("; ")
+                ));
             }
         }
     }

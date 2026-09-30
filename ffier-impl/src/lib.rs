@@ -130,6 +130,8 @@ enum ParamKind {
         ref_kind: String,
         /// Lifetime arguments on the trait (e.g. `["a"]` for `impl Snapshot<'a>`).
         trait_lifetime_args: Vec<String>,
+        lifetime_bounds: Vec<String>,
+        ref_lifetime: Option<String>,
     },
 }
 
@@ -752,6 +754,15 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
     // -----------------------------------------------------------------------
 
     let local_type_aliases = ctx.local_type_aliases();
+
+    if let Err(error) = validate_callback_generics(
+        &input.generics,
+        methods
+            .iter()
+            .any(|method| method.params.iter().any(ParamInfo::is_impl_trait)),
+    ) {
+        return error.to_compile_error().into();
+    }
 
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
@@ -2135,29 +2146,107 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
     Ok(result)
 }
 
-/// Extract the trait name from an `impl Trait` type.
-/// Extract trait name and lifetime arguments from `impl Trait<'a, 'b>`.
-/// Returns `(trait_name, lifetime_args)` e.g. `("Snapshot", vec!["a"])`.
-fn extract_impl_trait_info(ty: &Type) -> Option<(String, Vec<String>)> {
-    if let Type::ImplTrait(impl_trait) = ty {
-        for bound in &impl_trait.bounds {
-            if let syn::TypeParamBound::Trait(trait_bound) = bound
-                && let Some(seg) = trait_bound.path.segments.last()
+struct ImplTraitInfo {
+    trait_name: String,
+    trait_lifetime_args: Vec<String>,
+    lifetime_bounds: Vec<String>,
+}
+
+#[cfg(test)]
+mod callback_bound_tests {
+    use super::*;
+
+    #[test]
+    fn trait_arguments_and_value_bounds_are_separate() {
+        let ty: Type = syn::parse_quote!(impl Backend<'trait_data> + 'value_data + 'static);
+        let info = extract_impl_trait_info(&ty).unwrap().unwrap();
+        assert_eq!(info.trait_name, "Backend");
+        assert_eq!(info.trait_lifetime_args, ["trait_data"]);
+        assert_eq!(info.lifetime_bounds, ["value_data", "static"]);
+    }
+
+    #[test]
+    fn unsupported_bounds_are_not_discarded() {
+        for ty in [
+            syn::parse_quote!(impl Backend + Send),
+            syn::parse_quote!(impl for<'a> Backend<'a>),
+            syn::parse_quote!(impl Backend<u32>),
+        ] {
+            assert!(extract_impl_trait_info(&ty).is_err());
+        }
+    }
+}
+
+fn validate_callback_generics(generics: &syn::Generics, has_callbacks: bool) -> syn::Result<()> {
+    if has_callbacks
+        && (generics.lifetimes().any(|lt| !lt.bounds.is_empty()) || generics.where_clause.is_some())
+    {
+        return Err(syn::Error::new_spanned(
+            generics,
+            "ffier callback lifetime bounds on generic parameters and where clauses are unsupported",
+        ));
+    }
+    Ok(())
+}
+
+/// Keep trait arguments and value bounds separate; never drop extra bounds.
+fn extract_impl_trait_info(ty: &Type) -> syn::Result<Option<ImplTraitInfo>> {
+    let Type::ImplTrait(impl_trait) = ty else {
+        return Ok(None);
+    };
+    let mut trait_info = None;
+    let mut lifetime_bounds = Vec::new();
+    for bound in &impl_trait.bounds {
+        match bound {
+            syn::TypeParamBound::Lifetime(lt) => lifetime_bounds.push(lt.ident.to_string()),
+            syn::TypeParamBound::Trait(tb)
+                if trait_info.is_none()
+                    && tb.lifetimes.is_none()
+                    && matches!(tb.modifier, syn::TraitBoundModifier::None) =>
             {
-                let name = seg.ident.to_string();
-                let mut lt_args = Vec::new();
-                if let syn::PathArguments::AngleBracketed(args) = &seg.arguments {
-                    for arg in &args.args {
-                        if let syn::GenericArgument::Lifetime(lt) = arg {
-                            lt_args.push(lt.ident.to_string());
+                let seg = tb.path.segments.last().expect("trait path has a segment");
+                let mut args = Vec::new();
+                match &seg.arguments {
+                    syn::PathArguments::None => {}
+                    syn::PathArguments::AngleBracketed(arguments) => {
+                        for arg in &arguments.args {
+                            let syn::GenericArgument::Lifetime(lt) = arg else {
+                                return Err(syn::Error::new_spanned(
+                                    arg,
+                                    "ffier impl Trait supports only lifetime trait arguments",
+                                ));
+                            };
+                            args.push(lt.ident.to_string());
                         }
                     }
+                    other => {
+                        return Err(syn::Error::new_spanned(
+                            other,
+                            "ffier impl Trait does not support parenthesized trait arguments",
+                        ));
+                    }
                 }
-                return Some((name, lt_args));
+                trait_info = Some((seg.ident.to_string(), args));
+            }
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "ffier impl Trait supports one trait bound and lifetime bounds; additional or higher-ranked trait bounds are unsupported",
+                ));
             }
         }
     }
-    None
+    let Some((trait_name, trait_lifetime_args)) = trait_info else {
+        return Err(syn::Error::new_spanned(
+            ty,
+            "ffier impl Trait requires a trait bound",
+        ));
+    };
+    Ok(Some(ImplTraitInfo {
+        trait_name,
+        trait_lifetime_args,
+        lifetime_bounds,
+    }))
 }
 
 /// Extract `#[cfg(...)]` predicates from a list of attributes.
@@ -2419,7 +2508,12 @@ fn parse_method_sig(
                     let rk = if r.mutability.is_some() { "mut" } else { "ref" };
                     (&*r.elem, rk)
                 }
+                Type::Paren(p) => (&*p.elem, "value"),
                 other => (other, "value"),
+            };
+            let inner_ty = match inner_ty {
+                Type::Paren(p) => &*p.elem,
+                other => other,
             };
 
             // Parse #[ffier(...)] attrs on the parameter
@@ -2433,15 +2527,22 @@ fn parse_method_sig(
             }
             let foreign_crate_tokens = param_attrs.foreign_crate.as_ref().map(|p| quote! { #p });
 
-            if let Some((trait_name, trait_lifetime_args)) = extract_impl_trait_info(inner_ty) {
+            if let Some(info) = extract_impl_trait_info(inner_ty)? {
                 let dispatch = param_attrs.dispatch.unwrap_or_else(|| "auto".to_string());
                 return Ok(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::ImplTrait {
-                        trait_name,
+                        trait_name: info.trait_name,
                         dispatch,
                         ref_kind: impl_trait_ref_kind.to_string(),
-                        trait_lifetime_args,
+                        trait_lifetime_args: info.trait_lifetime_args,
+                        lifetime_bounds: info.lifetime_bounds,
+                        ref_lifetime: match &*pt.ty {
+                            Type::Reference(r) => {
+                                r.lifetime.as_ref().map(|lt| lt.ident.to_string())
+                            }
+                            _ => None,
+                        },
                     },
                     types: Some(TypePair {
                         bridge: quote! { *mut core::ffi::c_void },
@@ -2652,6 +2753,8 @@ fn parse_method_sig(
         }
     };
 
+    validate_callback_generics(&sig.generics, params.iter().any(ParamInfo::is_impl_trait))?;
+
     // --- Original rust_ret for client codegen ---
     let rust_ret = match &sig.output {
         ReturnType::Default => None,
@@ -2663,6 +2766,34 @@ fn parse_method_sig(
             Some(quote! { #replaced })
         }
     };
+
+    if params.iter().any(|param| {
+        matches!(&param.kind,
+        ParamKind::ImplTrait { ref_kind, .. } if ref_kind != "value")
+    }) && let ReturnType::Type(_, ty) = &sig.output
+    {
+        struct BorrowedReturn(bool);
+        impl VisitMut for BorrowedReturn {
+            fn visit_lifetime_mut(&mut self, _: &mut syn::Lifetime) {
+                self.0 = true;
+            }
+            fn visit_type_reference_mut(&mut self, _: &mut syn::TypeReference) {
+                self.0 = true;
+            }
+        }
+        let mut return_type = match self_ty {
+            Some(sty) => replace_self_type(ty, sty),
+            None => (**ty).clone(),
+        };
+        let mut borrowed = BorrowedReturn(false);
+        borrowed.visit_type_mut(&mut return_type);
+        if borrowed.0 {
+            return Err(syn::Error::new_spanned(
+                &sig.output,
+                "ffier borrowed callbacks with lifetime-bearing returns are unsupported; callback handles are call-scoped",
+            ));
+        }
+    }
 
     Ok(Some(MethodInfo {
         name: sig.ident.clone(),
@@ -2726,7 +2857,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             ParamKind::StrSlice => quote! { str_slice },
             ParamKind::HandleSlice => quote! { handle_slice },
             ParamKind::PrimitiveSlice => quote! { primitive_slice },
-            ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args } => {
+            ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args, lifetime_bounds, ref_lifetime } => {
                 let dispatch_ident = format_ident!("{dispatch}");
                 let ref_kind_ident = match ref_kind.as_str() {
                     "ref" => format_ident!("r#ref"),
@@ -2734,7 +2865,9 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                     other => format_ident!("{other}"),
                 };
                 let lt_idents: Vec<_> = trait_lifetime_args.iter().map(|lt| format_ident!("{lt}")).collect();
-                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*] }
+                let bounds: Vec<_> = lifetime_bounds.iter().map(|lt| format_ident!("{lt}")).collect();
+                let reference: Vec<_> = ref_lifetime.iter().map(|lt| format_ident!("{lt}")).collect();
+                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*], lifetime_bounds = [#(#bounds),*], ref_lifetime = [#(#reference),*] }
             }
         };
         let type_tokens = if p.is_impl_trait() {
@@ -2855,12 +2988,15 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
     }
 }
 
-/// Generate `impl Trait for &mut dyn Trait` — delegates via deref.
-/// This lets the bridge pass `&mut dyn Trait` where `impl Trait` is expected,
-/// as a dynamic dispatch fallback when enumerating concrete types would be
-/// a combinatorial explosion.
+/// Share forwarding bodies between owned and borrowed dynamic dispatch.
 fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
     let trait_name = &trait_item.ident;
+    let mut generics = trait_item.generics.clone();
+    generics
+        .params
+        .insert(0, syn::parse_quote!('__ffier_object));
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    let (_, trait_generics, _) = trait_item.generics.split_for_impl();
     let method_impls: Vec<_> = trait_item
         .items
         .iter()
@@ -2889,14 +3025,31 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
         })
         .collect();
 
-    quote! {
-        impl #trait_name for &mut dyn #trait_name {
-            #(#method_impls)*
+    let shared_impl = if trait_item.items.iter().any(|item| matches!(item,
+        TraitItem::Fn(method) if matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()))) {
+        quote! {}
+    } else {
+        quote! {
+            impl #impl_generics #trait_name #trait_generics for &(dyn #trait_name #trait_generics + '__ffier_object) #where_clause {
+                #(#method_impls)*
+            }
         }
+    };
+
+    quote! {
+        const _: () = {
+            impl #impl_generics #trait_name #trait_generics for Box<dyn #trait_name #trait_generics + '__ffier_object> #where_clause {
+                #(#method_impls)*
+            }
+            impl #impl_generics #trait_name #trait_generics for &mut (dyn #trait_name #trait_generics + '__ffier_object) #where_clause {
+                #(#method_impls)*
+            }
+            #shared_impl
+        };
     }
 }
 
-/// Generate `impl Trait for &mut dyn Trait` for dynamic dispatch fallback.
+/// Generate owned and mutable borrowed dynamic dispatch forwarding.
 ///
 /// `#[ffier::export]` on traits implies `#[ffier::dispatch]` — use this
 /// annotation alone when you want dynamic dispatch fallback without
@@ -2922,6 +3075,11 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 
     let trait_name = &trait_item.ident;
     let trait_name_str = trait_name.to_string();
+    if !args.no_vtable && !trait_item.generics.params.is_empty() {
+        return syn::Error::new_spanned(&trait_item.generics,
+            "ffier callback vtables with trait lifetime or type parameters are unsupported; use no_vtable and concrete dispatch")
+            .to_compile_error().into();
+    }
     let trait_snake = camel_to_snake(&trait_name_str);
 
     // Extract trait-level lifetime params (e.g. `<'a>` from `trait Snapshot<'a>`)
@@ -3203,23 +3361,18 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     // Generate &mut dyn Trait dispatch delegation (implies #[ffier::dispatch])
     // For traits with supertraits, we also need to delegate the supertrait methods.
     // Skip for foreign traits (orphan rules: can't impl foreign trait for local type).
-    let boxdyn_impl = if is_foreign {
-        quote! {}
+    let dyn_dispatch = !is_foreign
+        && !trait_item.supertraits.iter().any(|b| matches!(b, syn::TypeParamBound::Trait(_)))
+        && !vtable_methods.iter().any(|m| m.params.iter().any(ParamInfo::is_impl_trait))
+        && trait_item.items.iter().all(|item| match item {
+            TraitItem::Fn(method) => matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some())
+                && method.sig.generics.type_params().next().is_none(),
+            _ => false,
+        });
+    let boxdyn_impl = if dyn_dispatch {
+        emit_dyn_dispatch_impl(&trait_item)
     } else {
-        let has_supertraits = trait_item
-            .supertraits
-            .iter()
-            .any(|b| matches!(b, syn::TypeParamBound::Trait(_)));
-        // Traits with `impl Trait` params aren't dyn-compatible
-        let has_impl_trait = vtable_methods
-            .iter()
-            .any(|m| m.params.iter().any(|p| p.is_impl_trait()));
-        if !has_supertraits && !has_impl_trait {
-            emit_dyn_dispatch_impl(&trait_item)
-        } else {
-            // TODO: generate supertrait delegation for &mut dyn Trait
-            quote! {}
-        }
+        quote! {}
     };
 
     // For foreign traits (`extern trait`), don't re-emit the trait definition —
@@ -3262,11 +3415,21 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             }
 
             #[repr(C)]
-            pub struct #wrapper_name {
-                pub value: ffier::VtableHandle,
+            pub struct #wrapper_name<'callback> {
+                value: ffier::VtableHandle,
+                lifetime: core::marker::PhantomData<&'callback mut ()>,
             }
 
-            impl Drop for #wrapper_name {
+            impl<'callback> #wrapper_name<'callback> {
+                /// # Safety
+                /// Callback data and vtable must remain valid for 'callback.
+                /// This wrapper owns the callback and destroys it exactly once.
+                pub unsafe fn from_value(value: ffier::VtableHandle) -> Self {
+                    Self { value, lifetime: core::marker::PhantomData }
+                }
+            }
+
+            impl Drop for #wrapper_name<'_> {
                 fn drop(&mut self) {
                     let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
                         self.value.field_or_none(
@@ -3279,14 +3442,14 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 }
             }
 
-            impl FfiHandle for #wrapper_name {
-                const C_HANDLE_NAME: &str = #wrapper_c_handle_suffix;
+            impl FfiHandle for #wrapper_name<'_> {
+                const C_HANDLE_NAME: &'static str = #wrapper_c_handle_suffix;
                 const TYPE_TAG: u32 = $type_tag;
             }
 
-            impl FfiType for #wrapper_name {
+            impl FfiType for #wrapper_name<'_> {
                 type CRepr = *mut core::ffi::c_void;
-                const C_TYPE_NAME: &str = #wrapper_c_handle_suffix;
+                const C_TYPE_NAME: &'static str = #wrapper_c_handle_suffix;
                 const IS_HANDLE: bool = true;
                 fn into_c(self) -> *mut core::ffi::c_void {
                     ffier::ffier_handle_new(
@@ -3362,6 +3525,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     max_vtable_slot = #max_vtable_slot_val,
                     bless = #bless_tokens,
                     no_vtable = #no_vtable_tokens,
+                    dyn_dispatch = #dyn_dispatch,
                     #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };
@@ -3489,6 +3653,14 @@ fn trait_impl_inner(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
     let local_type_aliases = ctx.local_type_aliases();
 
     let method_meta = emit_method_meta(&methods, MethodMetaKind::Impl);
+    if let Err(error) = validate_callback_generics(
+        &input.generics,
+        methods
+            .iter()
+            .any(|method| method.params.iter().any(ParamInfo::is_impl_trait)),
+    ) {
+        return error.to_compile_error().into();
+    }
 
     let lifetime_idents: Vec<_> = input
         .generics
@@ -5511,7 +5683,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
             #(#handle_assertions)*
 
-            impl #trait_path #trait_generics for #wrapper {
+            impl #trait_path #trait_generics for #wrapper<'_> {
                 #(#own_method_impls)*
             }
 
