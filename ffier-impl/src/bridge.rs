@@ -2406,7 +2406,7 @@ impl CTypeResolver {
     fn type_ref_from_syn(&self, ty: &syn::Type) -> ffier_schema::TypeRef {
         match ty {
             // Option<T> → recurse into T and set optional = true.
-            syn::Type::Path(tp) if path_is_ident(&tp.path, "Option") => {
+            syn::Type::Path(tp) if path_ends_with_ident(&tp.path, "Option") => {
                 if let Some(inner) = single_angle_arg(&tp.path) {
                     let mut tr = self.type_ref_from_syn(inner);
                     tr.optional = true;
@@ -2424,7 +2424,7 @@ impl CTypeResolver {
             }
 
             // Box<str> → owned str.
-            syn::Type::Path(tp) if path_is_ident(&tp.path, "Box") => {
+            syn::Type::Path(tp) if path_ends_with_ident(&tp.path, "Box") => {
                 if let Some(inner) = single_angle_arg(&tp.path)
                     && matches!(inner, syn::Type::Path(p) if p.path.is_ident("str"))
                 {
@@ -2582,10 +2582,11 @@ impl CTypeResolver {
     }
 }
 
-/// Check if a `syn::Path` has a single segment matching `name`
-/// (e.g. `Option`, `Box`). Ignores leading `::` and multi-segment paths.
-fn path_is_ident(path: &syn::Path, name: &str) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == name
+/// Check the final segment of a possibly qualified path.
+fn path_ends_with_ident(path: &syn::Path, name: &str) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == name)
 }
 
 /// Check if a `syn::Type` is `c_void` or `core::ffi::c_void` (any qualification).
