@@ -1383,19 +1383,23 @@ impl AliasContext {
         quote! { $crate::#helper::#alias }
     }
 
-    /// Emit `pub type _TypeN = super::Erased;` items for the helper module
-    /// emitted at the definition site.
+    /// Emit type aliases in a helper module one level below the definition site.
     ///
-    /// Types that start with an external crate path (multi-segment, not
-    /// starting with `crate` or `self` or `super`) are emitted without
-    /// `super::` since they're already absolute paths.
+    /// Keep absolute paths intact, replace `self::` with `super::`, and
+    /// prepend `super::` to other local paths.
     fn local_type_aliases(&self) -> Vec<proc_macro2::TokenStream> {
         self.types
             .iter()
             .zip(self.aliases.iter())
             .map(|(ty, alias)| {
-                let erased = erase_lifetimes(ty);
-                if is_external_crate_path(&erased) {
+                let mut erased = erase_lifetimes(ty);
+                if is_absolute_type_path(&erased) {
+                    quote! { pub type #alias = #erased; }
+                } else if let Type::Path(tp) = &mut erased
+                    && tp.path.segments[0].ident == "self"
+                {
+                    tp.path.segments[0].ident =
+                        syn::Ident::new("super", tp.path.segments[0].ident.span());
                     quote! { pub type #alias = #erased; }
                 } else {
                     quote! { pub type #alias = super::#erased; }
@@ -1429,16 +1433,19 @@ fn is_primitive(ty: &Type) -> bool {
         && PRIMITIVES.contains(&tp.path.segments[0].ident.to_string().as_str())
 }
 
-/// Check if a type starts with an external crate path (e.g. `other_crate::Foo`).
+/// Check if a type starts with `crate::`, `::`, or an external crate path
+/// (e.g. `other_crate::Foo`).
 /// Such types should NOT get `super::` prepended in helper module aliases.
-fn is_external_crate_path(ty: &Type) -> bool {
+fn is_absolute_type_path(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
+    if tp.path.leading_colon.is_some() || tp.path.segments[0].ident == "crate" {
+        return true;
+    }
     if tp.path.segments.len() <= 1 {
         return false;
     }
     let first = tp.path.segments.first().unwrap().ident.to_string();
-    // `crate::`, `self::`, `super::` are local paths, not external
-    !matches!(first.as_str(), "crate" | "self" | "super")
+    !matches!(first.as_str(), "self" | "super")
 }
 
 // ---------------------------------------------------------------------------
