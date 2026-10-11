@@ -209,6 +209,15 @@ impl ForeignError {
             other => panic!("unknown {} error code {}", "ForeignError", other),
         }
     }
+    #[allow(dead_code)]
+    fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
+        let (code, handle) = match self {
+            Self::Invalid(handle) => (1u32, handle),
+        };
+        let raw = handle.handle();
+        core::mem::forget(handle);
+        (ffier::ffier_result(33554433u32, code), raw)
+    }
     fn handle_ptr(&self) -> *mut core::ffi::c_void {
         match self {
             Self::Invalid(h) => h.handle(),

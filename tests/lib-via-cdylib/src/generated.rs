@@ -498,6 +498,19 @@ impl TestError {
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
+    #[allow(dead_code)]
+    fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
+        let (code, handle) = match self {
+            Self::NotFound(data) => (1u32, data.0),
+            Self::CustomMessage(handle) => (2u32, handle),
+            Self::InvalidInput(handle) => (3u32, handle),
+            Self::NumericError(data) => (4u32, data.0),
+            Self::Fatal(handle) => (5u32, handle),
+        };
+        let raw = handle.handle();
+        core::mem::forget(handle);
+        (ffier::ffier_result(16777217u32, code), raw)
+    }
     fn handle_ptr(&self) -> *mut core::ffi::c_void {
         match self {
             Self::NotFound(d) => d.0.handle(),
@@ -573,6 +586,15 @@ impl Error {
             1u32 => Self::Failed(handle),
             other => panic!("unknown {} error code {}", "Error", other),
         }
+    }
+    #[allow(dead_code)]
+    fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
+        let (code, handle) = match self {
+            Self::Failed(handle) => (1u32, handle),
+        };
+        let raw = handle.handle();
+        core::mem::forget(handle);
+        (ffier::ffier_result(16777241u32, code), raw)
     }
     fn handle_ptr(&self) -> *mut core::ffi::c_void {
         match self {
@@ -2738,10 +2760,9 @@ pub trait Fruit {
                             0 // FFIER_RESULT_SUCCESS
                         }
                         Err(__e) => {
-                            unsafe {
-                                *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void
-                            };
-                            ffier::ffier_result(16777217, 1)
+                            let (__code, __handle) = __e.into_ffi();
+                            unsafe { *err_out = __handle };
+                            __code
                         }
                     }
                 }
