@@ -1751,12 +1751,16 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, _lib: &Lib
             }
             let call_str = call_args.join(", ");
 
-            writeln!(
-                out,
-                "                    let __result = __val.{}({call_str});",
-                m.name
-            )
-            .unwrap();
+            if matches!(m.ret, Return::Void) {
+                writeln!(out, "                    __val.{}({call_str});", m.name).unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "                    let __result = __val.{}({call_str});",
+                    m.name
+                )
+                .unwrap();
+            }
 
             match &m.ret {
                 Return::Void => {
