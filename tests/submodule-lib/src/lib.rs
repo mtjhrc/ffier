@@ -9,6 +9,7 @@ pub mod types;
 
 // Re-export types at the crate root (as a normal library would)
 pub use errors::SubError;
+#[ffier::reexport]
 pub use types::{Counter, Doubler};
 
 // Use crate:: qualified paths — the whole point of this test.

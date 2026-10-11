@@ -420,6 +420,33 @@ impl ExportCfg {
     }
 }
 
+/// Forward definition-site helpers when an annotated item is re-exported.
+/// Metadata uses `$crate` paths, so a submodule's helpers must be visible at
+/// its defining crate's root before another crate registers that item.
+fn reexport_helpers(
+    names: &[&syn::Ident],
+    cfg_attr: &proc_macro2::TokenStream,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let helper_mod = names[0];
+    let arm = quote! {
+        (@reexport_helpers ($($parent:tt)*)) => {
+            #cfg_attr
+            #[doc(hidden)]
+            #[allow(unused_imports)]
+            pub use $($parent)* #helper_mod::__reexports::*;
+        };
+    };
+    // A glob import can coexist with the explicit helper imports emitted by
+    // qualified library_definition! entries, without duplicate-name errors.
+    let bundle = quote! {
+        #[doc(hidden)]
+        pub mod __reexports {
+            #(pub use super::super::#names;)*
+        }
+    };
+    (arm, bundle)
+}
+
 fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
@@ -566,6 +593,8 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
 
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+
     let output = quote! {
         #cfg_attr
         #impl_block
@@ -575,12 +604,14 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
+            #reexport_bundle
             #(#local_type_aliases)*
         }
 
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiHandle for #struct_with_lifetimes {
                     const C_HANDLE_NAME: &'static str = stringify!(#struct_ident);
@@ -711,17 +742,22 @@ fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> TokenStream {
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
 
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+
     let output = quote! {
         #cfg_attr
         #input
 
         #cfg_attr
         #[doc(hidden)]
-        pub mod #helper_mod_name {}
+        pub mod #helper_mod_name {
+            #reexport_bundle
+        }
 
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
@@ -835,6 +871,8 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
 
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+
     let output = quote! {
         #cfg_attr
         #bitflags_call
@@ -846,6 +884,7 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
@@ -873,7 +912,9 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
 
         #cfg_attr
         #[doc(hidden)]
-        pub mod #helper_mod_name {}
+        pub mod #helper_mod_name {
+            #reexport_bundle
+        }
 
         #[doc(hidden)]
         pub use #internal_macro_name as #meta_alias_name;
@@ -1153,6 +1194,8 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
 
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+
     let output = quote! {
         #cfg_attr
         #clean_fn
@@ -1160,12 +1203,14 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
         #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
+            #reexport_bundle
             #(#local_type_aliases)*
         }
 
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {
                     @exported_fn,
@@ -1644,9 +1689,18 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let error_path = quote! { $crate::#name };
     let helper_mod_name = format_ident!("_ffier_{error_snake}");
 
+    let error_impl_helper = format_ident!("_ffier_impl_error_for_{error_snake}");
+    let error_impl_meta = format_ident!("__ffier_meta_Error_for_{name}");
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(
+        &[&helper_mod_name, &error_impl_helper, &error_impl_meta],
+        &quote! {},
+    );
+
     let output = quote! {
         #[doc(hidden)]
-        pub mod #helper_mod_name {}
+        pub mod #helper_mod_name {
+            #reexport_bundle
+        }
 
         impl ffier::FfiError for #name {
             fn code(&self) -> u32 {
@@ -1692,6 +1746,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
                 impl FfiHandle for #name {
                     const C_HANDLE_NAME: &'static str = stringify!(#name);
@@ -3068,6 +3123,11 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
 
+    let mut reexport_names: Vec<_> = default_helper_names.values().collect();
+    reexport_names.sort_by_key(|name| name.to_string());
+    reexport_names.insert(0, &helper_mod_name);
+    let (reexport_helpers, reexport_bundle) = reexport_helpers(&reexport_names, &cfg_attr);
+
     let output = quote! {
         #cfg_attr
         #(#default_helpers)*
@@ -3081,12 +3141,14 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         #cfg_attr
         #[doc(hidden)]
         pub mod #helper_mod_name {
+            #reexport_bundle
             #(#local_type_aliases)*
         }
 
         #[doc(hidden)]
         #[macro_export]
         macro_rules! #internal_macro_name {
+            #reexport_helpers
             // @on_library_export: generates the vtable struct, wrapper type, its trait impl,
             // Drop, FfiHandle, and FfiType impls. Called by library_definition!
             // with the type tag.
@@ -4950,7 +5012,10 @@ fn collect_reexport_paths(
             if prefix.is_empty() {
                 out.push(quote! { pub use #meta_alias; });
             } else {
-                out.push(quote! { pub use #(#prefix)::*::#meta_alias; });
+                out.push(quote! {
+                    pub use #(#prefix)::*::#meta_alias;
+                    #(#prefix)::*::#meta_alias!(@reexport_helpers (#(#prefix)::*::));
+                });
             }
         }
         syn::UseTree::Group(g) => {
