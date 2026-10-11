@@ -41,11 +41,11 @@ check-header: gen-header
     diff expected_header.h c/ffier_test.h
 
 # Check generated client matches checked-in version
-check-generated-client: gen-rust-client
+check-generated-client: build
     diff lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} 2>/dev/null | rustfmt)
 
 # Check generated foreign client matches checked-in version
-check-generated-foreign-client: gen-foreign-client
+check-generated-foreign-client: build-foreign
     diff foreign-lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{foreign_schema}} 2>/dev/null | rustfmt)
 
 # Compile and run the C tests
