@@ -5,6 +5,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/types.h>
+#endif
 
 typedef void* FtTestError;
 typedef void* FtError;

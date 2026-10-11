@@ -36,7 +36,9 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     out.push_str("#include <stddef.h>\n");
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stdbool.h>\n");
-    out.push_str("#include <string.h>\n\n");
+    out.push_str("#include <string.h>\n");
+    out.push_str("#ifndef _WIN32\n#include <sys/types.h>\n#endif\n");
+    out.push('\n');
 
     // Handle typedefs — error types first.
     for err in &lib.errors {
