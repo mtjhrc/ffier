@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 
 use ffier_test_foreign_lib_via_cdylib::{ForeignBorrowed, ForeignConfig, ForeignItem};
@@ -113,6 +114,7 @@ impl FfiType for &[u8] {
     }
 }
 
+#[cfg(unix)]
 impl FfiType for OwnedFd {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -126,6 +128,7 @@ impl FfiType for OwnedFd {
     }
 }
 
+#[cfg(unix)]
 impl FfiType for Option<OwnedFd> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -146,6 +149,7 @@ impl FfiType for Option<OwnedFd> {
     }
 }
 
+#[cfg(unix)]
 impl<'fd> FfiType for BorrowedFd<'fd> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
@@ -158,6 +162,7 @@ impl<'fd> FfiType for BorrowedFd<'fd> {
     }
 }
 
+#[cfg(unix)]
 impl<'fd> FfiType for Option<BorrowedFd<'fd>> {
     type CRepr = RawFd;
     const C_TYPE_NAME: &'static str = "int";
