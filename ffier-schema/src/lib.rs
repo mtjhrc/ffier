@@ -902,8 +902,12 @@ impl Library {
             .collect();
         self.type_registry.retain(|name, entry| {
             refs.contains(name.as_str())
-                || entry.bless == Some(Blessing::Object)
-                || entry.bless == Some(Blessing::ObjectArray)
+                // The bridge always exports result-name utilities, and the
+                // C header always emits these shared framework definitions.
+                || matches!(
+                    entry.bless,
+                    Some(Blessing::Object | Blessing::ObjectArray | Blessing::Result | Blessing::Str | Blessing::VtableHandle)
+                )
         });
     }
 
