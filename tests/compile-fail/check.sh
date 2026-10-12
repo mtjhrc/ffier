@@ -16,4 +16,15 @@ while IFS='|' read -r case_name expected; do
     fi
     printf 'compile-fail/%s ... ok\n' "$case_name"
 done <<'CASES'
+missing_repr|ffier value structs require #[repr(C)]
+private_field|ffier value-struct fields must be public
+cfg_field|field-level cfg on ffier value structs is not supported yet
+raw_field|ffier value-struct fields cannot use raw identifiers
+unsupported_field|unsupported type `String`
+unregistered_nested|unsupported type `Inner`
+value_slice|value-struct slices are not supported
+optional_param|Option<ValueStruct> is supported only in return positions
+optional_field|value-struct fields cannot be optional
+nested_option|nested Option<Option<ValueStruct>> is not supported
+packed|support only #[repr(C)]
 CASES
