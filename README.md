@@ -94,10 +94,87 @@ mylib_calculator_destroy(calc);
 See [`tests/`](tests/) for the full test suite covering error types, builders,
 lifetimes, `impl Trait` dispatch, file descriptors, and more.
 
+### Fixed-layout structs
+
+Annotate a public, non-generic struct with named public fields and `#[repr(C)]`,
+then register it with `value` instead of a type tag:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Packet {
+    pub kind: u16,
+    pub sequence: u16,
+    pub value: u32,
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("mylib", library_tag = 1, value Packet);
+```
+
+Fields may contain FFI scalars (`i8` through `i64`, `u8` through `u64`,
+`isize`, `usize`, `bool`, `f32`, `f64`), registered enums, bitflags, and other
+registered value structs. Field order and widths are preserved. Packed or
+custom-aligned layouts, empty structs, raw field identifiers, field-level
+conditional compilation, and optional fields are rejected. Gate the entire
+struct with `#[ffier::export(cfg = "...")]` when needed.
+
+Value structs cross the ABI inline or as pointers, without handles or
+heap allocation. `&T` becomes `const T*`, `&mut T` becomes `T*`,
+and optional references use a nullable pointer. Enum fields use their integer
+wire representation and are validated before constructing or borrowing Rust
+values. Borrowed pointers must be aligned, initialized, valid for the borrow,
+and exclusively accessible for a mutable borrow.
+
+Optional values are supported in returns, including `Result` success values:
+
+Here `T` denotes its generated C value type; `Status` and `Error` denote
+the library-prefixed result and error types, such as `MylibResult` and
+`MylibError`.
+
+| Rust return | C return | Additional C parameters |
+| --- | --- | --- |
+| `T` | `T` | none |
+| `Option<T>` | `bool` | `T*` |
+| `Result<T, E>` | `Status` | `T*, Error*` |
+| `Result<Option<T>, E>` | `Status` | `bool*, T*, Error*` |
+
+`Some` writes the value output; `None` leaves it untouched. A successful
+`Result<Option<T>, E>` writes the presence flag, and writes the value only
+when present. Errors leave both success outputs untouched. Callers must check
+the result status before reading the presence flag, then check the flag
+before reading the value. Generated Rust clients follow this order and use
+`MaybeUninit` for value storage. Supply valid output pointers for outputs
+that can be written. Library bridge calls permit a null `err_out`; a foreign
+callback returning an error must supply the owned generated error handle to
+the non-null error output provided by its Rust caller. These conventions also
+apply to trait vtable slots. Optional value parameters and value slices are
+currently rejected.
+
+When definitions live in another crate's submodule, re-export them at that
+crate's root with `#[ffier::reexport]`. Use the same annotation on the library
+crate's public re-export before registration:
+
+```rust
+// In the defining crate:
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use packets::Packet;
+
+// In the library crate:
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use packet_types::Packet;
+```
+
+This forwards metadata, type-resolution helpers, default trait methods, and
+derived error-trait metadata. The library registers the original types and
+traits without redeclaring them. The bridge can also be generated from a
+separate cdylib crate with `generate_bridge!(external = ...)`.
+
 ## Features
 
 - **`#[ffier::export]`** -- export struct methods, trait definitions, trait
-  impls, enums, and free functions as C functions
+  impls, enums, free functions, and fixed-layout value structs
 - **`#[derive(FfiError)]`** -- export error enums with codes, messages, and
   optional data payloads (including `#[ffier(opaque)]` for non-marshallable
   fields like `anyhow::Error`)
