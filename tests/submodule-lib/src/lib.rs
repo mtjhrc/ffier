@@ -19,7 +19,7 @@ pub use errors::SubError;
 #[ffier::reexport]
 pub use nested::Outer;
 #[ffier::reexport]
-pub use types::{Counter, Doubler};
+pub use types::{echo_scalars, Counter, Doubler};
 
 // Use crate:: qualified paths — the whole point of this test.
 // Previously this would have required manual `pub use types::_ffier_counter;` etc.
@@ -31,6 +31,8 @@ ffier::library_definition!(
     crate::types::Doubler = 3,
     value Inner,
     value Outer,
+    value crate::types::ScalarValues,
+    fn crate::types::echo_scalars,
     #[cfg(feature = "extra")]
     value crate::types::ConfigValue,
 );

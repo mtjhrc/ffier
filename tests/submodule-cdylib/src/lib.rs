@@ -12,6 +12,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn all_scalar_fields_cross_external_bridge() {
+        use ffier_test_submodule_lib::{types::ScalarValues, FfiType};
+
+        let values = ScalarValues {
+            i8_value: i8::MIN,
+            i16_value: i16::MIN,
+            i32_value: i32::MIN,
+            i64_value: i64::MIN,
+            u8_value: u8::MAX,
+            u16_value: u16::MAX,
+            u32_value: u32::MAX,
+            u64_value: u64::MAX,
+            offset: isize::MIN,
+            size: usize::MAX,
+            enabled: true,
+            f32_value: -0.0,
+            f64_value: f64::INFINITY,
+        };
+        let result = unsafe { ScalarValues::from_c(subtest_echo_scalars(values.into_c())) };
+        assert_eq!(result, values);
+        assert_eq!(result.f32_value.to_bits(), values.f32_value.to_bits());
+    }
+
+    #[test]
     fn counter_new_and_get() {
         unsafe {
             let c = subtest_counter_new();
