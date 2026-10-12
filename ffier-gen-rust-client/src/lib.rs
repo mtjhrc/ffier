@@ -940,14 +940,17 @@ fn emit_exported_type(
     // Struct definition
     emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     if has_lifetimes {
+        // The schema does not describe variance of the hidden Rust fields.
+        // Keep each lifetime invariant so shared refs cannot shorten it and
+        // write shorter-lived data through an interior-mutable source type.
         let phantom = if lifetimes.len() == 1 {
-            format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
+            format!("std::marker::PhantomData<*mut &'{} ()>", lifetimes[0])
         } else {
             format!(
                 "std::marker::PhantomData<({})>",
                 lifetimes
                     .iter()
-                    .map(|lt| format!("&'{lt} ()"))
+                    .map(|lt| format!("*mut &'{lt} ()"))
                     .collect::<Vec<_>>()
                     .join(", ")
             )

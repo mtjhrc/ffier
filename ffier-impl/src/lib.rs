@@ -2461,6 +2461,23 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    if let Some(FnArg::Receiver(receiver)) = sig.inputs.first()
+        && receiver.colon_token.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            receiver,
+            "ffier typed self parameters are unsupported; use self, &self, or &mut self",
+        ));
+    }
+    if let Some(FnArg::Receiver(receiver)) = sig.inputs.first()
+        && let Some((_, Some(lifetime))) = &receiver.reference
+        && lifetime.ident != "_"
+    {
+        return Err(syn::Error::new_spanned(
+            lifetime,
+            "ffier explicit receiver lifetimes are unsupported; use an elided receiver lifetime",
+        ));
+    }
     // --- Determine receiver ---
     let receiver = if raw_handle {
         Receiver::None
@@ -2566,6 +2583,28 @@ fn parse_method_sig(
                 Some(sty) => replace_self_type(&pt.ty, sty),
                 None => (*pt.ty).clone(),
             };
+
+            if (is_str_slice(&param_ty_bridge)
+                || is_handle_slice(&param_ty_bridge)
+                || primitive_slice_elem(&param_ty_bridge).is_some())
+                && let Type::Reference(reference) = &param_ty_rust
+                && let Some(lifetime) = reference
+                    .lifetime
+                    .iter()
+                    .chain(match &*reference.elem {
+                        Type::Slice(slice) => match &*slice.elem {
+                            Type::Reference(inner) => inner.lifetime.as_ref(),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .find(|lifetime| lifetime.ident != "_")
+            {
+                return Err(syn::Error::new_spanned(
+                    lifetime,
+                    "ffier explicit lifetimes on non-byte slice parameters are unsupported",
+                ));
+            }
 
             if is_str_slice(&param_ty_bridge) {
                 return Ok(ParamInfo {
@@ -2754,6 +2793,30 @@ fn parse_method_sig(
     };
 
     validate_callback_generics(&sig.generics, params.iter().any(ParamInfo::is_impl_trait))?;
+
+    // The schema records lifetime names, not constraints. Reject constraints
+    // rather than expose a safe client signature with weaker requirements.
+    let supported_raw_where = raw_handle
+        && sig.generics.where_clause.as_ref().is_some_and(|clause| {
+            clause.predicates.iter().all(|predicate| {
+                matches!(predicate, syn::WherePredicate::Type(predicate)
+                    if predicate.lifetimes.is_none()
+                        && matches!(&predicate.bounded_ty, Type::Path(ty) if ty.path.is_ident("Self"))
+                        && predicate.bounds.len() == 1
+                        && matches!(&predicate.bounds[0], syn::TypeParamBound::Trait(bound)
+                            if bound.lifetimes.is_none()
+                                && matches!(bound.modifier, syn::TraitBoundModifier::None)
+                                && bound.path.is_ident("Sized")))
+            })
+        });
+    if sig.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
+        || (sig.generics.where_clause.is_some() && !supported_raw_where)
+    {
+        return Err(syn::Error::new_spanned(
+            &sig.generics,
+            "ffier exported method lifetime bounds and where clauses are unsupported",
+        ));
+    }
 
     // --- Original rust_ret for client codegen ---
     let rust_ret = match &sig.output {

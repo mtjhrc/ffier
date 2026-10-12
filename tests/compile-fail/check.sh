@@ -61,3 +61,11 @@ done
 for case_name in callback_owned_factory_borrow callback_mutable_factory_shared callback_factory_wrong_trait; do
     check_failure "$case_name" 'mismatched types' via-cdylib
 done
+
+check_failure opaque_lifetime_variance 'lifetime may not live long enough' via-cdylib
+check_failure lifetime_contract 'ffier exported method lifetime bounds and where clauses are unsupported' thread_method_bounds
+check_failure lifetime_contract 'ffier explicit receiver lifetimes are unsupported' thread_receiver_lifetime
+check_failure lifetime_contract 'ffier typed self parameters are unsupported' thread_typed_receiver
+check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_slice_lifetime
+check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_inner_slice_lifetime
+check_failure lifetime_contract 'ffier exported method lifetime bounds and where clauses are unsupported' thread_raw_lifetime_bounds

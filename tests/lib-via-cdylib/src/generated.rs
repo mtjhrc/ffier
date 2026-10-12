@@ -1789,7 +1789,10 @@ unsafe extern "C" {
     ) -> <i32 as FfiType>::CRepr;
 }
 
-pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct View<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> View<'a> {
     #[doc(hidden)]
@@ -2751,7 +2754,10 @@ unsafe extern "C" {
     ) -> <i32 as FfiType>::CRepr;
 }
 
-pub struct RetainedFruit<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct RetainedFruit<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> RetainedFruit<'a> {
     #[doc(hidden)]

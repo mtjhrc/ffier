@@ -227,6 +227,12 @@ additional trait bounds, and method lifetime bounds/where clauses are rejected
 instead of discarded. Foreign traits and unsupported dynamic forwarding
 require concrete dispatch.
 
+Opaque client handles keep every lifetime parameter invariant because hidden
+Rust fields may require it. Signatures with named receiver lifetimes, typed
+receivers, constrained method lifetimes, or named reference lifetimes on
+non-byte slices are rejected when the schema cannot preserve their contracts.
+Byte-buffer references preserve their named lifetimes.
+
 C callers must enforce lifetimes themselves:
 
 - Pass stack `PREFIX_VTABLE_HANDLE` values only to borrowed parameters.

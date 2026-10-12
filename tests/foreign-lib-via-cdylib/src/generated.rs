@@ -459,7 +459,10 @@ unsafe extern "C" {
     ) -> <&'static str as FfiType>::CRepr;
 }
 
-pub struct ForeignBorrowed<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct ForeignBorrowed<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> ForeignBorrowed<'a> {
     #[doc(hidden)]
