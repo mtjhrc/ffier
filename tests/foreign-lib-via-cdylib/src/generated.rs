@@ -457,9 +457,16 @@ unsafe extern "C" {
     pub fn fl_foreign_borrowed_value(
         handle: *mut core::ffi::c_void,
     ) -> <&'static str as FfiType>::CRepr;
+    pub fn fl_foreign_borrowed_set_value(
+        handle: *mut core::ffi::c_void,
+        value: <&'static str as FfiType>::CRepr,
+    );
 }
 
-pub struct ForeignBorrowed<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct ForeignBorrowed<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> ForeignBorrowed<'a> {
     #[doc(hidden)]
@@ -511,6 +518,9 @@ impl<'a> ForeignBorrowed<'a> {
     pub fn value(&self) -> &str {
         let __raw = unsafe { fl_foreign_borrowed_value(self.0) };
         unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    pub fn set_value(&mut self, value: &'a str) {
+        unsafe { fl_foreign_borrowed_set_value(self.0, <&'a str as FfiType>::into_c(value)) }
     }
 }
 

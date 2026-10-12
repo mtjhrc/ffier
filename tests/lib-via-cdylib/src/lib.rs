@@ -14,6 +14,78 @@ unsafe extern "C" {
     pub fn ft_debug_fruit_dispatch_kind(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;
 }
 
+#[cfg(all(test, feature = "weak-tests"))]
+mod weak_receiver_lifetime_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn explicit_receiver_borrows_reach_local_and_foreign_handles() {
+        use api::Symbol;
+        api::require(
+            None,
+            &[
+                Symbol::FtWidgetWithName,
+                Symbol::FtWidgetSetCount,
+                Symbol::FtWidgetView,
+                Symbol::FtWidgetViewMut,
+                Symbol::FtWidgetReplaceView,
+                Symbol::FtWidgetReplaceForeignBorrowed,
+                Symbol::FtWidgetDestroy,
+                Symbol::FtViewSourceCount,
+                Symbol::FtViewDestroy,
+            ],
+        )
+        .unwrap();
+        let source = api::Widget::with_name("source");
+        let mut widget = api::Widget::with_name("weak receiver");
+        widget.set_count(76);
+        let mut view = source.view();
+        widget.replace_view(&mut view);
+        assert_eq!(view.source_count(), 76);
+        drop(view);
+        let view = widget.view_mut();
+        assert_eq!(view.source_count(), 76);
+        drop(view);
+        let mut value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new("");
+        widget.replace_foreign_borrowed(&mut value);
+        assert_eq!(value.value(), "weak receiver");
+    }
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod weak_receiver_default_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    fn init() {
+        use api::Symbol;
+        api::require(
+            None,
+            &[
+                Symbol::FtProbeReceiverDefaults,
+                Symbol::FtWidgetWithName,
+                Symbol::FtWidgetGetCount,
+                Symbol::FtWidgetDestroy,
+                Symbol::FtReceiverDefaultsChoose,
+                Symbol::FtReceiverDefaultsChooseMut,
+                Symbol::FtReceiverDefaultsChooseElided,
+                Symbol::FtReceiverDefaultsChooseMutElided,
+            ],
+        )
+        .unwrap();
+    }
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../receiver_defaults.rs"
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

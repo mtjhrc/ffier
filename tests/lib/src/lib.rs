@@ -70,6 +70,27 @@ impl Widget {
         }
     }
 
+    /// Return a view that retains the receiver borrow.
+    pub fn view<'a>(&'a self) -> View<'a> {
+        View::create(self)
+    }
+
+    /// Return a view while retaining exclusive access to the receiver.
+    pub fn view_mut<'a>(&'a mut self) -> View<'a> {
+        View::create(self)
+    }
+
+    /// Retain this receiver in an existing view.
+    pub fn replace_view<'a>(&'a self, view: &mut View<'a>) {
+        view.source = self;
+    }
+
+    /// Return bytes with an explicit receiver lifetime.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn name_bytes<'a>(&'a self) -> &'a [u8] {
+        self.name.as_bytes()
+    }
+
     /// Get the current count.
     pub fn get_count(&self) -> i32 {
         self.count
@@ -317,6 +338,15 @@ impl Widget {
         value: &ffier_test_foreign_lib_via_cdylib::ForeignBorrowed<'a>,
     ) -> i32 {
         value.value().len() as i32
+    }
+
+    /// Retain this receiver's name in a lifetime-bearing foreign handle.
+    pub fn replace_foreign_borrowed<'a>(
+        &'a self,
+        #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignBorrowed"))]
+        value: &mut ffier_test_foreign_lib_via_cdylib::ForeignBorrowed<'a>,
+    ) {
+        value.set_value(&self.name);
     }
 }
 
@@ -569,7 +599,68 @@ pub trait Processor {
     #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn process(&self, input: i32) -> i32;
     #[cfg_attr(feature = "ffi", ffier(index = 1))]
-    fn name(&self) -> &str;
+    #[allow(clippy::needless_lifetimes)]
+    fn name<'a>(&'a self) -> &'a str;
+}
+
+/// Defaults must retain the receiver borrow when extracted into helpers.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ReceiverDefaults {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn label(&self) -> &str;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn adjust(&mut self);
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn choose<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if fallback.is_empty() {
+            self.label()
+        } else {
+            fallback
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
+    fn choose_mut<'a>(&'a mut self, fallback: &'a str) -> &'a str {
+        self.adjust();
+        if fallback.is_empty() {
+            self.label()
+        } else {
+            fallback
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 4))]
+    fn choose_elided(&self, _context: &str) -> &str {
+        self.label()
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 5))]
+    fn choose_mut_elided(&mut self, _context: &str) -> &str {
+        self.adjust();
+        self.label()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl ReceiverDefaults for Widget {
+    fn label(&self) -> &str {
+        &self.name
+    }
+
+    fn adjust(&mut self) {
+        self.count += 1;
+    }
+}
+
+/// Exercise callback overrides and library default fallback with tied borrows.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_receiver_defaults(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] mut receiver: impl ReceiverDefaults,
+    fallback: &str,
+) -> usize {
+    receiver.choose(fallback).len() + receiver.choose_mut(fallback).len()
 }
 
 // ---------------------------------------------------------------------------
@@ -1610,6 +1701,18 @@ mod error_tests {
     }
 }
 
+#[cfg(test)]
+mod receiver_default_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../receiver_defaults.rs"
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -1622,6 +1725,9 @@ ffier::library_definition!("ft", library_tag = 1,
     View<'_> = 7, ViewFactory = 8,
     Pipeline = 9,
     trait Processor = 10,
+    trait ReceiverDefaults = 43,
+    ReceiverDefaults for Widget,
+    fn probe_receiver_defaults,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,
     Peach = 15, Plum = 16, Grape = 17, Lemon = 18,
     trait Fruit = 20,
@@ -1749,6 +1855,23 @@ mod tests {
     use std::ffi::CStr;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn explicit_receiver_views_retain_native_data() {
+        let source = Widget::new();
+        let mut widget = Widget::with_name("borrowed bytes");
+        widget.set_count(76);
+        let mut view = View::create(&source);
+        widget.replace_view(&mut view);
+        assert_eq!(view.source_count(), 76);
+        drop(view);
+        assert_eq!(widget.view().source_count(), 76);
+        assert_eq!(widget.name_bytes(), b"borrowed bytes");
+        let view = widget.view_mut();
+        assert_eq!(view.source_count(), 76);
+        drop(view);
+        widget.set_count(42);
+    }
 
     /// Helper: stream ft_error_message into a String via a stack-local PushStr handle.
     unsafe fn error_message_to_string(err: *mut core::ffi::c_void) -> String {

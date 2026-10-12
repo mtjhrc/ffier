@@ -227,6 +227,17 @@ additional trait bounds, and method lifetime bounds/where clauses are rejected
 instead of discarded. Foreign traits and unsupported dynamic forwarding
 require concrete dispatch.
 
+Opaque client handles keep every lifetime parameter invariant because hidden
+Rust fields may require it. Explicit receiver lifetimes are preserved in
+generated methods: `fn apply<'a>(&'a self, overlay: &mut Overlay<'a>)` keeps
+the receiver alive while the overlay retains its data. Shared and mutable
+receivers support ties to parameters and returns, including foreign handles.
+Trait default helpers preserve receiver lifetimes and mutability. Callback
+vtables reject `'static` receivers; use a named method lifetime or `no_vtable`.
+Typed receivers, constrained method lifetimes, and named reference lifetimes
+on non-byte slices are rejected when the schema cannot preserve their
+contracts. Byte-buffer references preserve their named lifetimes.
+
 C callers must enforce lifetimes themselves:
 
 - Pass stack `PREFIX_VTABLE_HANDLE` values only to borrowed parameters.

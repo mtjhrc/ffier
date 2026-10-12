@@ -6,6 +6,7 @@ edition = "2024"
 [workspace]
 
 [dependencies]
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
 ffier = { path = "../../ffier" }
 ffier-test-lib = { path = "../lib", optional = true }
 ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
@@ -13,3 +14,10 @@ ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
 [features]
 native = ["dep:ffier-test-lib"]
 via-cdylib = ["dep:ffier-test-lib-via-cdylib"]
+thread_method_bounds = []
+thread_typed_receiver = []
+thread_static_receiver = []
+thread_static_mut_receiver = []
+thread_slice_lifetime = []
+thread_inner_slice_lifetime = []
+thread_raw_lifetime_bounds = []

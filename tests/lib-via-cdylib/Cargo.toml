@@ -7,8 +7,14 @@ edition = "2024"
 default = ["fruit-label"]
 fruit-label = []
 optional-entry = []
+weak-tests = ["dep:libloading"]
 
 [dependencies]
 bitflags = "2"
 ffier = { path = "../../ffier" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
+
+libloading = { version = "0.8", optional = true }
+
+[build-dependencies]
+ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }

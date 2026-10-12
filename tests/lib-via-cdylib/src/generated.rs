@@ -858,6 +858,15 @@ unsafe extern "C" {
     pub fn ft_widget_with_name(
         name: <&'static str as FfiType>::CRepr,
     ) -> <Widget as FfiType>::CRepr;
+    pub fn ft_widget_view(handle: *mut core::ffi::c_void) -> <View<'static> as FfiType>::CRepr;
+    pub fn ft_widget_view_mut(handle: *mut core::ffi::c_void) -> <View<'static> as FfiType>::CRepr;
+    pub fn ft_widget_replace_view(
+        handle: *mut core::ffi::c_void,
+        view: <&'static mut View<'static> as FfiType>::CRepr,
+    );
+    pub fn ft_widget_name_bytes(
+        handle: *mut core::ffi::c_void,
+    ) -> <&'static [u8] as FfiType>::CRepr;
     pub fn ft_widget_get_count(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
     pub fn ft_widget_set_count(handle: *mut core::ffi::c_void, n: <i32 as FfiType>::CRepr);
     pub fn ft_widget_with_count(handle: *mut core::ffi::c_void, n: <i32 as FfiType>::CRepr);
@@ -990,6 +999,10 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         value: <&'static ForeignBorrowed<'static> as FfiType>::CRepr,
     ) -> <i32 as FfiType>::CRepr;
+    pub fn ft_widget_replace_foreign_borrowed(
+        handle: *mut core::ffi::c_void,
+        value: <&'static mut ForeignBorrowed<'static> as FfiType>::CRepr,
+    );
 }
 
 pub struct Widget(*mut core::ffi::c_void);
@@ -1046,6 +1059,29 @@ impl Widget {
     pub fn with_name(name: &str) -> Widget {
         let __raw = unsafe { ft_widget_with_name(<&str as FfiType>::into_c(name)) };
         unsafe { <Widget as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Return a view that retains the receiver borrow."]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn view<'a>(&'a self) -> View<'a> {
+        let __raw = unsafe { ft_widget_view(self.0) };
+        unsafe { <View<'a> as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Return a view while retaining exclusive access to the receiver."]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn view_mut<'a>(&'a mut self) -> View<'a> {
+        let __raw = unsafe { ft_widget_view_mut(self.0) };
+        unsafe { <View<'a> as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Retain this receiver in an existing view."]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn replace_view<'a>(&'a self, view: &mut View<'a>) {
+        unsafe { ft_widget_replace_view(self.0, FfiHandle::as_handle(view)) }
+    }
+    #[doc = " Return bytes with an explicit receiver lifetime."]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn name_bytes<'a>(&'a self) -> &'a [u8] {
+        let __raw = unsafe { ft_widget_name_bytes(self.0) };
+        unsafe { <&'a [u8] as FfiType>::from_c(__raw) }
     }
     #[doc = " Get the current count."]
     pub fn get_count(&self) -> i32 {
@@ -1370,6 +1406,11 @@ impl Widget {
     pub fn read_foreign_borrowed<'a>(&self, value: &ForeignBorrowed<'a>) -> i32 {
         let __raw = unsafe { ft_widget_read_foreign_borrowed(self.0, FfiHandle::as_handle(value)) };
         unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    #[doc = " Retain this receiver's name in a lifetime-bearing foreign handle."]
+    #[allow(clippy::needless_lifetimes)]
+    pub fn replace_foreign_borrowed<'a>(&'a self, value: &mut ForeignBorrowed<'a>) {
+        unsafe { ft_widget_replace_foreign_borrowed(self.0, FfiHandle::as_handle(value)) }
     }
 }
 
@@ -1789,7 +1830,10 @@ unsafe extern "C" {
     ) -> <i32 as FfiType>::CRepr;
 }
 
-pub struct View<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct View<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> View<'a> {
     #[doc(hidden)]
@@ -2751,7 +2795,10 @@ unsafe extern "C" {
     ) -> <i32 as FfiType>::CRepr;
 }
 
-pub struct RetainedFruit<'a>(*mut core::ffi::c_void, std::marker::PhantomData<&'a ()>);
+pub struct RetainedFruit<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
 
 impl<'a> RetainedFruit<'a> {
     #[doc(hidden)]
@@ -3210,7 +3257,8 @@ impl Drop for OptionalWidget {
 pub enum __FfierCallbackTagProcessor {}
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
-    fn name(&self) -> &str;
+    #[allow(clippy::needless_lifetimes)]
+    fn name<'a>(&'a self) -> &'a str;
     /// # Safety
     /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
@@ -3327,12 +3375,13 @@ fn __ffier_vtable_Processor<__T: Processor>() -> &'static ProcessorVtable {
             __trampoline::<__T>
         }),
         name: Some({
-            unsafe extern "C" fn __trampoline<__T: Processor>(
+            #[allow(clippy::extra_unused_lifetimes)]
+            unsafe extern "C" fn __trampoline<'a, __T: Processor + 'a>(
                 __ud: *mut core::ffi::c_void,
             ) -> <&'static str as FfiType>::CRepr {
                 let __val = unsafe { &*(__ud as *const __T) };
                 let __result = __val.name();
-                <&str as FfiType>::into_c(__result)
+                <&'a str as FfiType>::into_c(__result)
             }
             __trampoline::<__T>
         }),
@@ -3360,6 +3409,343 @@ impl VtableProcessor<'_> {
 impl Drop for VtableProcessor<'_> {
     fn drop(&mut self) {
         unsafe { ft_processor_destroy(self.0) }
+    }
+}
+
+#[doc(hidden)]
+pub enum __FfierCallbackTagReceiverDefaults {}
+pub trait ReceiverDefaults {
+    fn label(&self) -> &str;
+    fn adjust(&mut self);
+    #[allow(clippy::needless_lifetimes)]
+    fn choose<'a>(&'a self, fallback: &'a str) -> &'a str
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ReceiverDefaultsVtable = __ffier_vtable_ReceiverDefaults::<Self>();
+        let __metadata: u32 = ffier::default_dispatch_metadata(2);
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777259u32,
+            metadata: __metadata,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ReceiverDefaultsVtable as *const core::ffi::c_void,
+                user_data: self as *const Self as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>() as u16,
+            },
+        };
+        let __raw = unsafe {
+            ft_receiver_defaults_choose(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+                <&'a str as FfiType>::into_c(fallback),
+            )
+        };
+        unsafe { <&'a str as FfiType>::from_c(__raw) }
+    }
+    #[allow(clippy::needless_lifetimes)]
+    fn choose_mut<'a>(&'a mut self, fallback: &'a str) -> &'a str
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ReceiverDefaultsVtable = __ffier_vtable_ReceiverDefaults::<Self>();
+        let __metadata: u32 = ffier::default_dispatch_metadata(3);
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777259u32,
+            metadata: __metadata,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ReceiverDefaultsVtable as *const core::ffi::c_void,
+                user_data: self as *const Self as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>() as u16,
+            },
+        };
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_mut(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+                <&'a str as FfiType>::into_c(fallback),
+            )
+        };
+        unsafe { <&'a str as FfiType>::from_c(__raw) }
+    }
+    fn choose_elided(&self, _context: &str) -> &str
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ReceiverDefaultsVtable = __ffier_vtable_ReceiverDefaults::<Self>();
+        let __metadata: u32 = ffier::default_dispatch_metadata(4);
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777259u32,
+            metadata: __metadata,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ReceiverDefaultsVtable as *const core::ffi::c_void,
+                user_data: self as *const Self as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>() as u16,
+            },
+        };
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_elided(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+                <&str as FfiType>::into_c(_context),
+            )
+        };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    fn choose_mut_elided(&mut self, _context: &str) -> &str
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ReceiverDefaultsVtable = __ffier_vtable_ReceiverDefaults::<Self>();
+        let __metadata: u32 = ffier::default_dispatch_metadata(5);
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777259u32,
+            metadata: __metadata,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ReceiverDefaultsVtable as *const core::ffi::c_void,
+                user_data: self as *const Self as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>() as u16,
+            },
+        };
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_mut_elided(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+                <&str as FfiType>::into_c(_context),
+            )
+        };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
+    #[doc(hidden)]
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagReceiverDefaults>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
+                handle.field_or_none(core::mem::offset_of!(ReceiverDefaultsVtable, drop))
+            };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ReceiverDefaults::<Self>() as *const ReceiverDefaultsVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777259, value), destroy)
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagReceiverDefaults, ffier::BorrowedCallback<false>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ReceiverDefaults::<Self>() as *const ReceiverDefaultsVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777259, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagReceiverDefaults, ffier::BorrowedCallback<true>>
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ReceiverDefaults::<Self>() as *const ReceiverDefaultsVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ReceiverDefaultsVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777259, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+}
+
+#[repr(C)]
+pub struct ReceiverDefaultsVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub label:
+        Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr>,
+    pub adjust: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub choose: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as FfiType>::CRepr,
+        ) -> <&'static str as FfiType>::CRepr,
+    >,
+    pub choose_mut: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as FfiType>::CRepr,
+        ) -> <&'static str as FfiType>::CRepr,
+    >,
+    pub choose_elided: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as FfiType>::CRepr,
+        ) -> <&'static str as FfiType>::CRepr,
+    >,
+    pub choose_mut_elided: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            <&'static str as FfiType>::CRepr,
+        ) -> <&'static str as FfiType>::CRepr,
+    >,
+}
+
+#[allow(non_snake_case)]
+fn __ffier_vtable_ReceiverDefaults<__T: ReceiverDefaults>() -> &'static ReceiverDefaultsVtable {
+    &ReceiverDefaultsVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        label: Some({
+            unsafe extern "C" fn __trampoline<__T: ReceiverDefaults>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.label();
+                <&str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        adjust: Some({
+            unsafe extern "C" fn __trampoline<__T: ReceiverDefaults>(__ud: *mut core::ffi::c_void) {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                __val.adjust();
+            }
+            __trampoline::<__T>
+        }),
+        choose: Some({
+            #[allow(clippy::extra_unused_lifetimes)]
+            unsafe extern "C" fn __trampoline<'a, __T: ReceiverDefaults + 'a>(
+                __ud: *mut core::ffi::c_void,
+                fallback: <&'static str as FfiType>::CRepr,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.choose(unsafe { <&'a str as FfiType>::from_c(fallback) });
+                <&'a str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        choose_mut: Some({
+            #[allow(clippy::extra_unused_lifetimes)]
+            unsafe extern "C" fn __trampoline<'a, __T: ReceiverDefaults + 'a>(
+                __ud: *mut core::ffi::c_void,
+                fallback: <&'static str as FfiType>::CRepr,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.choose_mut(unsafe { <&'a str as FfiType>::from_c(fallback) });
+                <&'a str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        choose_elided: Some({
+            unsafe extern "C" fn __trampoline<__T: ReceiverDefaults>(
+                __ud: *mut core::ffi::c_void,
+                _context: <&'static str as FfiType>::CRepr,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.choose_elided(unsafe { <&str as FfiType>::from_c(_context) });
+                <&str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        choose_mut_elided: Some({
+            unsafe extern "C" fn __trampoline<__T: ReceiverDefaults>(
+                __ud: *mut core::ffi::c_void,
+                _context: <&'static str as FfiType>::CRepr,
+            ) -> <&'static str as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result =
+                    __val.choose_mut_elided(unsafe { <&str as FfiType>::from_c(_context) });
+                <&str as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_receiver_defaults_choose(
+        handle: *mut core::ffi::c_void,
+        fallback: <&'static str as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_receiver_defaults_choose_mut(
+        handle: *mut core::ffi::c_void,
+        fallback: <&'static str as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_receiver_defaults_choose_elided(
+        handle: *mut core::ffi::c_void,
+        _context: <&'static str as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_receiver_defaults_choose_mut_elided(
+        handle: *mut core::ffi::c_void,
+        _context: <&'static str as FfiType>::CRepr,
+    ) -> <&'static str as FfiType>::CRepr;
+}
+
+unsafe extern "C" {
+    pub fn ft_receiver_defaults_destroy(handle: *mut core::ffi::c_void);
+}
+
+pub struct VtableReceiverDefaults<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+
+impl VtableReceiverDefaults<'_> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableReceiverDefaults<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_receiver_defaults_destroy(self.0) }
     }
 }
 
@@ -4517,6 +4903,74 @@ impl VtableOptionalWorker<'_> {
 impl Drop for VtableOptionalWorker<'_> {
     fn drop(&mut self) {
         unsafe { ft_optional_worker_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_widget_label(handle: *mut core::ffi::c_void) -> <&'static str as FfiType>::CRepr;
+    pub fn ft_widget_adjust(handle: *mut core::ffi::c_void);
+}
+
+impl ReceiverDefaults for Widget {
+    fn label(&self) -> &str {
+        let __raw = unsafe { ft_widget_label(self.0) };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    fn adjust(&mut self) {
+        unsafe { ft_widget_adjust(self.0) }
+    }
+    #[allow(clippy::needless_lifetimes)]
+    fn choose<'a>(&'a self, fallback: &'a str) -> &'a str {
+        let __raw =
+            unsafe { ft_receiver_defaults_choose(self.0, <&'a str as FfiType>::into_c(fallback)) };
+        unsafe { <&'a str as FfiType>::from_c(__raw) }
+    }
+    #[allow(clippy::needless_lifetimes)]
+    fn choose_mut<'a>(&'a mut self, fallback: &'a str) -> &'a str {
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_mut(self.0, <&'a str as FfiType>::into_c(fallback))
+        };
+        unsafe { <&'a str as FfiType>::from_c(__raw) }
+    }
+    fn choose_elided(&self, _context: &str) -> &str {
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_elided(self.0, <&str as FfiType>::into_c(_context))
+        };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    fn choose_mut_elided(&mut self, _context: &str) -> &str {
+        let __raw = unsafe {
+            ft_receiver_defaults_choose_mut_elided(self.0, <&str as FfiType>::into_c(_context))
+        };
+        unsafe { <&str as FfiType>::from_c(__raw) }
+    }
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<'callback, __FfierCallbackTagReceiverDefaults>
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Widget as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagReceiverDefaults, ffier::BorrowedCallback<false>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<'_, __FfierCallbackTagReceiverDefaults, ffier::BorrowedCallback<true>>
+    {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
 }
 
@@ -5755,6 +6209,24 @@ impl OptionalWorker for OptionalWidget {
     {
         unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
     }
+}
+
+unsafe extern "C" {
+    pub fn ft_probe_receiver_defaults(
+        receiver: *mut core::ffi::c_void,
+        fallback: <&'static str as FfiType>::CRepr,
+    ) -> <usize as FfiType>::CRepr;
+}
+
+#[doc = " Exercise callback overrides and library default fallback with tied borrows."]
+pub fn probe_receiver_defaults(receiver: impl ReceiverDefaults, fallback: &str) -> usize {
+    let __raw = unsafe {
+        ft_probe_receiver_defaults(
+            receiver.__into_callback_handle().into_raw(),
+            <&str as FfiType>::into_c(fallback),
+        )
+    };
+    unsafe { <usize as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {

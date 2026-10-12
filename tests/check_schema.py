@@ -70,6 +70,20 @@ def check_schema(schema_path: Path) -> None:
     assert method_param("RetainedFruit", "borrowed_value")["ref_kind"] == "shared"
     assert method_param("RetainedFruit", "borrowed_value_dynamic")["ref_lifetime"] == "_"
     assert method_param("RetainedFruit", "borrowed_mut_value")["ref_kind"] == "mut"
+    widget = next(item for item in schema["exported_types"] if item["name"] == "Widget")
+    methods = {method["name"]: method for method in widget["methods"]}
+    for name in ["view", "view_mut", "replace_view", "name_bytes", "replace_foreign_borrowed"]:
+        assert methods[name]["receiver_lifetime"] == "a"
+        assert methods[name]["method_lifetimes"] == ["a"]
+    assert "receiver_lifetime" not in methods["new"]
+    assert "receiver_lifetime" not in methods["name"]
+    foreign = method_param("Widget", "replace_foreign_borrowed")
+    assert foreign["type_args"] == ["a"]
+    assert foreign["ref_kind"] == "mut"
+    processor = next(item for item in schema["traits"] if item["name"] == "Processor")
+    name = next(method for method in processor["methods"] if method["name"] == "name")
+    assert name["receiver_lifetime"] == "a"
+    assert name["ret"]["ref_lifetime"] == "a"
     retain = next(item for item in schema["free_functions"] if item["name"] == "retain_fruit")
     assert retain["lifetimes"] == ["a"]
     assert retain["ret"]["type_args"] == ["a"]

@@ -47,6 +47,10 @@ callback_borrowed_return|ffier borrowed callbacks with lifetime-bearing returns 
 CASES
 
 for mode in native via-cdylib; do
+    for case_name in receiver_parameter_escape receiver_return_escape receiver_foreign_escape receiver_default_escape; do
+        check_failure "$case_name" 'cannot move out of' "$mode"
+    done
+    check_failure receiver_mutable_escape 'cannot borrow' "$mode"
     for case_name in static_callback retained_callback_escape borrowed_callback_escape; do
         check_failure "$case_name" 'does not live long enough' "$mode"
     done
@@ -61,3 +65,12 @@ done
 for case_name in callback_owned_factory_borrow callback_mutable_factory_shared callback_factory_wrong_trait; do
     check_failure "$case_name" 'mismatched types' via-cdylib
 done
+
+check_failure opaque_lifetime_variance 'lifetime may not live long enough' via-cdylib
+check_failure lifetime_contract 'ffier exported method lifetime bounds and where clauses are unsupported' thread_method_bounds
+check_failure lifetime_contract 'ffier typed self parameters are unsupported' thread_typed_receiver
+check_failure lifetime_contract "ffier callback methods with 'static receivers are unsupported" thread_static_receiver
+check_failure lifetime_contract "ffier callback methods with 'static receivers are unsupported" thread_static_mut_receiver
+check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_slice_lifetime
+check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_inner_slice_lifetime
+check_failure lifetime_contract 'ffier exported method lifetime bounds and where clauses are unsupported' thread_raw_lifetime_bounds

@@ -3919,6 +3919,7 @@ fn convert_method(
         name: meta.name.to_string(),
         doc: meta.doc().to_vec(),
         receiver: convert_receiver(meta.receiver),
+        receiver_lifetime: meta.receiver_lifetime.as_ref().map(ToString::to_string),
         method_lifetimes: meta
             .method_lifetimes
             .iter()

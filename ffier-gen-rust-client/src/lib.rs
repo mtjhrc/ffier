@@ -940,14 +940,17 @@ fn emit_exported_type(
     // Struct definition
     emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     if has_lifetimes {
+        // The schema does not describe variance of the hidden Rust fields.
+        // Keep each lifetime invariant so shared refs cannot shorten it and
+        // write shorter-lived data through an interior-mutable source type.
         let phantom = if lifetimes.len() == 1 {
-            format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
+            format!("std::marker::PhantomData<*mut &'{} ()>", lifetimes[0])
         } else {
             format!(
                 "std::marker::PhantomData<({})>",
                 lifetimes
                     .iter()
-                    .map(|lt| format!("&'{lt} ()"))
+                    .map(|lt| format!("*mut &'{lt} ()"))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
@@ -1139,18 +1142,16 @@ fn emit_method_wrapper(
     let method_lt = lifetime_generics(&m.method_lifetimes);
 
     // Signature: receiver + params + return type
-    let receiver_str = match m.receiver {
-        Receiver::None => "",
-        Receiver::Ref => "&self, ",
-        Receiver::Mut => "&mut self, ",
-        Receiver::Value => "self, ",
-    };
+    let receiver_str = format_receiver(m);
 
     let param_sigs: Vec<String> = m.params.iter().map(format_param_sig).collect();
     let params_str = param_sigs.join(", ");
 
     let ret_type = build_wrapper_return_type(m, lib);
 
+    if m.receiver_lifetime.is_some() {
+        writeln!(out, "    #[allow(clippy::needless_lifetimes)]").unwrap();
+    }
     writeln!(
         out,
         "    pub fn {}{method_lt}({receiver_str}{params_str}){ret_type} {{",
@@ -1162,6 +1163,20 @@ fn emit_method_wrapper(
     emit_method_body(out, m, ffi_name, is_builder_type, has_lifetimes, lib);
 
     writeln!(out, "    }}").unwrap();
+}
+
+fn format_receiver(m: &Method) -> String {
+    let lifetime = m
+        .receiver_lifetime
+        .as_ref()
+        .map(|lt| format!("'{lt} "))
+        .unwrap_or_default();
+    match m.receiver {
+        Receiver::None => String::new(),
+        Receiver::Ref => format!("&{lifetime}self, "),
+        Receiver::Mut => format!("&{lifetime}mut self, "),
+        Receiver::Value => "self, ".to_string(),
+    }
 }
 
 fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
@@ -1682,12 +1697,7 @@ fn emit_callback_handle_methods(
 }
 
 fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
-    let receiver_str = match m.receiver {
-        Receiver::None => "",
-        Receiver::Ref => "&self, ",
-        Receiver::Mut => "&mut self, ",
-        Receiver::Value => "self, ",
-    };
+    let receiver_str = format_receiver(m);
 
     let params: Vec<String> = m.params.iter().map(format_param_sig).collect();
     let params_str = params.join(", ");
@@ -1698,7 +1708,15 @@ fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
     };
 
     let lifetimes = lifetime_generics(&m.method_lifetimes);
-    format!("fn {}{lifetimes}({receiver_str}{params_str}){ret}", m.name)
+    let attr = if m.receiver_lifetime.is_some() {
+        "#[allow(clippy::needless_lifetimes)]\n    "
+    } else {
+        ""
+    };
+    format!(
+        "{attr}fn {}{lifetimes}({receiver_str}{params_str}){ret}",
+        m.name
+    )
 }
 
 fn emit_default_dispatch_body(
@@ -1832,11 +1850,30 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
             push_extern_params(&m.params, &mut tramp_params, lib);
             let ret = push_return_and_out_params(&m.ret, &mut tramp_params, false, lib);
             let tramp_params_str = tramp_params.join(", ");
+            let method_lifetimes = m
+                .method_lifetimes
+                .iter()
+                .map(|lt| format!("'{lt}, "))
+                .collect::<String>();
+            // The erased receiver pointer is borrowed for the lifetime required
+            // by the Rust method, so its concrete value must outlive that borrow.
+            let receiver_bound = m
+                .receiver_lifetime
+                .as_ref()
+                .map(|lt| format!(" + '{lt}"))
+                .unwrap_or_default();
 
             writeln!(out, "            {}: Some({{", m.name).unwrap();
+            if !m.method_lifetimes.is_empty() {
+                writeln!(
+                    out,
+                    "                #[allow(clippy::extra_unused_lifetimes)]"
+                )
+                .unwrap();
+            }
             writeln!(
                 out,
-                "                unsafe extern \"C\" fn __trampoline<__T: {}>(",
+                "                unsafe extern \"C\" fn __trampoline<{method_lifetimes}__T: {}{receiver_bound}>(",
                 tr.name
             )
             .unwrap();

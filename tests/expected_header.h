@@ -41,6 +41,7 @@ typedef void* FtInputSource; /* FtEventQueue | FtVtableInputSource */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
+typedef void* FtReceiverDefaults; /* FtWidget | FtVtableReceiverDefaults */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 typedef void* FlForeignBorrowed;
@@ -213,6 +214,14 @@ typedef struct {
 FtWidget ft_widget_new();
 /** Create a widget with a given name. */
 FtWidget ft_widget_with_name(FtStr name);
+/** Return a view that retains the receiver borrow. */
+FtView ft_widget_view(FtWidget handle);
+/** Return a view while retaining exclusive access to the receiver. */
+FtView ft_widget_view_mut(FtWidget handle);
+/** Retain this receiver in an existing view. */
+void ft_widget_replace_view(FtWidget handle, FtView view);
+/** Return bytes with an explicit receiver lifetime. */
+FtBytes ft_widget_name_bytes(FtWidget handle);
 /** Get the current count. */
 int32_t ft_widget_get_count(FtWidget handle);
 /** Set the count. */
@@ -309,6 +318,8 @@ FtResult ft_widget_maybe_owned_fd(FtWidget handle, int32_t selector, int* result
 void ft_widget_apply_config(FtWidget handle, FlForeignConfig config);
 /** Read a lifetime-bearing foreign handle. */
 int32_t ft_widget_read_foreign_borrowed(FtWidget handle, FlForeignBorrowed value);
+/** Retain this receiver's name in a lifetime-bearing foreign handle. */
+void ft_widget_replace_foreign_borrowed(FtWidget handle, FlForeignBorrowed value);
 void ft_widget_destroy(FtWidget handle);
 
 /* Gadget ------------------------------------------------------------ */
@@ -515,6 +526,31 @@ int32_t ft_processor_process(FtProcessor handle, int32_t input);
 FtStr ft_processor_name(FtProcessor handle);
 void ft_processor_destroy(FtProcessor handle);
 
+/* FtReceiverDefaultsVtable ------------------------------------------ */
+
+#define FT_RECEIVER_DEFAULTS_TYPE_TAG 16777259
+
+typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
+    void (*drop)(void* self_data);
+    FtStr (*label)(void* self_data);
+    void (*adjust)(void* self_data);
+    FtStr (*choose)(void* self_data, FtStr fallback);
+    FtStr (*choose_mut)(void* self_data, FtStr fallback);
+    FtStr (*choose_elided)(void* self_data, FtStr _context);
+    FtStr (*choose_mut_elided)(void* self_data, FtStr _context);
+} FtReceiverDefaultsVtable;
+
+/* ReceiverDefaults (dispatch) --------------------------------------- */
+
+FtStr ft_receiver_defaults_label(FtReceiverDefaults handle);
+void ft_receiver_defaults_adjust(FtReceiverDefaults handle);
+FtStr ft_receiver_defaults_choose(FtReceiverDefaults handle, FtStr fallback);
+FtStr ft_receiver_defaults_choose_mut(FtReceiverDefaults handle, FtStr fallback);
+FtStr ft_receiver_defaults_choose_elided(FtReceiverDefaults handle, FtStr _context);
+FtStr ft_receiver_defaults_choose_mut_elided(FtReceiverDefaults handle, FtStr _context);
+void ft_receiver_defaults_destroy(FtReceiverDefaults handle);
+
 /* FtFruitVtable ----------------------------------------------------- */
 
 #define FT_FRUIT_TYPE_TAG 16777236
@@ -655,6 +691,8 @@ typedef struct {
 
 int32_t ft_optional_worker_amplify(FtOptionalWorker handle, int32_t input);
 void ft_optional_worker_destroy(FtOptionalWorker handle);
+FtStr ft_widget_label(FtWidget handle);
+void ft_widget_adjust(FtWidget handle);
 int32_t ft_apple_value(FtApple handle);
 FtResult ft_apple_try_count(FtApple handle, int32_t input, int32_t* result, FtError* err_out);
 int32_t ft_apple_count_tags(FtApple handle, const FtStr* tags, size_t tags_len);
@@ -705,6 +743,8 @@ int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
 
+/** Exercise callback overrides and library default fallback with tied borrows. */
+size_t ft_probe_receiver_defaults(FtReceiverDefaults receiver /* owned callback; valid until release */, FtStr fallback);
 /** Describe a log level as a string. */
 FtStr ft_log_level_name(uint32_t level);
 /** Check if a log level is enabled (everything above Off). */

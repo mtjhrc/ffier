@@ -161,6 +161,8 @@ struct ParamInfo {
 struct MethodInfo {
     name: syn::Ident,
     receiver: Receiver,
+    /// Explicit reference lifetime on the receiver; elided and `'_` use `None`.
+    receiver_lifetime: Option<syn::Ident>,
     params: Vec<ParamInfo>,
     ret: ReturnKind,
     // --- exported-impl-specific (defaults for trait methods) ---
@@ -2461,6 +2463,23 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    if let Some(FnArg::Receiver(receiver)) = sig.inputs.first()
+        && receiver.colon_token.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            receiver,
+            "ffier typed self parameters are unsupported; use self, &self, or &mut self",
+        ));
+    }
+    let receiver_lifetime = match sig.inputs.first() {
+        Some(FnArg::Receiver(receiver)) => receiver
+            .reference
+            .as_ref()
+            .and_then(|(_, lifetime)| lifetime.as_ref())
+            .filter(|lifetime| lifetime.ident != "_")
+            .map(|lifetime| lifetime.ident.clone()),
+        _ => None,
+    };
     // --- Determine receiver ---
     let receiver = if raw_handle {
         Receiver::None
@@ -2566,6 +2585,28 @@ fn parse_method_sig(
                 Some(sty) => replace_self_type(&pt.ty, sty),
                 None => (*pt.ty).clone(),
             };
+
+            if (is_str_slice(&param_ty_bridge)
+                || is_handle_slice(&param_ty_bridge)
+                || primitive_slice_elem(&param_ty_bridge).is_some())
+                && let Type::Reference(reference) = &param_ty_rust
+                && let Some(lifetime) = reference
+                    .lifetime
+                    .iter()
+                    .chain(match &*reference.elem {
+                        Type::Slice(slice) => match &*slice.elem {
+                            Type::Reference(inner) => inner.lifetime.as_ref(),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .find(|lifetime| lifetime.ident != "_")
+            {
+                return Err(syn::Error::new_spanned(
+                    lifetime,
+                    "ffier explicit lifetimes on non-byte slice parameters are unsupported",
+                ));
+            }
 
             if is_str_slice(&param_ty_bridge) {
                 return Ok(ParamInfo {
@@ -2755,6 +2796,30 @@ fn parse_method_sig(
 
     validate_callback_generics(&sig.generics, params.iter().any(ParamInfo::is_impl_trait))?;
 
+    // The schema records lifetime names, not constraints. Reject constraints
+    // rather than expose a safe client signature with weaker requirements.
+    let supported_raw_where = raw_handle
+        && sig.generics.where_clause.as_ref().is_some_and(|clause| {
+            clause.predicates.iter().all(|predicate| {
+                matches!(predicate, syn::WherePredicate::Type(predicate)
+                    if predicate.lifetimes.is_none()
+                        && matches!(&predicate.bounded_ty, Type::Path(ty) if ty.path.is_ident("Self"))
+                        && predicate.bounds.len() == 1
+                        && matches!(&predicate.bounds[0], syn::TypeParamBound::Trait(bound)
+                            if bound.lifetimes.is_none()
+                                && matches!(bound.modifier, syn::TraitBoundModifier::None)
+                                && bound.path.is_ident("Sized")))
+            })
+        });
+    if sig.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
+        || (sig.generics.where_clause.is_some() && !supported_raw_where)
+    {
+        return Err(syn::Error::new_spanned(
+            &sig.generics,
+            "ffier exported method lifetime bounds and where clauses are unsupported",
+        ));
+    }
+
     // --- Original rust_ret for client codegen ---
     let rust_ret = match &sig.output {
         ReturnType::Default => None,
@@ -2798,6 +2863,7 @@ fn parse_method_sig(
     Ok(Some(MethodInfo {
         name: sig.ident.clone(),
         receiver,
+        receiver_lifetime,
         params,
         ret,
         ffi_name: String::new(),
@@ -2843,6 +2909,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         Receiver::Mut => format_ident!("r#mut"),
         Receiver::Value => format_ident!("value"),
     };
+    let receiver_lifetime: Vec<_> = m.receiver_lifetime.iter().collect();
 
     let method_lt_idents: Vec<_> = m
         .method_lifetimes
@@ -2978,6 +3045,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             name = #mname,
             doc = [#(#doc_tokens),*],
             receiver = #receiver_ident,
+            receiver_lifetime = [#(#receiver_lifetime),*],
             #context_tokens
             method_lifetimes = [#(#method_lt_idents),*],
             params = [#(#param_tokens),*],
@@ -3021,7 +3089,12 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
-            Some(quote! { #sig { (**self).#name(#(#params),*) } })
+            let lifetime_lint = sig
+                .receiver()
+                .and_then(|receiver| receiver.reference.as_ref())
+                .and_then(|(_, lifetime)| lifetime.as_ref())
+                .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
+            Some(quote! { #lifetime_lint #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
@@ -3101,6 +3174,22 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         Ok(v) => v,
         Err(e) => return e.to_compile_error().into(),
     };
+    if !args.no_vtable
+        && let Some(method) = vtable_methods.iter().find(|method| {
+            method
+                .receiver_lifetime
+                .as_ref()
+                .is_some_and(|lifetime| lifetime == "static")
+        })
+    {
+        return syn::Error::new_spanned(
+            &method.name,
+            "ffier callback methods with 'static receivers are unsupported; \
+             use a named method lifetime or no_vtable",
+        )
+        .to_compile_error()
+        .into();
+    }
     let own_method_count = vtable_methods.len();
     let bless_tokens = match &args.bless {
         Some(s) => quote::quote! { #s },
@@ -3257,9 +3346,56 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         let mut body = default_block.clone();
         SelfReplacer.visit_block_mut(&mut body);
 
-        // Build the helper function signature: same as the trait method but
-        // with &self replaced by __self: &(impl Trait + ?Sized)
+        // Preserve the receiver's borrow contract in the extracted helper.
         let mut helper_sig = method.sig.clone();
+        let receiver = helper_sig
+            .receiver()
+            .cloned()
+            .expect("default method receiver");
+        let mutability = &receiver.mutability;
+        let helper_receiver = if let Some((_, lifetime)) = &receiver.reference {
+            let lifetime = match lifetime {
+                Some(lifetime) if lifetime.ident != "_" => lifetime.clone(),
+                _ => {
+                    let mut name = String::from("__ffier_receiver");
+                    while helper_sig
+                        .generics
+                        .lifetimes()
+                        .any(|lt| lt.lifetime.ident == name)
+                    {
+                        name.push('_');
+                    }
+                    let lifetime = syn::Lifetime::new(&format!("'{name}"), method_name.span());
+                    helper_sig
+                        .generics
+                        .params
+                        .insert(0, syn::parse_quote!(#lifetime));
+                    lifetime
+                }
+            };
+            // A method's elided output lifetimes refer to its receiver even
+            // when other parameters borrow. Free helpers need that tie named.
+            struct ReceiverElision<'a>(&'a syn::Lifetime);
+            impl VisitMut for ReceiverElision<'_> {
+                fn visit_type_reference_mut(&mut self, reference: &mut syn::TypeReference) {
+                    if reference.lifetime.is_none() {
+                        reference.lifetime = Some(self.0.clone());
+                    }
+                    syn::visit_mut::visit_type_reference_mut(self, reference);
+                }
+                fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+                    if lifetime.ident == "_" {
+                        *lifetime = self.0.clone();
+                    }
+                }
+            }
+            ReceiverElision(&lifetime).visit_return_type_mut(&mut helper_sig.output);
+            syn::parse_quote! {
+                __self: &#lifetime #mutability (impl #trait_name + ?Sized)
+            }
+        } else {
+            syn::parse_quote! { #mutability __self: impl #trait_name }
+        };
         // Remove the receiver and add __self parameter
         let helper_params: Vec<_> = helper_sig
             .inputs
@@ -3268,9 +3404,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             .cloned()
             .collect();
         helper_sig.inputs = syn::punctuated::Punctuated::new();
-        helper_sig.inputs.push(syn::parse_quote! {
-            __self: &(impl #trait_name + ?Sized)
-        });
+        helper_sig.inputs.push(helper_receiver);
         for p in helper_params {
             helper_sig.inputs.push(p);
         }
@@ -3278,6 +3412,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 
         default_helpers.push(quote! {
             #[doc(hidden)]
+            #[allow(clippy::needless_lifetimes)]
             pub #helper_sig #body
         });
 
@@ -5628,7 +5763,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             };
 
             // Full method body
+            let lifetime_lint = m
+                .receiver_lifetime
+                .as_ref()
+                .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
             quote! {
+                #lifetime_lint
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
                         self.value.field_or_none(
