@@ -3082,6 +3082,7 @@ fn build_schema(
         primitives_prefix: primitives_prefix.map(|s| s.to_string()),
         type_registry,
         exported_types,
+        value_structs: Vec::new(),
         errors,
         enum_constants,
         bitflags_constants,

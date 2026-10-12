@@ -19,6 +19,25 @@ pub trait FfiType {
     unsafe fn from_c(repr: Self::CRepr) -> Self;
 }
 
+/// Borrows layout-compatible Rust values from their C representations.
+///
+/// # Safety
+/// Implementors must have the same layout as their `CRepr`.
+pub unsafe trait BorrowFFiType: FfiType + Sized {
+    /// # Safety
+    /// `repr` must be non-null, aligned, initialized, and valid for the returned lifetime.
+    unsafe fn borrow_from_c<'a>(repr: *const Self::CRepr) -> &'a Self {
+        core::mem::forget(unsafe { Self::from_c(core::ptr::read(repr)) });
+        unsafe { &*repr.cast::<Self>() }
+    }
+    /// # Safety
+    /// `repr` must be non-null, aligned, initialized, exclusively borrowed, and valid for the returned lifetime.
+    unsafe fn borrow_mut_from_c<'a>(repr: *mut Self::CRepr) -> &'a mut Self {
+        core::mem::forget(unsafe { Self::from_c(core::ptr::read(repr)) });
+        unsafe { &mut *repr.cast::<Self>() }
+    }
+}
+
 macro_rules! impl_ffi_identity {
     ($($t:ty => $n:expr),* $(,)?) => { $(
         impl FfiType for $t {
