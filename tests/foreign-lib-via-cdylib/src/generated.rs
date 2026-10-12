@@ -130,6 +130,18 @@ impl FfiType for &[u8] {
     }
 }
 
+impl FfiType for &mut [u8] {
+    type CRepr = ffier::FfierMutBytes;
+    const C_TYPE_NAME: &'static str = "FfierBytesMut";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierMutBytes {
+        unsafe { ffier::FfierMutBytes::from_bytes(self) }
+    }
+    unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {
+        unsafe { repr.into_bytes() }
+    }
+}
+
 impl<T: FfiHandle + 'static> FfiType for &T {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME;

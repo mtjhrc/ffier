@@ -248,6 +248,15 @@ C callers must enforce lifetimes themselves:
 - `+ 'static` forbids expiring borrows. Other bounds require release before
   borrowed data expires.
 
+Mutable byte buffers (`&mut [u8]`) use a separate writable pointer-and-length
+representation (`FfierMutBytes`, `PrefixBytesMut` in generated C headers).
+They can be passed to exported methods and callbacks without copying. C callers
+must provide initialized writable bytes, with a non-null pointer for nonempty
+buffers and a length no greater than Rust's `isize::MAX`. Keep the storage valid
+for reads and writes and exclusively accessible for the call and for every
+active Rust borrow, including borrows returned or retained by the API. A
+zero-length buffer may use a null pointer.
+
 ## Thread safety
 
 Fixed-layout value structs always require `Send + Sync`. Their scalar, enum,

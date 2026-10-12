@@ -72,6 +72,16 @@ typedef struct {
     size_t len;
 } FtBytes;
 
+/* Writable initialized bytes; len must not exceed Rust's isize::MAX.
+ * For nonempty buffers, data must be non-null and valid for reads and writes.
+ * Keep the buffer valid and exclusively accessible for the call and for every
+ * active Rust borrow, including any borrow returned or retained by the API.
+ * A zero-length buffer may have a null data pointer. */
+typedef struct {
+    uint8_t* data;
+    size_t len;
+} FtBytesMut;
+
 #define FT_STR(s) ((FtStr){ .data = (s), .len = (s) ? strlen(s) : 0 })
 #if defined(__GNUC__)
 #define FT_BYTES(arr) ({ \
@@ -716,6 +726,7 @@ typedef struct {
     FtResult (*peek_ids_result)(void* self_data, const FtInputDeviceIds** result, FtError* err_out);
     FtResult (*edit_ids_result)(void* self_data, FtInputDeviceIds** result, FtError* err_out);
     FtResult (*next_event)(void* self_data, bool fail, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+    FtResult (*fill_config)(void* self_data, FtBytesMut output, FtBytesMut* result, FtError* err_out);
 } FtInputBackendVtable;
 
 /* InputBackend (dispatch) ------------------------------------------- */
@@ -724,6 +735,7 @@ FtResult ft_input_backend_current_ids(FtInputBackend handle, FtInputDeviceIds* r
 FtResult ft_input_backend_peek_ids_result(FtInputBackend handle, const FtInputDeviceIds** result, FtError* err_out);
 FtResult ft_input_backend_edit_ids_result(FtInputBackend handle, FtInputDeviceIds** result, FtError* err_out);
 FtResult ft_input_backend_next_event(FtInputBackend handle, bool fail, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+FtResult ft_input_backend_fill_config(FtInputBackend handle, FtBytesMut output, FtBytesMut* result, FtError* err_out);
 void ft_input_backend_destroy(FtInputBackend handle);
 
 /* FtPushStrVtable --------------------------------------------------- */
@@ -819,6 +831,7 @@ FtResult ft_event_queue_current_ids(FtEventQueue handle, FtInputDeviceIds* resul
 FtResult ft_event_queue_peek_ids_result(FtEventQueue handle, const FtInputDeviceIds** result, FtError* err_out);
 FtResult ft_event_queue_edit_ids_result(FtEventQueue handle, FtInputDeviceIds** result, FtError* err_out);
 FtResult ft_event_queue_next_event(FtEventQueue handle, bool fail, bool* result_is_some, FtInputEvent* result, FtError* err_out);
+FtResult ft_event_queue_fill_config(FtEventQueue handle, FtBytesMut output, FtBytesMut* result, FtError* err_out);
 uint32_t ft_test_error_code(FtTestError handle);
 void ft_test_error_message(FtTestError handle, FtPushStr writer /* mutable borrowed callback; call-scoped */);
 uint32_t ft_error_code(FtError handle);
