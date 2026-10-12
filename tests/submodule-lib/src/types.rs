@@ -43,3 +43,9 @@ impl Doubler {
         counter.value * 2
     }
 }
+
+#[ffier::export(cfg = "feature = \"extra\"")]
+#[repr(C)]
+pub struct ConfigValue {
+    pub base: u32,
+}
