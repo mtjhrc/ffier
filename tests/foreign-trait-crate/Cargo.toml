@@ -2,3 +2,7 @@
 name = "foreign-trait-crate"
 version = "0.1.0"
 edition = "2024"
+
+[dependencies]
+bitflags = "2"
+ffier = { path = "../../ffier" }

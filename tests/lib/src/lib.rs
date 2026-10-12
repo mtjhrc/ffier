@@ -1042,6 +1042,199 @@ impl<'a> Snapshot<'a> for Gadget {
 // Foreign trait — tests `extern trait` for traits from external crates
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use foreign_trait_crate::{
+    InputDeviceIds, InputEvent, InputEventFlags, InputEventKind, InputSource,
+};
+
+pub struct EventQueue {
+    event: Option<InputEvent>,
+    ids: InputDeviceIds,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl EventQueue {
+    pub fn new() -> Self {
+        let ids = InputDeviceIds {
+            bus: 3,
+            vendor: 0x1af4,
+            product: 0x0012,
+            version: 1,
+        };
+        Self {
+            event: Some(InputEvent {
+                device: ids,
+                kind: InputEventKind::Absolute,
+                code: 0,
+                flags: InputEventFlags::SYNTHETIC,
+                value: 42,
+                pressure: 1.5,
+                scale: 2.5,
+            }),
+            ids,
+        }
+    }
+
+    pub fn pop_event(&mut self) -> std::option::Option<InputEvent> {
+        self.event.take()
+    }
+
+    pub fn echo_event(&self, event: InputEvent) -> InputEvent {
+        event
+    }
+
+    pub fn set_ids(&mut self, ids: &InputDeviceIds) {
+        self.ids = *ids;
+    }
+
+    pub fn copy_ids_to(&self, ids: &mut InputDeviceIds) {
+        *ids = self.ids;
+    }
+
+    pub fn optional_ids_vendor(&self, ids: Option<&InputDeviceIds>) -> u16 {
+        ids.map_or(0, |value| value.vendor)
+    }
+
+    pub fn optional_ids_mut(&self, ids: Option<&mut InputDeviceIds>) {
+        if let Some(ids) = ids {
+            ids.vendor = self.ids.vendor;
+        }
+    }
+
+    pub fn event_or_error(&mut self) -> Result<InputEvent, TestError> {
+        self.pop_event().ok_or(TestError::InvalidInput())
+    }
+
+    pub fn try_peek_ids(&self, available: bool) -> Result<&InputDeviceIds, TestError> {
+        available
+            .then_some(&self.ids)
+            .ok_or(TestError::InvalidInput())
+    }
+
+    pub fn try_edit_ids(&mut self, available: bool) -> Result<&mut InputDeviceIds, TestError> {
+        available
+            .then_some(&mut self.ids)
+            .ok_or(TestError::InvalidInput())
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputSource for EventQueue {
+    fn poll_event(&mut self) -> Option<InputEvent> {
+        self.pop_event()
+    }
+
+    fn device_ids(&self) -> InputDeviceIds {
+        self.ids
+    }
+
+    fn peek_ids(&self) -> &InputDeviceIds {
+        &self.ids
+    }
+
+    fn edit_ids(&mut self) -> &mut InputDeviceIds {
+        &mut self.ids
+    }
+
+    fn maybe_peek_ids(&self, available: bool) -> Option<&InputDeviceIds> {
+        available.then_some(&self.ids)
+    }
+
+    fn submit_event(&mut self, event: InputEvent) {
+        self.event = Some(event);
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait InputBackend {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn current_ids(&self) -> Result<InputDeviceIds, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
+    fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError>;
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputBackend for EventQueue {
+    fn current_ids(&self) -> Result<InputDeviceIds, TestError> {
+        Ok(self.ids)
+    }
+
+    fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError> {
+        Ok(&self.ids)
+    }
+
+    fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError> {
+        Ok(&mut self.ids)
+    }
+
+    fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError> {
+        if fail {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(self.pop_event())
+        }
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_backend_values(mut backend: impl InputBackend) -> Result<u16, TestError> {
+    let original = backend.current_ids()?.vendor;
+    let borrowed = backend.peek_ids_result()?.vendor;
+    backend.edit_ids_result()?.vendor += 1;
+    assert_eq!(backend.next_event(false)?.unwrap().value, 42);
+    assert!(backend.next_event(false)?.is_none());
+    assert!(matches!(
+        backend.next_event(true),
+        Err(TestError::InvalidInput(..))
+    ));
+    Ok(original + borrowed + backend.peek_ids_result()?.vendor)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrow_input_ids(ids: &InputDeviceIds) -> &InputDeviceIds {
+    ids
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrow_input_ids_mut(ids: &mut InputDeviceIds) -> &mut InputDeviceIds {
+    ids
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_source(mut source: impl InputSource) -> i32 {
+    let before = i32::from(source.peek_ids().vendor);
+    source.edit_ids().vendor += 1;
+    let after = source
+        .maybe_peek_ids(true)
+        .map_or(0, |ids| i32::from(ids.vendor));
+    let missing = source.maybe_peek_ids(false).is_none();
+    source.submit_event(InputEvent {
+        device: source.device_ids(),
+        kind: InputEventKind::Key,
+        code: 12,
+        flags: InputEventFlags::REPEAT,
+        value: 7,
+        pressure: 0.5,
+        scale: 1.0,
+    });
+    let event = source.poll_event().map_or(0, |event| event.value);
+    let _ = source.poll_event();
+    before + after + event + i32::from(missing)
+}
+
 pub use foreign_trait_crate::Weighable;
 
 #[cfg(feature = "ffi")]
@@ -1384,6 +1577,11 @@ ffier::library_definition!("ft", library_tag = 1,
     trait Categorizable = 29,
     Categorizable for Apple,
     Categorizable for Orange,
+    EventQueue = 30,
+    trait InputSource = 31,
+    InputSource for EventQueue,
+    trait InputBackend = 32,
+    InputBackend for EventQueue,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
@@ -1396,11 +1594,15 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(feature = "optional-entry")]
     crate::optional_api::OptionalWorker for crate::optional_api::OptionalWidget,
     enum LogLevel,
+    enum InputEventKind,
     #[cfg(feature = "optional-entry")]
     enum crate::optional_api::OptionalMode,
     #[cfg(feature = "optional-entry")]
     bitflags crate::optional_api::OptionalFlags,
     bitflags Permissions,
+    bitflags InputEventFlags,
+    value InputDeviceIds,
+    value InputEvent,
     fn log_level_name,
     fn log_level_is_enabled,
     #[cfg(feature = "optional-entry")]
@@ -1414,6 +1616,10 @@ ffier::library_definition!("ft", library_tag = 1,
     fn sum_gadget_values,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
+    fn probe_input_backend_values,
+    fn borrow_input_ids,
+    fn borrow_input_ids_mut,
+    fn probe_input_source,
     fn apply_foreign_config,
     fn read_foreign_item_score,
     fn double_foreign_item_score,
@@ -2248,6 +2454,125 @@ mod tests {
             assert!(err.is_null());
             ft_widget_destroy(w);
         }
+    }
+
+    #[test]
+    fn optional_result_bridge_accepts_uninitialized_outputs() {
+        unsafe {
+            let queue = ft_event_queue_new();
+            for (call, fail) in [false, false, true].into_iter().enumerate() {
+                let mut present = core::mem::MaybeUninit::uninit();
+                let mut value = core::mem::MaybeUninit::uninit();
+                let mut error = ptr::null_mut();
+                let status = ft_input_backend_next_event(
+                    queue,
+                    fail,
+                    present.as_mut_ptr(),
+                    value.as_mut_ptr(),
+                    &mut error,
+                );
+                if fail {
+                    assert_eq!(
+                        status,
+                        ffier::ffier_result(
+                            TestError::TYPE_TAG,
+                            ffier::FfiError::code(&TestError::InvalidInput()),
+                        )
+                    );
+                    assert!(!error.is_null());
+                    ft_error_destroy(error);
+                } else {
+                    assert_eq!(status, 0);
+                    assert_eq!(present.assume_init(), call == 0);
+                    if call == 0 {
+                        assert_eq!(InputEvent::from_c(value.assume_init()).value, 42);
+                    }
+                }
+            }
+            ft_event_queue_destroy(queue);
+        }
+    }
+
+    #[test]
+    fn optional_result_vtable_reads_only_initialized_outputs() {
+        unsafe extern "C" fn next_event(
+            data: *mut core::ffi::c_void,
+            _fail: bool,
+            present: *mut bool,
+            value: *mut <InputEvent as FfiType>::CRepr,
+            error: *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult {
+            let calls = unsafe { &mut *data.cast::<u8>() };
+            *calls += 1;
+            unsafe {
+                match *calls {
+                    1 => {
+                        present.write(true);
+                        value.write(EventQueue::new().pop_event().unwrap().into_c());
+                        0
+                    }
+                    2 => {
+                        present.write(false);
+                        0
+                    }
+                    _ => {
+                        let e = TestError::InvalidInput();
+                        let status =
+                            ffier::ffier_result(TestError::TYPE_TAG, ffier::FfiError::code(&e));
+                        error.write(e.into_c());
+                        status
+                    }
+                }
+            }
+        }
+
+        let vtable = InputBackendVtable {
+            drop: None,
+            current_ids: None,
+            peek_ids_result: None,
+            edit_ids_result: None,
+            next_event: Some(next_event),
+        };
+        let mut calls = 0u8;
+        let handle = ffier::ffier_handle_new_with_metadata(
+            VtableInputBackend::TYPE_TAG,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: &vtable as *const _ as *const core::ffi::c_void,
+                user_data: &mut calls as *mut _ as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<InputBackendVtable>() as u16,
+            },
+        );
+        let mut backend = unsafe { VtableInputBackend::from_c(handle) };
+        assert_eq!(backend.next_event(false).unwrap().unwrap().value, 42);
+        assert!(backend.next_event(false).unwrap().is_none());
+        assert!(matches!(
+            backend.next_event(true),
+            Err(TestError::InvalidInput(..))
+        ));
+        drop(backend);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn borrow_ffi_type_rejects_invalid_value() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let mut repr = EventQueue::new().pop_event().unwrap().into_c();
+        repr.kind = 999;
+
+        assert!(
+            catch_unwind(|| unsafe {
+                let _ = <InputEvent as BorrowFFiType>::borrow_from_c(&repr);
+            })
+            .is_err()
+        );
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| unsafe {
+                let _ = <InputEvent as BorrowFFiType>::borrow_mut_from_c(&mut repr);
+            }))
+            .is_err()
+        );
     }
 
     // ================================================================
