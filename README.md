@@ -94,10 +94,71 @@ mylib_calculator_destroy(calc);
 See [`tests/`](tests/) for the full test suite covering error types, builders,
 lifetimes, `impl Trait` dispatch, file descriptors, and more.
 
+### Fixed-layout structs
+
+Annotate a public, non-generic struct with named public fields and `#[repr(C)]`,
+then register it with `value` instead of a type tag:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Packet {
+    pub kind: u16,
+    pub sequence: u16,
+    pub value: u32,
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("mylib", library_tag = 1, value Packet);
+```
+
+Fields support FFI scalars (`i8` through `i64`, `u8` through `u64`,
+`isize`, `usize`, `bool`, `f32`, `f64`), registered enums, bitflags, and
+registered value structs. Packed or custom-aligned layouts, empty structs,
+raw field identifiers, field-level conditional compilation, and optional
+fields are rejected. Gate the entire struct with
+`#[ffier::export(cfg = "...")]` when needed.
+
+Values cross the ABI inline; `&T` becomes `const T*`, `&mut T` becomes `T*`,
+and optional references use nullable pointers. Pointers must be aligned,
+initialized, valid for the borrow, and exclusive for mutable borrows.
+Enum fields use their integer wire representation and are validated before
+constructing or borrowing Rust values.
+
+Optional values are supported in returns. Here `T` is the generated C value
+type; `Status` and `Error` are the library-prefixed types, such as
+`MylibResult` and `MylibError`.
+
+| Rust return | C return | Additional C parameters |
+| --- | --- | --- |
+| `T` | `T` | none |
+| `Option<T>` | `bool` | `T*` |
+| `Result<T, E>` | `Status` | `T*, Error*` |
+| `Result<Option<T>, E>` | `Status` | `bool*, T*, Error*` |
+
+`Some` writes the value; `None` leaves it untouched. `Result<Option<T>, E>`
+writes the presence flag only on success and the value only for `Some`.
+Errors leave success outputs untouched. Check status, then presence, before
+reading the value. Supply valid pointers for outputs that can be written;
+generated Rust clients use `MaybeUninit` for value storage. Library calls
+permit null `err_out`; foreign callbacks returning errors must write the
+owned generated error handle to their caller's non-null `err_out`.
+These rules also apply to vtables. Optional value parameters and value slices
+are rejected.
+
+When reexporting values across modules or crates, annotate each public
+reexport:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use packets::Packet;
+```
+
 ## Features
 
 - **`#[ffier::export]`** -- export struct methods, trait definitions, trait
-  impls, enums, and free functions as C functions
+  impls, enums, free functions, and fixed-layout value structs
 - **`#[derive(FfiError)]`** -- export error enums with codes, messages, and
   optional data payloads (including `#[ffier(opaque)]` for non-marshallable
   fields like `anyhow::Error`)
