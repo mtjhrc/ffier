@@ -111,6 +111,6 @@ check-cfg-library-entry: build-foreign
 cargo-test: build
     cargo test --manifest-path {{root}}/Cargo.toml
 
-# Verify compile-fail fixture diagnostics.
+# Verify diagnostics for unsupported value-struct layouts and uses.
 compile-fail:
     bash compile-fail/check.sh
