@@ -207,6 +207,85 @@ pub struct MetaTypePair {
     pub foreign_c_name: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueTypeUse {
+    Value,
+    SharedRef,
+    MutRef,
+    OptionalValue,
+    OptionalSharedRef,
+    OptionalMutRef,
+}
+
+/// Classify a Rust type as a registered value-struct use.
+pub fn classify_value_type(
+    tokens: &TokenStream,
+    value_names: &std::collections::HashSet<String>,
+) -> Option<ValueTypeUse> {
+    let ty: syn::Type = syn::parse2(tokens.clone()).ok()?;
+    let (optional, inner) = match &ty {
+        syn::Type::Path(path) if path.path.segments.last()?.ident == "Option" => {
+            let syn::PathArguments::AngleBracketed(args) = &path.path.segments.last()?.arguments
+            else {
+                return None;
+            };
+            let syn::GenericArgument::Type(inner) = args.args.first()? else {
+                return None;
+            };
+            (true, inner)
+        }
+        other => (false, other),
+    };
+    let (reference, inner) = match inner {
+        syn::Type::Reference(reference) => (Some(reference.mutability.is_some()), &*reference.elem),
+        other => (None, other),
+    };
+    let syn::Type::Path(path) = inner else {
+        return None;
+    };
+    let name = path.path.segments.last()?.ident.to_string();
+    if !value_names.contains(&name) {
+        return None;
+    }
+    match (optional, reference) {
+        (false, None) => Some(ValueTypeUse::Value),
+        (false, Some(false)) => Some(ValueTypeUse::SharedRef),
+        (false, Some(true)) => Some(ValueTypeUse::MutRef),
+        (true, None) => Some(ValueTypeUse::OptionalValue),
+        (true, Some(false)) => Some(ValueTypeUse::OptionalSharedRef),
+        (true, Some(true)) => Some(ValueTypeUse::OptionalMutRef),
+    }
+}
+
+/// Strip one Option and/or reference wrapper from bridge type tokens.
+pub fn value_inner_type(tokens: &TokenStream) -> Option<TokenStream> {
+    let ty: syn::Type = syn::parse2(tokens.clone()).ok()?;
+    let inner = match ty {
+        syn::Type::Path(path)
+            if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Option") =>
+        {
+            let segment = path.path.segments.last()?;
+            let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+                return None;
+            };
+            let syn::GenericArgument::Type(inner) = args.args.first()? else {
+                return None;
+            };
+            inner.clone()
+        }
+        other => other,
+    };
+    let inner = match inner {
+        syn::Type::Reference(reference) => *reference.elem,
+        other => other,
+    };
+    Some(quote! { #inner })
+}
+
 pub struct MetaMethod {
     pub name: Ident,
     pub receiver: MetaReceiver,
