@@ -4,6 +4,7 @@
 //! Generator proc macros (`generate`) parse
 //! these tokens back into the types defined here, then produce code.
 
+use ffier_schema::ThreadSafety;
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::ext::IdentExt;
@@ -169,6 +170,7 @@ pub struct MetaExportable {
     /// Stable type tag assigned in `library_definition!`. Nonzero when set.
     pub type_tag: u32,
     pub lifetimes: Vec<Ident>,
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<MetaMethod>,
     /// `#[cfg(...)]` predicate for the entire type (e.g. `feature = "x"`).
     /// `None` = unconditional.
@@ -665,6 +667,16 @@ fn parse_bool(input: ParseStream) -> syn::Result<bool> {
     Ok(lit.value())
 }
 
+fn parse_thread_safety(input: ParseStream) -> syn::Result<ThreadSafety> {
+    expect_key(input, "send")?;
+    let send = parse_bool(input)?;
+    parse_comma(input)?;
+    expect_key(input, "sync")?;
+    let sync = parse_bool(input)?;
+    parse_comma(input)?;
+    Ok(ThreadSafety { send, sync })
+}
+
 fn parse_string(input: ParseStream) -> syn::Result<String> {
     let lit: LitStr = input.parse()?;
     Ok(lit.value())
@@ -752,6 +764,8 @@ impl syn::parse::Parse for MetaExportable {
         let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
 
+        let thread_safety = parse_thread_safety(input)?;
+
         expect_key(input, "methods")?;
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
@@ -764,6 +778,7 @@ impl syn::parse::Parse for MetaExportable {
             prefix,
             type_tag,
             lifetimes,
+            thread_safety,
             methods,
             cfg_predicate,
         })

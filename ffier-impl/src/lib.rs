@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use ffier_schema::ThreadSafety;
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -355,6 +356,9 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // 2. Fixed-layout value struct.
     if let Ok(struct_item) = syn::parse2::<ItemStruct>(item2.clone()) {
+        if let Err(error) = export_cfg.reject_thread_safety(&struct_item) {
+            return error.to_compile_error().into();
+        }
         return exportable_value_struct(struct_item, &export_cfg);
     }
 
@@ -362,17 +366,26 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
+        if let Err(error) = export_cfg.reject_thread_safety(&enum_item) {
+            return error.to_compile_error().into();
+        }
         return exportable_enum(enum_item, &export_cfg);
     }
 
     // 4. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
+        if let Err(error) = export_cfg.reject_thread_safety(&fn_item) {
+            return error.to_compile_error().into();
+        }
         return exportable_free_fn(fn_item, &export_cfg);
     }
 
     // 5. Impl block — trait impl or inherent impl
     let input = parse_macro_input!(item as ItemImpl);
     if input.trait_.is_some() {
+        if let Err(error) = export_cfg.reject_thread_safety(&input) {
+            return error.to_compile_error().into();
+        }
         return trait_impl_inner(input, &export_cfg);
     }
     exportable_struct_impl(input, &export_cfg)
@@ -386,30 +399,48 @@ struct ExportCfg {
     /// predicate as `#[cfg(PRED)]` on generated code that references the
     /// gated type, while metadata (for schema/bridge) is emitted unconditionally.
     cfg: Option<proc_macro2::TokenStream>,
+    thread_safety: ThreadSafety,
 }
 
 impl Parse for ExportCfg {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut cfg = None;
+        let mut thread_safety = ThreadSafety::default();
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "cfg" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
                 cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+            } else if key == "send" {
+                thread_safety.send = true;
+            } else if key == "sync" {
+                thread_safety.sync = true;
             } else {
                 return Err(syn::Error::new(
                     key.span(),
-                    format!("unknown #[ffier::export] argument `{key}`; expected `cfg`"),
+                    format!(
+                        "unknown #[ffier::export] argument `{key}`; expected `cfg`, `send`, or `sync`"
+                    ),
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
-        Ok(ExportCfg { cfg })
+        Ok(ExportCfg { cfg, thread_safety })
     }
 }
 
 impl ExportCfg {
+    fn reject_thread_safety(&self, item: &impl ToTokens) -> syn::Result<()> {
+        if !self.thread_safety.is_empty() {
+            return Err(syn::Error::new_spanned(
+                item,
+                "ffier send/sync annotations are supported only on inherent impls; value structs always require Send + Sync and traits use native supertraits",
+            ));
+        }
+        Ok(())
+    }
+
     /// Emit `#[cfg(PRED)]` token stream if cfg is set.
     fn cfg_attr(&self) -> proc_macro2::TokenStream {
         match &self.cfg {
@@ -452,6 +483,29 @@ fn reexport_helpers(
         }
     };
     (arm, bundle)
+}
+
+fn thread_safety_assertion(
+    ty: &impl ToTokens,
+    generics: &syn::Generics,
+    thread_safety: ThreadSafety,
+) -> proc_macro2::TokenStream {
+    if thread_safety.is_empty() {
+        return quote! {};
+    }
+    let bounds: Vec<syn::Path> = thread_safety
+        .rust_bounds()
+        .map(|bound| syn::parse_str(bound).expect("standard marker trait path"))
+        .collect();
+    let (impl_generics, _, where_clause) = generics.split_for_impl();
+    quote! {
+        const _: () = {
+            fn __ffier_check_thread_safety #impl_generics () #where_clause {
+                fn require<T: ?Sized + #(#bounds)+*>() {}
+                require::<#ty>();
+            }
+        };
+    }
 }
 
 fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenStream {
@@ -570,10 +624,21 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
     let cfg_pred_tokens = export_cfg.meta_tokens();
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+    let thread_safety_check = thread_safety_assertion(
+        name,
+        &input.generics,
+        ThreadSafety {
+            send: true,
+            sync: true,
+        },
+    );
 
     quote! {
         #cfg_attr
         #input
+
+        #cfg_attr
+        #thread_safety_check
 
         #cfg_attr
         #[doc(hidden)]
@@ -637,6 +702,16 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
 }
 
 fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
+    if !export_cfg.thread_safety.is_empty()
+        && (input.generics.type_params().next().is_some()
+            || input.generics.const_params().next().is_some()
+            || input.generics.where_clause.is_some()
+            || input.generics.lifetimes().any(|lt| !lt.bounds.is_empty()))
+    {
+        return syn::Error::new_spanned(&input.generics,
+            "ffier send/sync annotations require an inherent impl with only unconstrained lifetime parameters")
+            .to_compile_error().into();
+    }
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
@@ -663,6 +738,31 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         .segments
         .last()
         .expect("expected struct name");
+    if !export_cfg.thread_safety.is_empty() {
+        let parameters: Vec<_> = input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
+        let arguments = match &last_seg.arguments {
+            PathArguments::None => Vec::new(),
+            PathArguments::AngleBracketed(args) => args
+                .args
+                .iter()
+                .filter_map(|arg| {
+                    if let GenericArgument::Lifetime(lt) = arg {
+                        Some(lt)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        if arguments != parameters
+            || matches!(&last_seg.arguments, PathArguments::AngleBracketed(args) if args.args.len() != arguments.len())
+        {
+            return syn::Error::new_spanned(&input.self_ty,
+                "ffier send/sync annotations require exporting the type for all its lifetime parameters, without specialized type arguments")
+                .to_compile_error().into();
+        }
+    }
     let struct_ident = &last_seg.ident;
     let self_ty = &input.self_ty;
     let struct_name = struct_ident.to_string();
@@ -790,12 +890,18 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
 
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
+    let ThreadSafety { send, sync } = export_cfg.thread_safety;
+    let thread_safety_check =
+        thread_safety_assertion(self_ty, &input.generics, export_cfg.thread_safety);
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
 
     let output = quote! {
         #cfg_attr
         #impl_block
+
+        #cfg_attr
+        #thread_safety_check
 
         #(#warnings)*
 
@@ -835,6 +941,8 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
                     prefix = $prefix,
                     type_tag = $type_tag,
                     lifetimes = (#(#lifetime_idents),*),
+                    send = #send,
+                    sync = #sync,
                     methods = [#(#method_meta_tokens),*],
                     #cfg_pred_tokens
                 } $(, $($rest)*)? }
@@ -1051,6 +1159,7 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let repr_str = repr_ident.to_string();
     let export_cfg = ExportCfg {
         cfg: combine_cfg_predicates(&parsed.cfg_predicates),
+        thread_safety: ThreadSafety::default(),
     };
 
     let mut variants_meta = Vec::new();
@@ -2175,6 +2284,36 @@ mod callback_bound_tests {
             assert!(extract_impl_trait_info(&ty).is_err());
         }
     }
+
+    #[test]
+    fn export_thread_safety_arguments_are_independent() {
+        for (tokens, expected) in [
+            (
+                quote!(send),
+                ThreadSafety {
+                    send: true,
+                    sync: false,
+                },
+            ),
+            (
+                quote!(sync),
+                ThreadSafety {
+                    send: false,
+                    sync: true,
+                },
+            ),
+            (
+                quote!(sync, cfg = "feature = \"ffi\"", send),
+                ThreadSafety {
+                    send: true,
+                    sync: true,
+                },
+            ),
+        ] {
+            let args = syn::parse2::<ExportCfg>(tokens).unwrap();
+            assert_eq!(args.thread_safety, expected);
+        }
+    }
 }
 
 fn validate_callback_generics(generics: &syn::Generics, has_callbacks: bool) -> syn::Result<()> {
@@ -2366,7 +2505,10 @@ impl Parse for ImplementableArgs {
             foreign,
             bless,
             no_vtable,
-            export_cfg: ExportCfg { cfg },
+            export_cfg: ExportCfg {
+                cfg,
+                thread_safety: ThreadSafety::default(),
+            },
         })
     }
 }

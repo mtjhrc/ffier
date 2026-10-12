@@ -29,6 +29,8 @@ typedef void* FtGrape;
 typedef void* FtLemon;
 typedef void* FtMixer;
 typedef void* FtRetainedFruit;
+typedef void* FtSendCounter;
+typedef void* FtSyncCounter;
 typedef void* FtSprocket;
 typedef void* FtEventQueue;
 typedef void* FtOptionalWidget;
@@ -50,7 +52,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSprocket | FtEventQueue | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSendCounter | FtSyncCounter | FtSprocket | FtEventQueue | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -209,6 +211,11 @@ typedef struct {
 
 /* Widget ------------------------------------------------------------ */
 
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Sync: shared access may run concurrently across threads.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
 /** Create a new widget with default values. */
 FtWidget ft_widget_new();
 /** Create a widget with a given name. */
@@ -357,6 +364,11 @@ void ft_gizmo_builder_destroy(FtGizmoBuilder handle);
 
 /* View -------------------------------------------------------------- */
 
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Sync: shared access may run concurrently across threads.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
 /** Create a view that borrows a widget. */
 FtView ft_view_create(FtWidget source);
 /**
@@ -470,6 +482,26 @@ int32_t ft_retained_fruit_borrowed_value(FtRetainedFruit handle, FtFruit fruit /
 int32_t ft_retained_fruit_borrowed_value_dynamic(FtRetainedFruit handle, FtFruit fruit /* shared borrowed callback; call-scoped; value bounds: 'a; reference lifetime: '_ */);
 int32_t ft_retained_fruit_borrowed_mut_value(FtRetainedFruit handle, FtFruit fruit /* mutable borrowed callback; call-scoped; value bounds: 'a */);
 void ft_retained_fruit_destroy(FtRetainedFruit handle);
+
+/* SendCounter ------------------------------------------------------- */
+
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+FtSendCounter ft_send_counter_new(int32_t value);
+int32_t ft_send_counter_current_value(FtSendCounter handle);
+void ft_send_counter_destroy(FtSendCounter handle);
+
+/* SyncCounter ------------------------------------------------------- */
+
+/* Thread-safety contract:
+ * Sync: shared access may run concurrently across threads.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+FtSyncCounter ft_sync_counter_new(int32_t value);
+int32_t ft_sync_counter_current_value(FtSyncCounter handle);
+void ft_sync_counter_destroy(FtSyncCounter handle);
 
 /* Sprocket ---------------------------------------------------------- */
 

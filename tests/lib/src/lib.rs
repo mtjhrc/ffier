@@ -44,7 +44,7 @@ pub struct Widget {
     gadgets: Vec<Gadget>,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
 impl Widget {
     /// Create a new widget with default values.
     pub fn new() -> Self {
@@ -482,7 +482,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -977,6 +977,44 @@ pub fn retain_fruit<'a>(
     #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'a,
 ) -> RetainedFruit<'a> {
     RetainedFruit::new(fruit)
+}
+
+/// Send but not Sync: ownership may move, shared concurrent access may not.
+pub struct SendCounter(std::cell::Cell<i32>);
+
+#[cfg_attr(feature = "ffi", ffier::export(send))]
+impl SendCounter {
+    pub fn new(value: i32) -> Self {
+        Self(std::cell::Cell::new(value))
+    }
+
+    pub fn current_value(&self) -> i32 {
+        self.0.get()
+    }
+}
+
+/// Sync but not Send. Rc is a marker only, never a stored allocation.
+pub struct SyncCounter {
+    value: i32,
+    not_send: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+// SAFETY: only an immutable i32 is stored; shared access has no thread affinity.
+// The marker deliberately withholds Send to exercise independent guarantees.
+unsafe impl Sync for SyncCounter {}
+
+#[cfg_attr(feature = "ffi", ffier::export(sync))]
+impl SyncCounter {
+    pub fn new(value: i32) -> Self {
+        Self {
+            value,
+            not_send: std::marker::PhantomData,
+        }
+    }
+
+    pub fn current_value(&self) -> i32 {
+        self.value
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1635,6 +1673,8 @@ ffier::library_definition!("ft", library_tag = 1,
     Fruit for Lemon,
     Mixer = 21,
     RetainedFruit<'_> = 33,
+    SendCounter = 34,
+    SyncCounter = 35,
     Sprocket = 22,
     Attachment for Sprocket,
     Snapshot for View,

@@ -994,10 +994,15 @@ unsafe extern "C" {
 
 pub struct Widget(*mut core::ffi::c_void);
 
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl ::core::marker::Send for Widget {}
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl ::core::marker::Sync for Widget {}
 impl Widget {
     #[doc(hidden)]
     /// # Safety
     /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
     pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr)
     }
@@ -1794,10 +1799,15 @@ pub struct View<'a>(
     std::marker::PhantomData<*mut &'a ()>,
 );
 
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'a> ::core::marker::Send for View<'a> {}
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'a> ::core::marker::Sync for View<'a> {}
 impl<'a> View<'a> {
     #[doc(hidden)]
     /// # Safety
     /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
     pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
         Self(ptr, std::marker::PhantomData)
     }
@@ -2841,6 +2851,148 @@ impl<'a> RetainedFruit<'a> {
 impl<'a> Drop for RetainedFruit<'a> {
     fn drop(&mut self) {
         unsafe { ft_retained_fruit_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_send_counter_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_send_counter_new(value: <i32 as FfiType>::CRepr) -> <SendCounter as FfiType>::CRepr;
+    pub fn ft_send_counter_current_value(handle: *mut core::ffi::c_void)
+        -> <i32 as FfiType>::CRepr;
+}
+
+pub struct SendCounter(*mut core::ffi::c_void);
+
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl ::core::marker::Send for SendCounter {}
+impl SendCounter {
+    #[doc(hidden)]
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl FfiHandle for SendCounter {
+    const C_HANDLE_NAME: &'static str = "FtSendCounter";
+    const TYPE_TAG: u32 = 16777250u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
+}
+
+impl FfiType for SendCounter {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "SendCounter";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        unsafe { Self::__from_raw(repr) }
+    }
+}
+
+impl std::fmt::Debug for SendCounter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SendCounter").field(&self.0).finish()
+    }
+}
+
+impl SendCounter {
+    pub fn new(value: i32) -> SendCounter {
+        let __raw = unsafe { ft_send_counter_new(<i32 as FfiType>::into_c(value)) };
+        unsafe { <SendCounter as FfiType>::from_c(__raw) }
+    }
+    pub fn current_value(&self) -> i32 {
+        let __raw = unsafe { ft_send_counter_current_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl Drop for SendCounter {
+    fn drop(&mut self) {
+        unsafe { ft_send_counter_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_sync_counter_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_sync_counter_new(value: <i32 as FfiType>::CRepr) -> <SyncCounter as FfiType>::CRepr;
+    pub fn ft_sync_counter_current_value(handle: *mut core::ffi::c_void)
+        -> <i32 as FfiType>::CRepr;
+}
+
+pub struct SyncCounter(*mut core::ffi::c_void);
+
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl ::core::marker::Sync for SyncCounter {}
+impl SyncCounter {
+    #[doc(hidden)]
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl FfiHandle for SyncCounter {
+    const C_HANDLE_NAME: &'static str = "FtSyncCounter";
+    const TYPE_TAG: u32 = 16777251u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle)
+    }
+}
+
+impl FfiType for SyncCounter {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "SyncCounter";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        unsafe { Self::__from_raw(repr) }
+    }
+}
+
+impl std::fmt::Debug for SyncCounter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("SyncCounter").field(&self.0).finish()
+    }
+}
+
+impl SyncCounter {
+    pub fn new(value: i32) -> SyncCounter {
+        let __raw = unsafe { ft_sync_counter_new(<i32 as FfiType>::into_c(value)) };
+        unsafe { <SyncCounter as FfiType>::from_c(__raw) }
+    }
+    pub fn current_value(&self) -> i32 {
+        let __raw = unsafe { ft_sync_counter_current_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl Drop for SyncCounter {
+    fn drop(&mut self) {
+        unsafe { ft_sync_counter_destroy(self.0) }
     }
 }
 

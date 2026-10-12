@@ -13,7 +13,7 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method, Param,
-    ParamType, Receiver, Return, TraitImpl, TypeKind, ValueStruct,
+    ParamType, Receiver, Return, ThreadSafety, TraitImpl, TypeKind, ValueStruct,
 };
 
 /// Options controlling C header generation.
@@ -506,8 +506,23 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
+fn emit_thread_safety_contract(out: &mut String, thread_safety: ThreadSafety) {
+    if thread_safety.is_empty() {
+        return;
+    }
+    out.push_str("/* Thread-safety contract:\n");
+    if thread_safety.send {
+        out.push_str(" * Send: ownership and mutable borrows may transfer between threads; destruction may run there.\n");
+    }
+    if thread_safety.sync {
+        out.push_str(" * Sync: shared access may run concurrently across threads.\n");
+    }
+    out.push_str(" * Mutable access and destruction require exclusive access. Lifetime bounds still apply.\n */\n");
+}
+
 fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &Options) {
     emit_section_header(out, &ty.name);
+    emit_thread_safety_contract(out, ty.thread_safety);
 
     let c_name = lib.c_type_of(&ty.name);
 

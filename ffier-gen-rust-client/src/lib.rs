@@ -9,7 +9,7 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    ParamType, Receiver, Return, TraitImpl, TypeKind,
+    ParamType, Receiver, Return, ThreadSafety, TraitImpl, TypeKind,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -29,6 +29,29 @@ pub struct Options {
 fn emit_cfg_attr(out: &mut String, cfg: Option<&str>, weak: bool) {
     if !weak && let Some(pred) = cfg {
         writeln!(out, "#[cfg({pred})]").unwrap();
+    }
+}
+
+fn emit_thread_safety_impls(
+    out: &mut String,
+    name: &str,
+    generics: &str,
+    thread_safety: ThreadSafety,
+    cfg: Option<&str>,
+    weak: bool,
+) {
+    for bound in thread_safety.rust_bounds() {
+        emit_cfg_attr(out, cfg, weak);
+        writeln!(
+            out,
+            "// SAFETY: library verifies this guarantee; unsafe imports must preserve it."
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "unsafe impl{generics} {bound} for {name}{generics} {{}}"
+        )
+        .unwrap();
     }
 }
 
@@ -967,6 +990,14 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // __from_raw, __into_raw
+    emit_thread_safety_impls(
+        out,
+        &ty.name,
+        &lt_params,
+        ty.thread_safety,
+        ty.cfg.as_deref(),
+        weak,
+    );
     emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
@@ -976,6 +1007,13 @@ fn emit_exported_type(
         "    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self."
     )
     .unwrap();
+    if !ty.thread_safety.is_empty() {
+        writeln!(
+            out,
+            "    /// Underlying value must uphold this type's verified Send/Sync guarantees."
+        )
+        .unwrap();
+    }
     if has_lifetimes {
         writeln!(out, "    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
     } else {
