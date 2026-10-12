@@ -5,7 +5,13 @@ use core::marker::PhantomData;
 
 /// Lifetime-tracked callback handle. Dropping it destroys its handle exactly once.
 /// Raw ownership transfer is unsafe because raw pointers cannot track lifetimes.
-pub struct CallbackHandle<'a, TraitTag, Ownership = OwnedCallback> {
+pub struct CallbackHandle<
+    'a,
+    TraitTag,
+    Ownership = OwnedCallback,
+    const SEND: bool = false,
+    const SYNC: bool = false,
+> {
     raw: *mut c_void,
     destroy: unsafe fn(*mut c_void),
     lifetime: PhantomData<&'a mut ()>,
@@ -19,12 +25,21 @@ pub enum OwnedCallback {}
 /// Borrowed callback handles only lend their raw pointer during a call.
 pub enum BorrowedCallback<const MUTABLE: bool = false> {}
 
-impl<'a, TraitTag, Ownership> CallbackHandle<'a, TraitTag, Ownership> {
+impl<'a, TraitTag, Ownership, const SEND: bool, const SYNC: bool>
+    CallbackHandle<'a, TraitTag, Ownership, SEND, SYNC>
+{
     /// # Safety
     /// `raw` must match `TraitTag` and `Ownership` and remain valid for `'a`.
     /// `destroy` must release the owned handle or borrowed shell exactly once.
     /// Borrowed handles must not destroy callback data. Mutable borrowed handles
     /// require exclusive access to that data until the handle is dropped.
+    /// If `SEND` is true, owned callback data must permit ownership transfer
+    /// and destruction on another thread; mutable borrows must permit transfer.
+    /// If `SYNC` is true, callback data must permit concurrent shared access.
+    /// Shared borrowed handles require `SYNC`, not `SEND`, for thread transfer.
+    /// Vtable storage and callback functions must uphold the same guarantees.
+    /// For shared borrowed handles with `SYNC`, `destroy` must release only
+    /// the shell and must be callable on any thread, even when `SEND` is false.
     pub unsafe fn from_raw(raw: *mut c_void, destroy: unsafe fn(*mut c_void)) -> Self {
         Self {
             raw,
@@ -40,7 +55,34 @@ impl<'a, TraitTag, Ownership> CallbackHandle<'a, TraitTag, Ownership> {
     }
 }
 
-impl<'a, TraitTag> CallbackHandle<'a, TraitTag> {
+// SAFETY: from_raw requires these exact guarantees from callback data and its
+// vtable. Safe generated factories verify them through trait supertraits.
+unsafe impl<TraitTag, const SYNC: bool> Send
+    for CallbackHandle<'_, TraitTag, OwnedCallback, true, SYNC>
+{
+}
+unsafe impl<TraitTag, const SEND: bool> Sync
+    for CallbackHandle<'_, TraitTag, OwnedCallback, SEND, true>
+{
+}
+// Shared borrows can transfer only when the callback value is Sync.
+unsafe impl<TraitTag, const SEND: bool> Send
+    for CallbackHandle<'_, TraitTag, BorrowedCallback<false>, SEND, true>
+{
+}
+// Mutable borrows can transfer when the callback value is Send.
+unsafe impl<TraitTag, const SYNC: bool> Send
+    for CallbackHandle<'_, TraitTag, BorrowedCallback<true>, true, SYNC>
+{
+}
+unsafe impl<TraitTag, const MUTABLE: bool, const SEND: bool> Sync
+    for CallbackHandle<'_, TraitTag, BorrowedCallback<MUTABLE>, SEND, true>
+{
+}
+
+impl<'a, TraitTag, const SEND: bool, const SYNC: bool>
+    CallbackHandle<'a, TraitTag, OwnedCallback, SEND, SYNC>
+{
     /// Transfer ownership to the callee.
     ///
     /// # Safety
@@ -52,7 +94,9 @@ impl<'a, TraitTag> CallbackHandle<'a, TraitTag> {
     }
 }
 
-impl<TraitTag, Ownership> Drop for CallbackHandle<'_, TraitTag, Ownership> {
+impl<TraitTag, Ownership, const SEND: bool, const SYNC: bool> Drop
+    for CallbackHandle<'_, TraitTag, Ownership, SEND, SYNC>
+{
     fn drop(&mut self) {
         unsafe { (self.destroy)(self.raw) };
     }
