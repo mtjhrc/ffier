@@ -5,10 +5,19 @@
 //! to verify that types don't need to be at the crate root.
 
 pub mod errors;
+pub mod nested;
 pub mod types;
+
+#[ffier::export]
+#[repr(C)]
+pub struct Inner {
+    pub value: u32,
+}
 
 // Re-export types at the crate root (as a normal library would)
 pub use errors::SubError;
+#[ffier::reexport]
+pub use nested::Outer;
 #[ffier::reexport]
 pub use types::{Counter, Doubler};
 
@@ -20,4 +29,8 @@ ffier::library_definition!(
     crate::errors::SubError = 1,
     crate::types::Counter = 2,
     crate::types::Doubler = 3,
+    value Inner,
+    value Outer,
+    #[cfg(feature = "extra")]
+    value crate::types::ConfigValue,
 );

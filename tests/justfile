@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer compat cargo-test
+default: no-codegen check-cfg-library-entry check-cfg-value check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -100,6 +100,11 @@ compat: build
 # all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
 no-codegen:
     cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
+
+# Compile a qualified value struct with its whole-type cfg on and off.
+check-cfg-value:
+    cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-submodule-cdylib --no-default-features
+    cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-submodule-cdylib --no-default-features --features extra
 
 # Verify cfg-gated entries are PRESENT in the schema with a "cfg" field
 # even when the feature is off but FFI codegen is still enabled.
