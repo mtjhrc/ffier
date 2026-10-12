@@ -43,3 +43,33 @@ impl Doubler {
         counter.value * 2
     }
 }
+
+#[ffier::export(cfg = "feature = \"extra\"")]
+#[repr(C)]
+pub struct ConfigValue {
+    pub base: u32,
+}
+
+#[ffier::export]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScalarValues {
+    pub i8_value: i8,
+    pub i16_value: i16,
+    pub i32_value: i32,
+    pub i64_value: i64,
+    pub u8_value: u8,
+    pub u16_value: u16,
+    pub u32_value: u32,
+    pub u64_value: u64,
+    pub offset: isize,
+    pub size: usize,
+    pub enabled: bool,
+    pub f32_value: f32,
+    pub f64_value: f64,
+}
+
+#[ffier::export]
+pub fn echo_scalars(values: ScalarValues) -> ScalarValues {
+    values
+}
