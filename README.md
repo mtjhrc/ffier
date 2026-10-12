@@ -246,7 +246,7 @@ C callers must enforce lifetimes themselves:
   releases `user_data`; it must not free the consumed handle shell again.
 - Borrowed callbacks must not be retained, destroyed, or used after call return.
 - `+ 'static` forbids expiring borrows. Other bounds require release before
-  borrowed data expires. These rules add no Send/Sync support.
+  borrowed data expires.
 
 ## Thread safety
 
@@ -268,6 +268,42 @@ generated client handles implement only the declared auto traits. Unannotated
 handles remain non-`Send`, non-`Sync`, even when their hidden Rust value happens
 to satisfy those bounds. Specialized or constrained impls cannot declare
 type-wide guarantees.
+
+Exported traits use native supertraits, not export arguments:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait Backend: Send + Sync {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn poll(&mut self) -> i32;
+}
+```
+
+These bounds apply to every implementation, including generated client
+callbacks. Every trait used in an exported `impl Trait` callback signature must
+have an exported definition registered in `library_definition!`, so its native
+bounds and lifetimes are available to the generators. Use `no_vtable` for traits
+that support only concrete dispatch. Trait-impl-only registration remains usable
+for method bindings, but does not define a callback contract.
+
+Concrete client types implementing the trait must also declare the required
+`send`/`sync` guarantees on their inherent export. Stronger use-site
+trait bounds (`impl LocalBackend + Send`) remain unsupported: put requirements
+on the exported trait. Redundant marker bounds remain in the schema; generated
+signatures rely on the trait's equivalent supertraits. Combining thread-safety
+markers with other supertraits or where clauses is currently rejected.
+
+`Send` permits ownership transfer and destruction on another thread. `Sync`
+permits concurrent shared access, never simultaneous mutable access. Shared
+borrowed callbacks can move between threads only for `Sync` traits. Dynamic
+shared forwarding for `Send`-only traits requires `Sync` or concrete dispatch.
+Lifetime bounds remain separate; `Send` never implies `'static`.
+
+C callbacks must uphold the trait's guarantees for `user_data`, vtable storage,
+callback functions, and destruction. Vtable storage remains valid and immutable
+throughout callback use. Generic raw handles and `VtableHandle` do not gain
+`Send`/`Sync`; unsafe callback construction must uphold the exact declared
+contract.
 
 ## How it works
 

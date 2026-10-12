@@ -306,6 +306,18 @@ fn emit_shared_types(
     out.push_str(
         " * bounds require release before borrowed data expires. C must enforce these bounds.\n",
     );
+    out.push_str(
+        " * Thread guarantees depend on the exported trait, not this raw handle layout.\n",
+    );
+    out.push_str(
+        " * Send permits owned/mutable callback transfer and destruction on another thread.\n",
+    );
+    out.push_str(" * Sync permits concurrent shared callbacks. Mutable access always requires exclusivity.\n");
+    out.push_str(" * Vtable storage, user_data, callback functions, and drop must uphold those guarantees.\n");
+    out.push_str(" * Vtable storage remains valid and immutable throughout callback use.\n");
+    out.push_str(
+        " * Shared borrowed callbacks may transfer with Sync; Send alone is insufficient.\n",
+    );
     out.push_str(" */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    uint32_t type_tag;\n");
@@ -455,6 +467,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     let vtable_name = &tr.vtable_struct_c_name;
 
     emit_section_header(out, vtable_name);
+    emit_thread_safety_contract(out, tr.thread_safety);
 
     // Type tag constant for constructing vtable handles from C.
     if let Some(entry) = lib.type_entry(&tr.name)
@@ -506,20 +519,6 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_thread_safety_contract(out: &mut String, thread_safety: ThreadSafety) {
-    if thread_safety.is_empty() {
-        return;
-    }
-    out.push_str("/* Thread-safety contract:\n");
-    if thread_safety.send {
-        out.push_str(" * Send: ownership and mutable borrows may transfer between threads; destruction may run there.\n");
-    }
-    if thread_safety.sync {
-        out.push_str(" * Sync: shared access may run concurrently across threads.\n");
-    }
-    out.push_str(" * Mutable access and destruction require exclusive access. Lifetime bounds still apply.\n */\n");
-}
-
 fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &Options) {
     emit_section_header(out, &ty.name);
     emit_thread_safety_contract(out, ty.thread_safety);
@@ -540,6 +539,20 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
         &format!("{c_name} handle"),
         opts,
     );
+}
+
+fn emit_thread_safety_contract(out: &mut String, thread_safety: ThreadSafety) {
+    if thread_safety.is_empty() {
+        return;
+    }
+    out.push_str("/* Thread-safety contract:\n");
+    if thread_safety.send {
+        out.push_str(" * Send: ownership and mutable borrows may transfer between threads; destruction may run there.\n");
+    }
+    if thread_safety.sync {
+        out.push_str(" * Sync: shared access may run concurrently across threads.\n");
+    }
+    out.push_str(" * Mutable access and destruction require exclusive access. Lifetime bounds still apply.\n */\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -654,6 +667,7 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
                 lifetime_bounds,
                 ref_kind,
                 ref_lifetime,
+                ..
             } => {
                 let c_type = lib.c_type_of(trait_name);
                 let ownership = match ref_kind {
@@ -662,6 +676,14 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
                     ffier_schema::RefKind::Mut => "mutable borrowed callback; call-scoped",
                 };
                 let mut requirements = vec![ownership.to_string()];
+                if let Some(tr) = lib.traits.iter().find(|tr| &tr.name == trait_name) {
+                    if tr.thread_safety.send {
+                        requirements.push("Send".to_string());
+                    }
+                    if tr.thread_safety.sync {
+                        requirements.push("Sync".to_string());
+                    }
+                }
                 for (label, lifetimes) in [
                     ("trait arguments", type_args),
                     ("value bounds", lifetime_bounds),

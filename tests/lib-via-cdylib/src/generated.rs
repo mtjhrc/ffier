@@ -2997,6 +2997,90 @@ impl Drop for SyncCounter {
 }
 
 unsafe extern "C" {
+    pub fn ft_backend_worker_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_backend_worker_new(
+        backend: *mut core::ffi::c_void,
+    ) -> <BackendWorker<'static> as FfiType>::CRepr;
+    pub fn ft_backend_worker_step(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+    pub fn ft_backend_worker_run(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub struct BackendWorker<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
+
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'a> ::core::marker::Send for BackendWorker<'a> {}
+impl<'a> BackendWorker<'a> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr, std::marker::PhantomData)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl<'a> FfiHandle for BackendWorker<'a> {
+    const C_HANDLE_NAME: &'static str = "FtBackendWorker";
+    const TYPE_TAG: u32 = 16777252u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle, std::marker::PhantomData)
+    }
+}
+
+impl<'a> FfiType for BackendWorker<'a> {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "BackendWorker";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        unsafe { Self::__from_raw(repr) }
+    }
+}
+
+impl<'a> std::fmt::Debug for BackendWorker<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("BackendWorker").field(&self.0).finish()
+    }
+}
+
+impl<'a> BackendWorker<'a> {
+    pub fn new(backend: impl SendBackend + 'a) -> BackendWorker<'a> {
+        let __raw = unsafe { ft_backend_worker_new(backend.__into_callback_handle().into_raw()) };
+        unsafe { <BackendWorker<'a> as FfiType>::from_c(__raw) }
+    }
+    pub fn step(&mut self) -> i32 {
+        let __raw = unsafe { ft_backend_worker_step(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    pub fn run(self) -> i32 {
+        let __handle = {
+            let this = std::mem::ManuallyDrop::new(self);
+            this.0
+        };
+        let __raw = unsafe { ft_backend_worker_run(__handle) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+}
+
+impl<'a> Drop for BackendWorker<'a> {
+    fn drop(&mut self) {
+        unsafe { ft_backend_worker_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
     pub fn ft_sprocket_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_sprocket_new(name: <&'static str as FfiType>::CRepr) -> <Sprocket as FfiType>::CRepr;
     pub fn ft_sprocket_try_spin(
@@ -3752,6 +3836,520 @@ impl VtableFruit<'_> {
 impl Drop for VtableFruit<'_> {
     fn drop(&mut self) {
         unsafe { ft_fruit_destroy(self.0) }
+    }
+}
+
+#[doc(hidden)]
+pub enum __FfierCallbackTagSendBackend {}
+pub trait SendBackend: ::core::marker::Send {
+    fn step(&mut self) -> i32;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
+    #[doc(hidden)]
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagSendBackend,
+        ffier::OwnedCallback,
+        true,
+        false,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(SendBackendVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SendBackend::<Self>() as *const SendBackendVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SendBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777253, value), destroy)
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSendBackend,
+        ffier::BorrowedCallback<false>,
+        true,
+        false,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SendBackend::<Self>() as *const SendBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SendBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777253, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSendBackend,
+        ffier::BorrowedCallback<true>,
+        true,
+        false,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SendBackend::<Self>() as *const SendBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SendBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777253, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+}
+
+#[repr(C)]
+pub struct SendBackendVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub step: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
+}
+
+#[allow(non_snake_case)]
+fn __ffier_vtable_SendBackend<__T: SendBackend>() -> &'static SendBackendVtable {
+    &SendBackendVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        step: Some({
+            unsafe extern "C" fn __trampoline<__T: SendBackend>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &mut *(__ud as *mut __T) };
+                let __result = __val.step();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_send_backend_destroy(handle: *mut core::ffi::c_void);
+}
+
+pub struct VtableSendBackend<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'callback> ::core::marker::Send for VtableSendBackend<'callback> {}
+
+impl VtableSendBackend<'_> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableSendBackend<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_send_backend_destroy(self.0) }
+    }
+}
+
+#[doc(hidden)]
+pub enum __FfierCallbackTagSyncBackend {}
+pub trait SyncBackend: ::core::marker::Sync {
+    fn value(&self) -> i32;
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
+    #[doc(hidden)]
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagSyncBackend,
+        ffier::OwnedCallback,
+        false,
+        true,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(SyncBackendVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SyncBackend::<Self>() as *const SyncBackendVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SyncBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777254, value), destroy)
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSyncBackend,
+        ffier::BorrowedCallback<false>,
+        false,
+        true,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SyncBackend::<Self>() as *const SyncBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SyncBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777254, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSyncBackend,
+        ffier::BorrowedCallback<true>,
+        false,
+        true,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_SyncBackend::<Self>() as *const SyncBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<SyncBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777254, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+}
+
+#[repr(C)]
+pub struct SyncBackendVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
+}
+
+#[allow(non_snake_case)]
+fn __ffier_vtable_SyncBackend<__T: SyncBackend>() -> &'static SyncBackendVtable {
+    &SyncBackendVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        value: Some({
+            unsafe extern "C" fn __trampoline<__T: SyncBackend>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.value();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_sync_backend_destroy(handle: *mut core::ffi::c_void);
+}
+
+pub struct VtableSyncBackend<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'callback> ::core::marker::Sync for VtableSyncBackend<'callback> {}
+
+impl VtableSyncBackend<'_> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableSyncBackend<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_sync_backend_destroy(self.0) }
+    }
+}
+
+#[doc(hidden)]
+pub enum __FfierCallbackTagThreadBackend {}
+pub trait ThreadBackend: ::core::marker::Send + ::core::marker::Sync {
+    fn value(&self) -> i32;
+    fn twice(&self) -> i32
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ThreadBackendVtable = __ffier_vtable_ThreadBackend::<Self>();
+        let __metadata: u32 = ffier::default_dispatch_metadata(1);
+        let mut __temp = ffier::FfierHandle {
+            type_tag: 16777255u32,
+            metadata: __metadata,
+            value: ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ThreadBackendVtable as *const core::ffi::c_void,
+                user_data: self as *const Self as *const core::ffi::c_void,
+                vtable_size: core::mem::size_of::<ThreadBackendVtable>() as u16,
+            },
+        };
+        let __raw = unsafe {
+            ft_thread_backend_twice(
+                &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle>
+                    as *mut core::ffi::c_void,
+            )
+        };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    /// # Safety
+    /// Callee must destroy this handle exactly once before any borrowed callback data expires.
+    #[doc(hidden)]
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        unsafe { self.__into_callback_handle().into_raw() }
+    }
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagThreadBackend,
+        ffier::OwnedCallback,
+        true,
+        true,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            let handle = unsafe { ffier::ffier_handle_consume::<ffier::VtableHandle>(raw) };
+            let drop_callback: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> =
+                unsafe { handle.field_or_none(core::mem::offset_of!(ThreadBackendVtable, drop)) };
+            if let Some(drop_callback) = drop_callback {
+                unsafe { drop_callback(handle.user_data as *mut core::ffi::c_void) }
+            }
+        }
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ThreadBackend::<Self>() as *const ThreadBackendVtable
+                as *const core::ffi::c_void,
+            user_data: Box::into_raw(Box::new(self)) as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ThreadBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(ffier::ffier_handle_new(16777255, value), destroy)
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagThreadBackend,
+        ffier::BorrowedCallback<false>,
+        true,
+        true,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ThreadBackend::<Self>() as *const ThreadBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *const Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ThreadBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777255, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagThreadBackend,
+        ffier::BorrowedCallback<true>,
+        true,
+        true,
+    >
+    where
+        Self: Sized,
+    {
+        let value = ffier::VtableHandle {
+            vtable_ptr: __ffier_vtable_ThreadBackend::<Self>() as *const ThreadBackendVtable
+                as *const core::ffi::c_void,
+            user_data: self as *mut Self as *const core::ffi::c_void,
+            vtable_size: core::mem::size_of::<ThreadBackendVtable>()
+                .try_into()
+                .expect("vtable_size exceeds u16::MAX"),
+        };
+        unsafe {
+            ffier::CallbackHandle::from_raw(
+                ffier::ffier_handle_new(16777255, value),
+                ffier::ffier_handle_drop::<ffier::VtableHandle>,
+            )
+        }
+    }
+}
+
+#[repr(C)]
+pub struct ThreadBackendVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
+    pub twice: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
+}
+
+#[allow(non_snake_case)]
+fn __ffier_vtable_ThreadBackend<__T: ThreadBackend>() -> &'static ThreadBackendVtable {
+    &ThreadBackendVtable {
+        drop: Some({
+            unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+            }
+            __drop_trampoline::<__T>
+        }),
+        value: Some({
+            unsafe extern "C" fn __trampoline<__T: ThreadBackend>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.value();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+        twice: Some({
+            unsafe extern "C" fn __trampoline<__T: ThreadBackend>(
+                __ud: *mut core::ffi::c_void,
+            ) -> <i32 as FfiType>::CRepr {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result = __val.twice();
+                <i32 as FfiType>::into_c(__result)
+            }
+            __trampoline::<__T>
+        }),
+    }
+}
+unsafe extern "C" {
+    pub fn ft_thread_backend_twice(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+unsafe extern "C" {
+    pub fn ft_thread_backend_destroy(handle: *mut core::ffi::c_void);
+}
+
+pub struct VtableThreadBackend<'callback>(
+    *mut core::ffi::c_void,
+    core::marker::PhantomData<&'callback mut ()>,
+);
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'callback> ::core::marker::Send for VtableThreadBackend<'callback> {}
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'callback> ::core::marker::Sync for VtableThreadBackend<'callback> {}
+
+impl VtableThreadBackend<'_> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Callee must destroy this handle exactly once within its callback lifetime.
+    pub unsafe fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableThreadBackend<'_> {
+    fn drop(&mut self) {
+        unsafe { ft_thread_backend_destroy(self.0) }
     }
 }
 
@@ -5278,6 +5876,175 @@ impl Fruit for Lemon {
     }
 }
 
+unsafe extern "C" {
+    pub fn ft_send_counter_step(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+impl SendBackend for SendCounter {
+    fn step(&mut self) -> i32 {
+        let __raw = unsafe { ft_send_counter_step(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagSendBackend,
+        ffier::OwnedCallback,
+        true,
+        false,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<SendCounter as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSendBackend,
+        ffier::BorrowedCallback<false>,
+        true,
+        false,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSendBackend,
+        ffier::BorrowedCallback<true>,
+        true,
+        false,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_sync_counter_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+impl SyncBackend for SyncCounter {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_sync_counter_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagSyncBackend,
+        ffier::OwnedCallback,
+        false,
+        true,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<SyncCounter as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSyncBackend,
+        ffier::BorrowedCallback<false>,
+        false,
+        true,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagSyncBackend,
+        ffier::BorrowedCallback<true>,
+        false,
+        true,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_widget_value(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+impl ThreadBackend for Widget {
+    fn value(&self) -> i32 {
+        let __raw = unsafe { ft_widget_value(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    fn twice(&self) -> i32 {
+        let __raw = unsafe { ft_thread_backend_twice(self.0) };
+        unsafe { <i32 as FfiType>::from_c(__raw) }
+    }
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagThreadBackend,
+        ffier::OwnedCallback,
+        true,
+        true,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<Widget as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagThreadBackend,
+        ffier::BorrowedCallback<false>,
+        true,
+        true,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagThreadBackend,
+        ffier::BorrowedCallback<true>,
+        true,
+        true,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+}
+
 #[doc(hidden)]
 pub enum __FfierCallbackTagAttachment {}
 pub trait Attachment {
@@ -6129,6 +6896,53 @@ unsafe extern "C" {
 pub fn retain_fruit<'a>(fruit: impl Fruit + 'a) -> RetainedFruit<'a> {
     let __raw = unsafe { ft_retain_fruit(fruit.__into_callback_handle().into_raw()) };
     unsafe { <RetainedFruit<'a> as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_run_send_backend(backend: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn run_send_backend(backend: impl SendBackend + 'static) -> i32 {
+    let __raw = unsafe { ft_run_send_backend(backend.__into_callback_handle().into_raw()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_borrow_send_backend(backend: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn borrow_send_backend(backend: &mut impl SendBackend) -> i32 {
+    let __ffi_backend = backend.__borrow_callback_handle_mut();
+    let __raw = unsafe { ft_borrow_send_backend(__ffi_backend.as_raw()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_share_sync_backend(backend: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn share_sync_backend(backend: &impl SyncBackend) -> i32 {
+    let __ffi_backend = backend.__borrow_callback_handle();
+    let __raw = unsafe { ft_share_sync_backend(__ffi_backend.as_raw()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_own_sync_backend(backend: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn own_sync_backend(backend: impl SyncBackend) -> i32 {
+    let __raw = unsafe { ft_own_sync_backend(backend.__into_callback_handle().into_raw()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_run_thread_backend(backend: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
+}
+
+pub fn run_thread_backend(backend: impl ThreadBackend + 'static) -> i32 {
+    let __raw = unsafe { ft_run_thread_backend(backend.__into_callback_handle().into_raw()) };
+    unsafe { <i32 as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {

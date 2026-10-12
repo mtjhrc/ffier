@@ -979,6 +979,16 @@ pub fn retain_fruit<'a>(
     RetainedFruit::new(fruit)
 }
 
+// ---------------------------------------------------------------------------
+// Thread-safe callbacks and independently verified opaque handle guarantees
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait SendBackend: Send {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn step(&mut self) -> i32;
+}
+
 /// Send but not Sync: ownership may move, shared concurrent access may not.
 pub struct SendCounter(std::cell::Cell<i32>);
 
@@ -991,6 +1001,21 @@ impl SendCounter {
     pub fn current_value(&self) -> i32 {
         self.0.get()
     }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl SendBackend for SendCounter {
+    fn step(&mut self) -> i32 {
+        let value = self.0.get();
+        self.0.set(value + 1);
+        value
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait SyncBackend: std::marker::Sync {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn value(&self) -> i32;
 }
 
 /// Sync but not Send. Rc is a marker only, never a stored allocation.
@@ -1015,6 +1040,120 @@ impl SyncCounter {
     pub fn current_value(&self) -> i32 {
         self.value
     }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl SyncBackend for SyncCounter {
+    fn value(&self) -> i32 {
+        self.value
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ThreadBackend: core::marker::Sync + std::marker::Send {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn value(&self) -> i32;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn twice(&self) -> i32 {
+        self.value() * 2
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl ThreadBackend for Widget {
+    fn value(&self) -> i32 {
+        self.count
+    }
+}
+
+/// Retains a Send callback, then transfers ownership to a worker thread.
+pub struct BackendWorker<'a> {
+    backend: Box<dyn SendBackend + 'a>,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export(send))]
+impl<'a> BackendWorker<'a> {
+    pub fn new(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl SendBackend + 'a,
+    ) -> Self {
+        Self {
+            backend: Box::new(backend),
+        }
+    }
+
+    pub fn step(&mut self) -> i32 {
+        self.backend.step()
+    }
+
+    pub fn run(mut self) -> i32 {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || self.backend.step())
+                .join()
+                .expect("backend worker panicked")
+        })
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+// Exercise preservation of an explicit bound already implied by the trait.
+#[allow(clippy::implied_bounds_in_impls)]
+pub fn run_send_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] mut backend: impl SendBackend
+    + Send
+    + 'static,
+) -> i32 {
+    std::thread::spawn(move || backend.step())
+        .join()
+        .expect("backend worker panicked")
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrow_send_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: &mut impl SendBackend,
+) -> i32 {
+    std::thread::scope(|scope| {
+        scope
+            .spawn(move || backend.step())
+            .join()
+            .expect("backend worker panicked")
+    })
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn share_sync_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: &impl SyncBackend,
+) -> i32 {
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| backend.value());
+        let second = scope.spawn(|| backend.value());
+        first.join().expect("backend worker panicked")
+            + second.join().expect("backend worker panicked")
+    })
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn own_sync_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl SyncBackend,
+) -> i32 {
+    share_sync_backend(&backend)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn run_thread_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl ThreadBackend + 'static,
+) -> i32 {
+    std::thread::spawn(move || {
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| backend.value());
+            let second = scope.spawn(|| backend.twice());
+            first.join().expect("backend worker panicked")
+                + second.join().expect("backend worker panicked")
+        })
+    })
+    .join()
+    .expect("backend worker panicked")
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,8 +1232,11 @@ impl Attachment for Sprocket {
 // preserves lifetimes in generated client code.
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
 pub trait Snapshot<'a> {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn snap_description(&self) -> &str;
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
     fn snap_source_count(&self) -> i32;
 }
 
@@ -1675,8 +1817,16 @@ ffier::library_definition!("ft", library_tag = 1,
     RetainedFruit<'_> = 33,
     SendCounter = 34,
     SyncCounter = 35,
+    BackendWorker<'_> = 36,
+    trait SendBackend = 37,
+    SendBackend for SendCounter,
+    trait SyncBackend = 38,
+    SyncBackend for SyncCounter,
+    trait ThreadBackend = 39,
+    ThreadBackend for Widget,
     Sprocket = 22,
     Attachment for Sprocket,
+    trait Snapshot = 40,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
@@ -1727,6 +1877,11 @@ ffier::library_definition!("ft", library_tag = 1,
     fn probe_input_backend_values,
     fn probe_borrowed_input_backend_values,
     fn retain_fruit,
+    fn run_send_backend,
+    fn borrow_send_backend,
+    fn share_sync_backend,
+    fn own_sync_backend,
+    fn run_thread_backend,
     fn borrow_input_ids,
     fn borrow_input_ids_mut,
     fn probe_input_source,
@@ -1789,6 +1944,55 @@ mod tests {
     use std::ffi::CStr;
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn thread_safe_vtable_wrappers_preserve_capabilities() {
+        fn require_send<T: Send>() {}
+        fn require_sync<T: Sync>() {}
+        require_send::<VtableSendBackend<'_>>();
+        require_sync::<VtableSyncBackend<'_>>();
+        require_send::<VtableThreadBackend<'_>>();
+        require_sync::<VtableThreadBackend<'_>>();
+    }
+
+    #[test]
+    fn send_vtable_callback_moves_and_drops_once() {
+        use std::cell::Cell;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+        struct Backend {
+            value: Cell<i32>,
+            drops: Arc<AtomicUsize>,
+        }
+        unsafe extern "C" fn step(data: *mut c_void) -> i32 {
+            let backend = unsafe { &mut *(data as *mut Backend) };
+            let value = backend.value.get();
+            backend.value.set(value + 1);
+            value
+        }
+        unsafe extern "C" fn destroy(data: *mut c_void) {
+            let backend = unsafe { Box::from_raw(data as *mut Backend) };
+            backend.drops.fetch_add(1, Ordering::SeqCst);
+        }
+        static VTABLE: SendBackendVtable = SendBackendVtable {
+            drop: Some(destroy),
+            step: Some(step),
+        };
+        let drops = Arc::new(AtomicUsize::new(0));
+        let backend = Box::new(Backend {
+            value: Cell::new(42),
+            drops: drops.clone(),
+        });
+        let wrapper = unsafe {
+            VtableSendBackend::from_value(ffier::VtableHandle {
+                vtable_ptr: &VTABLE as *const SendBackendVtable as *const c_void,
+                user_data: Box::into_raw(backend) as *const c_void,
+                vtable_size: size_of::<SendBackendVtable>().try_into().unwrap(),
+            })
+        };
+        assert_eq!(run_send_backend(wrapper), 42);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+    }
 
     /// Helper: stream ft_error_message into a String via a stack-local PushStr handle.
     unsafe fn error_message_to_string(err: *mut core::ffi::c_void) -> String {

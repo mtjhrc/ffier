@@ -503,6 +503,10 @@ pub enum ParamType {
         /// Lifetime on the reference, not on the callback value or trait.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ref_lifetime: Option<String>,
+        /// Explicit use-site marker bounds. Supported only when already
+        /// guaranteed by the exported trait's native supertraits.
+        #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+        thread_safety: ThreadSafety,
     },
 }
 
@@ -727,6 +731,10 @@ pub struct ImplementableTrait {
     /// Rust wrapper type name (e.g. `"VtableFruit"`).
     pub wrapper_name: String,
 
+    /// Requirements from explicit `Send`/`Sync` supertraits. Callback
+    /// implementations and foreign callers must uphold these guarantees.
+    #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,

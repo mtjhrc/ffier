@@ -133,6 +133,7 @@ enum ParamKind {
         trait_lifetime_args: Vec<String>,
         lifetime_bounds: Vec<String>,
         ref_lifetime: Option<String>,
+        thread_safety: ThreadSafety,
     },
 }
 
@@ -334,6 +335,8 @@ fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
 /// ```
 ///
 /// All item kinds also accept `cfg = "predicate"` — see [`ExportCfg`].
+/// Inherent impls accept `send` and `sync`, checked against the exported type.
+/// Value structs always require both. Traits use native `Send`/`Sync` supertraits.
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item2: proc_macro2::TokenStream = item.clone().into();
@@ -485,6 +488,7 @@ fn reexport_helpers(
     (arm, bundle)
 }
 
+/// Check actual compiler trait information, never guesses based on field syntax.
 fn thread_safety_assertion(
     ty: &impl ToTokens,
     generics: &syn::Generics,
@@ -506,6 +510,58 @@ fn thread_safety_assertion(
             }
         };
     }
+}
+
+/// Only explicit standard marker paths are supported. A compiler assertion
+/// also verifies unqualified names, which could otherwise shadow marker traits.
+fn thread_safety_bound(bound: &syn::TypeParamBound) -> Option<ThreadSafety> {
+    let syn::TypeParamBound::Trait(bound) = bound else {
+        return None;
+    };
+    if bound.lifetimes.is_some()
+        || !matches!(bound.modifier, syn::TraitBoundModifier::None)
+        || bound
+            .path
+            .segments
+            .iter()
+            .any(|segment| !matches!(segment.arguments, PathArguments::None))
+    {
+        return None;
+    }
+    let segments: Vec<_> = bound
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect();
+    let name = match segments.as_slice() {
+        [name] => name,
+        [root, module, name] if (root == "std" || root == "core") && module == "marker" => name,
+        _ => return None,
+    };
+    match name.as_str() {
+        "Send" => Some(ThreadSafety {
+            send: true,
+            sync: false,
+        }),
+        "Sync" => Some(ThreadSafety {
+            send: false,
+            sync: true,
+        }),
+        _ => None,
+    }
+}
+
+fn trait_thread_safety(trait_item: &ItemTrait) -> ThreadSafety {
+    trait_item
+        .supertraits
+        .iter()
+        .filter_map(thread_safety_bound)
+        .fold(ThreadSafety::default(), |mut guarantees, bound| {
+            guarantees.send |= bound.send;
+            guarantees.sync |= bound.sync;
+            guarantees
+        })
 }
 
 fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenStream {
@@ -2259,6 +2315,7 @@ struct ImplTraitInfo {
     trait_name: String,
     trait_lifetime_args: Vec<String>,
     lifetime_bounds: Vec<String>,
+    thread_safety: ThreadSafety,
 }
 
 #[cfg(test)]
@@ -2277,11 +2334,30 @@ mod callback_bound_tests {
     #[test]
     fn unsupported_bounds_are_not_discarded() {
         for ty in [
-            syn::parse_quote!(impl Backend + Send),
+            syn::parse_quote!(impl Backend + Unpin),
             syn::parse_quote!(impl for<'a> Backend<'a>),
             syn::parse_quote!(impl Backend<u32>),
         ] {
             assert!(extract_impl_trait_info(&ty).is_err());
+        }
+    }
+
+    #[test]
+    fn thread_markers_are_separate_and_order_independent() {
+        for ty in [
+            syn::parse_quote!(impl Backend + Send + Sync + 'static),
+            syn::parse_quote!(impl std::marker::Sync + Backend + core::marker::Send + 'static),
+        ] {
+            let info = extract_impl_trait_info(&ty).unwrap().unwrap();
+            assert_eq!(info.trait_name, "Backend");
+            assert_eq!(
+                info.thread_safety,
+                ThreadSafety {
+                    send: true,
+                    sync: true
+                }
+            );
+            assert_eq!(info.lifetime_bounds, ["static"]);
         }
     }
 
@@ -2314,6 +2390,30 @@ mod callback_bound_tests {
             assert_eq!(args.thread_safety, expected);
         }
     }
+
+    #[test]
+    fn only_supported_marker_paths_are_recognized() {
+        for bound in [
+            syn::parse_quote!(Send),
+            syn::parse_quote!(::core::marker::Send),
+            syn::parse_quote!(std::marker::Send),
+        ] {
+            assert_eq!(
+                thread_safety_bound(&bound),
+                Some(ThreadSafety {
+                    send: true,
+                    sync: false
+                })
+            );
+        }
+        for bound in [
+            syn::parse_quote!(other::Send),
+            syn::parse_quote!(?Send),
+            syn::parse_quote!(Send<u32>),
+        ] {
+            assert!(thread_safety_bound(&bound).is_none());
+        }
+    }
 }
 
 fn validate_callback_generics(generics: &syn::Generics, has_callbacks: bool) -> syn::Result<()> {
@@ -2335,7 +2435,13 @@ fn extract_impl_trait_info(ty: &Type) -> syn::Result<Option<ImplTraitInfo>> {
     };
     let mut trait_info = None;
     let mut lifetime_bounds = Vec::new();
+    let mut thread_safety = ThreadSafety::default();
     for bound in &impl_trait.bounds {
+        if let Some(marker) = thread_safety_bound(bound) {
+            thread_safety.send |= marker.send;
+            thread_safety.sync |= marker.sync;
+            continue;
+        }
         match bound {
             syn::TypeParamBound::Lifetime(lt) => lifetime_bounds.push(lt.ident.to_string()),
             syn::TypeParamBound::Trait(tb)
@@ -2385,6 +2491,7 @@ fn extract_impl_trait_info(ty: &Type) -> syn::Result<Option<ImplTraitInfo>> {
         trait_name,
         trait_lifetime_args,
         lifetime_bounds,
+        thread_safety,
     }))
 }
 
@@ -2696,6 +2803,7 @@ fn parse_method_sig(
                         ref_kind: impl_trait_ref_kind.to_string(),
                         trait_lifetime_args: info.trait_lifetime_args,
                         lifetime_bounds: info.lifetime_bounds,
+                        thread_safety: info.thread_safety,
                         ref_lifetime: match &*pt.ty {
                             Type::Reference(r) => {
                                 r.lifetime.as_ref().map(|lt| lt.ident.to_string())
@@ -2935,7 +3043,6 @@ fn parse_method_sig(
     };
 
     validate_callback_generics(&sig.generics, params.iter().any(ParamInfo::is_impl_trait))?;
-
     // The schema records lifetime names, not constraints. Reject constraints
     // rather than expose a safe client signature with weaker requirements.
     let supported_raw_where = raw_handle
@@ -3062,7 +3169,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             ParamKind::StrSlice => quote! { str_slice },
             ParamKind::HandleSlice => quote! { handle_slice },
             ParamKind::PrimitiveSlice => quote! { primitive_slice },
-            ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args, lifetime_bounds, ref_lifetime } => {
+            ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args, lifetime_bounds, ref_lifetime, thread_safety } => {
                 let dispatch_ident = format_ident!("{dispatch}");
                 let ref_kind_ident = match ref_kind.as_str() {
                     "ref" => format_ident!("r#ref"),
@@ -3072,7 +3179,8 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
                 let lt_idents: Vec<_> = trait_lifetime_args.iter().map(|lt| format_ident!("{lt}")).collect();
                 let bounds: Vec<_> = lifetime_bounds.iter().map(|lt| format_ident!("{lt}")).collect();
                 let reference: Vec<_> = ref_lifetime.iter().map(|lt| format_ident!("{lt}")).collect();
-                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*], lifetime_bounds = [#(#bounds),*], ref_lifetime = [#(#reference),*] }
+                let ThreadSafety { send, sync } = thread_safety;
+                quote! { impl_trait, trait_name = #trait_name, dispatch = #dispatch_ident, ref_kind = #ref_kind_ident, trait_lifetime_args = [#(#lt_idents),*], lifetime_bounds = [#(#bounds),*], ref_lifetime = [#(#reference),*], send = #send, sync = #sync }
             }
         };
         let type_tokens = if p.is_impl_trait() {
@@ -3230,7 +3338,9 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
         })
         .collect();
 
-    let shared_impl = if trait_item.items.iter().any(|item| matches!(item,
+    let thread_safety = trait_thread_safety(trait_item);
+    let shared_impl = if (thread_safety.send && !thread_safety.sync)
+        || trait_item.items.iter().any(|item| matches!(item,
         TraitItem::Fn(method) if matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.mutability.is_some()))) {
         quote! {}
     } else {
@@ -3280,6 +3390,48 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 
     let trait_name = &trait_item.ident;
     let trait_name_str = trait_name.to_string();
+    if let Some(where_clause) = &trait_item.generics.where_clause {
+        return syn::Error::new_spanned(
+            where_clause,
+            "ffier exported trait where clauses are unsupported; declare Send/Sync as native supertraits",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let thread_safety = trait_thread_safety(&trait_item);
+    if !thread_safety.is_empty()
+        && (trait_item
+            .supertraits
+            .iter()
+            .any(|bound| thread_safety_bound(bound).is_none()))
+    {
+        return syn::Error::new_spanned(&trait_item,
+            "ffier thread-safe traits support only explicit Send/Sync supertraits; additional supertraits are unsupported")
+            .to_compile_error().into();
+    }
+    let ThreadSafety { send, sync } = thread_safety;
+    if !thread_safety.is_empty()
+        && (trait_item.generics.type_params().next().is_some()
+            || trait_item.generics.const_params().next().is_some()
+            || trait_item
+                .generics
+                .lifetimes()
+                .any(|lt| !lt.bounds.is_empty()))
+    {
+        return syn::Error::new_spanned(
+            &trait_item.generics,
+            "ffier thread-safe traits support only unconstrained lifetime parameters",
+        )
+        .to_compile_error()
+        .into();
+    }
+    let (_, check_trait_generics, _) = trait_item.generics.split_for_impl();
+    let mut check_generics = trait_item.generics.clone();
+    check_generics
+        .params
+        .push(syn::parse_quote!(__FfierType: #trait_name #check_trait_generics + ?Sized));
+    let check_type: Type = syn::parse_quote!(__FfierType);
+    let thread_safety_check = thread_safety_assertion(&check_type, &check_generics, thread_safety);
     if !args.no_vtable && !trait_item.generics.params.is_empty() {
         return syn::Error::new_spanned(&trait_item.generics,
             "ffier callback vtables with trait lifetime or type parameters are unsupported; use no_vtable and concrete dispatch")
@@ -3567,7 +3719,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     // For traits with supertraits, we also need to delegate the supertrait methods.
     // Skip for foreign traits (orphan rules: can't impl foreign trait for local type).
     let dyn_dispatch = !is_foreign
-        && !trait_item.supertraits.iter().any(|b| matches!(b, syn::TypeParamBound::Trait(_)))
+        && !trait_item.supertraits.iter().any(|bound| thread_safety_bound(bound).is_none())
         && !vtable_methods.iter().any(|m| m.params.iter().any(ParamInfo::is_impl_trait))
         && trait_item.items.iter().all(|item| match item {
             TraitItem::Fn(method) => matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some())
@@ -3587,6 +3739,20 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     } else {
         quote! { #modified_trait }
     };
+    let wrapper_thread_impls = thread_safety
+        .rust_bounds()
+        .map(|bound| {
+            let bound: syn::Path = syn::parse_str(bound).expect("standard marker trait path");
+            quote! {
+                // SAFETY: unsafe construction requires the trait's callback contract.
+                // Every safe Rust callback implementation satisfies its supertraits.
+                unsafe impl #bound for #wrapper_name<'_> {}
+            }
+        })
+        .collect::<Vec<_>>();
+    let wrapper_thread_contract = format!(
+        "Callback data and vtable must uphold the trait's thread-safety requirements: Send = {send}, Sync = {sync}. Send permits ownership transfer and destruction on another thread; Sync permits concurrent shared access only."
+    );
 
     // When no_vtable is set, the @on_library_export arm emits nothing —
     // no vtable struct, no wrapper type, no FfiHandle/FfiType impls.
@@ -3629,10 +3795,13 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 /// # Safety
                 /// Callback data and vtable must remain valid for 'callback.
                 /// This wrapper owns the callback and destroys it exactly once.
+                #[doc = #wrapper_thread_contract]
                 pub unsafe fn from_value(value: ffier::VtableHandle) -> Self {
                     Self { value, lifetime: core::marker::PhantomData }
                 }
             }
+
+            #(#wrapper_thread_impls)*
 
             impl Drop for #wrapper_name<'_> {
                 fn drop(&mut self) {
@@ -3685,6 +3854,9 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         #trait_tokens
 
         #cfg_attr
+        #thread_safety_check
+
+        #cfg_attr
         #boxdyn_impl
 
         #cfg_attr
@@ -3731,6 +3903,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     bless = #bless_tokens,
                     no_vtable = #no_vtable_tokens,
                     dyn_dispatch = #dyn_dispatch,
+                    send = #send,
+                    sync = #sync,
                     #cfg_pred_tokens
                 } $(, $($rest)*)? }
             };

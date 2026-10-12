@@ -3,6 +3,7 @@
 //! `generate_batch_impl` takes batched metadata token streams and produces
 //! the corresponding `extern "C"` FFI functions.
 
+use ffier_schema::ThreadSafety;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 
@@ -52,6 +53,7 @@ struct TraitVariant {
 struct ImplementableInfo {
     pub trait_path: TokenStream2,
     pub dyn_dispatch: bool,
+    pub thread_safety: ThreadSafety,
 
     pub methods: Vec<MetaMethod>,
     /// Number of methods that belong to this trait (not supertrait methods).
@@ -115,6 +117,7 @@ fn build_trait_map(implementables: &[TokenStream2], trait_impls: &[TokenStream2]
             info.implementable = Some(ImplementableInfo {
                 trait_path: meta.trait_path,
                 dyn_dispatch: meta.dyn_dispatch,
+                thread_safety: meta.thread_safety,
                 methods,
                 own_method_count,
                 cfg_predicate: meta.cfg_predicate,
@@ -556,6 +559,104 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             Err(error) => return error.to_compile_error(),
         };
         if let Some(error) = validate_methods(&meta.methods) {
+            return error;
+        }
+    }
+
+    // A concrete client handle cannot implement a thread-safe trait unless its
+    // inherent export independently verifies and exposes those capabilities.
+    let handle_thread_safety: HashMap<_, _> = exportables
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaExportable>(item.clone()).ok())
+        .map(|meta| (meta.struct_name.to_string(), meta.thread_safety))
+        .collect();
+    let trait_thread_safety: HashMap<_, _> = implementables
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaImplementable>(item.clone()).ok())
+        .map(|meta| (meta.trait_name.to_string(), meta.thread_safety))
+        .collect();
+    for item in &trait_impls {
+        let meta: MetaTraitImpl = match syn::parse2(item.clone()) {
+            Ok(meta) => meta,
+            Err(error) => return error.to_compile_error(),
+        };
+        let Some(required) = trait_thread_safety.get(&meta.trait_name.to_string()) else {
+            continue;
+        };
+        let Some(actual) = handle_thread_safety.get(&meta.struct_name.to_string()) else {
+            continue;
+        };
+        let missing = ThreadSafety {
+            send: required.send && !actual.send,
+            sync: required.sync && !actual.sync,
+        };
+        if !missing.is_empty() {
+            let arguments = [
+                missing.send.then_some("send"),
+                missing.sync.then_some("sync"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ");
+            let message = format!(
+                "ffier: exported impl of thread-safe trait `{}` for `{}` requires #[ffier::export({arguments})] on its inherent impl",
+                meta.trait_name, meta.struct_name,
+            );
+            return quote! { compile_error!(#message); };
+        }
+    }
+
+    // Explicit marker bounds must not upgrade an unrestricted trait wrapper.
+    // Redundant bounds are preserved; stronger use-site bounds are rejected.
+    let validate_callback_bounds = |methods: &[MetaMethod]| -> Option<TokenStream2> {
+        for param in methods.iter().flat_map(|method| &method.params) {
+            let MetaParamKind::ImplTrait {
+                trait_name,
+                thread_safety: required,
+                ..
+            } = &param.kind
+            else {
+                continue;
+            };
+            let Some(actual) = trait_thread_safety.get(trait_name).copied() else {
+                let message = format!(
+                    "ffier: callback trait `{trait_name}` requires a registered exported trait definition to preserve its supertrait and lifetime contracts; annotate the trait and register `trait {trait_name}` in library_definition! (use no_vtable for concrete dispatch only)",
+                );
+                return Some(quote! { compile_error!(#message); });
+            };
+            if (required.send && !actual.send) || (required.sync && !actual.sync) {
+                let message = format!(
+                    "ffier: stronger use-site Send/Sync bounds for callback `{}` are unsupported; declare the required native supertraits on `{trait_name}`",
+                    param.name,
+                );
+                return Some(quote! { compile_error!(#message); });
+            }
+        }
+        None
+    };
+    for item in &exportables {
+        let meta: MetaExportable = syn::parse2(item.clone()).expect("validated export metadata");
+        if let Some(error) = validate_callback_bounds(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &implementables {
+        let meta: MetaImplementable = syn::parse2(item.clone()).expect("validated trait metadata");
+        if let Some(error) = validate_callback_bounds(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &trait_impls {
+        let meta: MetaTraitImpl = syn::parse2(item.clone()).expect("validated trait impl metadata");
+        if let Some(error) = validate_callback_bounds(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &free_fns {
+        let meta: MetaFreeFunction =
+            syn::parse2(item.clone()).expect("validated function metadata");
+        if let Some(error) = validate_callback_bounds(&meta.methods) {
             return error;
         }
     }
@@ -1466,6 +1567,18 @@ fn convert_params(
             let msg = format!(
                 "ffier: vtable dispatch for param `{}` requires owned/borrowed dynamic forwarding for trait `{}`; foreign traits, supertraits, and generic or consuming methods require concrete dispatch",
                 p.name, p.trait_name
+            );
+            return Err(quote! { compile_error!(#msg); });
+        }
+        if p.ref_kind == crate::meta::ImplTraitRefKind::Ref
+            && info
+                .implementable
+                .as_ref()
+                .is_some_and(|imp| imp.thread_safety.send && !imp.thread_safety.sync)
+        {
+            let msg = format!(
+                "ffier: shared vtable dispatch for param `{}` requires Sync on Send trait `{}`; &T is Send only when T is Sync; use concrete dispatch",
+                p.name, p.trait_name,
             );
             return Err(quote! { compile_error!(#msg); });
         }
@@ -3848,6 +3961,7 @@ fn convert_implementable(
         wrapper_c_name: format!("{}Vtable{}", r.type_pfx, name),
         vtable_struct_name: format!("{name}Vtable"),
         wrapper_name: format!("Vtable{name}"),
+        thread_safety: meta.thread_safety,
         methods: meta
             .methods
             .iter()
@@ -4048,6 +4162,7 @@ fn convert_param(
             lifetime_bounds,
             ref_kind,
             ref_lifetime,
+            thread_safety,
             ..
         } => ffier_schema::ParamType::ImplTrait {
             trait_name: trait_name.clone(),
@@ -4062,6 +4177,7 @@ fn convert_param(
                 crate::meta::ImplTraitRefKind::Mut => ffier_schema::RefKind::Mut,
             },
             ref_lifetime: ref_lifetime.as_ref().map(ToString::to_string),
+            thread_safety: *thread_safety,
         },
     };
     ffier_schema::Param {
