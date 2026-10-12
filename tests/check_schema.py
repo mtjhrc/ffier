@@ -44,6 +44,20 @@ def check_schema(schema_path: Path) -> None:
     if len(cfg_items) < 8:
         raise AssertionError(f"expected >=8 cfg-gated items, got {len(cfg_items)}")
 
+    def method_return(section: str, owner: str, method_name: str) -> dict:
+        item = next(item for item in schema[section] if item["name"] == owner)
+        method = next(method for method in item["methods"] if method["name"] == method_name)
+        return method["ret"]
+
+    value_snapshot = {
+        "value_structs": schema["value_structs"],
+        "event_queue_pop_event": method_return("exported_types", "EventQueue", "pop_event"),
+        "input_backend_next_event": method_return("traits", "InputBackend", "next_event"),
+    }
+    expected = json.loads((Path(__file__).parent / "expected_value_schema.json").read_text())
+    if value_snapshot != expected:
+        raise AssertionError("value-struct schema differs from expected_value_schema.json")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate generated ffier schema")
