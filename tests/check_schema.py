@@ -35,6 +35,10 @@ def check_schema(schema_path: Path) -> None:
         "InvalidInput": True,
         "NumericError": False,
         "Fatal": False,
+        "GadgetError": False,
+        "DeviceError": False,
+        "ContextError": False,
+        "FileError": False,
     }
     assert {v["name"]: v["is_unit"] for v in error["variants"]} == {
         "NotFound": False,
@@ -42,7 +46,17 @@ def check_schema(schema_path: Path) -> None:
         "InvalidInput": False,
         "NumericError": False,
         "Fatal": False,
+        "GadgetError": False,
+        "DeviceError": False,
+        "ContextError": False,
+        "FileError": False,
     }
+    for variant in error["variants"]:
+        factory = variant.get("constructor_ffi_name")
+        assert bool(factory) == bool(variant.get("fields")), variant
+        if factory:
+            assert factory.startswith("ft_test_error_") and factory.endswith("_new")
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(

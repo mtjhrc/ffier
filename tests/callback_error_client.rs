@@ -54,3 +54,30 @@ fn same_client_source_constructs_and_matches_fieldless_errors() {
     assert_eq!(drops.get(), 1);
 }
 
+#[test]
+fn same_client_source_constructs_payload_errors_and_returns_them_from_callbacks() {
+    init();
+    let ids = api::InputDeviceIds {
+        bus: 3,
+        vendor: 76,
+        product: 1,
+        version: 1,
+    };
+    let errors = [
+        api::TestError::NumericError(76.into()),
+        api::TestError::GadgetError(api::Gadget::new(76).into()),
+        api::TestError::DeviceError(ids.into()),
+    ];
+    for error in errors {
+        let drops = Rc::new(Cell::new(0));
+        let error = api::roundtrip_input_backend_error(FailingBackend(drops.clone(), Some(error)))
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            api::TestError::NumericError(..)
+                | api::TestError::GadgetError(..)
+                | api::TestError::DeviceError(..)
+        ));
+        assert_eq!(drops.get(), 1);
+    }
+}

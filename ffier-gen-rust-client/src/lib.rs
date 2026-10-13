@@ -497,7 +497,6 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     // 1. Error enums
     // Emit shared error factory and payload declarations once.
     if !lib.errors.is_empty() {
-        let payload_fn = format!("{}_error_payload", lib.prefix);
         emit_extern_fns(
             &mut out,
             &[
@@ -507,9 +506,10 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                     " -> *mut core::ffi::c_void".to_string(),
                 ),
                 extern_fn_private(
-                    &payload_fn,
+                    &format!("{}_error_field", lib.prefix),
                     vec![
                         "handle: *const core::ffi::c_void".to_string(),
+                        "index: usize".to_string(),
                         "out_buf: *mut core::ffi::c_void".to_string(),
                         "buf_size: usize".to_string(),
                     ],
@@ -519,8 +519,45 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             weak,
             &mut symbols,
         );
+        if lib
+            .errors
+            .iter()
+            .flat_map(|e| &e.variants)
+            .flat_map(|v| &v.fields)
+            .any(|f| {
+                lib.type_entry(&f.type_ref.type_name)
+                    .is_some_and(|e| e.kind.is_handle())
+            })
+        {
+            writeln!(
+                out,
+                "/// Shared access to a handle field, tied to the owning error's lifetime."
+            )
+            .unwrap();
+            writeln!(out, "pub struct ErrorFieldRef<'a, T> {{ value: T, lifetime: core::marker::PhantomData<&'a T> }}").unwrap();
+            writeln!(out, "impl<T> core::ops::Deref for ErrorFieldRef<'_, T> {{ type Target = T; fn deref(&self) -> &T {{ &self.value }} }}").unwrap();
+            writeln!(out).unwrap();
+        }
     }
     for err in &lib.errors {
+        let factories: Vec<_> = err
+            .variants
+            .iter()
+            .filter_map(|v| {
+                v.constructor_ffi_name.as_ref().map(|name| {
+                    extern_fn_private(
+                        name,
+                        v.fields
+                            .iter()
+                            .enumerate()
+                            .map(|(i, f)| format!("field_{i}: {}", ffi_repr_type(&f.type_ref, lib)))
+                            .collect(),
+                        " -> *mut core::ffi::c_void".to_string(),
+                    )
+                })
+            })
+            .collect();
+        emit_extern_fns(&mut out, &factories, weak, &mut symbols);
         emit_error(&mut out, err, lib, weak);
     }
 
@@ -659,7 +696,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
     let prefix = &lib.prefix;
     let error_type_tag = err.type_tag;
     let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
-    let payload_fn = format!("{prefix}_error_payload");
+    let payload_fn = format!("{prefix}_error_field");
 
     // Find the error_message dispatch function from the Error trait
     let error_msg_fn = find_error_message_fn(lib);
@@ -698,35 +735,145 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
         let data_name = format!("{}{}Data", err.name, v.name);
         writeln!(out, "pub struct {data_name}({handle_name});").unwrap();
         writeln!(out, "impl {data_name} {{").unwrap();
-        // Getter per field — calls ft_error_payload, returns borrowed data.
+        if let Some(factory) = &v.constructor_ffi_name {
+            let params = v
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, f)| format!("field_{i}: {}", f.type_ref.to_rust_type()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "    pub fn new({params}) -> Self {{").unwrap();
+            if weak {
+                // Check before transferring any handles or file descriptors.
+                for name in [factory.as_str(), error_destroy_fn] {
+                    writeln!(out, "        {}.get().expect(\"symbol `{name}` not loaded; call require() first\");", name.to_ascii_uppercase()).unwrap();
+                }
+            }
+            let args = v
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    if f.type_ref.owned && f.type_ref.type_name == "str" {
+                        format!("<&str as FfiType>::into_c(field_{i}.as_ref())")
+                    } else if let Some(expr) =
+                        borrowed_value_into_c(&f.type_ref, &format!("field_{i}"), lib)
+                    {
+                        expr
+                    } else {
+                        format!(
+                            "<{} as FfiType>::into_c(field_{i})",
+                            f.type_ref.to_rust_type()
+                        )
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "        let raw = unsafe {{ {factory}({args}) }};").unwrap();
+            writeln!(
+                out,
+                "        assert!(!raw.is_null(), \"library could not construct {}::{}\");",
+                err.name, v.name
+            )
+            .unwrap();
+            writeln!(out, "        Self({handle_name}(raw))").unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+        // Getter per field — calls ft_error_field, returns borrowed data.
         // The payload borrows from the handle, so the getter returns a
         // reference tied to &self (which keeps the handle alive).
         for (i, field) in v.fields.iter().enumerate() {
             let getter_name = format!("field_{i}");
             // The field type in the schema is the owned type (e.g. Box<str>),
             // but the getter borrows — return &str for Box<str>, etc.
-            let borrow_ref = field.type_ref.as_borrowed();
+            let mut borrow_ref = field.type_ref.as_borrowed();
+            // Shared inspection must never yield mutable access or claim a
+            // 'static lifetime for data retained by the native error.
+            if borrow_ref.ref_kind != ffier_schema::RefKind::None {
+                borrow_ref.ref_kind = ffier_schema::RefKind::Shared;
+                borrow_ref.ref_lifetime = None;
+            }
+            for (owned, borrowed) in [
+                (
+                    ffier_schema::Blessing::OwnedFd,
+                    ffier_schema::Blessing::BorrowedFd,
+                ),
+                (
+                    ffier_schema::Blessing::OwnedHandle,
+                    ffier_schema::Blessing::BorrowedHandle,
+                ),
+            ] {
+                if lib
+                    .blessed(owned)
+                    .is_some_and(|(name, _)| name == field.type_ref.type_name)
+                {
+                    let (name, _) = lib
+                        .blessed(borrowed)
+                        .expect("owned OS handle needs borrowed blessing");
+                    borrow_ref.type_name = name.to_string();
+                    borrow_ref.type_args = vec!["_".to_string()];
+                }
+            }
             let borrow_ty = borrow_ref.to_rust_type();
-            let borrow_ty_static = borrow_ref.to_rust_type_static();
-            writeln!(out, "    pub fn {getter_name}(&self) -> {borrow_ty} {{").unwrap();
+            let is_handle = lib
+                .type_entry(&field.type_ref.type_name)
+                .is_some_and(|e| e.kind.is_handle());
+            let mut handle_ref = field.type_ref.clone();
+            handle_ref.ref_kind = ffier_schema::RefKind::None;
+            handle_ref.ref_lifetime = None;
+            let handle_ty = handle_ref.to_rust_type();
+            let return_ty = if is_handle {
+                format!("ErrorFieldRef<'_, {handle_ty}>")
+            } else {
+                borrow_ty.clone()
+            };
+            let repr = if is_handle {
+                "*mut core::ffi::c_void".to_string()
+            } else {
+                ffi_repr_type(&borrow_ref, lib)
+            };
+            writeln!(out, "    pub fn {getter_name}(&self) -> {return_ty} {{").unwrap();
+            if weak
+                && is_handle
+                && let Some(ty) = lib
+                    .exported_types
+                    .iter()
+                    .find(|ty| ty.name == field.type_ref.type_name)
+            {
+                let destroy = &ty.destroy_ffi_name;
+                writeln!(out, "        {}.get().expect(\"symbol `{destroy}` not loaded; call require() first\");", destroy.to_ascii_uppercase()).unwrap();
+            }
             writeln!(
                 out,
-                "        let mut __buf = std::mem::MaybeUninit::<<{borrow_ty_static} as FfiType>::CRepr>::uninit();"
+                "        let mut __buf = std::mem::MaybeUninit::<{repr}>::uninit();"
             )
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{borrow_ty_static} as FfiType>::CRepr>()) }};"
+                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, {i}, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<{repr}>()) }};"
             )
             .unwrap();
-            writeln!(
-                out,
-                "        unsafe {{ <{borrow_ty} as FfiType>::from_c(__buf.assume_init()) }}"
-            )
-            .unwrap();
+            if is_handle {
+                writeln!(out, "        ErrorFieldRef {{ value: unsafe {{ <{handle_ty} as FfiType>::from_c(__buf.assume_init()) }}, lifetime: core::marker::PhantomData }}").unwrap();
+            } else if let Some(expr) =
+                borrowed_value_from_c(&borrow_ref, "__buf.assume_init()", lib)
+            {
+                writeln!(out, "        {expr}").unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "        unsafe {{ <{borrow_ty} as FfiType>::from_c(__buf.assume_init()) }}"
+                )
+                .unwrap();
+            }
             writeln!(out, "    }}").unwrap();
         }
         writeln!(out, "}}").unwrap();
+        if v.fields.len() == 1 && v.constructor_ffi_name.is_some() {
+            let ty = v.fields[0].type_ref.to_rust_type();
+            writeln!(out, "impl From<{ty}> for {data_name} {{ fn from(value: {ty}) -> Self {{ Self::new(value) }} }}").unwrap();
+        }
         writeln!(out, "impl std::fmt::Debug for {data_name} {{").unwrap();
         writeln!(
             out,

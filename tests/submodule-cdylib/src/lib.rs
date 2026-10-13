@@ -28,6 +28,26 @@ mod tests {
     }
 
     #[test]
+    fn payload_factory_resolves_qualified_fields_in_external_bridge() {
+        use ffier_test_submodule_lib::{types::Counter, FfiType, Inner, SubError};
+        let message = String::from("external payload");
+        let mut counter = Counter::new();
+        counter.increment();
+        let handle = unsafe {
+            subtest_sub_error_payload_new(
+                76,
+                message.as_str().into_c(),
+                counter.into_c(),
+                Inner { value: 42 }.into_c(),
+            )
+        };
+        drop(message);
+        let error = unsafe { SubError::from_c(handle) };
+        assert_eq!(error.to_string(), "76: external payload, 1, 42");
+        assert_eq!(ffier::FfiError::code(&error), 3);
+    }
+
+    #[test]
     fn all_scalar_fields_cross_external_bridge() {
         use ffier_test_submodule_lib::{types::ScalarValues, FfiType};
 

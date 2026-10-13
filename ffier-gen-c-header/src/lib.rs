@@ -655,6 +655,43 @@ fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &
             &format!("{result_c} r"),
             opts,
         );
+        for err in &lib.errors {
+            for variant in &err.variants {
+                if let Some(factory) = &variant.constructor_ffi_name {
+                    out.push_str("/* Construct an owned error. Handle fields transfer ownership; strings are copied. */\n");
+                    let params = variant
+                        .fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, field)| {
+                            format!("{} field_{i}", lib.c_type_of_ref(&field.type_ref))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    write_decl(out, "void*", factory, &params, opts);
+                }
+            }
+        }
+        out.push_str("/* Borrow an indexed payload field into an aligned buffer. Invalid indices leave it untouched.\n");
+        out.push_str(" * The data must not outlive the error. Handle fields return borrowed shells: destroy each shell\n");
+        out.push_str(
+            " * before destroying the error, without consuming or mutating the field. */\n",
+        );
+        write_decl(
+            out,
+            "void",
+            &format!("{fn_pfx}error_field"),
+            "const void* handle, size_t index, void* out_buf, size_t buf_size",
+            opts,
+        );
+        out.push_str("/* Equivalent to error_field(handle, 0, out_buf, buf_size). */\n");
+        write_decl(
+            out,
+            "void",
+            &format!("{fn_pfx}error_payload"),
+            "const void* handle, void* out_buf, size_t buf_size",
+            opts,
+        );
     }
     let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
     let result_name_fn = format!("{fn_pfx}result_name");

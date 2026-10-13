@@ -654,6 +654,10 @@ pub struct ErrorVariant {
     /// Whether the native variant is declared without parentheses.
     #[serde(default)]
     pub is_unit: bool,
+    /// Typed factory for a variant with marshallable payload fields.
+    /// Absent for fieldless and opaque variants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constructor_ffi_name: Option<String>,
     /// Marshallable payload fields. Empty for fieldless and opaque variants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<ErrorField>,

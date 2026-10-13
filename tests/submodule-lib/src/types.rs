@@ -1,4 +1,5 @@
 /// A simple counter type, defined in a submodule.
+#[derive(Debug)]
 pub struct Counter {
     value: i32,
 }

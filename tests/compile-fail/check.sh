@@ -54,6 +54,8 @@ done
 
 check_failure callback_handle_escape 'does not live long enough' via-cdylib
 check_failure opaque_lifetime_variance 'lifetime may not live long enough' via-cdylib
+check_failure error_field_escape 'does not live long enough' via-cdylib
+check_failure error_field_consume 'cannot move out of dereference' via-cdylib
 check_failure error_raw_import 'unsafe and requires unsafe block' via-cdylib
 
 for case_name in callback_raw_transfer callback_raw_import; do

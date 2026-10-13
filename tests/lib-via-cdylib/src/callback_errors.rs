@@ -68,8 +68,97 @@ fn payload_error_forwarding_retains_native_handle_and_payload() {
     assert_eq!(api::test_error_drop_count(), before + 1);
 }
 
+#[test]
+fn client_constructs_string_payload_including_non_exhaustive_native_variant() {
+    init();
+    let before = api::test_error_drop_count();
+    let error = api::TestError::NotFound(Box::<str>::from("client message").into());
+    assert_eq!(error.to_string(), "not found: client message");
+    let error =
+        api::roundtrip_input_backend_error(FailingBackend(Rc::new(Cell::new(0)), Some(error)))
+            .unwrap_err();
+    let api::TestError::NotFound(ref data) = error else {
+        panic!("expected NotFound")
+    };
+    assert_eq!(data.field_0(), "client message");
+    assert_eq!(api::test_error_drop_count(), before);
+    drop(error);
+    assert_eq!(api::test_error_drop_count(), before + 1);
+}
 
+#[test]
+fn client_constructs_multiple_fields_and_borrows_handles_without_consuming_them() {
+    init();
+    let before = api::test_error_drop_count();
+    let gadgets_before = api::gadget_drop_count();
+    let ids = api::InputDeviceIds {
+        bus: 3,
+        vendor: 76,
+        product: 1,
+        version: 1,
+    };
+    let error = api::TestError::ContextError(api::TestErrorContextErrorData::new(
+        76,
+        "client message".into(),
+        api::Gadget::new(76),
+        ids,
+        api::LogLevel::Warn,
+        api::Permissions::READ | api::Permissions::WRITE,
+    ));
+    assert_eq!(api::gadget_drop_count(), gadgets_before);
+    assert_eq!(error.to_string(), "context error: 76, client message");
+    let error =
+        api::roundtrip_input_backend_error(FailingBackend(Rc::new(Cell::new(0)), Some(error)))
+            .unwrap_err();
+    let api::TestError::ContextError(ref data) = error else {
+        panic!("expected ContextError")
+    };
+    assert_eq!(data.field_0(), 76);
+    assert_eq!(data.field_1(), "client message");
+    let gadget = data.field_2();
+    assert_eq!(gadget.get(), 76);
+    drop(gadget);
+    assert_eq!(api::gadget_drop_count(), gadgets_before);
+    // Repeated getters allocate/destroy borrowed shells, retaining the field.
+    assert_eq!(data.field_2().get(), 76);
+    assert_eq!(data.field_3().vendor, 76);
+    assert!(matches!(data.field_4(), api::LogLevel::Warn));
+    assert_eq!(
+        data.field_5(),
+        api::Permissions::READ | api::Permissions::WRITE
+    );
+    assert_eq!(api::test_error_drop_count(), before);
+    drop(error);
+    assert_eq!(api::test_error_drop_count(), before + 1);
+    assert_eq!(api::gadget_drop_count(), gadgets_before + 1);
+}
 
+#[test]
+fn owned_file_payload_is_borrowed_for_inspection_and_closed_with_error() {
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, OwnedFd};
+    init();
+    let (stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .unwrap();
+    let fd: OwnedFd = stream.into();
+    let raw = fd.as_raw_fd();
+    let error = api::TestError::FileError(fd.into());
+    let error =
+        api::roundtrip_input_backend_error(FailingBackend(Rc::new(Cell::new(0)), Some(error)))
+            .unwrap_err();
+    let api::TestError::FileError(ref data) = error else {
+        panic!("expected FileError")
+    };
+    assert_eq!(data.field_0().as_raw_fd(), raw);
+    assert_eq!(data.field_0().as_raw_fd(), raw);
+    let duplicate = data.field_0().try_clone_to_owned().unwrap();
+    drop(duplicate);
+    drop(error);
+    // EOF proves the native error closed the descriptor (without relying on
+    // a descriptor number that another parallel test might have reused).
+    assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+}
 
 #[test]
 fn callback_errors_leave_success_outputs_untouched() {

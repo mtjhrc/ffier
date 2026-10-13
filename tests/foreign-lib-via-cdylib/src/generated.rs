@@ -203,8 +203,9 @@ impl<T> Drop for ForeignSlice<T> {
 
 unsafe extern "C" {
     fn fl_error_new(r: ffier::FfierResult) -> *mut core::ffi::c_void;
-    fn fl_error_payload(
+    fn fl_error_field(
         handle: *const core::ffi::c_void,
+        index: usize,
         out_buf: *mut core::ffi::c_void,
         buf_size: usize,
     );

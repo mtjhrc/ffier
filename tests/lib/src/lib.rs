@@ -29,6 +29,18 @@ pub enum TestError {
     #[error(transparent)]
     #[cfg_attr(feature = "ffi", ffier(code = 5, opaque))]
     Fatal(anyhow::Error),
+    #[error("gadget error: {0:?}")]
+    #[cfg_attr(feature = "ffi", ffier(code = 6))]
+    GadgetError(Gadget),
+    #[error("device error: {0:?}")]
+    #[cfg_attr(feature = "ffi", ffier(code = 7))]
+    DeviceError(InputDeviceIds),
+    #[error("context error: {0}, {1}")]
+    #[cfg_attr(feature = "ffi", ffier(code = 8))]
+    ContextError(i32, Box<str>, Gadget, InputDeviceIds, LogLevel, Permissions),
+    #[error("file error: {0:?}")]
+    #[cfg_attr(feature = "ffi", ffier(code = 9))]
+    FileError(OwnedFd),
 }
 
 thread_local! {
@@ -346,16 +358,36 @@ impl Default for Widget {
 // Gadget — second handle type (used as param/return in Widget methods)
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct Gadget {
     value: i32,
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
 impl Gadget {
+    pub fn new(value: i32) -> Self {
+        Self { value }
+    }
+
     /// Get the gadget value.
     pub fn get(&self) -> i32 {
         self.value
     }
+}
+
+thread_local! {
+    static GADGET_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Drop for Gadget {
+    fn drop(&mut self) {
+        GADGET_DROPS.with(|drops| drops.set(drops.get() + 1));
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn gadget_drop_count() -> usize {
+    GADGET_DROPS.with(std::cell::Cell::get)
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,6 +1501,18 @@ pub fn roundtrip_input_backend_error(mut backend: impl InputBackend) -> Result<(
             assert_eq!(*number, 76);
             assert_eq!(error.to_string(), "numeric error: 76");
         }
+        TestError::NotFound(message) => assert_eq!(message.as_ref(), "client message"),
+        TestError::GadgetError(gadget) => assert_eq!(gadget.get(), 76),
+        TestError::DeviceError(ids) => assert_eq!(ids.vendor, 76),
+        TestError::ContextError(number, message, gadget, ids, level, permissions) => {
+            assert_eq!(*number, 76);
+            assert_eq!(message.as_ref(), "client message");
+            assert_eq!(gadget.get(), 76);
+            assert_eq!(ids.vendor, 76);
+            assert_eq!(*level, LogLevel::Warn);
+            assert_eq!(*permissions, Permissions::READ | Permissions::WRITE);
+        }
+        TestError::FileError(fd) => assert!(fd.as_raw_fd() >= 0),
         _ => panic!("unexpected callback error: {error}"),
     }
     Err(error)
@@ -1857,6 +1901,7 @@ ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
     fn test_error_drop_count,
     fn roundtrip_input_backend_error,
+    fn gadget_drop_count,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
     View<'_> = 7, ViewFactory = 8,
@@ -2787,6 +2832,98 @@ mod tests {
             let handle = ft_error_new(ffier::ffier_result(Error::TYPE_TAG, 1));
             assert_eq!(Error::from_c(handle), Error::Failed);
         }
+    }
+
+    #[test]
+    fn payload_factory_and_indexed_getters_preserve_ownership() {
+        let before = test_error_drop_count();
+        let gadgets_before = gadget_drop_count();
+        let message = String::from("client message");
+        let ids = InputDeviceIds {
+            bus: 3,
+            vendor: 76,
+            product: 1,
+            version: 1,
+        };
+        unsafe {
+            let error = ft_test_error_context_error_new(
+                76,
+                message.as_str().into_c(),
+                Gadget::new(76).into_c(),
+                ids.into_c(),
+                LogLevel::Warn.into_c(),
+                (Permissions::READ | Permissions::WRITE).into_c(),
+            );
+            // Native construction copies the string rather than keeping its caller's storage.
+            drop(message);
+            assert_eq!(
+                error_message_to_string(error),
+                "context error: 76, client message"
+            );
+            let mut number = -1i32;
+            ft_error_field(
+                error,
+                0,
+                (&mut number as *mut i32).cast(),
+                core::mem::size_of::<i32>(),
+            );
+            assert_eq!(number, 76);
+            ft_error_field(
+                error,
+                99,
+                (&mut number as *mut i32).cast(),
+                core::mem::size_of::<i32>(),
+            );
+            assert_eq!(number, 76);
+            let mut bytes = ffier::FfierBytes::EMPTY;
+            ft_error_field(
+                error,
+                1,
+                (&mut bytes as *mut ffier::FfierBytes).cast(),
+                core::mem::size_of::<ffier::FfierBytes>(),
+            );
+            assert_eq!(bytes.as_str_unchecked(), "client message");
+            let mut gadget = core::ptr::null_mut();
+            ft_error_field(
+                error,
+                2,
+                (&mut gadget as *mut *mut core::ffi::c_void).cast(),
+                core::mem::size_of::<*mut core::ffi::c_void>(),
+            );
+            assert_eq!(ft_gadget_get(gadget), 76);
+            ft_gadget_destroy(gadget);
+            assert_eq!(gadget_drop_count(), gadgets_before);
+            let mut wire_ids =
+                core::mem::MaybeUninit::<<InputDeviceIds as FfiType>::CRepr>::uninit();
+            ft_error_field(
+                error,
+                3,
+                wire_ids.as_mut_ptr().cast(),
+                core::mem::size_of::<<InputDeviceIds as FfiType>::CRepr>(),
+            );
+            assert_eq!(InputDeviceIds::from_c(wire_ids.assume_init()), ids);
+            let native = TestError::from_c(error);
+            assert!(
+                matches!(&native, TestError::ContextError(76, message, gadget, _, LogLevel::Warn, _) if message.as_ref() == "client message" && gadget.get() == 76)
+            );
+            assert_eq!(test_error_drop_count(), before);
+            drop(native);
+        }
+        assert_eq!(test_error_drop_count(), before + 1);
+        assert_eq!(gadget_drop_count(), gadgets_before + 1);
+    }
+
+    #[test]
+    fn string_error_factory_accepts_null_empty_and_unicode_inputs() {
+        for message in ["", "žluťoučký 🦀"] {
+            let bytes = unsafe { ffier::FfierBytes::from_str(message) };
+            let handle = unsafe { ft_test_error_not_found_new(bytes) };
+            let error = unsafe { TestError::from_c(handle) };
+            assert_eq!(error.to_string(), format!("not found: {message}"));
+        }
+        let handle = unsafe { ft_test_error_not_found_new(ffier::FfierBytes::EMPTY) };
+        let error = unsafe { TestError::from_c(handle) };
+        assert_eq!(error.to_string(), "not found: ");
     }
 
     #[test]

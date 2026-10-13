@@ -494,9 +494,9 @@ pub struct MetaErrorVariant {
     pub constructible: bool,
     /// True for native `Variant`, false for tuple variants including `Variant()`.
     pub is_unit: bool,
-    /// Type tokens for data-carrying variant fields (e.g. `Box<str>`).
+    /// Bridge aliases and schema types for data-carrying variant fields.
     /// Empty for unit variants.
-    pub field_types: Vec<TokenStream>,
+    pub field_types: Vec<MetaTypePair>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1213,9 +1213,11 @@ impl syn::parse::Parse for MetaError {
             parse_comma(&inner)?;
             expect_key(&inner, "fields")?;
             let field_types = parse_bracketed_list(&inner, |content| {
-                let ts = parse_parenthesized_tokens(content)?;
+                let field;
+                syn::braced!(field in content);
+                let types = parse_type_pair(&field)?;
                 parse_comma(content)?;
-                Ok(ts)
+                Ok(types)
             })?;
             parse_comma(&inner)?;
             Ok(MetaErrorVariant {
