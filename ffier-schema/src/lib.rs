@@ -336,7 +336,34 @@ impl TypeRef {
 // Exported types (structs with #[ffier::export] methods)
 // ---------------------------------------------------------------------------
 
+/// Verified thread-safety guarantees for an opaque type or exported trait.
+/// These are independent: `Send` permits ownership transfer, while `Sync`
+/// permits sharing references. Neither guarantee relaxes lifetime requirements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSafety {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub send: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync: bool,
+}
+
+impl ThreadSafety {
+    pub fn is_empty(&self) -> bool {
+        !self.send && !self.sync
+    }
+
+    pub fn rust_bounds(self) -> impl Iterator<Item = &'static str> {
+        [
+            self.send.then_some("::core::marker::Send"),
+            self.sync.then_some("::core::marker::Sync"),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 /// A fixed-layout struct exported by value.
+/// Exported value structs always satisfy `Send + Sync`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValueStruct {
     /// Rust struct name — key into the type registry.
@@ -369,6 +396,9 @@ pub struct ExportedType {
     /// by-value self methods in C take a pointer-to-handle so the bridge
     /// can update the handle in place.
     pub is_builder_type: bool,
+    /// Compiler-checked guarantees declared on the inherent export.
+    #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<Method>,
     /// `#[cfg(...)]` predicate gating this type (e.g. `"feature = \"x\""`,
     /// `"all(feature = \"a\", feature = \"b\")"`). `None` = unconditional.

@@ -87,6 +87,15 @@ def check_schema(schema_path: Path) -> None:
     retain = next(item for item in schema["free_functions"] if item["name"] == "retain_fruit")
     assert retain["lifetimes"] == ["a"]
     assert retain["ret"]["type_args"] == ["a"]
+    def guarantees(section: str, name: str) -> dict:
+        item = next(item for item in schema[section] if item["name"] == name)
+        return item.get("thread_safety", {})
+
+    assert guarantees("exported_types", "Widget") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "View") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "SendCounter") == {"send": True}
+    assert guarantees("exported_types", "SyncCounter") == {"sync": True}
+    assert guarantees("exported_types", "Gadget") == {}
 
 
 def main() -> None:

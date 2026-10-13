@@ -71,6 +71,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn opaque_and_value_types_preserve_verified_guarantees() {
+        fn require_send<T: Send>() {}
+        fn require_sync<T: Sync>() {}
+        require_send::<api::Widget>();
+        require_sync::<api::Widget>();
+        require_send::<api::View<'_>>();
+        require_sync::<api::View<'_>>();
+        require_send::<api::SendCounter>();
+        require_sync::<api::SyncCounter>();
+        require_send::<api::InputEvent>();
+        require_sync::<api::InputEvent>();
+        let mut widget = api::Widget::new();
+        widget.set_count(19);
+        let widget = std::thread::spawn(move || {
+            assert_eq!(widget.get_count(), 19);
+            widget
+        })
+        .join()
+        .unwrap();
+        let view = api::View::create(&widget);
+        std::thread::scope(|scope| {
+            scope.spawn(move || assert_eq!(view.source_count(), 19));
+            scope.spawn(|| assert_eq!(widget.get_count(), 19));
+        });
+        let send = api::SendCounter::new(21);
+        std::thread::spawn(move || assert_eq!(send.current_value(), 21))
+            .join()
+            .unwrap();
+        let sync = api::SyncCounter::new(7);
+        std::thread::scope(|scope| {
+            scope.spawn(|| assert_eq!(sync.current_value(), 7));
+            scope.spawn(|| assert_eq!(sync.current_value(), 7));
+        });
+    }
+
     struct BorrowedFruit<'a> {
         value: &'a i32,
         drops: std::rc::Rc<std::cell::Cell<usize>>,

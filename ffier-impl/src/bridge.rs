@@ -3794,6 +3794,7 @@ fn convert_exportable(
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         is_builder_type,
+        thread_safety: meta.thread_safety,
         methods: meta
             .methods
             .iter()

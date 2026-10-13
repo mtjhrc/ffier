@@ -74,3 +74,15 @@ check_failure lifetime_contract "ffier callback methods with 'static receivers a
 check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_slice_lifetime
 check_failure lifetime_contract 'ffier explicit lifetimes on non-byte slice parameters are unsupported' thread_inner_slice_lifetime
 check_failure lifetime_contract 'ffier exported method lifetime bounds and where clauses are unsupported' thread_raw_lifetime_bounds
+
+check_failure thread_safety 'cannot be sent between threads safely' via-cdylib,thread_handle_not_send
+
+check_failure thread_safety 'cannot be shared between threads safely' via-cdylib,thread_handle_not_sync
+
+check_failure thread_safety 'cannot be shared between threads safely' via-cdylib,thread_send_handle_not_sync
+
+check_failure thread_safety 'cannot be sent between threads safely' via-cdylib,thread_sync_handle_not_send
+check_failure thread_contract 'cannot be sent between threads safely' thread_false_send
+check_failure thread_contract 'cannot be shared between threads safely' thread_false_sync
+check_failure thread_contract 'ffier send/sync annotations require an inherent impl with only unconstrained lifetime parameters' thread_constrained_lifetime
+check_failure thread_contract 'ffier send/sync annotations require exporting the type for all its lifetime parameters' thread_specialized_lifetime

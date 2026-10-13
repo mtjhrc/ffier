@@ -253,6 +253,27 @@ C callers must enforce lifetimes themselves:
 - `+ 'static` forbids expiring borrows. Other bounds require release before
   borrowed data expires. These rules add no Send/Sync support.
 
+## Thread safety
+
+Fixed-layout value structs always require `Send + Sync`. Their scalar, enum,
+bitflags, and nested value fields give generated client structs both auto traits.
+
+Opaque handle types opt in on their inherent export:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
+impl Widget {
+    // ...
+}
+```
+
+Use `send`, `sync`, or both independently. The Rust compiler verifies the actual
+type, including all lifetime parameters. The schema records these guarantees;
+generated client handles implement only the declared auto traits. Unannotated
+handles remain non-`Send`, non-`Sync`, even when their hidden Rust value happens
+to satisfy those bounds. Specialized or constrained impls cannot declare
+type-wide guarantees.
+
 ## How it works
 
 The pipeline has two phases:
