@@ -19,7 +19,11 @@ def extract_expected_error(fixture: Path) -> str:
 
 def main() -> int:
     fixture_dir = Path(__file__).resolve().parent
-    for fixture in sorted((fixture_dir / "src" / "bin").glob("*.rs")):
+    fixtures = sorted((fixture_dir / "src" / "bin").glob("*.rs"))
+    if not fixtures:
+        print("compile-fail: no fixtures found", file=sys.stderr)
+        return 1
+    for fixture in fixtures:
         case_name = fixture.stem
         try:
             expected = extract_expected_error(fixture)
