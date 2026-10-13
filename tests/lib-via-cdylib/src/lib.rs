@@ -274,6 +274,20 @@ mod tests {
         assert_eq!(w.echo("ping"), "ping");
     }
 
+    #[test]
+    fn method_with_mutable_bytes_param() {
+        init();
+        let w = Widget::new();
+        let mut buffer = [0xa5; 4];
+        assert_eq!(w.fill_bytes(&mut buffer), [1, 2, 3]);
+        assert_eq!(buffer, [1, 2, 3, 0xa5]);
+        assert!(w.fill_bytes(&mut []).is_empty());
+
+        let mut counted = [0xa5; 4];
+        assert_eq!(w.fill_bytes_count(&mut counted).unwrap(), 3);
+        assert_eq!(counted, [1, 2, 3, 0xa5]);
+    }
+
     // ================================================================
     // Str slice param
     // ================================================================

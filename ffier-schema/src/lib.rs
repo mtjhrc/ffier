@@ -950,6 +950,13 @@ impl Library {
     /// registry spelling, because handles are already pointers.
     pub fn c_type_of_ref(&self, type_ref: &TypeRef) -> String {
         let base = self.c_type_of(&type_ref.type_name);
+        if type_ref.ref_kind == RefKind::Mut
+            && self
+                .type_entry(&type_ref.type_name)
+                .is_some_and(|entry| entry.bless == Some(Blessing::Bytes))
+        {
+            return format!("{base}Mut");
+        }
         if self.is_value_struct(&type_ref.type_name) {
             // An optional borrowed value is a nullable pointer: `Option<&T>`
             // and `&T` share the same C spelling.
@@ -1197,5 +1204,46 @@ mod lifetime_tests {
         assert!(entry.same_registration(&other));
         other.lifetime_params[0].variance = Some(LifetimeVariance::Invariant);
         assert!(!entry.same_registration(&other));
+    }
+
+    #[test]
+    fn mutable_byte_references_select_the_writable_c_type() {
+        let library = Library::from_json(
+            &json!({
+                "prefix": "test", "exported_types": [], "errors": [], "traits": [], "trait_impls": [],
+                "type_registry": {
+                    "[u8]": {"kind": {"bytes": {"c_name": "TestBytes"}}, "bless": "bytes"},
+                    "FfierPath": {"kind": {"bytes": {"c_name": "TestPath"}}, "bless": "path"}
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let type_ref = |type_name: &str, ref_kind: RefKind| TypeRef {
+            type_name: type_name.to_string(),
+            ref_kind,
+            ref_lifetime: None,
+            type_args: vec![],
+            optional: false,
+            owned: false,
+        };
+
+        // Only the type blessed as bytes has a writable C typedef next to it.
+        assert_eq!(
+            library.c_type_of_ref(&type_ref("[u8]", RefKind::Mut)),
+            "TestBytesMut"
+        );
+        assert_eq!(
+            library.c_type_of_ref(&type_ref("[u8]", RefKind::Shared)),
+            "TestBytes"
+        );
+        // Paths share the byte-slice layout but have no writable variant, so a
+        // mutable reference keeps the read-only spelling instead of naming a
+        // typedef the header never emits.
+        assert_eq!(
+            library.c_type_of_ref(&type_ref("FfierPath", RefKind::Mut)),
+            "TestPath"
+        );
     }
 }
