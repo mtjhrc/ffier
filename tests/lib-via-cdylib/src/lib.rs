@@ -27,7 +27,7 @@ mod tests {
         assert_eq!(ffier::ffier_result_type_tag(result), unsafe {
             ffier::handle_type_tag(handle)
         });
-        let error = Error::from_ffi(result, handle);
+        let error = unsafe { Error::from_ffi(result, handle) };
         assert_eq!(error.to_string(), "generic failure");
     }
 

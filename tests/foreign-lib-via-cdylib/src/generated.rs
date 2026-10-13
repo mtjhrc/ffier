@@ -234,7 +234,12 @@ pub enum ForeignError {
 }
 
 impl ForeignError {
-    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+    /// Import an owned native error handle.
+    ///
+    /// # Safety
+    /// The handle must be valid, non-null, and uniquely owned by the caller.
+    /// Its native error type and variant must match the type tag and code in `r`.
+    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
         let handle = ForeignErrorErrorHandle(err_handle);
         match code {
