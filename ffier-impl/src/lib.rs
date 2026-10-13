@@ -734,6 +734,14 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
                     }
                 }
 
+                impl FfiBorrow for #value_type {
+                    fn borrow_as_c(&self) -> Self::CRepr {
+                        #wire_name {
+                            #(#field_names: <#field_types as FfiBorrow>::borrow_as_c(&self.#field_names),)*
+                        }
+                    }
+                }
+
                 unsafe impl BorrowFFiType for #value_type {}
                 const _: () = {
                     assert!(core::mem::size_of::<#value_type>() == core::mem::size_of::<#wire_name>());
@@ -988,6 +996,11 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
                     }
                     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
                         unsafe { ffier::ffier_handle_consume::<Self>(repr) }
+                    }
+                }
+                impl FfiBorrow for #struct_with_lifetimes {
+                    fn borrow_as_c(&self) -> Self::CRepr {
+                        unsafe { ffier::ffier_handle_new_borrowed($type_tag, self) }
                     }
                 }
             };
@@ -1919,6 +1932,10 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut variant_meta_tokens = Vec::new();
     let mut payload_arms = Vec::new();
     let mut from_code_arms = Vec::new();
+    let mut payload_constructors = Vec::new();
+    let error_snake = camel_to_snake(&name.to_string());
+    let helper_mod_name = format_ident!("_ffier_{error_snake}");
+    let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     for variant in &data_enum.variants {
         let var_ident = &variant.ident;
@@ -1968,8 +1985,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         });
 
         // Collect field types for data-carrying variants.
-        // Each type is emitted as a parenthesized token group `(Type)` so the
-        // meta crate can parse it back as a TokenStream without stringifying.
+        // Keep schema types separate from aliases resolved in external bridges.
         // Opaque variants have no marshallable fields: exclude them from metadata.
         let field_types: Vec<_> = if attrs.opaque {
             vec![]
@@ -1981,7 +1997,8 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                     .iter()
                     .map(|f| {
                         let ty = &f.ty;
-                        quote! { (#ty) }
+                        let bridge_type = ctx.bridge_tokens(ty);
+                        quote! { { bridge_type = (#bridge_type), rust_type = (#ty), } }
                     })
                     .collect(),
                 syn::Fields::Named(_) => {
@@ -1996,39 +2013,52 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         };
 
-        // Build payload arm for this variant.
-        // Opaque variants suppress marshalling — the inner value is
-        // Rust-only and not transferable across the C boundary.
-        if !attrs.opaque {
-            match &variant.fields {
-                syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
-                    // Empty-tuple variant — no payload to write
-                    payload_arms.push(quote! {
-                        #name::#var_ident(..) => {}
-                    });
+        // Construct within the defining crate, including non_exhaustive variants.
+        if !attrs.opaque
+            && let syn::Fields::Unnamed(fields) = &variant.fields
+            && !fields.unnamed.is_empty()
+        {
+            let constructor = format_ident!(
+                "__ffier_construct_{}",
+                camel_to_snake(&var_ident.to_string())
+            );
+            let field_names: Vec<_> = (0..fields.unnamed.len())
+                .map(|i| format_ident!("field_{i}"))
+                .collect();
+            let field_types: Vec<_> = fields.unnamed.iter().map(|f| &f.ty).collect();
+            payload_constructors.push(quote! {
+                #[doc(hidden)]
+                pub fn #constructor(#(#field_names: #field_types),*) -> Self {
+                    Self::#var_ident(#(#field_names),*)
                 }
-                syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    let field_ty = &fields.unnamed[0].ty;
-                    payload_arms.push(quote! {
-                        #name::#var_ident(val, ..) => {
-                            let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
+            });
+            let field_arms = field_names.iter().zip(&field_types).enumerate().map(
+                |(index, (val, field_ty))| {
+                    quote! {
+                        #index => {
+                            let expected = core::mem::size_of::<<#field_ty as crate::FfiType>::CRepr>();
                             assert!(
                                 buf_size >= expected,
                                 "error payload buffer too small: got {} bytes, need {}",
                                 buf_size, expected,
                             );
-                            let c_val = <#field_ty as FfiBorrow>::borrow_as_c(val);
+                            let c_val = <#field_ty as crate::FfiBorrow>::borrow_as_c(#val);
                             unsafe {
                                 core::ptr::write(
-                                    out_buf as *mut <#field_ty as FfiType>::CRepr,
+                                    out_buf as *mut <#field_ty as crate::FfiType>::CRepr,
                                     c_val,
                                 );
                             }
                         }
-                    });
+                    }
+                },
+            );
+            payload_arms.push(quote! {
+                #name::#var_ident(#(#field_names),*) => match index {
+                    #(#field_arms,)*
+                    _ => {}
                 }
-                _ => {} // already rejected above
-            }
+            });
         }
 
         codes_entries.push(quote! { (#upper_name, #code) });
@@ -2043,13 +2073,12 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     );
     let unknown_lit = proc_macro2::Literal::byte_string(unknown_msg.as_bytes());
 
-    let error_snake = camel_to_snake(&name.to_string());
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let internal_macro_name = format_ident!("__ffier_internal_{error_snake}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{name}");
 
     let error_path = quote! { $crate::#name };
-    let helper_mod_name = format_ident!("_ffier_{error_snake}");
+    let local_type_aliases = ctx.local_type_aliases();
 
     let error_impl_helper = format_ident!("_ffier_impl_error_for_{error_snake}");
     let error_impl_meta = format_ident!("__ffier_meta_Error_for_{name}");
@@ -2062,6 +2091,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         #[doc(hidden)]
         pub mod #helper_mod_name {
             #reexport_bundle
+            #(#local_type_aliases)*
+        }
+
+        impl #name {
+            #(#payload_constructors)*
         }
 
         impl ffier::FfiError for #name {
@@ -2092,6 +2126,10 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
 
             unsafe fn payload(&self, out_buf: *mut core::ffi::c_void, buf_size: usize) {
+                unsafe { self.payload_field(0, out_buf, buf_size) };
+            }
+
+            unsafe fn payload_field(&self, index: usize, out_buf: *mut core::ffi::c_void, buf_size: usize) {
                 match self {
                     #(#payload_arms)*
                     #[allow(unreachable_patterns)]
@@ -2114,6 +2152,8 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
         #[doc(hidden)]
         #[macro_export]
+        // Original field paths are schema data; bridge paths use defining-crate aliases.
+        #[allow(clippy::crate_in_macro_def)]
         macro_rules! #internal_macro_name {
             #reexport_helpers
             (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
@@ -2130,6 +2170,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                     }
                     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
                         unsafe { ffier::ffier_handle_consume::<Self>(repr) }
+                    }
+                }
+                impl FfiBorrow for #name {
+                    fn borrow_as_c(&self) -> Self::CRepr {
+                        unsafe { ffier::ffier_handle_new_borrowed($type_tag, self) }
                     }
                 }
             };
@@ -4656,8 +4701,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
 
         /// Produce a CRepr from `&self` without consuming.
         /// Used by error payload getters to borrow data from an error handle.
-        /// Only implemented for types that appear as error payload fields
-        /// (primitives, enums, bitflags, strings, byte slices, paths).
+        /// Handle fields allocate a borrowed shell which the caller must destroy
+        /// before the field's owner. Other fields copy their wire representation.
         #[doc(hidden)]
         pub trait FfiBorrow: FfiType {
             fn borrow_as_c(&self) -> Self::CRepr;
@@ -4695,6 +4740,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             fn into_c(self) -> Self { self }
             unsafe fn from_c(repr: Self) -> Self { repr }
         }
+        impl FfiBorrow for *mut core::ffi::c_void {
+            fn borrow_as_c(&self) -> Self::CRepr { *self }
+        }
 
         impl FfiType for *const core::ffi::c_void {
             type CRepr = *const core::ffi::c_void;
@@ -4702,6 +4750,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             const IS_HANDLE: bool = false;
             fn into_c(self) -> Self { self }
             unsafe fn from_c(repr: Self) -> Self { repr }
+        }
+        impl FfiBorrow for *const core::ffi::c_void {
+            fn borrow_as_c(&self) -> Self::CRepr { *self }
         }
 
         impl FfiType for &str {
@@ -4741,6 +4792,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 }
             }
         }
+        impl FfiBorrow for Option<&str> {
+            fn borrow_as_c(&self) -> Self::CRepr { self.into_c() }
+        }
 
         impl FfiType for Box<str> {
             type CRepr = ffier::FfierBytes;
@@ -4775,6 +4829,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 }
             }
         }
+        impl FfiBorrow for &[u8] {
+            fn borrow_as_c(&self) -> Self::CRepr { self.into_c() }
+        }
 
         impl FfiType for &mut [u8] {
             type CRepr = ffier::FfierMutBytes;
@@ -4785,6 +4842,11 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             }
             unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {
                 unsafe { repr.into_bytes() }
+            }
+        }
+        impl FfiBorrow for &mut [u8] {
+            fn borrow_as_c(&self) -> Self::CRepr {
+                ffier::FfierMutBytes { data: self.as_ptr() as *mut u8, len: self.len() }
             }
         }
 
@@ -4802,6 +4864,10 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 }
             }
         }
+        #[cfg(unix)]
+        impl FfiBorrow for &std::path::Path {
+            fn borrow_as_c(&self) -> Self::CRepr { self.into_c() }
+        }
 
         #[cfg(unix)]
         const _: () = {
@@ -4813,12 +4879,18 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 fn into_c(self) -> i32 { self.into_raw_fd() }
                 unsafe fn from_c(fd: i32) -> Self { unsafe { OwnedFd::from_raw_fd(fd) } }
             }
+            impl FfiBorrow for OwnedFd {
+                fn borrow_as_c(&self) -> i32 { self.as_raw_fd() }
+            }
             impl<'a> FfiType for BorrowedFd<'a> {
                 type CRepr = i32;
                 const C_TYPE_NAME: &'static str = "int";
                 const IS_HANDLE: bool = false;
                 fn into_c(self) -> i32 { self.as_raw_fd() }
                 unsafe fn from_c(fd: i32) -> Self { unsafe { BorrowedFd::borrow_raw(fd) } }
+            }
+            impl FfiBorrow for BorrowedFd<'_> {
+                fn borrow_as_c(&self) -> i32 { self.as_raw_fd() }
             }
             impl<'a> FfiType for Option<BorrowedFd<'a>> {
                 type CRepr = i32;
@@ -4834,6 +4906,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     if fd < 0 { None } else { Some(unsafe { BorrowedFd::borrow_raw(fd) }) }
                 }
             }
+            impl FfiBorrow for Option<BorrowedFd<'_>> {
+                fn borrow_as_c(&self) -> i32 { self.map_or(-1, |fd| fd.as_raw_fd()) }
+            }
             impl FfiType for Option<OwnedFd> {
                 type CRepr = i32;
                 const C_TYPE_NAME: &'static str = "int";
@@ -4847,6 +4922,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 unsafe fn from_c(fd: i32) -> Self {
                     if fd < 0 { None } else { Some(unsafe { OwnedFd::from_raw_fd(fd) }) }
                 }
+            }
+            impl FfiBorrow for Option<OwnedFd> {
+                fn borrow_as_c(&self) -> i32 { self.as_ref().map_or(-1, |fd| fd.as_raw_fd()) }
             }
         };
 
@@ -4864,6 +4942,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     unsafe { OwnedHandle::from_raw_handle(handle) }
                 }
             }
+            impl FfiBorrow for OwnedHandle {
+                fn borrow_as_c(&self) -> RawHandle { self.as_raw_handle() }
+            }
             impl<'a> FfiType for BorrowedHandle<'a> {
                 type CRepr = RawHandle;
                 const C_TYPE_NAME: &'static str = "void *";
@@ -4872,6 +4953,9 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 unsafe fn from_c(handle: RawHandle) -> Self {
                     unsafe { BorrowedHandle::borrow_raw(handle) }
                 }
+            }
+            impl FfiBorrow for BorrowedHandle<'_> {
+                fn borrow_as_c(&self) -> RawHandle { self.as_raw_handle() }
             }
             impl<'a> FfiType for Option<BorrowedHandle<'a>> {
                 type CRepr = RawHandle;
@@ -4886,6 +4970,11 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     } else {
                         Some(unsafe { BorrowedHandle::borrow_raw(handle) })
                     }
+                }
+            }
+            impl FfiBorrow for Option<BorrowedHandle<'_>> {
+                fn borrow_as_c(&self) -> RawHandle {
+                    self.map_or(core::ptr::null_mut(), |handle| handle.as_raw_handle())
                 }
             }
             impl FfiType for Option<OwnedHandle> {
@@ -4903,6 +4992,11 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                     }
                 }
             }
+            impl FfiBorrow for Option<OwnedHandle> {
+                fn borrow_as_c(&self) -> RawHandle {
+                    self.as_ref().map_or(core::ptr::null_mut(), |handle| handle.as_raw_handle())
+                }
+            }
         };
 
         impl<T: FfiHandle + 'static> FfiType for &T {
@@ -4912,6 +5006,11 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             fn into_c(self) -> *mut core::ffi::c_void { unimplemented!("&T into_c") }
             unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow::<T>(repr) } }
         }
+        impl<T: FfiHandle + 'static> FfiBorrow for &T {
+            fn borrow_as_c(&self) -> Self::CRepr {
+                unsafe { ffier::ffier_handle_new_borrowed(T::TYPE_TAG, *self) }
+            }
+        }
 
         impl<T: FfiHandle + 'static> FfiType for &mut T {
             type CRepr = *mut core::ffi::c_void;
@@ -4919,6 +5018,11 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             const IS_HANDLE: bool = true;
             fn into_c(self) -> *mut core::ffi::c_void { unimplemented!("&mut T into_c") }
             unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self { unsafe { ffier::ffier_handle_borrow_mut::<T>(repr) } }
+        }
+        impl<T: FfiHandle + 'static> FfiBorrow for &mut T {
+            fn borrow_as_c(&self) -> Self::CRepr {
+                unsafe { ffier::ffier_handle_new_borrowed(T::TYPE_TAG, &**self) }
+            }
         }
 
         // Create helper modules at the crate root and invoke @on_library_export arms.

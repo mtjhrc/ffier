@@ -639,6 +639,20 @@ pub trait FfiError: std::error::Error + Sized {
     /// `out_buf` must point to a valid, aligned buffer of at least
     /// `buf_size` bytes.
     unsafe fn payload(&self, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {}
+
+    /// Borrow one payload field by its zero-based tuple index.
+    /// Fieldless/opaque variants and out-of-range indices leave `out_buf` untouched.
+    /// Handle fields return a borrowed shell: destroy that shell before the
+    /// error, without consuming or mutating its referenced field.
+    ///
+    /// # Safety
+    /// `out_buf` must satisfy the alignment and size requirements of `payload`.
+    /// The returned representation must not outlive this error.
+    unsafe fn payload_field(&self, index: usize, out_buf: *mut core::ffi::c_void, buf_size: usize) {
+        if index == 0 {
+            unsafe { self.payload(out_buf, buf_size) };
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

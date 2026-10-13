@@ -974,6 +974,7 @@ fn generate_error_factory(
 ) -> TokenStream2 {
     let factory_fn = format_ident!("{prefix}_error_new");
     let mut dispatch_arms = Vec::new();
+    let mut payload_factories = Vec::new();
     for item in errors {
         let meta: MetaError = syn::parse2(item.clone()).expect("validated error metadata");
         let type_tag = meta.type_tag;
@@ -983,6 +984,51 @@ fn generate_error_factory(
                 .map(<#path as #lib_crate::FfiType>::into_c)
                 .unwrap_or(core::ptr::null_mut()),
         });
+        for variant in &meta.variants {
+            if variant.field_types.is_empty() {
+                continue;
+            }
+            let error_name = camel_to_snake(&meta.name.to_string());
+            let variant_name = camel_to_snake(&variant.name.to_string());
+            let factory = format_ident!("{prefix}_{error_name}_{variant_name}_new");
+            let constructor = format_ident!("__ffier_construct_{variant_name}");
+            let fields: Vec<_> = (0..variant.field_types.len())
+                .map(|i| format_ident!("field_{i}"))
+                .collect();
+            let types: Vec<_> = variant
+                .field_types
+                .iter()
+                .map(|tp| &tp.bridge_type)
+                .collect();
+            // Strings are copied into the library's allocator; owned handles
+            // and other fields use the same ownership transfer as method inputs.
+            let conversions = fields.iter().zip(&variant.field_types).map(|(field, tp)| {
+                let ty = &tp.bridge_type;
+                let is_boxed_str = matches!(syn::parse2::<syn::Type>(tp.rust_type.clone()),
+                    Ok(syn::Type::Path(tp)) if path_ends_with_ident(&tp.path, "Box")
+                        && matches!(single_angle_arg(&tp.path), Some(syn::Type::Path(p)) if p.path.is_ident("str")));
+                if is_boxed_str {
+                    quote! { unsafe { #field.as_str_unchecked() }.into() }
+                } else {
+                    quote! { unsafe { <#ty as #lib_crate::FfiType>::from_c(#field) } }
+                }
+            });
+            payload_factories.push(quote! {
+                /// Construct an owned native error. Handle fields transfer ownership;
+                /// string fields borrow the input for this call and are copied.
+                ///
+                /// # Safety
+                /// Each input must be a valid C representation of its field type.
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #factory(
+                    #(#fields: <#types as #lib_crate::FfiType>::CRepr),*
+                ) -> *mut core::ffi::c_void {
+                    <#path as #lib_crate::FfiType>::into_c(
+                        #path::#constructor(#(#conversions),*)
+                    )
+                }
+            });
+        }
     }
     quote! {
         /// Create an owned fieldless error. Returns null for success,
@@ -996,6 +1042,7 @@ fn generate_error_factory(
                 _ => core::ptr::null_mut(),
             }
         }
+        #(#payload_factories)*
     }
 }
 
@@ -1012,6 +1059,7 @@ fn generate_error_getters(
 ) -> TokenStream2 {
     let fn_pfx = format!("{prefix}_");
     let payload_fn = format_ident!("{fn_pfx}error_payload");
+    let field_fn = format_ident!("{fn_pfx}error_field");
 
     let mut dispatch_arms = Vec::new();
 
@@ -1025,7 +1073,7 @@ fn generate_error_getters(
         dispatch_arms.push(quote! {
             #type_tag => {
                 let err: &#path = unsafe { ffier::ffier_handle_borrow(handle) };
-                unsafe { ffier::FfiError::payload(err, out_buf, buf_size) };
+                unsafe { ffier::FfiError::payload_field(err, index, out_buf, buf_size) };
             }
         });
     }
@@ -1039,6 +1087,23 @@ fn generate_error_getters(
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #payload_fn(
             handle: *const core::ffi::c_void,
+            out_buf: *mut core::ffi::c_void,
+            buf_size: usize,
+        ) {
+            unsafe { #field_fn(handle, 0, out_buf, buf_size) };
+        }
+
+        /// Borrow the indexed payload field. Invalid indices and fieldless/opaque
+        /// variants leave the buffer untouched. Borrowed handle fields allocate
+        /// a shell which the caller must destroy before destroying the error.
+        ///
+        /// # Safety
+        /// The handle and aligned output buffer must be valid. Returned borrowed
+        /// data must not outlive the error handle.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn #field_fn(
+            handle: *const core::ffi::c_void,
+            index: usize,
             out_buf: *mut core::ffi::c_void,
             buf_size: usize,
         ) {
@@ -3964,8 +4029,8 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
                 let fields = v
                     .field_types
                     .iter()
-                    .map(|ty_tokens| ffier_schema::ErrorField {
-                        type_ref: r.type_ref_from_tokens(ty_tokens),
+                    .map(|types| ffier_schema::ErrorField {
+                        type_ref: r.type_ref_from_tokens(&types.rust_type),
                     })
                     .collect();
                 ffier_schema::ErrorVariant {
@@ -3975,6 +4040,13 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
                     message: v.message.clone(),
                     constructible: v.constructible,
                     is_unit: v.is_unit,
+                    constructor_ffi_name: (!v.field_types.is_empty()).then(|| {
+                        r.ffi_fn_name(&format!(
+                            "{}_{}_new",
+                            camel_to_snake(&meta.name.to_string()),
+                            camel_to_snake(&v.name.to_string()),
+                        ))
+                    }),
                     fields,
                 }
             })

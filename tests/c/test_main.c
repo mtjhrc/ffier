@@ -232,6 +232,37 @@ void method_returning_result_fail_with_value(void) {
     ft_widget_destroy(w);
 }
 
+void construct_payload_error_and_borrow_fields(void) {
+    size_t errors_before = ft_test_error_drop_count();
+    size_t gadgets_before = ft_gadget_drop_count();
+    FtInputDeviceIds ids = { .bus = 3, .vendor = 76, .product = 1, .version = 1 };
+    FtError error = ft_test_error_context_error_new(
+        76, FT_STR("client message"), ft_gadget_new(76), ids,
+        FT_LOG_LEVEL_WARN, FT_PERMISSIONS_READ | FT_PERMISSIONS_WRITE);
+    assert(error != NULL);
+    assert(ft_error_result(error) == FT_ERROR_TEST_CONTEXT_ERROR);
+    int32_t number = -1;
+    ft_error_field(error, 0, &number, sizeof(number));
+    assert(number == 76);
+    ft_error_field(error, 99, &number, sizeof(number));
+    assert(number == 76);
+    FtStr message = { 0 };
+    ft_error_field(error, 1, &message, sizeof(message));
+    assert_ft_str_eq(message, "client message");
+    FtGadget gadget = NULL;
+    ft_error_field(error, 2, &gadget, sizeof(gadget));
+    assert(ft_gadget_get(gadget) == 76);
+    ft_gadget_destroy(gadget);
+    assert(ft_gadget_drop_count() == gadgets_before);
+    FtInputDeviceIds received = { 0 };
+    ft_error_field(error, 3, &received, sizeof(received));
+    assert(received.vendor == 76);
+    assert(ft_test_error_drop_count() == errors_before);
+    ft_error_destroy(error);
+    assert(ft_test_error_drop_count() == errors_before + 1);
+    assert(ft_gadget_drop_count() == gadgets_before + 1);
+}
+
 /* ===================================================================== */
 /* Handle as parameter                                                   */
 /* ===================================================================== */
@@ -806,6 +837,7 @@ int main(void) {
     RUN_TEST(method_returning_result_handle_ok);
     RUN_TEST(method_returning_result_handle_err);
     RUN_TEST(method_returning_result_fail_with_value);
+    RUN_TEST(construct_payload_error_and_borrow_fields);
 
     printf("\n[handle params]\n");
     RUN_TEST(method_with_borrowed_handle_param);

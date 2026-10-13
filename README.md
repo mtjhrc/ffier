@@ -178,9 +178,30 @@ change the timing of native `Drop` compared with retaining the original handle.
 Weak clients must load the factory and required error dispatch symbols with
 `require` before returning or formatting errors.
 
+Payload variants with FFI-supported fields also have safe constructors. A
+single-field variant accepts `.into()` to share its construction expression
+between native Rust and generated clients:
+
+```rust
+Err(api::TestError::NumericError(76.into()))
+Err(api::TestError::GadgetError(gadget.into()))
+```
+
+The generated `TestErrorNumericErrorData::new(76)` form is also available.
+Multi-field variants use `ErrorVariantData::new(field_0, field_1, ...)` in
+generated clients; native Rust keeps its tuple-variant syntax. Each variant
+has a typed native factory recorded as `constructor_ffi_name` in the schema.
+Integers, enums, bitflags, value structs, owned strings (`Box<str>`), and
+owned handles use their normal FFI representations. Strings are copied into
+the library's allocator; handles and owned OS descriptors transfer ownership.
+Weak clients must load the typed factory and error destroy symbol before
+constructing a payload error.
+
 Payload errors retain their native handle for inspection, formatting, and
-forwarding. Payload variants can forward errors received from the native
-library.
+forwarding. `field_0()`, `field_1()`, etc. borrow strings and OS descriptors,
+copy value fields, and return `ErrorFieldRef<'_, T>` for handles. This wrapper
+allows shared access to the field and cannot outlive its error. Dropping the
+error destroys its owned payloads exactly once.
 
 Opaque variants (such as `Fatal(String)`, declared with
 `#[ffier(code = N, opaque)]` on the variant) remain forwarding-only. They

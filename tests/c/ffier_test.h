@@ -225,6 +225,10 @@ typedef struct {
 #define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
 #define FT_ERROR_TEST_NUMERIC_ERROR ((uint64_t)16777217 << 32 | 4)
 #define FT_ERROR_TEST_FATAL ((uint64_t)16777217 << 32 | 5)
+#define FT_ERROR_TEST_GADGET_ERROR ((uint64_t)16777217 << 32 | 6)
+#define FT_ERROR_TEST_DEVICE_ERROR ((uint64_t)16777217 << 32 | 7)
+#define FT_ERROR_TEST_CONTEXT_ERROR ((uint64_t)16777217 << 32 | 8)
+#define FT_ERROR_TEST_FILE_ERROR ((uint64_t)16777217 << 32 | 9)
 
 /* Error ------------------------------------------------------------- */
 
@@ -351,6 +355,7 @@ void ft_widget_destroy(FtWidget handle);
 
 /* Gadget ------------------------------------------------------------ */
 
+FtGadget ft_gadget_new(int32_t value);
 /** Get the gadget value. */
 int32_t ft_gadget_get(FtGadget handle);
 void ft_gadget_destroy(FtGadget handle);
@@ -882,6 +887,7 @@ int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 size_t ft_test_error_drop_count(void);
 /** Check native reconstruction, then return the same error to its client. */
 FtResult ft_roundtrip_input_backend_error(FtInputBackend backend /* owned callback; valid until release */, FtError* err_out);
+size_t ft_gadget_drop_count(void);
 /** Exercise callback overrides and library default fallback with tied borrows. */
 size_t ft_probe_receiver_defaults(FtReceiverDefaults receiver /* owned callback; valid until release */, FtStr fallback);
 /** Describe a log level as a string. */
@@ -930,6 +936,24 @@ FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtEr
 /* Create an owned fieldless error; returns NULL for payload variants or unknown codes.
  * Destroy once with error_destroy or transfer ownership to a callback caller. */
 void* ft_error_new(FtResult r);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_not_found_new(FtStr field_0);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_numeric_error_new(int32_t field_0);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_gadget_error_new(FtGadget field_0);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_device_error_new(FtInputDeviceIds field_0);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_context_error_new(int32_t field_0, FtStr field_1, FtGadget field_2, FtInputDeviceIds field_3, uint32_t field_4, uint32_t field_5);
+/* Construct an owned error. Handle fields transfer ownership; strings are copied. */
+void* ft_test_error_file_error_new(int field_0);
+/* Borrow an indexed payload field into an aligned buffer. Invalid indices leave it untouched.
+ * The data must not outlive the error. Handle fields return borrowed shells: destroy each shell
+ * before destroying the error, without consuming or mutating the field. */
+void ft_error_field(const void* handle, size_t index, void* out_buf, size_t buf_size);
+/* Equivalent to error_field(handle, 0, out_buf, buf_size). */
+void ft_error_payload(const void* handle, void* out_buf, size_t buf_size);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

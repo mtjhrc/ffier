@@ -640,11 +640,46 @@ const _: () = {
 
 unsafe extern "C" {
     fn ft_error_new(r: ffier::FfierResult) -> *mut core::ffi::c_void;
-    fn ft_error_payload(
+    fn ft_error_field(
         handle: *const core::ffi::c_void,
+        index: usize,
         out_buf: *mut core::ffi::c_void,
         buf_size: usize,
     );
+}
+
+/// Shared access to a handle field, tied to the owning error's lifetime.
+pub struct ErrorFieldRef<'a, T> {
+    value: T,
+    lifetime: core::marker::PhantomData<&'a T>,
+}
+impl<T> core::ops::Deref for ErrorFieldRef<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+unsafe extern "C" {
+    fn ft_test_error_not_found_new(field_0: <Box<str> as FfiType>::CRepr)
+        -> *mut core::ffi::c_void;
+    fn ft_test_error_numeric_error_new(field_0: <i32 as FfiType>::CRepr) -> *mut core::ffi::c_void;
+    fn ft_test_error_gadget_error_new(
+        field_0: <Gadget as FfiType>::CRepr,
+    ) -> *mut core::ffi::c_void;
+    fn ft_test_error_device_error_new(
+        field_0: <InputDeviceIds as FfiType>::CRepr,
+    ) -> *mut core::ffi::c_void;
+    fn ft_test_error_context_error_new(
+        field_0: <i32 as FfiType>::CRepr,
+        field_1: <Box<str> as FfiType>::CRepr,
+        field_2: <Gadget as FfiType>::CRepr,
+        field_3: <InputDeviceIds as FfiType>::CRepr,
+        field_4: <LogLevel as FfiType>::CRepr,
+        field_5: <Permissions as FfiType>::CRepr,
+    ) -> *mut core::ffi::c_void;
+    fn ft_test_error_file_error_new(field_0: <OwnedFd as FfiType>::CRepr)
+        -> *mut core::ffi::c_void;
 }
 
 pub struct TestErrorErrorHandle(*mut core::ffi::c_void);
@@ -668,16 +703,31 @@ impl std::fmt::Debug for TestErrorErrorHandle {
 
 pub struct TestErrorNotFoundData(TestErrorErrorHandle);
 impl TestErrorNotFoundData {
+    pub fn new(field_0: Box<str>) -> Self {
+        let raw =
+            unsafe { ft_test_error_not_found_new(<&str as FfiType>::into_c(field_0.as_ref())) };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::NotFound"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
     pub fn field_0(&self) -> &str {
         let mut __buf = std::mem::MaybeUninit::<<&'static str as FfiType>::CRepr>::uninit();
         unsafe {
-            ft_error_payload(
+            ft_error_field(
                 self.0.handle() as *const core::ffi::c_void,
+                0,
                 __buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<<&'static str as FfiType>::CRepr>(),
             )
         };
         unsafe { <&str as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl From<Box<str>> for TestErrorNotFoundData {
+    fn from(value: Box<str>) -> Self {
+        Self::new(value)
     }
 }
 impl std::fmt::Debug for TestErrorNotFoundData {
@@ -688,11 +738,20 @@ impl std::fmt::Debug for TestErrorNotFoundData {
 
 pub struct TestErrorNumericErrorData(TestErrorErrorHandle);
 impl TestErrorNumericErrorData {
+    pub fn new(field_0: i32) -> Self {
+        let raw = unsafe { ft_test_error_numeric_error_new(<i32 as FfiType>::into_c(field_0)) };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::NumericError"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
     pub fn field_0(&self) -> i32 {
         let mut __buf = std::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
         unsafe {
-            ft_error_payload(
+            ft_error_field(
                 self.0.handle() as *const core::ffi::c_void,
+                0,
                 __buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<<i32 as FfiType>::CRepr>(),
             )
@@ -700,9 +759,228 @@ impl TestErrorNumericErrorData {
         unsafe { <i32 as FfiType>::from_c(__buf.assume_init()) }
     }
 }
+impl From<i32> for TestErrorNumericErrorData {
+    fn from(value: i32) -> Self {
+        Self::new(value)
+    }
+}
 impl std::fmt::Debug for TestErrorNumericErrorData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "NumericError(...)")
+    }
+}
+
+pub struct TestErrorGadgetErrorData(TestErrorErrorHandle);
+impl TestErrorGadgetErrorData {
+    pub fn new(field_0: Gadget) -> Self {
+        let raw = unsafe { ft_test_error_gadget_error_new(<Gadget as FfiType>::into_c(field_0)) };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::GadgetError"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
+    pub fn field_0(&self) -> ErrorFieldRef<'_, Gadget> {
+        let mut __buf = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                0,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<*mut core::ffi::c_void>(),
+            )
+        };
+        ErrorFieldRef {
+            value: unsafe { <Gadget as FfiType>::from_c(__buf.assume_init()) },
+            lifetime: core::marker::PhantomData,
+        }
+    }
+}
+impl From<Gadget> for TestErrorGadgetErrorData {
+    fn from(value: Gadget) -> Self {
+        Self::new(value)
+    }
+}
+impl std::fmt::Debug for TestErrorGadgetErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "GadgetError(...)")
+    }
+}
+
+pub struct TestErrorDeviceErrorData(TestErrorErrorHandle);
+impl TestErrorDeviceErrorData {
+    pub fn new(field_0: InputDeviceIds) -> Self {
+        let raw =
+            unsafe { ft_test_error_device_error_new(<InputDeviceIds as FfiType>::into_c(field_0)) };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::DeviceError"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
+    pub fn field_0(&self) -> InputDeviceIds {
+        let mut __buf = std::mem::MaybeUninit::<<InputDeviceIds as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                0,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<InputDeviceIds as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <InputDeviceIds as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl From<InputDeviceIds> for TestErrorDeviceErrorData {
+    fn from(value: InputDeviceIds) -> Self {
+        Self::new(value)
+    }
+}
+impl std::fmt::Debug for TestErrorDeviceErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "DeviceError(...)")
+    }
+}
+
+pub struct TestErrorContextErrorData(TestErrorErrorHandle);
+impl TestErrorContextErrorData {
+    pub fn new(
+        field_0: i32,
+        field_1: Box<str>,
+        field_2: Gadget,
+        field_3: InputDeviceIds,
+        field_4: LogLevel,
+        field_5: Permissions,
+    ) -> Self {
+        let raw = unsafe {
+            ft_test_error_context_error_new(
+                <i32 as FfiType>::into_c(field_0),
+                <&str as FfiType>::into_c(field_1.as_ref()),
+                <Gadget as FfiType>::into_c(field_2),
+                <InputDeviceIds as FfiType>::into_c(field_3),
+                <LogLevel as FfiType>::into_c(field_4),
+                <Permissions as FfiType>::into_c(field_5),
+            )
+        };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::ContextError"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
+    pub fn field_0(&self) -> i32 {
+        let mut __buf = std::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                0,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<i32 as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <i32 as FfiType>::from_c(__buf.assume_init()) }
+    }
+    pub fn field_1(&self) -> &str {
+        let mut __buf = std::mem::MaybeUninit::<<&'static str as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                1,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<&'static str as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <&str as FfiType>::from_c(__buf.assume_init()) }
+    }
+    pub fn field_2(&self) -> ErrorFieldRef<'_, Gadget> {
+        let mut __buf = std::mem::MaybeUninit::<*mut core::ffi::c_void>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                2,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<*mut core::ffi::c_void>(),
+            )
+        };
+        ErrorFieldRef {
+            value: unsafe { <Gadget as FfiType>::from_c(__buf.assume_init()) },
+            lifetime: core::marker::PhantomData,
+        }
+    }
+    pub fn field_3(&self) -> InputDeviceIds {
+        let mut __buf = std::mem::MaybeUninit::<<InputDeviceIds as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                3,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<InputDeviceIds as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <InputDeviceIds as FfiType>::from_c(__buf.assume_init()) }
+    }
+    pub fn field_4(&self) -> LogLevel {
+        let mut __buf = std::mem::MaybeUninit::<<LogLevel as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                4,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<LogLevel as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <LogLevel as FfiType>::from_c(__buf.assume_init()) }
+    }
+    pub fn field_5(&self) -> Permissions {
+        let mut __buf = std::mem::MaybeUninit::<<Permissions as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                5,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<Permissions as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <Permissions as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl std::fmt::Debug for TestErrorContextErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ContextError(...)")
+    }
+}
+
+pub struct TestErrorFileErrorData(TestErrorErrorHandle);
+impl TestErrorFileErrorData {
+    pub fn new(field_0: OwnedFd) -> Self {
+        let raw = unsafe { ft_test_error_file_error_new(<OwnedFd as FfiType>::into_c(field_0)) };
+        assert!(
+            !raw.is_null(),
+            "library could not construct TestError::FileError"
+        );
+        Self(TestErrorErrorHandle(raw))
+    }
+    pub fn field_0(&self) -> BorrowedFd<'_> {
+        let mut __buf = std::mem::MaybeUninit::<<BorrowedFd<'static> as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_field(
+                self.0.handle() as *const core::ffi::c_void,
+                0,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<BorrowedFd<'static> as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <BorrowedFd<'_> as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl From<OwnedFd> for TestErrorFileErrorData {
+    fn from(value: OwnedFd) -> Self {
+        Self::new(value)
+    }
+}
+impl std::fmt::Debug for TestErrorFileErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "FileError(...)")
     }
 }
 
@@ -713,6 +991,10 @@ pub enum TestError {
     InvalidInput(),
     NumericError(TestErrorNumericErrorData),
     Fatal(TestErrorErrorHandle),
+    GadgetError(TestErrorGadgetErrorData),
+    DeviceError(TestErrorDeviceErrorData),
+    ContextError(TestErrorContextErrorData),
+    FileError(TestErrorFileErrorData),
 }
 
 impl TestError {
@@ -744,6 +1026,10 @@ impl TestError {
             }
             4u32 => Self::NumericError(TestErrorNumericErrorData(handle)),
             5u32 => Self::Fatal(handle),
+            6u32 => Self::GadgetError(TestErrorGadgetErrorData(handle)),
+            7u32 => Self::DeviceError(TestErrorDeviceErrorData(handle)),
+            8u32 => Self::ContextError(TestErrorContextErrorData(handle)),
+            9u32 => Self::FileError(TestErrorFileErrorData(handle)),
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
@@ -755,6 +1041,10 @@ impl TestError {
             Self::InvalidInput() => (3u32, Self::fieldless_handle(3u32)),
             Self::NumericError(data) => (4u32, data.0),
             Self::Fatal(handle) => (5u32, handle),
+            Self::GadgetError(data) => (6u32, data.0),
+            Self::DeviceError(data) => (7u32, data.0),
+            Self::ContextError(data) => (8u32, data.0),
+            Self::FileError(data) => (9u32, data.0),
         };
         let raw = handle.handle();
         core::mem::forget(handle);
@@ -773,6 +1063,10 @@ impl TestError {
             }
             Self::NumericError(d) => (d.0.handle(), None),
             Self::Fatal(h) => (h.handle(), None),
+            Self::GadgetError(d) => (d.0.handle(), None),
+            Self::DeviceError(d) => (d.0.handle(), None),
+            Self::ContextError(d) => (d.0.handle(), None),
+            Self::FileError(d) => (d.0.handle(), None),
         }
     }
 }
@@ -1492,6 +1786,7 @@ impl Drop for Widget {
 
 unsafe extern "C" {
     pub fn ft_gadget_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_gadget_new(value: <i32 as FfiType>::CRepr) -> <Gadget as FfiType>::CRepr;
     pub fn ft_gadget_get(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
 
@@ -1540,6 +1835,10 @@ impl std::fmt::Debug for Gadget {
 }
 
 impl Gadget {
+    pub fn new(value: i32) -> Gadget {
+        let __raw = unsafe { ft_gadget_new(<i32 as FfiType>::into_c(value)) };
+        unsafe { <Gadget as FfiType>::from_c(__raw) }
+    }
     #[doc = " Get the gadget value."]
     pub fn get(&self) -> i32 {
         let __raw = unsafe { ft_gadget_get(self.0) };
@@ -7277,6 +7576,15 @@ pub fn roundtrip_input_backend_error(backend: impl InputBackend) -> Result<(), T
     } else {
         Err(unsafe { TestError::from_ffi(__r, __err) })
     }
+}
+
+unsafe extern "C" {
+    pub fn ft_gadget_drop_count() -> <usize as FfiType>::CRepr;
+}
+
+pub fn gadget_drop_count() -> usize {
+    let __raw = unsafe { ft_gadget_drop_count() };
+    unsafe { <usize as FfiType>::from_c(__raw) }
 }
 
 unsafe extern "C" {

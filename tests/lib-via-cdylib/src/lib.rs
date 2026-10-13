@@ -111,7 +111,17 @@ mod weak_callback_error_tests {
                 Symbol::FtErrorNew,
                 Symbol::FtErrorDestroy,
                 Symbol::FtErrorMessage,
-                Symbol::FtErrorPayload,
+                Symbol::FtErrorField,
+                Symbol::FtTestErrorNumericErrorNew,
+                Symbol::FtTestErrorNotFoundNew,
+                Symbol::FtTestErrorGadgetErrorNew,
+                Symbol::FtTestErrorDeviceErrorNew,
+                Symbol::FtTestErrorContextErrorNew,
+                Symbol::FtTestErrorFileErrorNew,
+                Symbol::FtGadgetNew,
+                Symbol::FtGadgetGet,
+                Symbol::FtGadgetDestroy,
+                Symbol::FtGadgetDropCount,
                 Symbol::FtWidgetNew,
                 Symbol::FtWidgetDestroy,
                 Symbol::FtWidgetFailWithNumber,
@@ -123,6 +133,33 @@ mod weak_callback_error_tests {
     }
 
     include!("callback_errors.rs");
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod unloaded_error_factory_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn missing_factory_drops_inputs_without_transferring_handles() {
+        use api::Symbol;
+        api::require(
+            None,
+            &[
+                Symbol::FtGadgetNew,
+                Symbol::FtGadgetDestroy,
+                Symbol::FtGadgetDropCount,
+            ],
+        )
+        .unwrap();
+        let before = api::gadget_drop_count();
+        let gadget = api::Gadget::new(76);
+        let result = std::panic::catch_unwind(|| api::TestErrorGadgetErrorData::new(gadget));
+        assert!(result.is_err());
+        assert_eq!(api::gadget_drop_count(), before + 1);
+    }
 }
 
 #[cfg(test)]
@@ -599,6 +636,37 @@ mod tests {
         let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
         let w = Widget::new();
         assert_eq!(w.read_foreign_borrowed(&value), text.len() as i32);
+    }
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod unloaded_error_field_destroy_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn missing_field_destroy_does_not_allocate_a_borrowed_handle() {
+        use api::Symbol;
+        api::require(
+            None,
+            &[
+                Symbol::FtGadgetNew,
+                Symbol::FtGadgetDropCount,
+                Symbol::FtTestErrorGadgetErrorNew,
+                Symbol::FtErrorDestroy,
+                Symbol::FtErrorField,
+            ],
+        )
+        .unwrap();
+        let before = api::gadget_drop_count();
+        let data = api::TestErrorGadgetErrorData::new(api::Gadget::new(76));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| data.field_0()));
+        assert!(result.is_err());
+        assert_eq!(api::gadget_drop_count(), before);
+        drop(data);
+        assert_eq!(api::gadget_drop_count(), before + 1);
     }
 }
 

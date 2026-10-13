@@ -10,6 +10,7 @@ pub mod types;
 
 #[ffier::export]
 #[repr(C)]
+#[derive(Debug)]
 pub struct Inner {
     pub value: u32,
 }
