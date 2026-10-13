@@ -600,6 +600,17 @@ void value_struct_bridge_roundtrip(void) {
     ft_event_queue_destroy(queue);
 
     queue = ft_event_queue_new();
+    uint8_t config[] = {0xa5, 0xa5, 0xa5, 0xa5};
+    FtBytesMut written = {.data = NULL, .len = SIZE_MAX};
+    assert(ft_input_backend_fill_config(
+        queue, (FtBytesMut){.data = config, .len = sizeof(config)}, &written, NULL
+    ) == FT_RESULT_SUCCESS);
+    assert(written.data == config && written.len == 3);
+    assert(config[0] == 1 && config[1] == 2 && config[2] == 3 && config[3] == 0xa5);
+    assert(ft_input_backend_fill_config(
+        queue, (FtBytesMut){.data = NULL, .len = 0}, &written, NULL
+    ) == FT_RESULT_SUCCESS);
+    assert(written.len == 0);
     bool present = false;
     assert(ft_input_backend_next_event(queue, false, &present, &out, NULL)
            == FT_RESULT_SUCCESS);

@@ -241,6 +241,21 @@ fn emit_shared_types(
         out.push_str("    const uint8_t* data;\n");
         out.push_str("    size_t len;\n");
         out.push_str(&format!("}} {bytes_c};\n\n"));
+        out.push_str("/* Writable initialized bytes; len must not exceed Rust's isize::MAX.\n");
+        out.push_str(
+            " * For nonempty buffers, data must be non-null and valid for reads and writes.\n",
+        );
+        out.push_str(
+            " * Keep the buffer valid and exclusively accessible for the call and for every\n",
+        );
+        out.push_str(
+            " * active Rust borrow, including any borrow returned or retained by the API.\n",
+        );
+        out.push_str(" * A zero-length buffer may have a null data pointer. */\n");
+        out.push_str("typedef struct {\n");
+        out.push_str("    uint8_t* data;\n");
+        out.push_str("    size_t len;\n");
+        out.push_str(&format!("}} {bytes_c}Mut;\n\n"));
         if let Some(path_c) = &path_c {
             out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
             out.push_str(&format!("typedef {bytes_c} {path_c};\n\n"));

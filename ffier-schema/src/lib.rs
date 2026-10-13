@@ -841,6 +841,13 @@ impl Library {
     /// typed pointers; opaque-handle references retain their typedef spelling.
     pub fn c_type_of_ref(&self, type_ref: &TypeRef) -> String {
         let base = self.c_type_of(&type_ref.type_name);
+        if type_ref.ref_kind == RefKind::Mut
+            && self
+                .type_entry(&type_ref.type_name)
+                .is_some_and(|entry| matches!(entry.kind, TypeKind::Bytes { .. }))
+        {
+            return format!("{base}Mut");
+        }
         let is_value = self
             .type_entry(&type_ref.type_name)
             .is_some_and(|entry| matches!(entry.kind, TypeKind::ValueStruct { .. }));

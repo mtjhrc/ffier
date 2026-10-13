@@ -329,6 +329,14 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // Mutable byte buffers use a writable pointer and preserve exclusivity.
+    writeln!(out, "impl FfiType for &mut [u8] {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierMutBytes; const C_TYPE_NAME: &'static str = \"FfierBytesMut\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierMutBytes {{ unsafe {{ ffier::FfierMutBytes::from_bytes(self) }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {{ unsafe {{ repr.into_bytes() }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     // Blessed fd type FfiType impls
     emit_blessed_fd_impls(&mut out, lib);
 
@@ -1961,6 +1969,8 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
 
             writeln!(out, "            {}: Some({{", m.name).unwrap();
             if !m.method_lifetimes.is_empty() {
+                // The C signature erases lifetimes, but the conversions inside
+                // the trampoline still use the original method lifetime names.
                 writeln!(
                     out,
                     "                #[allow(clippy::extra_unused_lifetimes)]"
@@ -2770,6 +2780,14 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolIn
 ///
 /// Shared by all extern signature builders.
 fn ffi_repr_type(tr: &ffier_schema::TypeRef, lib: &Library) -> String {
+    if tr.ref_kind == ffier_schema::RefKind::Mut
+        && !tr.optional
+        && lib
+            .type_entry(&tr.type_name)
+            .is_some_and(|entry| matches!(entry.kind, TypeKind::Bytes { .. }))
+    {
+        return "ffier::FfierMutBytes".to_string();
+    }
     let is_value = lib
         .type_entry(&tr.type_name)
         .is_some_and(|entry| matches!(entry.kind, TypeKind::ValueStruct { .. }));

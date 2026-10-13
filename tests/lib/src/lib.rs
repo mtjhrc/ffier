@@ -1495,6 +1495,9 @@ pub trait InputBackend {
 
     #[cfg_attr(feature = "ffi", ffier(index = 3))]
     fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 4))]
+    fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], TestError>;
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1518,6 +1521,12 @@ impl InputBackend for EventQueue {
             Ok(self.pop_event())
         }
     }
+
+    fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], TestError> {
+        let len = output.len().min(3);
+        output[..len].copy_from_slice(&[1, 2, 3][..len]);
+        Ok(&mut output[..len])
+    }
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1538,6 +1547,10 @@ pub fn probe_borrowed_input_backend_values(
         backend.next_event(true),
         Err(TestError::InvalidInput(..))
     ));
+    let mut config = [0xa5; 4];
+    assert_eq!(backend.fill_config(&mut config)?, [1, 2, 3]);
+    assert_eq!(config, [1, 2, 3, 0xa5]);
+    assert!(backend.fill_config(&mut [])?.is_empty());
     Ok(original + borrowed + backend.peek_ids_result()?.vendor)
 }
 
@@ -2969,6 +2982,7 @@ mod tests {
             peek_ids_result: None,
             edit_ids_result: None,
             next_event: Some(next_event),
+            fill_config: None,
         };
         let mut calls = 0u8;
         let handle = ffier::ffier_handle_new_with_metadata(

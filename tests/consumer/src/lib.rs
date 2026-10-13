@@ -475,6 +475,12 @@ mod tests {
                 Ok(self.event.take())
             }
         }
+
+        fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], api::TestError> {
+            let len = output.len().min(3);
+            output[..len].copy_from_slice(&[1, 2, 3][..len]);
+            Ok(&mut output[..len])
+        }
     }
 
     struct CallbackSource {

@@ -564,6 +564,48 @@ impl FfierBytes {
 }
 
 // ---------------------------------------------------------------------------
+// Mutable byte slices
+// ---------------------------------------------------------------------------
+
+/// Writable byte buffer passed across FFI for `&mut [u8]`.
+/// The raw representation does not track the buffer's lifetime or exclusivity.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct FfierMutBytes {
+    pub data: *mut u8,
+    pub len: usize,
+}
+
+impl FfierMutBytes {
+    pub const EMPTY: Self = Self {
+        data: core::ptr::null_mut(),
+        len: 0,
+    };
+
+    /// # Safety
+    /// The source must remain exclusively borrowed for every use of this raw
+    /// buffer, including all FFI calls that receive it.
+    pub unsafe fn from_bytes(bytes: &mut [u8]) -> Self {
+        Self {
+            data: bytes.as_mut_ptr(),
+            len: bytes.len(),
+        }
+    }
+
+    /// # Safety
+    /// For nonempty buffers, `data` must be non-null and valid for reads and
+    /// writes of `len` initialized bytes for `'a`. The buffer must be exclusively
+    /// accessible for `'a`, and `len` must not exceed `isize::MAX`.
+    pub unsafe fn into_bytes<'a>(self) -> &'a mut [u8] {
+        if self.len == 0 {
+            &mut []
+        } else {
+            unsafe { core::slice::from_raw_parts_mut(self.data, self.len) }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // FfiError --- trait for error enums exported via FFI
 // ---------------------------------------------------------------------------
 

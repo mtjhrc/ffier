@@ -135,6 +135,18 @@ impl FfiType for &[u8] {
     }
 }
 
+impl FfiType for &mut [u8] {
+    type CRepr = ffier::FfierMutBytes;
+    const C_TYPE_NAME: &'static str = "FfierBytesMut";
+    const IS_HANDLE: bool = false;
+    fn into_c(self) -> ffier::FfierMutBytes {
+        unsafe { ffier::FfierMutBytes::from_bytes(self) }
+    }
+    unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {
+        unsafe { repr.into_bytes() }
+    }
+}
+
 #[cfg(unix)]
 impl FfiType for OwnedFd {
     type CRepr = RawFd;
@@ -5101,6 +5113,7 @@ pub trait InputBackend {
     fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError>;
     fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError>;
     fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError>;
+    fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], TestError>;
     /// # Safety
     /// Callee must destroy this handle exactly once before any borrowed callback data expires.
     #[doc(hidden)]
@@ -5216,6 +5229,14 @@ pub struct InputBackendVtable {
             *mut *mut core::ffi::c_void,
         ) -> ffier::FfierResult,
     >,
+    pub fill_config: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            ffier::FfierMutBytes,
+            *mut ffier::FfierMutBytes,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult,
+    >,
 }
 
 #[allow(non_snake_case)]
@@ -5324,6 +5345,31 @@ fn __ffier_vtable_InputBackend<__T: InputBackend>() -> &'static InputBackendVtab
                     Ok(None) => {
                         unsafe { result_is_some.write(false) };
                         0
+                    }
+                    Err(__e) => {
+                        let (__code, __handle) = __e.into_ffi();
+                        unsafe { *err_out = __handle };
+                        __code
+                    }
+                }
+            }
+            __trampoline::<__T>
+        }),
+        fill_config: Some({
+            #[allow(clippy::extra_unused_lifetimes)]
+            unsafe extern "C" fn __trampoline<'a, __T: InputBackend>(
+                __ud: *mut core::ffi::c_void,
+                output: ffier::FfierMutBytes,
+                result: *mut ffier::FfierMutBytes,
+                err_out: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult {
+                let __val = unsafe { &*(__ud as *const __T) };
+                let __result =
+                    __val.fill_config(unsafe { <&'a mut [u8] as FfiType>::from_c(output) });
+                match __result {
+                    Ok(__ok) => {
+                        unsafe { result.write(<&'a mut [u8] as FfiType>::into_c(__ok)) };
+                        0 // FFIER_RESULT_SUCCESS
                     }
                     Err(__e) => {
                         let (__code, __handle) = __e.into_ffi();
@@ -6976,6 +7022,12 @@ unsafe extern "C" {
         result: *mut <InputEvent as FfiType>::CRepr,
         err_out: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierResult;
+    pub fn ft_event_queue_fill_config(
+        handle: *mut core::ffi::c_void,
+        output: ffier::FfierMutBytes,
+        result: *mut ffier::FfierMutBytes,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
 }
 
 impl InputBackend for EventQueue {
@@ -7052,6 +7104,23 @@ impl InputBackend for EventQueue {
             } else {
                 Ok(None)
             }
+        } else {
+            Err(TestError::from_ffi(__r, __err))
+        }
+    }
+    fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let mut __result = core::mem::MaybeUninit::<ffier::FfierMutBytes>::uninit();
+        let __r = unsafe {
+            ft_event_queue_fill_config(
+                self.0,
+                <&'a mut [u8] as FfiType>::into_c(output),
+                __result.as_mut_ptr(),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(unsafe { <&'a mut [u8] as FfiType>::from_c(__result.assume_init()) })
         } else {
             Err(TestError::from_ffi(__r, __err))
         }
