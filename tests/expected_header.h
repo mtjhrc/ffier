@@ -33,8 +33,10 @@ typedef void* FtSendCounter;
 typedef void* FtSyncCounter;
 typedef void* FtBackendWorker;
 typedef void* FtSprocket;
+typedef void* FtAttachItem;
 typedef void* FtEventQueue;
 typedef void* FtOptionalWidget;
+typedef void* FtAttachDevice; /* FtAttachItem */
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtCategorizable; /* FtApple | FtOrange */
 typedef void* FtError; /* FtTestError | FtError | FtVtableError */
@@ -56,7 +58,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSendCounter | FtSyncCounter | FtBackendWorker | FtSprocket | FtEventQueue | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSendCounter | FtSyncCounter | FtBackendWorker | FtSprocket | FtAttachItem | FtEventQueue | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -546,6 +548,15 @@ FtSprocket ft_sprocket_new(FtStr name);
 FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
+/* AttachItem -------------------------------------------------------- */
+
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+FtAttachItem ft_attach_item_new(FtStr label);
+void ft_attach_item_destroy(FtAttachItem handle);
+
 /* EventQueue -------------------------------------------------------- */
 
 FtEventQueue ft_event_queue_new();
@@ -675,6 +686,10 @@ void ft_thread_backend_destroy(FtThreadBackend handle);
 FtStr ft_snapshot_snap_description(FtSnapshot handle);
 int32_t ft_snapshot_snap_source_count(FtSnapshot handle);
 void ft_snapshot_destroy(FtSnapshot handle);
+
+/* AttachDevice (dispatch) ------------------------------------------- */
+
+void ft_attach_device_destroy(FtAttachDevice handle);
 
 /* FtWeighableVtable ------------------------------------------------- */
 
@@ -850,6 +865,7 @@ size_t ft_test_error_drop_count(void);
 /** Check native reconstruction, then return the same error to its client. */
 FtResult ft_roundtrip_input_backend_error(FtInputBackend backend /* owned callback; valid until release */, FtError* err_out);
 size_t ft_gadget_drop_count(void);
+size_t ft_attach_device(FtAttachDevice device /* owned callback; valid until release; Send; trait arguments: 'a; value bounds: 'a */);
 /** Describe a log level as a string. */
 FtStr ft_log_level_name(uint32_t level);
 /** Check if a log level is enabled (everything above Off). */

@@ -47,7 +47,7 @@ callback_borrowed_return|ffier borrowed callbacks with lifetime-bearing returns 
 CASES
 
 for mode in native via-cdylib; do
-    for case_name in static_callback retained_callback_escape borrowed_callback_escape; do
+    for case_name in static_callback retained_callback_escape borrowed_callback_escape attach_device_escape; do
         check_failure "$case_name" 'does not live long enough' "$mode"
     done
 done

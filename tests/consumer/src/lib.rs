@@ -22,6 +22,13 @@ mod tests {
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
     };
 
+    #[test]
+    fn skipped_native_methods_work_through_concrete_dispatch() {
+        let label = String::from("attached");
+        let device = api::AttachItem::new(&label);
+        assert_eq!(api::attach_device(device), 6 + label.len());
+    }
+
     fn input_event(value: i32) -> api::InputEvent {
         api::InputEvent {
             device: api::InputDeviceIds {

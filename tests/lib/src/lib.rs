@@ -3,6 +3,11 @@
 
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
+mod native_attachment;
+pub use native_attachment::{AttachContext, Requirements};
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use native_attachment::{AttachDevice, AttachItem, attach_device};
+
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
@@ -1935,6 +1940,10 @@ ffier::library_definition!("ft", library_tag = 1,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
+    trait AttachDevice = 41,
+    AttachItem<'_> = 42,
+    AttachDevice for native_attachment::AttachItem,
+    fn attach_device,
     trait Weighable = 23,
     Weighable for Apple,
     trait Categorizable = 29,

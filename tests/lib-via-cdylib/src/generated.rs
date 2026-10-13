@@ -3516,6 +3516,76 @@ impl Drop for Sprocket {
 }
 
 unsafe extern "C" {
+    pub fn ft_attach_item_destroy(handle: *mut core::ffi::c_void);
+    pub fn ft_attach_item_new(
+        label: <&'static str as FfiType>::CRepr,
+    ) -> <AttachItem<'static> as FfiType>::CRepr;
+}
+
+pub struct AttachItem<'a>(
+    *mut core::ffi::c_void,
+    std::marker::PhantomData<*mut &'a ()>,
+);
+
+// SAFETY: library verifies this guarantee; unsafe imports must preserve it.
+unsafe impl<'a> ::core::marker::Send for AttachItem<'a> {}
+impl<'a> AttachItem<'a> {
+    #[doc(hidden)]
+    /// # Safety
+    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.
+    /// Underlying value must uphold this type's verified Send/Sync guarantees.
+    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {
+        Self(ptr, std::marker::PhantomData)
+    }
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl<'a> FfiHandle for AttachItem<'a> {
+    const C_HANDLE_NAME: &'static str = "FtAttachItem";
+    const TYPE_TAG: u32 = 16777258u32;
+    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
+        self.0
+    }
+    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
+        Self(handle, std::marker::PhantomData)
+    }
+}
+
+impl<'a> FfiType for AttachItem<'a> {
+    type CRepr = *mut core::ffi::c_void;
+    const C_TYPE_NAME: &'static str = "AttachItem";
+    fn into_c(self) -> *mut core::ffi::c_void {
+        self.__into_raw()
+    }
+    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
+        unsafe { Self::__from_raw(repr) }
+    }
+}
+
+impl<'a> std::fmt::Debug for AttachItem<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AttachItem").field(&self.0).finish()
+    }
+}
+
+impl<'a> AttachItem<'a> {
+    pub fn new(label: &'a str) -> AttachItem<'a> {
+        let __raw = unsafe { ft_attach_item_new(<&'a str as FfiType>::into_c(label)) };
+        unsafe { <AttachItem<'a> as FfiType>::from_c(__raw) }
+    }
+}
+
+impl<'a> Drop for AttachItem<'a> {
+    fn drop(&mut self) {
+        unsafe { ft_attach_item_destroy(self.0) }
+    }
+}
+
+unsafe extern "C" {
     pub fn ft_event_queue_destroy(handle: *mut core::ffi::c_void);
     pub fn ft_event_queue_new() -> <EventQueue as FfiType>::CRepr;
     pub fn ft_event_queue_pop_event(
@@ -6680,6 +6750,102 @@ impl<'a> Snapshot<'a> for Gadget {
     }
 }
 
+#[doc(hidden)]
+pub struct __FfierCallbackTagAttachDevice<'a> {
+    lifetime_0: core::marker::PhantomData<*mut &'a ()>,
+}
+pub trait AttachDevice<'a>: ::core::marker::Send {
+    #[doc(hidden)]
+    /// # Safety
+    /// Callee must destroy this handle exactly once before borrowed data expires.
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::OwnedCallback,
+        true,
+        false,
+    >
+    where
+        Self: Sized + 'callback;
+    #[doc(hidden)]
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::BorrowedCallback<false>,
+        true,
+        false,
+    >
+    where
+        Self: Sized;
+    #[doc(hidden)]
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::BorrowedCallback<true>,
+        true,
+        false,
+    >
+    where
+        Self: Sized;
+}
+
+impl<'a> AttachDevice<'a> for AttachItem<'a> {
+    unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+    fn __into_callback_handle<'callback>(
+        self,
+    ) -> ffier::CallbackHandle<
+        'callback,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::OwnedCallback,
+        true,
+        false,
+    >
+    where
+        Self: Sized + 'callback,
+    {
+        unsafe fn destroy(raw: *mut core::ffi::c_void) {
+            unsafe { drop(<AttachItem<'_> as FfiType>::from_c(raw)) };
+        }
+        let this = std::mem::ManuallyDrop::new(self);
+        unsafe { ffier::CallbackHandle::from_raw(this.0, destroy) }
+    }
+    fn __borrow_callback_handle(
+        &self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::BorrowedCallback<false>,
+        true,
+        false,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+    fn __borrow_callback_handle_mut(
+        &mut self,
+    ) -> ffier::CallbackHandle<
+        '_,
+        __FfierCallbackTagAttachDevice<'a>,
+        ffier::BorrowedCallback<true>,
+        true,
+        false,
+    > {
+        unsafe { ffier::CallbackHandle::from_raw(self.0, |_| {}) }
+    }
+}
+
 unsafe extern "C" {
     pub fn ft_apple_weight_grams(handle: *mut core::ffi::c_void) -> <i32 as FfiType>::CRepr;
 }
@@ -7136,6 +7302,15 @@ unsafe extern "C" {
 
 pub fn gadget_drop_count() -> usize {
     let __raw = unsafe { ft_gadget_drop_count() };
+    unsafe { <usize as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_attach_device(device: *mut core::ffi::c_void) -> <usize as FfiType>::CRepr;
+}
+
+pub fn attach_device<'a>(device: impl AttachDevice<'a> + 'a) -> usize {
+    let __raw = unsafe { ft_attach_device(device.__into_callback_handle().into_raw()) };
     unsafe { <usize as FfiType>::from_c(__raw) }
 }
 
