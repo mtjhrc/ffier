@@ -152,6 +152,10 @@ the non-null error output provided by its Rust caller. These conventions also
 apply to trait vtable slots. Optional value parameters and value slices are
 currently rejected.
 
+Importing a raw error handle through `Error::from_ffi` is unsafe: the handle
+must be valid, uniquely owned, and match the result's native type and variant.
+Generated `Result` wrappers perform this import internally.
+
 When definitions live in another crate's submodule, re-export them at that
 crate's root with `#[ffier::reexport]`. Use the same annotation on the library
 crate's public re-export before registration:

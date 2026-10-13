@@ -715,7 +715,12 @@ pub enum TestError {
 }
 
 impl TestError {
-    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+    /// Import an owned native error handle.
+    ///
+    /// # Safety
+    /// The handle must be valid, non-null, and uniquely owned by the caller.
+    /// Its native error type and variant must match the type tag and code in `r`.
+    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
         let handle = TestErrorErrorHandle(err_handle);
         match code {
@@ -808,7 +813,12 @@ pub enum Error {
 }
 
 impl Error {
-    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+    /// Import an owned native error handle.
+    ///
+    /// # Safety
+    /// The handle must be valid, non-null, and uniquely owned by the caller.
+    /// Its native error type and variant must match the type tag and code in `r`.
+    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
         let handle = ErrorErrorHandle(err_handle);
         match code {
@@ -1151,7 +1161,7 @@ impl Widget {
         if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Parse a count value from the name length, returning error if name matches trigger."]
@@ -1177,7 +1187,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Describe a code as a string."]
@@ -1199,7 +1209,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <&str as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Always fails with an error."]
@@ -1210,7 +1220,7 @@ impl Widget {
         if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Always fails with an error (value variant)."]
@@ -1227,7 +1237,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Always fails with a numeric error carrying an i32 payload."]
@@ -1243,7 +1253,7 @@ impl Widget {
         if __r == 0 {
             Ok(())
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Set tags from a string slice."]
@@ -1285,7 +1295,7 @@ impl Widget {
             Ok(unsafe { <Gadget as FfiType>::from_c(__raw) })
         } else {
             let __r = unsafe { ft_error_result(__err) };
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Read a gadget's value."]
@@ -1370,7 +1380,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <Option<BorrowedFd<'_>> as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Duplicate a file descriptor (returns owned fd)."]
@@ -1393,7 +1403,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <Option<OwnedFd> as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Optionally return an owned fd depending on `selector`:"]
@@ -1412,7 +1422,7 @@ impl Widget {
         if __r == 0 {
             Ok(unsafe { <Option<OwnedFd> as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Apply a foreign config to this widget (tests foreign param on a method)."]
@@ -1616,7 +1626,7 @@ impl Config {
         if __r == 0 {
             Ok(Self(__handle))
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     #[doc = " Get the config name."]
@@ -1808,7 +1818,7 @@ impl GizmoBuilder {
             Ok(unsafe { <Gizmo as FfiType>::from_c(__raw) })
         } else {
             let __r = unsafe { ft_error_result(__err) };
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
 }
@@ -2130,7 +2140,7 @@ impl Pipeline {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
 }
@@ -3199,7 +3209,7 @@ impl Sprocket {
         if __r == 0 {
             Ok(())
         } else {
-            Err(Error::from_ffi(__r, __err))
+            Err(unsafe { Error::from_ffi(__r, __err) })
         }
     }
 }
@@ -3369,7 +3379,7 @@ impl EventQueue {
         if __r == 0 {
             Ok(unsafe { <InputEvent as FfiType>::from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     pub fn try_peek_ids(&self, available: bool) -> Result<&InputDeviceIds, TestError> {
@@ -3386,7 +3396,7 @@ impl EventQueue {
         if __r == 0 {
             Ok(unsafe { <InputDeviceIds as BorrowFFiType>::borrow_from_c(__out.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     pub fn try_edit_ids(&mut self, available: bool) -> Result<&mut InputDeviceIds, TestError> {
@@ -3407,7 +3417,7 @@ impl EventQueue {
                 },
             )
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
 }
@@ -5804,7 +5814,7 @@ impl Fruit for Apple {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -5879,7 +5889,7 @@ impl Fruit for Orange {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -5954,7 +5964,7 @@ impl Fruit for Banana {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -6029,7 +6039,7 @@ impl Fruit for Mango {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -6104,7 +6114,7 @@ impl Fruit for Peach {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -6179,7 +6189,7 @@ impl Fruit for Plum {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -6254,7 +6264,7 @@ impl Fruit for Grape {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -6329,7 +6339,7 @@ impl Fruit for Lemon {
         if __r == 0 {
             Ok(unsafe { <i32 as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn count_tags(&self, tags: &[&str]) -> i32 {
@@ -7044,7 +7054,7 @@ impl InputBackend for EventQueue {
         if __r == 0 {
             Ok(unsafe { <InputDeviceIds as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn peek_ids_result(&self) -> Result<&InputDeviceIds, TestError> {
@@ -7061,7 +7071,7 @@ impl InputBackend for EventQueue {
         if __r == 0 {
             Ok(unsafe { <InputDeviceIds as BorrowFFiType>::borrow_from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn edit_ids_result(&mut self) -> Result<&mut InputDeviceIds, TestError> {
@@ -7080,7 +7090,7 @@ impl InputBackend for EventQueue {
                 <InputDeviceIds as BorrowFFiType>::borrow_mut_from_c(__result.assume_init())
             })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn next_event(&mut self, fail: bool) -> Result<Option<InputEvent>, TestError> {
@@ -7105,7 +7115,7 @@ impl InputBackend for EventQueue {
                 Ok(None)
             }
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     fn fill_config<'a>(&self, output: &'a mut [u8]) -> Result<&'a mut [u8], TestError> {
@@ -7122,7 +7132,7 @@ impl InputBackend for EventQueue {
         if __r == 0 {
             Ok(unsafe { <&'a mut [u8] as FfiType>::from_c(__result.assume_init()) })
         } else {
-            Err(TestError::from_ffi(__r, __err))
+            Err(unsafe { TestError::from_ffi(__r, __err) })
         }
     }
     unsafe fn __into_raw_handle(self) -> *mut core::ffi::c_void {
@@ -7323,7 +7333,7 @@ pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     if __r == 0 {
         Ok(unsafe { <OwnedFd as FfiType>::from_c(__out.assume_init()) })
     } else {
-        Err(TestError::from_ffi(__r, __err))
+        Err(unsafe { TestError::from_ffi(__r, __err) })
     }
 }
 
@@ -7390,7 +7400,7 @@ pub fn probe_input_backend_values(backend: impl InputBackend) -> Result<u16, Tes
     if __r == 0 {
         Ok(unsafe { <u16 as FfiType>::from_c(__out.assume_init()) })
     } else {
-        Err(TestError::from_ffi(__r, __err))
+        Err(unsafe { TestError::from_ffi(__r, __err) })
     }
 }
 
@@ -7418,7 +7428,7 @@ pub fn probe_borrowed_input_backend_values(
     if __r == 0 {
         Ok(unsafe { <u16 as FfiType>::from_c(__out.assume_init()) })
     } else {
-        Err(TestError::from_ffi(__r, __err))
+        Err(unsafe { TestError::from_ffi(__r, __err) })
     }
 }
 
@@ -7604,6 +7614,6 @@ pub fn create_foreign_config_checked(name: &str, value: i32) -> Result<ForeignCo
         Ok(unsafe { <ForeignConfig as FfiType>::from_c(__raw) })
     } else {
         let __r = unsafe { ft_error_result(__err) };
-        Err(TestError::from_ffi(__r, __err))
+        Err(unsafe { TestError::from_ffi(__r, __err) })
     }
 }
