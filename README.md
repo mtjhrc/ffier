@@ -358,6 +358,12 @@ bounds and lifetimes are available to the generators. Use `no_vtable` for traits
 that support only concrete dispatch. Trait-impl-only registration remains usable
 for method bindings, but does not define a callback contract.
 
+Mark Rust-only methods with `#[ffier(skip)]` on a `no_vtable` trait and on
+explicit exported implementations of those methods. Skipped methods need no
+index and keep their native signatures and default bodies. They add no FFI
+methods or callback slots; the registered trait still carries its native
+thread-safety and lifetime requirements for concrete dispatch.
+
 Concrete client types implementing the trait must also declare the required
 `send`/`sync` guarantees on their inherent export. Stronger use-site
 trait bounds (`impl LocalBackend + Send`) remain unsupported: put requirements

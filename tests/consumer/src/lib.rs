@@ -35,6 +35,13 @@ mod tests {
     };
 
     #[test]
+    fn skipped_native_methods_work_through_concrete_dispatch() {
+        let label = String::from("attached");
+        let device = api::AttachItem::new(&label);
+        assert_eq!(api::attach_device(device), 6 + label.len());
+    }
+
+    #[test]
     fn explicit_receiver_borrows_reach_retained_handles() {
         let source = Widget::new();
         let mut widget = Widget::with_name("retained receiver");

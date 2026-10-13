@@ -134,6 +134,22 @@ def check_schema(schema_path: Path) -> None:
     assert run_send["params"][0]["thread_safety"] == {"send": True}
     assert run_send["params"][0]["lifetime_bounds"] == ["static"]
 
+    attach = next(item for item in schema["traits"] if item["name"] == "AttachDevice")
+    assert attach["no_vtable"]
+    assert not attach.get("dyn_dispatch", False)
+    assert attach["methods"] == []
+    assert attach["thread_safety"] == {"send": True}
+    assert guarantees("exported_types", "AttachItem") == {"send": True}
+    implementation = next(
+        item for item in schema["trait_impls"] if item["trait_name"] == "AttachDevice"
+    )
+    assert implementation["methods"] == []
+    assert implementation["trait_lifetime_args"] == ["a"]
+    assert "AttachContext" not in schema_text and "Requirements" not in schema_text
+    add = next(item for item in schema["free_functions"] if item["name"] == "attach_device")
+    assert add["params"][0]["type_args"] == ["a"]
+    assert add["params"][0]["lifetime_bounds"] == ["a"]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate generated ffier schema")
