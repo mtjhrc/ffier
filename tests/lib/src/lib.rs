@@ -235,6 +235,22 @@ impl Widget {
         data.iter().map(|&b| b as i32).sum()
     }
 
+    /// Fill the caller-owned buffer and return the written prefix.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn fill_bytes<'a>(&self, output: &'a mut [u8]) -> &'a mut [u8] {
+        let len = output.len().min(3);
+        output[..len].copy_from_slice(&[1, 2, 3][..len]);
+        &mut output[..len]
+    }
+
+    /// Fill the caller-owned buffer, reporting how much was written.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn fill_bytes_count<'a>(&self, output: &'a mut [u8]) -> Result<u8, TestError> {
+        let len = output.len().min(3);
+        output[..len].copy_from_slice(&[1, 2, 3][..len]);
+        Ok(len as u8)
+    }
+
     /// Echo back the given string (zero-copy borrow passthrough).
     pub fn echo<'a>(&self, s: &'a str) -> &'a str {
         s

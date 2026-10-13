@@ -309,6 +309,28 @@ void method_with_bytes_param(void) {
     ft_widget_destroy(w);
 }
 
+void method_with_mutable_bytes_param(void) {
+    FtWidget w = ft_widget_new();
+
+    uint8_t data[] = { 0xa5, 0xa5, 0xa5, 0xa5 };
+    FtBytesMut written = ft_widget_fill_bytes(w, (FtBytesMut){ .data = data, .len = sizeof(data) });
+    assert(written.data == data && written.len == 3);
+    assert(data[0] == 1 && data[1] == 2 && data[2] == 3 && data[3] == 0xa5);
+
+    /* A zero-length buffer may use a null pointer. */
+    written = ft_widget_fill_bytes(w, (FtBytesMut){ .data = NULL, .len = 0 });
+    assert(written.len == 0);
+
+    uint8_t counted[] = { 0xa5, 0xa5, 0xa5, 0xa5 };
+    uint8_t count = 0;
+    assert(ft_widget_fill_bytes_count(w, (FtBytesMut){ .data = counted, .len = sizeof(counted) }, &count, NULL)
+           == FT_RESULT_SUCCESS);
+    assert(count == 3);
+    assert(counted[0] == 1 && counted[1] == 2 && counted[2] == 3 && counted[3] == 0xa5);
+
+    ft_widget_destroy(w);
+}
+
 /* ===================================================================== */
 /* File descriptor params                                                */
 /* ===================================================================== */
@@ -939,6 +961,7 @@ int main(int argc, char** argv) {
     printf("\n[str slice param]\n");
     RUN_TEST(method_with_str_slice_param);
     RUN_TEST(method_with_bytes_param);
+    RUN_TEST(method_with_mutable_bytes_param);
 
     printf("\n[file descriptors]\n");
     #ifndef _WIN32
