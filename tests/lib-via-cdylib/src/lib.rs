@@ -90,6 +90,19 @@ mod weak_receiver_default_tests {
 mod tests {
     use super::*;
 
+    #[test]
+    fn forwarded_error_named_error_preserves_native_type_tag() {
+        let error = Sprocket::new("broken").try_spin().unwrap_err();
+        let (result, handle) = error.into_ffi();
+        assert!(!handle.is_null());
+        // Compare against the native handle's tag, independent of registry names.
+        assert_eq!(ffier::ffier_result_type_tag(result), unsafe {
+            ffier::handle_type_tag(handle)
+        });
+        let error = Error::from_ffi(result, handle);
+        assert_eq!(error.to_string(), "generic failure");
+    }
+
     // ================================================================
     // Constructors
     // ================================================================

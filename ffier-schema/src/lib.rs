@@ -634,6 +634,8 @@ impl Return {
 pub struct ErrorType {
     /// Rust enum name — key into `type_registry`.
     pub name: String,
+    /// Error handle tag. Stored explicitly because a trait can share its name.
+    pub type_tag: u32,
     pub variants: Vec<ErrorVariant>,
 }
 
