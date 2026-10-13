@@ -7,6 +7,68 @@ ffier::generate_bridge!(
     schema_output = "../../target/ffier-subtest.json"
 );
 
+#[cfg(all(test, unix))]
+mod fd_client_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!("generated.rs");
+    }
+
+    use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
+
+    struct Backend {
+        fd: OwnedFd,
+        fail: bool,
+    }
+
+    impl api::FdSource for Backend {
+        fn read_notify_fd(&self) -> Result<BorrowedFd<'_>, api::SubError> {
+            if self.fail {
+                Err(api::SubError::Oops)
+            } else {
+                Ok(self.fd.as_fd())
+            }
+        }
+
+        fn clone_fd(&self, fd: BorrowedFd<'_>) -> Result<OwnedFd, api::SubError> {
+            Ok(fd.try_clone_to_owned().unwrap())
+        }
+
+        fn preserve_fd(&self, fd: OwnedFd) -> OwnedFd {
+            fd
+        }
+
+        fn raw_fd(&self, fd: RawFd) -> RawFd {
+            fd
+        }
+
+        fn borrowed_fd<'a>(&self, fd: BorrowedFd<'a>) -> Option<BorrowedFd<'a>> {
+            Some(fd)
+        }
+    }
+
+    #[test]
+    fn private_fd_types_work_through_cross_crate_callbacks() {
+        use std::io::Read;
+        let (stream, mut peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        let mut backend = Backend {
+            fd: stream.into(),
+            fail: false,
+        };
+        assert!(api::probe_fd_source(&mut backend).unwrap());
+        backend.fail = true;
+        assert_eq!(
+            api::probe_fd_source(&mut backend).unwrap_err().to_string(),
+            "oops"
+        );
+        drop(backend);
+        // EOF also verifies that the callback's owned descriptor was closed.
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
