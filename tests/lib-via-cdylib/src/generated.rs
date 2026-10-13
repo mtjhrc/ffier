@@ -823,7 +823,7 @@ impl Error {
         };
         let raw = handle.handle();
         core::mem::forget(handle);
-        (ffier::ffier_result(16777241u32, code), raw)
+        (ffier::ffier_result(16777242u32, code), raw)
     }
     fn handle_ptr(&self) -> *mut core::ffi::c_void {
         match self {

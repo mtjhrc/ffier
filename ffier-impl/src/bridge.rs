@@ -3920,6 +3920,7 @@ fn convert_exportable(
 fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType {
     ffier_schema::ErrorType {
         name: meta.name.to_string(),
+        type_tag: meta.type_tag,
         variants: meta
             .variants
             .iter()

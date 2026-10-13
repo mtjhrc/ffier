@@ -642,10 +642,7 @@ pub fn generate_from_file_with_options(
 fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
-    let error_type_tag = lib
-        .type_entry(&err.name)
-        .and_then(|entry| entry.type_tag)
-        .expect("error type must have a type tag");
+    let error_type_tag = err.type_tag;
     let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
     let payload_fn = format!("{prefix}_error_payload");
 
