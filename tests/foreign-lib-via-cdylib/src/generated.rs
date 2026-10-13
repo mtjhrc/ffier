@@ -202,6 +202,7 @@ impl<T> Drop for ForeignSlice<T> {
 }
 
 unsafe extern "C" {
+    fn fl_error_new(r: ffier::FfierResult) -> *mut core::ffi::c_void;
     fn fl_error_payload(
         handle: *const core::ffi::c_void,
         out_buf: *mut core::ffi::c_void,
@@ -230,10 +231,18 @@ impl std::fmt::Debug for ForeignErrorErrorHandle {
 
 #[derive(Debug)]
 pub enum ForeignError {
-    Invalid(ForeignErrorErrorHandle),
+    Invalid(),
 }
 
 impl ForeignError {
+    fn fieldless_handle(code: u32) -> ForeignErrorErrorHandle {
+        let raw = unsafe { fl_error_new(ffier::ffier_result(33554433u32, code)) };
+        assert!(
+            !raw.is_null(),
+            "library cannot construct ForeignError error code {code}"
+        );
+        ForeignErrorErrorHandle(raw)
+    }
     /// Import an owned native error handle.
     ///
     /// # Safety
@@ -243,22 +252,28 @@ impl ForeignError {
         let code = ffier::ffier_result_code(r);
         let handle = ForeignErrorErrorHandle(err_handle);
         match code {
-            1u32 => Self::Invalid(handle),
+            1u32 => {
+                drop(handle);
+                Self::Invalid()
+            }
             other => panic!("unknown {} error code {}", "ForeignError", other),
         }
     }
     #[allow(dead_code)]
     fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
         let (code, handle) = match self {
-            Self::Invalid(handle) => (1u32, handle),
+            Self::Invalid() => (1u32, Self::fieldless_handle(1u32)),
         };
         let raw = handle.handle();
         core::mem::forget(handle);
         (ffier::ffier_result(33554433u32, code), raw)
     }
-    fn handle_ptr(&self) -> *mut core::ffi::c_void {
+    fn message_handle(&self) -> (*mut core::ffi::c_void, Option<ForeignErrorErrorHandle>) {
         match self {
-            Self::Invalid(h) => h.handle(),
+            Self::Invalid() => {
+                let handle = Self::fieldless_handle(1u32);
+                (handle.handle(), Some(handle))
+            }
         }
     }
 }
@@ -288,7 +303,8 @@ impl std::fmt::Display for ForeignError {
         };
         let __writer_handle =
             &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void;
-        unsafe { fl_error_message(self.handle_ptr(), __writer_handle) };
+        let (__error_handle, __temporary) = self.message_handle();
+        unsafe { fl_error_message(__error_handle, __writer_handle) };
         Ok(())
     }
 }

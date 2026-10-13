@@ -17,7 +17,7 @@ pub enum TestError {
     NotFound(Box<str>),
     #[error("custom error message")]
     #[cfg_attr(feature = "ffi", ffier(code = 2))]
-    CustomMessage(),
+    CustomMessage,
     #[error("invalid input")]
     #[cfg_attr(feature = "ffi", ffier(code = 3))]
     InvalidInput(),
@@ -29,6 +29,22 @@ pub enum TestError {
     #[error(transparent)]
     #[cfg_attr(feature = "ffi", ffier(code = 5, opaque))]
     Fatal(anyhow::Error),
+}
+
+thread_local! {
+    static TEST_ERROR_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Drop for TestError {
+    fn drop(&mut self) {
+        TEST_ERROR_DROPS.with(|drops| drops.set(drops.get() + 1));
+    }
+}
+
+/// Test instrumentation: errors destroyed on the current library thread.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn test_error_drop_count() -> usize {
+    TEST_ERROR_DROPS.with(std::cell::Cell::get)
 }
 
 // ---------------------------------------------------------------------------
@@ -157,7 +173,7 @@ impl Widget {
 
     /// Always fails with an error.
     pub fn fail_always(&self) -> Result<(), TestError> {
-        Err(TestError::CustomMessage())
+        Err(TestError::CustomMessage)
     }
 
     /// Always fails with an error (value variant).
@@ -1205,10 +1221,10 @@ impl Sprocket {
         }
     }
 
-    /// Returns `Err(Error::Failed())` when name is "broken".
+    /// Returns `Err(Error::Failed)` when name is "broken".
     pub fn try_spin(&self) -> Result<(), Error> {
         if self.name == "broken" {
-            Err(Error::Failed())
+            Err(Error::Failed)
         } else {
             Ok(())
         }
@@ -1441,6 +1457,21 @@ impl InputBackend for EventQueue {
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn probe_input_backend_values(mut backend: impl InputBackend) -> Result<u16, TestError> {
     probe_borrowed_input_backend_values(&mut backend)
+}
+
+/// Check native reconstruction, then return the same error to its client.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn roundtrip_input_backend_error(mut backend: impl InputBackend) -> Result<(), TestError> {
+    let error = backend.next_event(true).unwrap_err();
+    match &error {
+        TestError::InvalidInput() => assert_eq!(error.to_string(), "invalid input"),
+        TestError::NumericError(number) => {
+            assert_eq!(*number, 76);
+            assert_eq!(error.to_string(), "numeric error: 76");
+        }
+        _ => panic!("unexpected callback error: {error}"),
+    }
+    Err(error)
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1771,13 +1802,14 @@ pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
 pub enum Error {
     #[error("generic failure")]
     #[cfg_attr(feature = "ffi", ffier(code = 1))]
-    Failed(),
+    Failed,
 }
 
 #[cfg(test)]
 mod error_tests {
     use super::TestError;
     use anyhow::anyhow;
+    #[cfg(feature = "ffi")]
     use ffier::FfiError as _;
 
     #[test]
@@ -1787,6 +1819,7 @@ mod error_tests {
     }
 
     #[test]
+    #[cfg(feature = "ffi")]
     fn fatal_variant_ffi_code() {
         let err = TestError::Fatal(anyhow!("boom"));
         assert_eq!(err.code(), 5);
@@ -1803,6 +1836,18 @@ mod error_tests {
     }
 }
 
+#[cfg(test)]
+mod fieldless_error_client_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../callback_error_client.rs"
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -1810,6 +1855,8 @@ mod error_tests {
 #[cfg(feature = "ffi")]
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
+    fn test_error_drop_count,
+    fn roundtrip_input_backend_error,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
     View<'_> = 7, ViewFactory = 8,
@@ -2711,6 +2758,34 @@ mod tests {
             assert_eq!(msg, "custom error message");
             ft_error_destroy(err);
             ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn error_factory_constructs_native_fieldless_variants_only() {
+        use ffier::FfiError as _;
+        for code in [0, 1, 4, 5, 6, 7, 8, 9, u32::MAX] {
+            assert!(TestError::from_code(code).is_none());
+            assert!(ft_error_new(ffier::ffier_result(TestError::TYPE_TAG, code)).is_null());
+        }
+        assert!(ft_error_new(0).is_null());
+        assert!(ft_error_new(ffier::ffier_result(u32::MAX, 2)).is_null());
+        unsafe {
+            for (code, message) in [(2, "custom error message"), (3, "invalid input")] {
+                let handle = ft_error_new(ffier::ffier_result(TestError::TYPE_TAG, code));
+                assert!(!handle.is_null());
+                assert_eq!(ffier::handle_type_tag(handle), TestError::TYPE_TAG);
+                assert_eq!(error_message_to_string(handle), message);
+                let native = TestError::from_c(handle);
+                match code {
+                    2 => assert!(matches!(native, TestError::CustomMessage)),
+                    3 => assert!(matches!(native, TestError::InvalidInput(..))),
+                    _ => unreachable!(),
+                }
+                assert_eq!(ffier::FfiError::code(&native), code);
+            }
+            let handle = ft_error_new(ffier::ffier_result(Error::TYPE_TAG, 1));
+            assert_eq!(Error::from_c(handle), Error::Failed);
         }
     }
 

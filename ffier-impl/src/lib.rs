@@ -1860,14 +1860,16 @@ fn is_absolute_type_path(ty: &Type) -> bool {
 // #[derive(FfiError)]
 // ---------------------------------------------------------------------------
 
-/// Derive `ffier::FfiError` for a unit enum.
+/// Derive `ffier::FfiError` for an error enum.
 ///
 /// Each variant must have `#[ffier(code = N)]` and optionally
 /// `#[ffier(code = N, message = "...")]`. Without an explicit message,
-/// the variant name is humanized (`DivisionByZero` → `"division by zero"`).
+/// the static message is the variant name. Fieldless variants may use either
+/// `Variant` or `Variant()` syntax; generated clients preserve that choice.
 ///
 /// ```ignore
 /// #[derive(ffier::FfiError)]
+/// #[non_exhaustive]
 /// pub enum CalcError {
 ///     #[ffier(code = 1)]
 ///     DivisionByZero,
@@ -1897,17 +1899,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             .into();
     }
 
-    // Validate: no unit variants (use `Variant()` instead of `Variant`)
     for variant in &data_enum.variants {
-        if matches!(variant.fields, syn::Fields::Unit) {
-            return syn::Error::new_spanned(
-                variant,
-                "FfiError variants must not be unit variants; \
-                 use `Variant()` instead of `Variant` for FFI compatibility",
-            )
-            .to_compile_error()
-            .into();
-        }
         if matches!(variant.fields, syn::Fields::Named(_)) {
             return syn::Error::new_spanned(
                 variant,
@@ -1924,6 +1916,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut codes_entries = Vec::new();
     let mut variant_meta_tokens = Vec::new();
     let mut payload_arms = Vec::new();
+    let mut from_code_arms = Vec::new();
 
     for variant in &data_enum.variants {
         let var_ident = &variant.ident;
@@ -1934,6 +1927,14 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
+        let is_unit = matches!(&variant.fields, syn::Fields::Unit);
+        let constructible = is_unit
+            || matches!(&variant.fields, syn::Fields::Unnamed(fields) if fields.unnamed.is_empty());
+        if is_unit {
+            from_code_arms.push(quote! { #code => Some(Self::#var_ident) });
+        } else if constructible {
+            from_code_arms.push(quote! { #code => Some(Self::#var_ident()) });
+        }
         // Static message for strerror: #[ffier(message="...")] > raw variant name
         // Data-carrying variants get "Name(...)" / "Name{..}" to signal
         // that ft_error_message() has richer detail.
@@ -1996,11 +1997,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         // Build payload arm for this variant.
         // Opaque variants suppress marshalling — the inner value is
         // Rust-only and not transferable across the C boundary.
-        if attrs.opaque {
-            payload_arms.push(quote! {
-                #name::#var_ident(..) => {}
-            });
-        } else {
+        if !attrs.opaque {
             match &variant.fields {
                 syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
                     // Empty-tuple variant — no payload to write
@@ -2034,7 +2031,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
         codes_entries.push(quote! { (#upper_name, #code) });
         variant_meta_tokens.push(quote! {
-            { name = #var_ident, code = #code, message = #message, fields = [#(#field_types),*], }
+            { name = #var_ident, code = #code, message = #message, constructible = #constructible, is_unit = #is_unit, fields = [#(#field_types),*], }
         });
     }
 
@@ -2083,6 +2080,13 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
             fn codes() -> &'static [(&'static str, u32)] {
                 &[#(#codes_entries),*]
+            }
+
+            fn from_code(code: u32) -> Option<Self> {
+                match code {
+                    #(#from_code_arms,)*
+                    _ => None,
+                }
             }
 
             unsafe fn payload(&self, out_buf: *mut core::ffi::c_void, buf_size: usize) {

@@ -415,7 +415,6 @@ mod tests {
     struct CallbackBackend {
         ids: api::InputDeviceIds,
         event: Option<api::InputEvent>,
-        error: Option<api::TestError>,
     }
 
     impl api::InputBackend for CallbackBackend {
@@ -433,7 +432,7 @@ mod tests {
 
         fn next_event(&mut self, fail: bool) -> Result<Option<api::InputEvent>, api::TestError> {
             if fail {
-                Err(self.error.take().unwrap())
+                Err(api::TestError::InvalidInput())
             } else {
                 Ok(self.event.take())
             }
@@ -483,13 +482,11 @@ mod tests {
         let backend = CallbackBackend {
             ids: event.device,
             event: Some(event),
-            error: api::EventQueue::new().try_peek_ids(false).err(),
         };
         assert_eq!(api::probe_input_backend_values(backend).unwrap(), 20701);
 
         let mut backend = CallbackBackend {
             event: Some(event),
-            error: api::EventQueue::new().try_peek_ids(false).err(),
             ids: event.device,
         };
         assert_eq!(
@@ -580,7 +577,7 @@ mod tests {
     #[test]
     fn test_result_err() {
         let err = result_err_path().unwrap_err();
-        assert!(matches!(err, api::TestError::CustomMessage(..)));
+        assert!(matches!(err, api::TestError::CustomMessage));
     }
 
     #[test]
@@ -736,9 +733,6 @@ mod tests {
             self.sweetness
         }
         fn try_count(&self, input: i32) -> Result<i32, api::TestError> {
-            // Only native mode can construct TestError directly
-            // (via-cdylib TestError wraps an error handle that requires FFI)
-            #[cfg(feature = "native")]
             if input < 0 {
                 return Err(api::TestError::InvalidInput());
             }

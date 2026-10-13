@@ -920,6 +920,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
     // Generate per-variant field getters for data-carrying error variants
     let error_getters = generate_error_getters(&first_prefix, &errors, &lib_crate);
+    let error_factory = generate_error_factory(&first_prefix, &errors, &lib_crate);
 
     // Generate str_free function for dropping owned strings (Box<str>)
     let str_free_fn = generate_str_free(&first_prefix);
@@ -953,6 +954,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 
         #error_getters
 
+        #error_factory
+
         #str_free_fn
 
         #free_object_array_fn
@@ -962,6 +965,39 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 // ===========================================================================
 // Error payload getter — borrows field data from the handle
 // ===========================================================================
+
+/// Construct native fieldless errors in the library's allocator.
+fn generate_error_factory(
+    prefix: &str,
+    errors: &[TokenStream2],
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    let factory_fn = format_ident!("{prefix}_error_new");
+    let mut dispatch_arms = Vec::new();
+    for item in errors {
+        let meta: MetaError = syn::parse2(item.clone()).expect("validated error metadata");
+        let type_tag = meta.type_tag;
+        let path = &meta.path;
+        dispatch_arms.push(quote! {
+            #type_tag => <#path as #lib_crate::FfiError>::from_code(code)
+                .map(<#path as #lib_crate::FfiType>::into_c)
+                .unwrap_or(core::ptr::null_mut()),
+        });
+    }
+    quote! {
+        /// Create an owned fieldless error. Returns null for success,
+        /// unknown error types/codes, and variants with payloads.
+        /// Destroy the handle exactly once or transfer it to a callback caller.
+        #[unsafe(no_mangle)]
+        pub extern "C" fn #factory_fn(r: ffier::FfierResult) -> *mut core::ffi::c_void {
+            let code = ffier::ffier_result_code(r);
+            match ffier::ffier_result_type_tag(r) {
+                #(#dispatch_arms)*
+                _ => core::ptr::null_mut(),
+            }
+        }
+    }
+}
 
 /// Generate `{prefix}_error_payload(handle, out_buf, buf_size)` — shallow-
 /// copies the variant's CRepr into caller-provided storage, *borrowing* the
@@ -3937,6 +3973,8 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
                     c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
                     code: v.code,
                     message: v.message.clone(),
+                    constructible: v.constructible,
+                    is_unit: v.is_unit,
                     fields,
                 }
             })

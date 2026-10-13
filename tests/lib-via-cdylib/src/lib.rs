@@ -15,6 +15,45 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
+mod callback_error_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!("callback_errors.rs");
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod weak_callback_error_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    fn init() {
+        use api::Symbol;
+        assert!(Symbol::FtErrorNew.is_available(None));
+        api::require(
+            None,
+            &[
+                Symbol::FtErrorNew,
+                Symbol::FtErrorDestroy,
+                Symbol::FtErrorMessage,
+                Symbol::FtErrorPayload,
+                Symbol::FtWidgetNew,
+                Symbol::FtWidgetDestroy,
+                Symbol::FtWidgetFailWithNumber,
+                Symbol::FtTestErrorDropCount,
+                Symbol::FtRoundtripInputBackendError,
+            ],
+        )
+        .unwrap();
+    }
+
+    include!("callback_errors.rs");
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -135,7 +174,7 @@ mod tests {
     fn method_returning_result_void_err() {
         let w = Widget::new();
         let err = w.fail_always().unwrap_err();
-        assert!(matches!(err, TestError::CustomMessage(..)));
+        assert!(matches!(err, TestError::CustomMessage));
     }
 
     #[test]
@@ -488,5 +527,23 @@ mod tests {
         let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
         let w = Widget::new();
         assert_eq!(w.read_foreign_borrowed(&value), text.len() as i32);
+    }
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod unloaded_fieldless_destroy_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn missing_error_destroy_does_not_allocate_a_fieldless_error() {
+        use api::Symbol;
+        api::require(None, &[Symbol::FtErrorNew, Symbol::FtTestErrorDropCount]).unwrap();
+        let before = api::test_error_drop_count();
+        let result = std::panic::catch_unwind(|| api::TestError::InvalidInput().to_string());
+        assert!(result.is_err());
+        assert_eq!(api::test_error_drop_count(), before);
     }
 }

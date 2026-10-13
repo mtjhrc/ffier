@@ -623,10 +623,17 @@ pub trait FfiError: std::error::Error + Sized {
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
     fn codes() -> &'static [(&'static str, u32)];
 
+    /// Construct a fieldless (unit or empty-tuple) variant from its code.
+    /// Returns `None` for unknown codes and variants with payloads,
+    /// including opaque payloads.
+    fn from_code(_code: u32) -> Option<Self> {
+        None
+    }
+
     /// Shallow-copy the variant's payload CRepr into `out_buf`.
     /// The written CRepr borrows from `&self` — the caller must not
     /// outlive the error value. `buf_size` is checked for safety.
-    /// Fieldless (empty-tuple) variants are a no-op.
+    /// Fieldless variants are a no-op.
     ///
     /// # Safety
     /// `out_buf` must point to a valid, aligned buffer of at least
