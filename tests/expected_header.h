@@ -228,7 +228,7 @@ typedef struct {
 
 /* Error ------------------------------------------------------------- */
 
-#define FT_ERROR__FAILED ((uint64_t)16777241 << 32 | 1)
+#define FT_ERROR__FAILED ((uint64_t)16777242 << 32 | 1)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -548,7 +548,7 @@ void ft_backend_worker_destroy(FtBackendWorker handle);
 /* Sprocket ---------------------------------------------------------- */
 
 FtSprocket ft_sprocket_new(FtStr name);
-/** Returns `Err(Error::Failed())` when name is "broken". */
+/** Returns `Err(Error::Failed)` when name is "broken". */
 FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
@@ -878,6 +878,10 @@ int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
 
+/** Test instrumentation: errors destroyed on the current library thread. */
+size_t ft_test_error_drop_count(void);
+/** Check native reconstruction, then return the same error to its client. */
+FtResult ft_roundtrip_input_backend_error(FtInputBackend backend /* owned callback; valid until release */, FtError* err_out);
 /** Exercise callback overrides and library default fallback with tied borrows. */
 size_t ft_probe_receiver_defaults(FtReceiverDefaults receiver /* owned callback; valid until release */, FtStr fallback);
 /** Describe a log level as a string. */
@@ -923,6 +927,9 @@ int32_t ft_consume_foreign_item(FlForeignItem item);
 FlForeignItem ft_create_foreign_item(FtStr label, int32_t score);
 /** Create a foreign config, returning Result with foreign ok type. */
 FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtError* err_out);
+/* Create an owned fieldless error; returns NULL for payload variants or unknown codes.
+ * Destroy once with error_destroy or transfer ownership to a callback caller. */
+void* ft_error_new(FtResult r);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

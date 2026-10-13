@@ -156,6 +156,39 @@ Importing a raw error handle through `Error::from_ffi` is unsafe: the handle
 must be valid, uniquely owned, and match the result's native type and variant.
 Generated `Result` wrappers perform this import internally.
 
+Generated Rust clients preserve native fieldless error syntax, so the same
+callback implementation works with native Rust and generated bindings:
+
+```rust
+Err(api::TestError::InvalidInput())
+```
+
+The derive accepts both ordinary unit variants (`CustomMessage`) and
+empty-tuple variants (`InvalidInput()`). Generated bindings preserve the
+declaration's construction and pattern syntax, so fieldless variants no
+longer require parentheses.
+
+Fieldless variants are client values and need no allocation or loaded symbols
+to construct or drop. Returning one from a callback allocates an owned native
+error through `{prefix}_error_new` and transfers ownership to the library.
+Receiving a fieldless error releases its native handle immediately and keeps
+the variant as a client value. `Display` formats a temporary native error to
+preserve the native message and destroys that temporary afterward. This can
+change the timing of native `Drop` compared with retaining the original handle.
+Weak clients must load the factory and required error dispatch symbols with
+`require` before returning or formatting errors.
+
+Payload errors retain their native handle for inspection, formatting, and
+forwarding. Payload variants can forward errors received from the native
+library.
+
+Opaque variants (such as `Fatal(String)`, declared with
+`#[ffier(code = N, opaque)]` on the variant) remain forwarding-only. They
+cannot be constructed without a native error handle. The generic
+`{prefix}_error_new` factory only constructs fieldless variants and returns
+null for payload variants and unknown error types or codes. Rebuild native
+bridges and regenerate schemas, headers, and bindings together.
+
 When definitions live in another crate's submodule, re-export them at that
 crate's root with `#[ffier::reexport]`. Use the same annotation on the library
 crate's public re-export before registration:

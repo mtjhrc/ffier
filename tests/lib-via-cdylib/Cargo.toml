@@ -13,7 +13,6 @@ weak-tests = ["dep:libloading"]
 bitflags = "2"
 ffier = { path = "../../ffier" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
-
 libloading = { version = "0.8", optional = true }
 
 [build-dependencies]

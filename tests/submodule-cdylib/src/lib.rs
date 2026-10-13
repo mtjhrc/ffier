@@ -12,6 +12,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fieldless_error_factory_uses_defining_crate_constructor() {
+        use ffier_test_submodule_lib::{FfiHandle, FfiType, SubError};
+
+        for code in [1, 2] {
+            let handle = subtest_error_new(ffier::ffier_result(SubError::TYPE_TAG, code));
+            assert!(!handle.is_null());
+            let error = unsafe { SubError::from_c(handle) };
+            match code {
+                1 => assert!(matches!(error, SubError::Oops)),
+                2 => assert!(matches!(error, SubError::BadThing())),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
     fn all_scalar_fields_cross_external_bridge() {
         use ffier_test_submodule_lib::{types::ScalarValues, FfiType};
 

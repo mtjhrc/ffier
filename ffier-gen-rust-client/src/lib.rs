@@ -495,26 +495,33 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     }
 
     // 1. Error enums
-    // Emit ft_error_payload extern once (shared by all error types).
+    // Emit shared error factory and payload declarations once.
     if !lib.errors.is_empty() {
         let payload_fn = format!("{}_error_payload", lib.prefix);
         emit_extern_fns(
             &mut out,
-            &[extern_fn_private(
-                &payload_fn,
-                vec![
-                    "handle: *const core::ffi::c_void".to_string(),
-                    "out_buf: *mut core::ffi::c_void".to_string(),
-                    "buf_size: usize".to_string(),
-                ],
-                String::new(),
-            )],
+            &[
+                extern_fn_private(
+                    &format!("{}_error_new", lib.prefix),
+                    vec!["r: ffier::FfierResult".to_string()],
+                    " -> *mut core::ffi::c_void".to_string(),
+                ),
+                extern_fn_private(
+                    &payload_fn,
+                    vec![
+                        "handle: *const core::ffi::c_void".to_string(),
+                        "out_buf: *mut core::ffi::c_void".to_string(),
+                        "buf_size: usize".to_string(),
+                    ],
+                    String::new(),
+                ),
+            ],
             weak,
             &mut symbols,
         );
     }
     for err in &lib.errors {
-        emit_error(&mut out, err, lib);
+        emit_error(&mut out, err, lib, weak);
     }
 
     // 2. Exported types
@@ -639,7 +646,15 @@ pub fn generate_from_file_with_options(
 // Error generation
 // ===========================================================================
 
-fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
+fn fieldless_variant_syntax(variant: &ffier_schema::ErrorVariant) -> String {
+    if variant.is_unit {
+        variant.name.clone()
+    } else {
+        format!("{}()", variant.name)
+    }
+}
+
+fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
     let error_type_tag = err.type_tag;
@@ -723,12 +738,14 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
         writeln!(out).unwrap();
     }
 
-    // Enum definition — every variant holds ErrorHandle (fieldless) or
-    // VariantData (data-carrying, which wraps ErrorHandle)
+    // Fieldless variants mirror the native enum. Payload variants retain
+    // their native handle, including variants with opaque payloads.
     writeln!(out, "#[derive(Debug)]").unwrap();
     writeln!(out, "pub enum {} {{", err.name).unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.constructible {
+            writeln!(out, "    {},", fieldless_variant_syntax(v)).unwrap();
+        } else if v.fields.is_empty() {
             writeln!(out, "    {}({handle_name}),", v.name).unwrap();
         } else {
             let data_name = format!("{}{}Data", err.name, v.name);
@@ -738,8 +755,28 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // from_ffi — just match on code and stash the handle
     writeln!(out, "impl {} {{", err.name).unwrap();
+    if err.variants.iter().any(|v| v.constructible) {
+        writeln!(
+            out,
+            "    fn fieldless_handle(code: u32) -> {handle_name} {{"
+        )
+        .unwrap();
+        if weak {
+            writeln!(out, "        {}.get().expect(\"symbol `{error_destroy_fn}` not loaded; call require() first\");", error_destroy_fn.to_ascii_uppercase()).unwrap();
+        }
+        writeln!(out, "        let raw = unsafe {{ {prefix}_error_new(ffier::ffier_result({error_type_tag}u32, code)) }};").unwrap();
+        writeln!(
+            out,
+            "        assert!(!raw.is_null(), \"library cannot construct {} error code {{code}}\");",
+            err.name
+        )
+        .unwrap();
+        writeln!(out, "        {handle_name}(raw)").unwrap();
+        writeln!(out, "    }}").unwrap();
+    }
+    // Native fieldless handles are released immediately on conversion to
+    // client values. Payload variants keep their handles for borrowing.
     writeln!(out, "    /// Import an owned native error handle.").unwrap();
     writeln!(out, "    ///").unwrap();
     writeln!(out, "    /// # Safety").unwrap();
@@ -762,7 +799,15 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "        let handle = {handle_name}(err_handle);").unwrap();
     writeln!(out, "        match code {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.constructible {
+            writeln!(
+                out,
+                "            {}u32 => {{ drop(handle); Self::{} }},",
+                v.code,
+                fieldless_variant_syntax(v)
+            )
+            .unwrap();
+        } else if v.fields.is_empty() {
             writeln!(
                 out,
                 "            {}u32 => Self::{}(handle),",
@@ -788,8 +833,8 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
 
-    // Return the library's error handle to a callback caller. Forgetting the
-    // wrapper transfers ownership, so its Drop implementation must not run.
+    // Materialize fieldless values as native errors at the FFI boundary.
+    // Payload errors transfer their existing native handle unchanged.
     writeln!(out, "    #[allow(dead_code)]").unwrap();
     writeln!(
         out,
@@ -798,7 +843,16 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(out, "        let (code, handle) = match self {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.constructible {
+            writeln!(
+                out,
+                "            Self::{} => ({}u32, Self::fieldless_handle({}u32)),",
+                fieldless_variant_syntax(v),
+                v.code,
+                v.code
+            )
+            .unwrap();
+        } else if v.fields.is_empty() {
             writeln!(
                 out,
                 "            Self::{}(handle) => ({}u32, handle),",
@@ -824,14 +878,31 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
 
-    // message() — calls ft_error_message with a PushStr handle wrapping a String
-    writeln!(out, "    fn handle_ptr(&self) -> *mut core::ffi::c_void {{").unwrap();
+    // Formatting a fieldless value borrows a temporary native error, keeping
+    // custom native Display behavior instead of using the static code name.
+    writeln!(
+        out,
+        "    fn message_handle(&self) -> (*mut core::ffi::c_void, Option<{handle_name}>) {{"
+    )
+    .unwrap();
     writeln!(out, "        match self {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
-            writeln!(out, "            Self::{}(h) => h.handle(),", v.name).unwrap();
+        if v.constructible {
+            writeln!(out, "            Self::{} => {{ let handle = Self::fieldless_handle({}u32); (handle.handle(), Some(handle)) }},", fieldless_variant_syntax(v), v.code).unwrap();
+        } else if v.fields.is_empty() {
+            writeln!(
+                out,
+                "            Self::{}(h) => (h.handle(), None),",
+                v.name
+            )
+            .unwrap();
         } else {
-            writeln!(out, "            Self::{}(d) => d.0.handle(),", v.name).unwrap();
+            writeln!(
+                out,
+                "            Self::{}(d) => (d.0.handle(), None),",
+                v.name
+            )
+            .unwrap();
         }
     }
     writeln!(out, "        }}").unwrap();
@@ -896,7 +967,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(
         out,
-        "        unsafe {{ {error_msg_fn}(self.handle_ptr(), __writer_handle) }};"
+        "        let (__error_handle, __temporary) = self.message_handle();\n        unsafe {{ {error_msg_fn}(__error_handle, __writer_handle) }};"
     )
     .unwrap();
     writeln!(out, "        Ok(())").unwrap();
@@ -2627,7 +2698,7 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
     writeln!(out, "            None => {{").unwrap();
     writeln!(
         out,
-        "                let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+        "                let lib = libloading::os::unix::Library::this();"
     )
     .unwrap();
     writeln!(
@@ -2716,7 +2787,7 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
     writeln!(out, "        None => {{").unwrap();
     writeln!(
         out,
-        "            let lib = unsafe {{ libloading::os::unix::Library::this() }};"
+        "            let lib = libloading::os::unix::Library::this();"
     )
     .unwrap();
     writeln!(out, "            load_all(&lib, symbols)").unwrap();

@@ -86,7 +86,7 @@ consumer-cdylib: build
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
 
-# Exercise generated weak client receiver lifetime contracts.
+# Exercise generated weak clients, including client-originated callback errors.
 weak-client: build
     cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features weak-tests
 
@@ -104,6 +104,7 @@ compat: build
 # all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
 no-codegen:
     cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features fieldless_error_client_tests
 
 # Compile a qualified value struct with its whole-type cfg on and off.
 check-cfg-value:

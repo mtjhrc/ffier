@@ -491,6 +491,10 @@ pub struct MetaErrorVariant {
     pub name: Ident,
     pub code: u32,
     pub message: String,
+    /// True only for variants with no native payload (opaque fields count).
+    pub constructible: bool,
+    /// True for native `Variant`, false for tuple variants including `Variant()`.
+    pub is_unit: bool,
     /// Type tokens for data-carrying variant fields (e.g. `Box<str>`).
     /// Empty for unit variants.
     pub field_types: Vec<TokenStream>,
@@ -1209,6 +1213,14 @@ impl syn::parse::Parse for MetaError {
             expect_key(&inner, "message")?;
             let message = parse_string(&inner)?;
             parse_comma(&inner)?;
+            expect_key(&inner, "constructible")?;
+            let constructible: syn::LitBool = inner.parse()?;
+            let constructible = constructible.value;
+            parse_comma(&inner)?;
+            expect_key(&inner, "is_unit")?;
+            let is_unit: syn::LitBool = inner.parse()?;
+            let is_unit = is_unit.value;
+            parse_comma(&inner)?;
             expect_key(&inner, "fields")?;
             let field_types = parse_bracketed_list(&inner, |content| {
                 let ts = parse_parenthesized_tokens(content)?;
@@ -1220,6 +1232,8 @@ impl syn::parse::Parse for MetaError {
                 name,
                 code,
                 message,
+                constructible,
+                is_unit,
                 field_types,
             })
         })?;
