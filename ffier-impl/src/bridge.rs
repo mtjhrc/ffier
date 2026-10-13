@@ -593,7 +593,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let free_object_array_fn = generate_free_object_array(&first_prefix);
 
     // Emit JSON schema to the user-specified path.
-    emit_json(
+    if let Err(error) = emit_json(
         &first_prefix,
         primitives_prefix.as_deref(),
         &schema_output,
@@ -604,7 +604,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         &enum_constants,
         &bitflags_constants,
         &free_fns,
-    );
+    ) {
+        return error.to_compile_error();
+    }
 
     quote! {
         #dispatch_helpers
@@ -2319,18 +2321,7 @@ fn emit_json(
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
     free_fns: &[TokenStream2],
-) {
-    let path = std::path::PathBuf::from(schema_output);
-    let path = if path.is_absolute() {
-        path
-    } else {
-        let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
-            Ok(d) => std::path::PathBuf::from(d),
-            Err(_) => return,
-        };
-        manifest_dir.join(path)
-    };
-
+) -> syn::Result<()> {
     let library = build_schema(
         prefix,
         primitives_prefix,
@@ -2342,6 +2333,40 @@ fn emit_json(
         bitflags_constants,
         free_fns,
     );
+    // Standard Option/Box/Result syntax has already been converted. Any remaining
+    // use of these names would collide with that syntax in generated bindings.
+    let payload_types = library
+        .errors
+        .iter()
+        .flat_map(|error| &error.variants)
+        .flat_map(|variant| &variant.fields)
+        .map(|field| field.type_ref.type_name.as_str());
+    for name in library
+        .type_registry
+        .keys()
+        .map(String::as_str)
+        .chain(library.referenced_types())
+        .chain(payload_types)
+    {
+        if matches!(name, "Option" | "Box" | "Result") {
+            return Err(syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("FFI type name `{name}` is reserved; rename the exported type"),
+            ));
+        }
+    }
+
+    let path = std::path::PathBuf::from(schema_output);
+    let path = if path.is_absolute() {
+        path
+    } else {
+        let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {
+            Ok(d) => std::path::PathBuf::from(d),
+            Err(_) => return Ok(()),
+        };
+        manifest_dir.join(path)
+    };
+
     let json = library.to_json();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -2356,6 +2381,34 @@ fn emit_json(
         std::fs::write(&path, json).unwrap_or_else(|e| {
             panic!("failed to write {}: {e}", path.display());
         });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qualified_paths_preserve_schema_type_information() {
+        let resolver = CTypeResolver::new("test", None);
+        for (source, canonical) in [
+            ("std::option::Option<&str>", "Option<&str>"),
+            ("alloc::boxed::Box<str>", "Box<str>"),
+            (
+                "::core::result::Result<::std::option::Option<::std::boxed::Box<str>>, Error>",
+                "Option<Box<str>>",
+            ),
+        ] {
+            let source: syn::Type = syn::parse_str(source).unwrap();
+            let source = crate::extract_result_types(&source).map_or(source, |(ok, _)| ok);
+            let canonical: syn::Type = syn::parse_str(canonical).unwrap();
+            assert_eq!(
+                resolver.type_ref_from_syn(&source),
+                resolver.type_ref_from_syn(&canonical),
+                "source: {source:?}",
+            );
+        }
     }
 }
 
@@ -2406,40 +2459,22 @@ impl CTypeResolver {
     fn type_ref_from_syn(&self, ty: &syn::Type) -> ffier_schema::TypeRef {
         match ty {
             // Option<T> → recurse into T and set optional = true.
-            syn::Type::Path(tp) if path_is_ident(&tp.path, "Option") => {
-                if let Some(inner) = single_angle_arg(&tp.path) {
-                    let mut tr = self.type_ref_from_syn(inner);
-                    tr.optional = true;
-                    return tr;
-                }
-                // Fallthrough: bare `Option` without angle brackets (shouldn't happen).
-                ffier_schema::TypeRef {
-                    type_name: "Option".to_string(),
-                    ref_kind: ffier_schema::RefKind::None,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                }
+            syn::Type::Path(tp) if crate::is_option(tp) => {
+                let inner = crate::option_inner(tp);
+                let mut tr = self.type_ref_from_syn(inner);
+                tr.optional = true;
+                tr
             }
 
             // Box<str> → owned str.
-            syn::Type::Path(tp) if path_is_ident(&tp.path, "Box") => {
-                if let Some(inner) = single_angle_arg(&tp.path)
-                    && matches!(inner, syn::Type::Path(p) if p.path.is_ident("str"))
-                {
-                    return ffier_schema::TypeRef {
-                        type_name: "str".to_string(),
-                        ref_kind: ffier_schema::RefKind::None,
-                        ref_lifetime: None,
-                        type_args: vec![],
-                        optional: false,
-                        owned: true,
-                    };
-                }
-                // Fallthrough: Box<SomethingElse> — treat like a regular path.
-                self.type_ref_from_path(&tp.path, ffier_schema::RefKind::None, None)
-            }
+            syn::Type::Path(tp) if crate::is_box_str(tp) => ffier_schema::TypeRef {
+                type_name: "str".to_string(),
+                ref_kind: ffier_schema::RefKind::None,
+                ref_lifetime: None,
+                type_args: vec![],
+                optional: false,
+                owned: true,
+            },
 
             // &T or &mut T — extract reference kind, lifetime, then recurse.
             syn::Type::Reference(ref_ty) => {
@@ -2582,12 +2617,6 @@ impl CTypeResolver {
     }
 }
 
-/// Check if a `syn::Path` has a single segment matching `name`
-/// (e.g. `Option`, `Box`). Ignores leading `::` and multi-segment paths.
-fn path_is_ident(path: &syn::Path, name: &str) -> bool {
-    path.segments.len() == 1 && path.segments[0].ident == name
-}
-
 /// Check if a `syn::Type` is `c_void` or `core::ffi::c_void` (any qualification).
 fn is_c_void(ty: &syn::Type) -> bool {
     if let syn::Type::Path(tp) = ty {
@@ -2596,19 +2625,6 @@ fn is_c_void(ty: &syn::Type) -> bool {
     } else {
         false
     }
-}
-
-/// Extract the single type argument from `Path<T>` (e.g. `Option<&str>` → `&str`).
-/// Returns `None` if there isn't exactly one type argument.
-fn single_angle_arg(path: &syn::Path) -> Option<&syn::Type> {
-    let last = path.segments.last()?;
-    if let syn::PathArguments::AngleBracketed(ab) = &last.arguments
-        && ab.args.len() == 1
-        && let syn::GenericArgument::Type(ty) = &ab.args[0]
-    {
-        return Some(ty);
-    }
-    None
 }
 
 #[allow(clippy::too_many_arguments)]

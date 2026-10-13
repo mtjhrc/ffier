@@ -1194,12 +1194,15 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
 fn extract_result_types(ty: &Type) -> Option<(Type, Type)> {
     let Type::Path(tp) = ty else { return None };
     let last = tp.path.segments.last()?;
-    if last.ident != "Result" {
+    if !is_builtin_type_path(tp, "Result") {
         return None;
     }
     let PathArguments::AngleBracketed(args) = &last.arguments else {
         return None;
     };
+    if args.args.len() != 2 {
+        return None;
+    }
     let mut iter = args.args.iter();
     let GenericArgument::Type(ok_ty) = iter.next()? else {
         return None;
@@ -1263,41 +1266,56 @@ struct AliasContext {
     helper_mod: syn::Ident,
 }
 
+/// Recognize Option, Box, and Result by their bare or standard-library paths.
+fn is_builtin_type_path(tp: &syn::TypePath, name: &str) -> bool {
+    if tp.qself.is_some() {
+        return false;
+    }
+    let segments = &tp.path.segments;
+    if segments.len() == 1 {
+        return tp.path.leading_colon.is_none() && segments[0].ident == name;
+    }
+    let (module, roots) = match name {
+        "Option" => ("option", ["std", "core"]),
+        "Box" => ("boxed", ["std", "alloc"]),
+        "Result" => ("result", ["std", "core"]),
+        _ => return false,
+    };
+    segments.len() == 3
+        && roots.iter().any(|root| segments[0].ident == root)
+        && segments[1].ident == module
+        && segments[2].ident == name
+        && matches!(segments[0].arguments, syn::PathArguments::None)
+        && matches!(segments[1].arguments, syn::PathArguments::None)
+}
+
+/// Extract the single type argument from `Path<T>`.
+fn single_angle_arg(path: &syn::Path) -> Option<&Type> {
+    let last = path.segments.last()?;
+    if let PathArguments::AngleBracketed(args) = &last.arguments
+        && args.args.len() == 1
+        && let GenericArgument::Type(ty) = &args.args[0]
+    {
+        return Some(ty);
+    }
+    None
+}
+
 /// Check if a TypePath is `Option<_>`.
 fn is_option(tp: &syn::TypePath) -> bool {
-    tp.qself.is_none() && {
-        let last = tp.path.segments.last().unwrap();
-        last.ident == "Option" && matches!(&last.arguments, syn::PathArguments::AngleBracketed(_))
-    }
+    is_builtin_type_path(tp, "Option") && single_angle_arg(&tp.path).is_some()
 }
 
 /// Extract the inner type from `Option<T>`.
 fn option_inner(tp: &syn::TypePath) -> &Type {
-    let last = tp.path.segments.last().unwrap();
-    match &last.arguments {
-        syn::PathArguments::AngleBracketed(args) => match args.args.first().unwrap() {
-            syn::GenericArgument::Type(ty) => ty,
-            _ => panic!("Option<_> must have a type argument"),
-        },
-        _ => panic!("Option must have angle bracket arguments"),
-    }
+    single_angle_arg(&tp.path).expect("expected Option<T>")
 }
 
 /// Check if a TypePath is `Box<str>`.
 fn is_box_str(tp: &syn::TypePath) -> bool {
-    tp.qself.is_none() && {
-        let last = tp.path.segments.last().unwrap();
-        if last.ident != "Box" {
-            return false;
-        }
-        match &last.arguments {
-            syn::PathArguments::AngleBracketed(args) => match args.args.first() {
-                Some(syn::GenericArgument::Type(Type::Path(inner))) => inner.path.is_ident("str"),
-                _ => false,
-            },
-            _ => false,
-        }
-    }
+    is_builtin_type_path(tp, "Box")
+        && single_angle_arg(&tp.path)
+            .is_some_and(|inner| matches!(inner, Type::Path(p) if p.path.is_ident("str")))
 }
 
 const PRIMITIVES: &[&str] = &[
