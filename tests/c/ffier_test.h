@@ -31,6 +31,7 @@ typedef void* FtMixer;
 typedef void* FtRetainedFruit;
 typedef void* FtSendCounter;
 typedef void* FtSyncCounter;
+typedef void* FtBackendWorker;
 typedef void* FtSprocket;
 typedef void* FtEventQueue;
 typedef void* FtOptionalWidget;
@@ -44,7 +45,10 @@ typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
 typedef void* FtReceiverDefaults; /* FtWidget | FtVtableReceiverDefaults */
+typedef void* FtSendBackend; /* FtSendCounter | FtVtableSendBackend */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
+typedef void* FtSyncBackend; /* FtSyncCounter | FtVtableSyncBackend */
+typedef void* FtThreadBackend; /* FtWidget | FtVtableThreadBackend */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 typedef void* FlForeignBorrowed;
 typedef void* FlForeignConfig;
@@ -53,7 +57,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSendCounter | FtSyncCounter | FtSprocket | FtEventQueue | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtRetainedFruit | FtSendCounter | FtSyncCounter | FtBackendWorker | FtSprocket | FtEventQueue | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -94,6 +98,12 @@ typedef struct {
  * Keep vtable and user_data valid until that destruction, not merely call return.
  * A + 'static API requires callback data with no expiring borrows. Other lifetime
  * bounds require release before borrowed data expires. C must enforce these bounds.
+ * Thread guarantees depend on the exported trait, not this raw handle layout.
+ * Send permits owned/mutable callback transfer and destruction on another thread.
+ * Sync permits concurrent shared callbacks. Mutable access always requires exclusivity.
+ * Vtable storage, user_data, callback functions, and drop must uphold those guarantees.
+ * Vtable storage remains valid and immutable throughout callback use.
+ * Shared borrowed callbacks may transfer with Sync; Send alone is insufficient.
  */
 typedef struct {
     uint32_t type_tag;
@@ -514,6 +524,17 @@ FtSyncCounter ft_sync_counter_new(int32_t value);
 int32_t ft_sync_counter_current_value(FtSyncCounter handle);
 void ft_sync_counter_destroy(FtSyncCounter handle);
 
+/* BackendWorker ----------------------------------------------------- */
+
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+FtBackendWorker ft_backend_worker_new(FtSendBackend backend /* owned callback; valid until release; Send; value bounds: 'a */);
+int32_t ft_backend_worker_step(FtBackendWorker handle);
+int32_t ft_backend_worker_run(FtBackendWorker handle);
+void ft_backend_worker_destroy(FtBackendWorker handle);
+
 /* Sprocket ---------------------------------------------------------- */
 
 FtSprocket ft_sprocket_new(FtStr name);
@@ -609,6 +630,72 @@ FtResult ft_fruit_try_count(FtFruit handle, int32_t input, int32_t* result, FtEr
 /** Count how many of the given tags match the fruit's label. */
 int32_t ft_fruit_count_tags(FtFruit handle, const FtStr* tags, size_t tags_len);
 void ft_fruit_destroy(FtFruit handle);
+
+/* FtSendBackendVtable ----------------------------------------------- */
+
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+#define FT_SEND_BACKEND_TYPE_TAG 16777253
+
+typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
+    void (*drop)(void* self_data);
+    int32_t (*step)(void* self_data);
+} FtSendBackendVtable;
+
+/* SendBackend (dispatch) -------------------------------------------- */
+
+int32_t ft_send_backend_step(FtSendBackend handle);
+void ft_send_backend_destroy(FtSendBackend handle);
+
+/* FtSyncBackendVtable ----------------------------------------------- */
+
+/* Thread-safety contract:
+ * Sync: shared access may run concurrently across threads.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+#define FT_SYNC_BACKEND_TYPE_TAG 16777254
+
+typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
+    void (*drop)(void* self_data);
+    int32_t (*value)(void* self_data);
+} FtSyncBackendVtable;
+
+/* SyncBackend (dispatch) -------------------------------------------- */
+
+int32_t ft_sync_backend_value(FtSyncBackend handle);
+void ft_sync_backend_destroy(FtSyncBackend handle);
+
+/* FtThreadBackendVtable --------------------------------------------- */
+
+/* Thread-safety contract:
+ * Send: ownership and mutable borrows may transfer between threads; destruction may run there.
+ * Sync: shared access may run concurrently across threads.
+ * Mutable access and destruction require exclusive access. Lifetime bounds still apply.
+ */
+#define FT_THREAD_BACKEND_TYPE_TAG 16777255
+
+typedef struct {
+    /* Releases transferred user_data exactly once; never called for borrowed parameters. */
+    void (*drop)(void* self_data);
+    int32_t (*value)(void* self_data);
+    int32_t (*twice)(void* self_data);
+} FtThreadBackendVtable;
+
+/* ThreadBackend (dispatch) ------------------------------------------ */
+
+int32_t ft_thread_backend_value(FtThreadBackend handle);
+int32_t ft_thread_backend_twice(FtThreadBackend handle);
+void ft_thread_backend_destroy(FtThreadBackend handle);
+
+/* Snapshot (dispatch) ----------------------------------------------- */
+
+FtStr ft_snapshot_snap_description(FtSnapshot handle);
+int32_t ft_snapshot_snap_source_count(FtSnapshot handle);
+void ft_snapshot_destroy(FtSnapshot handle);
 
 /* FtWeighableVtable ------------------------------------------------- */
 
@@ -749,6 +836,9 @@ int32_t ft_grape_count_tags(FtGrape handle, const FtStr* tags, size_t tags_len);
 int32_t ft_lemon_value(FtLemon handle);
 FtResult ft_lemon_try_count(FtLemon handle, int32_t input, int32_t* result, FtError* err_out);
 int32_t ft_lemon_count_tags(FtLemon handle, const FtStr* tags, size_t tags_len);
+int32_t ft_send_counter_step(FtSendCounter handle);
+int32_t ft_sync_counter_value(FtSyncCounter handle);
+int32_t ft_widget_value(FtWidget handle);
 FtStr ft_sprocket_label(FtSprocket handle);
 FtStr ft_view_snap_description(FtView handle);
 int32_t ft_view_snap_source_count(FtView handle);
@@ -800,6 +890,11 @@ size_t ft_opaque_ptr_to_int(const void* ptr);
 FtResult ft_probe_input_backend_values(FtInputBackend backend /* owned callback; valid until release */, uint16_t* result, FtError* err_out);
 FtResult ft_probe_borrowed_input_backend_values(FtInputBackend backend /* mutable borrowed callback; call-scoped */, uint16_t* result, FtError* err_out);
 FtRetainedFruit ft_retain_fruit(FtFruit fruit /* owned callback; valid until release; value bounds: 'a */);
+int32_t ft_run_send_backend(FtSendBackend backend /* owned callback; valid until release; Send; value bounds: 'static */);
+int32_t ft_borrow_send_backend(FtSendBackend backend /* mutable borrowed callback; call-scoped; Send */);
+int32_t ft_share_sync_backend(FtSyncBackend backend /* shared borrowed callback; call-scoped; Sync */);
+int32_t ft_own_sync_backend(FtSyncBackend backend /* owned callback; valid until release; Sync */);
+int32_t ft_run_thread_backend(FtThreadBackend backend /* owned callback; valid until release; Send; Sync; value bounds: 'static */);
 const FtInputDeviceIds* ft_borrow_input_ids(const FtInputDeviceIds* ids);
 FtInputDeviceIds* ft_borrow_input_ids_mut(FtInputDeviceIds* ids);
 int32_t ft_probe_input_source(FtInputSource source /* owned callback; valid until release */);

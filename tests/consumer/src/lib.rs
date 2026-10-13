@@ -22,7 +22,12 @@ mod receiver_default_tests {
 
 #[cfg(all(test, unix))]
 mod tests {
+    use std::cell::Cell;
+    use std::marker::PhantomData;
     use std::os::fd::AsRawFd;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::api::{
         self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,
@@ -71,6 +76,46 @@ mod tests {
         }
     }
 
+    struct ThreadCallback<T> {
+        value: T,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl api::SendBackend for ThreadCallback<Cell<i32>> {
+        fn step(&mut self) -> i32 {
+            let value = self.value.get();
+            self.value.set(value + 1);
+            value
+        }
+    }
+
+    impl api::ThreadBackend for ThreadCallback<i32> {
+        fn value(&self) -> i32 {
+            self.value
+        }
+    }
+
+    impl<T> Drop for ThreadCallback<T> {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct SyncCallback {
+        inner: ThreadCallback<i32>,
+        not_send: PhantomData<Rc<()>>,
+    }
+
+    // SAFETY: Rc is never stored. Shared access touches only immutable data
+    // and an atomic drop counter. The marker deliberately withholds Send.
+    unsafe impl Sync for SyncCallback {}
+
+    impl api::SyncBackend for SyncCallback {
+        fn value(&self) -> i32 {
+            self.inner.value
+        }
+    }
+
     #[test]
     fn opaque_and_value_types_preserve_verified_guarantees() {
         fn require_send<T: Send>() {}
@@ -81,6 +126,7 @@ mod tests {
         require_sync::<api::View<'_>>();
         require_send::<api::SendCounter>();
         require_sync::<api::SyncCounter>();
+        require_send::<api::BackendWorker<'_>>();
         require_send::<api::InputEvent>();
         require_sync::<api::InputEvent>();
         let mut widget = api::Widget::new();
@@ -105,6 +151,127 @@ mod tests {
             scope.spawn(|| assert_eq!(sync.current_value(), 7));
             scope.spawn(|| assert_eq!(sync.current_value(), 7));
         });
+        assert_eq!(api::run_send_backend(api::SendCounter::new(21)), 21);
+        assert_eq!(api::share_sync_backend(&api::SyncCounter::new(7)), 14);
+        assert_eq!(api::own_sync_backend(api::SyncCounter::new(8)), 16);
+        assert_eq!(api::run_thread_backend(widget), 57);
+    }
+
+    #[test]
+    fn owned_callback_transfers_and_destroys_on_worker_thread() {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let callback = ThreadCallback {
+            value: Cell::new(41),
+            drops: drops.clone(),
+        };
+        let mut worker = api::BackendWorker::new(callback);
+        assert_eq!(worker.step(), 41);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert_eq!(std::thread::spawn(move || worker.run()).join().unwrap(), 42);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            api::run_send_backend(ThreadCallback {
+                value: Cell::new(51),
+                drops: drops.clone(),
+            }),
+            51
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            api::run_thread_backend(ThreadCallback {
+                value: 17,
+                drops: drops.clone(),
+            }),
+            51
+        );
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn borrowed_thread_safe_callbacks_keep_ownership_and_lifetimes() {
+        // Use a mutable borrow: Cell is Send but not Sync.
+        struct MutableBackend<'a>(&'a mut Cell<i32>);
+        impl api::SendBackend for MutableBackend<'_> {
+            fn step(&mut self) -> i32 {
+                self.0.get()
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut callback = ThreadCallback {
+            value: Cell::new(10),
+            drops: drops.clone(),
+        };
+        assert_eq!(api::borrow_send_backend(&mut callback), 10);
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        drop(callback);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let callback = SyncCallback {
+            inner: ThreadCallback {
+                value: 13,
+                drops: drops.clone(),
+            },
+            not_send: PhantomData,
+        };
+        assert_eq!(api::share_sync_backend(&callback), 26);
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert_eq!(api::own_sync_backend(callback), 26);
+        assert_eq!(drops.load(Ordering::SeqCst), 2);
+        let mut value = Cell::new(81);
+        let worker = api::BackendWorker::new(MutableBackend(&mut value));
+        assert_eq!(worker.run(), 81);
+        assert_eq!(value.get(), 81);
+    }
+
+    #[cfg(feature = "via-cdylib")]
+    #[test]
+    fn callback_handle_guarantees_match_ownership_and_borrow_kind() {
+        use api::{SendBackend, SyncBackend, ThreadBackend};
+        fn require_send<T: Send>(_: &T) {}
+        fn require_sync<T: Sync>(_: &T) {}
+        let drops = Arc::new(AtomicUsize::new(0));
+        let handle = ThreadCallback {
+            value: Cell::new(2),
+            drops: drops.clone(),
+        }
+        .__into_callback_handle();
+        require_send(&handle);
+        std::thread::spawn(move || drop(handle)).join().unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let mut callback = ThreadCallback {
+            value: Cell::new(3),
+            drops: drops.clone(),
+        };
+        let handle = callback.__borrow_callback_handle_mut();
+        require_send(&handle);
+        std::thread::scope(|scope| {
+            scope.spawn(move || drop(handle));
+        });
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        let callback = SyncCallback {
+            inner: ThreadCallback {
+                value: 4,
+                drops: drops.clone(),
+            },
+            not_send: PhantomData,
+        };
+        let handle = callback.__borrow_callback_handle();
+        require_send(&handle);
+        require_sync(&handle);
+        std::thread::scope(|scope| {
+            scope.spawn(move || drop(handle));
+        });
+        let handle = callback.__into_callback_handle();
+        require_sync(&handle);
+        drop(handle);
+        let handle = ThreadCallback {
+            value: 5,
+            drops: drops.clone(),
+        }
+        .__into_callback_handle();
+        require_send(&handle);
+        require_sync(&handle);
+        std::thread::spawn(move || drop(handle)).join().unwrap();
+        assert_eq!(drops.load(Ordering::SeqCst), 3);
     }
 
     struct BorrowedFruit<'a> {

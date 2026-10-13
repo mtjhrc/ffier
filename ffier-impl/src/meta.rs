@@ -447,6 +447,7 @@ pub enum MetaParamKind {
         trait_lifetime_args: Vec<Ident>,
         lifetime_bounds: Vec<Ident>,
         ref_lifetime: Option<Ident>,
+        thread_safety: ThreadSafety,
     },
 }
 
@@ -593,6 +594,7 @@ pub struct MetaImplementable {
     pub no_vtable: bool,
     /// Owned/borrowed dynamic forwarding was generated for this trait.
     pub dyn_dispatch: bool,
+    pub thread_safety: ThreadSafety,
     /// `#[cfg(...)]` predicate for the entire trait. `None` = unconditional.
     pub cfg_predicate: Option<TokenStream>,
 }
@@ -1045,6 +1047,7 @@ impl syn::parse::Parse for MetaParam {
                 }
                 let ref_lifetime = reference.into_iter().next();
                 parse_comma(input)?;
+                let thread_safety = parse_thread_safety(input)?;
                 MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
@@ -1052,6 +1055,7 @@ impl syn::parse::Parse for MetaParam {
                     trait_lifetime_args,
                     lifetime_bounds,
                     ref_lifetime,
+                    thread_safety,
                 }
             }
             other => {
@@ -1473,6 +1477,8 @@ impl syn::parse::Parse for MetaImplementable {
         let dyn_dispatch = dyn_dispatch.value;
         parse_comma(input)?;
 
+        let thread_safety = parse_thread_safety(input)?;
+
         let cfg_predicate = parse_optional_cfg_predicate(input)?;
 
         Ok(MetaImplementable {
@@ -1488,6 +1494,7 @@ impl syn::parse::Parse for MetaImplementable {
             bless,
             no_vtable,
             dyn_dispatch,
+            thread_safety,
             cfg_predicate,
         })
     }
