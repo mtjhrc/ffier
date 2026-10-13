@@ -1848,6 +1848,28 @@ fn is_std_handle_type(tp: &syn::TypePath) -> bool {
         )
 }
 
+/// Resolve standard OS types in native code emitted at the registration site.
+/// Keep lifetimes intact: unlike ABI types, native signatures cannot use 'static.
+struct StdOsTypeQualifier;
+
+impl VisitMut for StdOsTypeQualifier {
+    fn visit_type_path_mut(&mut self, ty: &mut syn::TypePath) {
+        syn::visit_mut::visit_type_path_mut(self, ty);
+        let path = &ty.path;
+        if is_std_fd_type(ty) {
+            ty.path = syn::parse_quote!(::std::os::fd::#path);
+        } else if is_std_handle_type(ty) {
+            ty.path = syn::parse_quote!(::std::os::windows::io::#path);
+        }
+    }
+}
+
+fn native_type_tokens(tokens: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+    let mut ty: Type = syn::parse2(tokens.clone()).expect("validated native type");
+    StdOsTypeQualifier.visit_type_mut(&mut ty);
+    quote! { #ty }
+}
+
 fn is_primitive(ty: &Type) -> bool {
     let Type::Path(tp) = ty else { return false };
     tp.path.segments.len() == 1
@@ -3744,7 +3766,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             if vm.raw_handle {
                 return None;
             }
-            let sig = &method.sig;
+            let mut sig = method.sig.clone();
+            StdOsTypeQualifier.visit_signature_mut(&mut sig);
             Some(quote! { (#sig) })
         })
         .collect();
@@ -5796,7 +5819,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #vec_id.len() });
                     }
                     crate::meta::MetaParamKind::HandleSlice(tp) => {
-                        let rt = &tp.rust_type;
+                        let rt = native_type_tokens(&tp.rust_type);
                         let vec_id = format_ident!("__{id}_handles");
                         vtable_pre.push(quote! {
                             let #vec_id: Vec<*mut core::ffi::c_void> = #id.iter()
@@ -5813,8 +5836,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #id.len() });
                     }
                     crate::meta::MetaParamKind::Regular(tp) => {
-                        let rt = &tp.rust_type;
-                        match crate::meta::classify_value_type(rt, &value_names) {
+                        let rt = native_type_tokens(&tp.rust_type);
+                        match crate::meta::classify_value_type(&tp.rust_type, &value_names) {
                             Some(crate::meta::ValueTypeUse::SharedRef) => {
                                 let inner = crate::meta::value_inner_type(&tp.bridge_type).unwrap();
                                 vtable_args.push(quote! { #id as *const #inner as *const <#inner as FfiType>::CRepr });
