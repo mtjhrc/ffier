@@ -190,6 +190,9 @@ FtStr ft_widget_echo(FtWidget handle, FtStr s);
 bool ft_widget_is_active(FtWidget handle);
 /** Negate a 64-bit integer. */
 int64_t ft_widget_negate(FtWidget handle, int64_t v);
+float ft_widget_echo_f32(FtWidget handle, float value);
+double ft_widget_echo_f64(FtWidget handle, double value);
+ssize_t ft_widget_echo_isize(FtWidget handle, ssize_t value);
 /** Validate internal state (always succeeds for default widget). */
 FtResult ft_widget_validate(FtWidget handle, FtError* err_out);
 /**
