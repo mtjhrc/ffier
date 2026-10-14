@@ -1,0 +1,6 @@
+[workspace]
+members = ["provider", "facade", "bridge"]
+resolver = "2"
+
+[workspace.dependencies]
+ffier = { path = "../../ffier" }
