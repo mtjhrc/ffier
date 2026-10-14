@@ -116,6 +116,18 @@ impl Widget {
         -v
     }
 
+    pub fn echo_f32(&self, value: f32) -> f32 {
+        value
+    }
+
+    pub fn echo_f64(&self, value: f64) -> f64 {
+        value
+    }
+
+    pub fn echo_isize(&self, value: isize) -> isize {
+        value
+    }
+
     /// Validate internal state (always succeeds for default widget).
     pub fn validate(&self) -> Result<(), TestError> {
         if self.count >= 0 {

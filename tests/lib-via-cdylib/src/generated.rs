@@ -635,6 +635,18 @@ unsafe extern "C" {
         handle: *mut core::ffi::c_void,
         v: <i64 as FfiType>::CRepr,
     ) -> <i64 as FfiType>::CRepr;
+    pub fn ft_widget_echo_f32(
+        handle: *mut core::ffi::c_void,
+        value: <f32 as FfiType>::CRepr,
+    ) -> <f32 as FfiType>::CRepr;
+    pub fn ft_widget_echo_f64(
+        handle: *mut core::ffi::c_void,
+        value: <f64 as FfiType>::CRepr,
+    ) -> <f64 as FfiType>::CRepr;
+    pub fn ft_widget_echo_isize(
+        handle: *mut core::ffi::c_void,
+        value: <isize as FfiType>::CRepr,
+    ) -> <isize as FfiType>::CRepr;
     pub fn ft_widget_validate(
         handle: *mut core::ffi::c_void,
         err_out: *mut *mut core::ffi::c_void,
@@ -847,6 +859,18 @@ impl Widget {
     pub fn negate(&self, v: i64) -> i64 {
         let __raw = unsafe { ft_widget_negate(self.0, <i64 as FfiType>::into_c(v)) };
         unsafe { <i64 as FfiType>::from_c(__raw) }
+    }
+    pub fn echo_f32(&self, value: f32) -> f32 {
+        let __raw = unsafe { ft_widget_echo_f32(self.0, <f32 as FfiType>::into_c(value)) };
+        unsafe { <f32 as FfiType>::from_c(__raw) }
+    }
+    pub fn echo_f64(&self, value: f64) -> f64 {
+        let __raw = unsafe { ft_widget_echo_f64(self.0, <f64 as FfiType>::into_c(value)) };
+        unsafe { <f64 as FfiType>::from_c(__raw) }
+    }
+    pub fn echo_isize(&self, value: isize) -> isize {
+        let __raw = unsafe { ft_widget_echo_isize(self.0, <isize as FfiType>::into_c(value)) };
+        unsafe { <isize as FfiType>::from_c(__raw) }
     }
     #[doc = " Validate internal state (always succeeds for default widget)."]
     pub fn validate(&self) -> Result<(), TestError> {
