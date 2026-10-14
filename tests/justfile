@@ -36,9 +36,10 @@ gen-foreign-client: build-foreign
 # Update the generated client bindings
 update-generated-client: gen-rust-client gen-foreign-client
 
-# Check header matches expected (byte-for-byte)
+# Check the header snapshot and compile it without additional includes.
 check-header: gen-header
     diff expected_header.h c/ffier_test.h
+    cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only c/ffier_test.h
 
 # Check generated client matches checked-in version
 check-generated-client: build
