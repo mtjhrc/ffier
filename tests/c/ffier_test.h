@@ -5,6 +5,11 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#ifndef _WIN32
+#include <sys/types.h>
+#else
+#define ssize_t intptr_t
+#endif
 
 typedef void* FtTestError;
 typedef void* FtError;

@@ -36,7 +36,11 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     out.push_str("#include <stddef.h>\n");
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stdbool.h>\n");
-    out.push_str("#include <string.h>\n\n");
+    out.push_str("#include <string.h>\n");
+    out.push_str("#ifndef _WIN32\n#include <sys/types.h>\n#else\n");
+    // TODO: avoid defining names without a library prefix.
+    out.push_str("#define ssize_t intptr_t\n#endif\n");
+    out.push('\n');
 
     // Handle typedefs — error types first.
     for err in &lib.errors {
