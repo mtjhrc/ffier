@@ -367,6 +367,7 @@ impl FfiType for OptionalMode {
 
 #[cfg(feature = "optional-entry")]
 bitflags::bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct OptionalFlags: u32 {
         const READ = 1;
@@ -387,6 +388,7 @@ impl FfiType for OptionalFlags {
 }
 
 bitflags::bitflags! {
+    #[repr(transparent)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct Permissions: u32 {
         const READ = 1;
