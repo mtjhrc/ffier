@@ -661,6 +661,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
         "    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {{"
     )
     .unwrap();
+    writeln!(out, "        assert!(r != ffier::FFIER_RESULT_SUCCESS, \"cannot import a successful FFI result as an error\");").unwrap();
     writeln!(out, "        let code = ffier::ffier_result_code(r);").unwrap();
     writeln!(out, "        let handle = {handle_name}(err_handle);").unwrap();
     writeln!(out, "        match code {{").unwrap();
