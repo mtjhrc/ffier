@@ -2756,6 +2756,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library, weak: bool
     // bitflags! invocation
     emit_cfg_attr(out, bf.cfg.as_deref(), weak);
     writeln!(out, "bitflags::bitflags! {{").unwrap();
+    writeln!(out, "    #[repr(transparent)]").unwrap();
     writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
     writeln!(out, "    pub struct {}: {repr} {{", bf.name).unwrap();
     for v in &bf.variants {
