@@ -634,7 +634,6 @@ fn format_return_and_out_params(
     is_builder: bool,
     lib: &Library,
 ) -> (String, Vec<String>) {
-    let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
     let result_c = || blessed_c_type(lib, ffier_schema::Blessing::Result);
     match ret {
         Return::Void => ("void".to_string(), vec![]),
@@ -643,6 +642,7 @@ fn format_return_and_out_params(
         Return::Result {
             ok, c_convention, ..
         } => {
+            let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
             use ffier_schema::CResultConvention;
             match c_convention {
                 CResultConvention::HandleOrNull => {
