@@ -201,7 +201,15 @@ pub enum ForeignError {
 }
 
 impl ForeignError {
-    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+    /// Import an owned native error handle.
+    ///
+    /// # Safety
+    /// The handle must be valid, non-null, and uniquely owned by the caller.
+    /// It must contain the native error type represented by `Self` in the
+    /// library targeted by these bindings.
+    /// The type tag and variant code in `r` must match that native error.
+    /// Ownership of the handle transfers to the returned value.
+    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         let code = ffier::ffier_result_code(r);
         let handle = ForeignErrorErrorHandle(err_handle);
         match code {
