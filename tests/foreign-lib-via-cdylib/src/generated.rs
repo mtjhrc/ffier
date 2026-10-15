@@ -210,6 +210,10 @@ impl ForeignError {
     /// The type tag and variant code in `r` must match that native error.
     /// Ownership of the handle transfers to the returned value.
     pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
+        assert!(
+            r != ffier::FFIER_RESULT_SUCCESS,
+            "cannot import a successful FFI result as an error"
+        );
         let code = ffier::ffier_result_code(r);
         let handle = ForeignErrorErrorHandle(err_handle);
         match code {
