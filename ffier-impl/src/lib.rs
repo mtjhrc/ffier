@@ -1765,7 +1765,14 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
             if meta.path.is_ident("code") {
                 let value = meta.value()?;
                 let lit: syn::LitInt = value.parse()?;
-                code = Some(lit.base10_parse::<u32>()?);
+                let parsed_code = lit.base10_parse::<u32>()?;
+                if parsed_code == 0 {
+                    return Err(syn::Error::new_spanned(
+                        lit,
+                        "FfiError code 0 is reserved for success",
+                    ));
+                }
+                code = Some(parsed_code);
                 Ok(())
             } else if meta.path.is_ident("message") {
                 let value = meta.value()?;
