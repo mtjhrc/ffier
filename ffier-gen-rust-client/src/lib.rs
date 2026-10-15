@@ -632,9 +632,33 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
 
     // from_ffi — just match on code and stash the handle
     writeln!(out, "impl {} {{", err.name).unwrap();
+    writeln!(out, "    /// Import an owned native error handle.").unwrap();
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// # Safety").unwrap();
     writeln!(
         out,
-        "    pub fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {{"
+        "    /// The handle must be valid, non-null, and uniquely owned by the caller."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    /// It must contain the native error type represented by `Self` in the"
+    )
+    .unwrap();
+    writeln!(out, "    /// library targeted by these bindings.").unwrap();
+    writeln!(
+        out,
+        "    /// The type tag and variant code in `r` must match that native error."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    /// Ownership of the handle transfers to the returned value."
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {{"
     )
     .unwrap();
     writeln!(out, "        let code = ffier::ffier_result_code(r);").unwrap();
@@ -1229,9 +1253,9 @@ fn emit_method_body(
             .unwrap();
             writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             if has_lifetimes {
-                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle, std::marker::PhantomData)) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}").unwrap();
+                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle, std::marker::PhantomData)) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}").unwrap();
             } else {
-                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}").unwrap();
+                writeln!(out, "        if __r == 0 {{ Ok(Self(__handle)) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}").unwrap();
             }
         }
         Return::Result {
@@ -1248,7 +1272,7 @@ fn emit_method_body(
             writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(
                 out,
-                "        if __r == 0 {{ Ok(self) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}"
+                "        if __r == 0 {{ Ok(self) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}"
             )
             .unwrap();
         }
@@ -1263,7 +1287,7 @@ fn emit_method_body(
             writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(
                 out,
-                "        if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}"
+                "        if __r == 0 {{ Ok(()) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}"
             )
             .unwrap();
         }
@@ -1303,7 +1327,11 @@ fn emit_method_body(
                 "            let __r = unsafe {{ {error_result_fn}(__err) }};"
             )
             .unwrap();
-            writeln!(out, "            Err({err_type}::from_ffi(__r, __err))").unwrap();
+            writeln!(
+                out,
+                "            Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+            )
+            .unwrap();
             writeln!(out, "        }}").unwrap();
         }
         Return::Result {
@@ -1331,7 +1359,11 @@ fn emit_method_body(
             )
             .unwrap();
             writeln!(out, "        }} else {{").unwrap();
-            writeln!(out, "            Err({err_type}::from_ffi(__r, __err))").unwrap();
+            writeln!(
+                out,
+                "            Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+            )
+            .unwrap();
             writeln!(out, "        }}").unwrap();
         }
     }
@@ -2517,7 +2549,7 @@ fn emit_ffi_call_return(
             writeln!(out, "{indent}let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             writeln!(
                 out,
-                "{indent}if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}"
+                "{indent}if __r == 0 {{ Ok(()) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}"
             )
             .unwrap();
         }
@@ -2549,7 +2581,11 @@ fn emit_ffi_call_return(
                         "{indent}    let __r = unsafe {{ {error_result_fn}(__err) }};"
                     )
                     .unwrap();
-                    writeln!(out, "{indent}    Err({err_type}::from_ffi(__r, __err))").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}    Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                    )
+                    .unwrap();
                     writeln!(out, "{indent}}}").unwrap();
                 }
                 CResultConvention::OutParam => {
@@ -2560,7 +2596,11 @@ fn emit_ffi_call_return(
                     let ty = ok_tr.to_rust_type();
                     writeln!(out, "{indent}    Ok(unsafe {{ <{ty} as FfiType>::from_c(__result.assume_init()) }})").unwrap();
                     writeln!(out, "{indent}}} else {{").unwrap();
-                    writeln!(out, "{indent}    Err({err_type}::from_ffi(__r, __err))").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}    Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                    )
+                    .unwrap();
                     writeln!(out, "{indent}}}").unwrap();
                 }
             }
@@ -2872,7 +2912,7 @@ fn emit_free_function(
             .unwrap();
             writeln!(
                 out,
-                "    if __r == 0 {{ Ok(()) }} else {{ Err({err_type}::from_ffi(__r, __err)) }}"
+                "    if __r == 0 {{ Ok(()) }} else {{ Err(unsafe {{ {err_type}::from_ffi(__r, __err) }}) }}"
             )
             .unwrap();
         }
@@ -2907,7 +2947,11 @@ fn emit_free_function(
                     "        let __r = unsafe {{ {error_result_fn}(__err) }};"
                 )
                 .unwrap();
-                writeln!(out, "        Err({err_type}::from_ffi(__r, __err))").unwrap();
+                writeln!(
+                    out,
+                    "        Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                )
+                .unwrap();
                 writeln!(out, "    }}").unwrap();
             } else {
                 writeln!(out, "    let mut __out = std::mem::MaybeUninit::uninit();").unwrap();
@@ -2930,7 +2974,11 @@ fn emit_free_function(
                 )
                 .unwrap();
                 writeln!(out, "    }} else {{").unwrap();
-                writeln!(out, "        Err({err_type}::from_ffi(__r, __err))").unwrap();
+                writeln!(
+                    out,
+                    "        Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                )
+                .unwrap();
                 writeln!(out, "    }}").unwrap();
             }
         }
