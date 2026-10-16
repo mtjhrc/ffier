@@ -525,6 +525,19 @@ fn emit_free_functions(
 
 fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &Options) {
     let result_c = blessed_c_type(lib, ffier_schema::Blessing::Result);
+    if !lib.errors.is_empty() {
+        out.push_str("/* Create an owned fieldless error; returns NULL for payload variants or unknown codes.\n");
+        out.push_str(
+            " * Destroy once with error_destroy or transfer ownership to a callback caller. */\n",
+        );
+        write_decl(
+            out,
+            "void*",
+            &format!("{fn_pfx}error_new"),
+            &format!("{result_c} r"),
+            opts,
+        );
+    }
     let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
     let result_name_fn = format!("{fn_pfx}result_name");
     let result_name_cstr_fn = format!("{fn_pfx}result_name_cstr");

@@ -411,6 +411,7 @@ impl FfiType for Permissions {
 }
 
 unsafe extern "C" {
+    fn ft_error_new(r: ffier::FfierResult) -> *mut core::ffi::c_void;
     fn ft_error_payload(
         handle: *const core::ffi::c_void,
         out_buf: *mut core::ffi::c_void,
@@ -480,13 +481,21 @@ impl std::fmt::Debug for TestErrorNumericErrorData {
 #[derive(Debug)]
 pub enum TestError {
     NotFound(TestErrorNotFoundData),
-    CustomMessage(TestErrorErrorHandle),
-    InvalidInput(TestErrorErrorHandle),
+    CustomMessage,
+    InvalidInput(),
     NumericError(TestErrorNumericErrorData),
     Fatal(TestErrorErrorHandle),
 }
 
 impl TestError {
+    fn fieldless_handle(code: u32) -> TestErrorErrorHandle {
+        let raw = unsafe { ft_error_new(ffier::ffier_result(16777217u32, code)) };
+        assert!(
+            !raw.is_null(),
+            "library cannot construct TestError error code {code}"
+        );
+        TestErrorErrorHandle(raw)
+    }
     /// Import an owned native error handle.
     ///
     /// # Safety
@@ -494,7 +503,8 @@ impl TestError {
     /// It must contain the native error type represented by `Self` in the
     /// library targeted by these bindings.
     /// The type tag and variant code in `r` must match that native error.
-    /// Ownership of the handle transfers to the returned value.
+    /// Ownership transfers to this function. Fieldless handles are destroyed
+    /// immediately; payload handles remain owned by the returned value.
     pub unsafe fn from_ffi(r: ffier::FfierResult, err_handle: *mut core::ffi::c_void) -> Self {
         assert!(
             r != ffier::FFIER_RESULT_SUCCESS,
@@ -504,8 +514,14 @@ impl TestError {
         let handle = TestErrorErrorHandle(err_handle);
         match code {
             1u32 => Self::NotFound(TestErrorNotFoundData(handle)),
-            2u32 => Self::CustomMessage(handle),
-            3u32 => Self::InvalidInput(handle),
+            2u32 => {
+                drop(handle);
+                Self::CustomMessage
+            }
+            3u32 => {
+                drop(handle);
+                Self::InvalidInput()
+            }
             4u32 => Self::NumericError(TestErrorNumericErrorData(handle)),
             5u32 => Self::Fatal(handle),
             other => panic!("unknown {} error code {}", "TestError", other),
@@ -515,8 +531,8 @@ impl TestError {
     fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
         let (code, handle) = match self {
             Self::NotFound(data) => (1u32, data.0),
-            Self::CustomMessage(handle) => (2u32, handle),
-            Self::InvalidInput(handle) => (3u32, handle),
+            Self::CustomMessage => (2u32, Self::fieldless_handle(2u32)),
+            Self::InvalidInput() => (3u32, Self::fieldless_handle(3u32)),
             Self::NumericError(data) => (4u32, data.0),
             Self::Fatal(handle) => (5u32, handle),
         };
@@ -524,13 +540,19 @@ impl TestError {
         core::mem::forget(handle);
         (ffier::ffier_result(16777217u32, code), raw)
     }
-    fn handle_ptr(&self) -> *mut core::ffi::c_void {
+    fn message_handle(&self) -> (*mut core::ffi::c_void, Option<TestErrorErrorHandle>) {
         match self {
-            Self::NotFound(d) => d.0.handle(),
-            Self::CustomMessage(h) => h.handle(),
-            Self::InvalidInput(h) => h.handle(),
-            Self::NumericError(d) => d.0.handle(),
-            Self::Fatal(h) => h.handle(),
+            Self::NotFound(d) => (d.0.handle(), None),
+            Self::CustomMessage => {
+                let handle = Self::fieldless_handle(2u32);
+                (handle.handle(), Some(handle))
+            }
+            Self::InvalidInput() => {
+                let handle = Self::fieldless_handle(3u32);
+                (handle.handle(), Some(handle))
+            }
+            Self::NumericError(d) => (d.0.handle(), None),
+            Self::Fatal(h) => (h.handle(), None),
         }
     }
 }
@@ -560,7 +582,8 @@ impl std::fmt::Display for TestError {
         };
         let __writer_handle =
             &mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void;
-        unsafe { ft_error_message(self.handle_ptr(), __writer_handle) };
+        let (__error_handle, __temporary) = self.message_handle();
+        unsafe { ft_error_message(__error_handle, __writer_handle) };
         Ok(())
     }
 }

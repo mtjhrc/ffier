@@ -431,6 +431,27 @@ void error_handle_null_safe(void) {
     ft_error_destroy(NULL); /* should not crash */
 }
 
+void error_factory_constructs_fieldless_variants_only(void) {
+    FtResult results[] = { FT_ERROR_TEST_CUSTOM_MESSAGE, FT_ERROR_TEST_INVALID_INPUT };
+    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+        size_t before = ft_test_error_drop_count();
+        FtError err = ft_error_new(results[i]);
+        assert(err != NULL);
+        assert(ft_error_result(err) == results[i]);
+        struct push_str_buf buf;
+        error_message_to_buf(err, &buf);
+        assert(buf.len > 0);
+        assert(ft_test_error_drop_count() == before);
+        ft_error_destroy(err);
+        assert(ft_test_error_drop_count() == before + 1);
+    }
+    assert(ft_error_new(FT_RESULT_SUCCESS) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_NOT_FOUND) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_NUMERIC_ERROR) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_FATAL) == NULL);
+    assert(ft_error_new(UINT64_MAX) == NULL);
+}
+
 /* ===================================================================== */
 /* Vtable / implementable                                                */
 /* ===================================================================== */
@@ -648,6 +669,7 @@ int main(void) {
     RUN_TEST(error_name_success);
     RUN_TEST(error_handle_message_and_destroy);
     RUN_TEST(error_handle_null_safe);
+    RUN_TEST(error_factory_constructs_fieldless_variants_only);
 
     printf("\n[vtable/implementable]\n");
     RUN_TEST(vtable_dyn_dispatch_process);

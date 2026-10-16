@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer compat cargo-test
+default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer weak-client compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -95,6 +95,10 @@ consumer-cdylib: build
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
 
+# Exercise fieldless error construction and forwarding through weak bindings.
+weak-client: build
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features weak-tests
+
 # The checked-in compatibility bindings omit fruit-label and reserve its slot.
 # Refresh them with gen-compat-client, not gen-rust-client. The compatibility
 # test checks the empty-slot fallback against the current v2 library.
@@ -106,8 +110,9 @@ compat: build
 # Verify the test lib compiles without FFI (no codegen, pure Rust types).
 # Compilation alone proves no FFI symbols leak: library_definition! and
 # all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
-no-codegen:
+no-codegen: build-foreign
     cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features fieldless_error_client_tests
 
 # Verify cfg-gated entries are PRESENT in the schema with a "cfg" field
 # even when the feature is off but FFI codegen is still enabled.

@@ -29,6 +29,22 @@ def check_schema(schema_path: Path) -> None:
     schema = json.loads(schema_path.read_text())
     schema_text = json.dumps(schema)
 
+    error = next(item for item in schema["errors"] if item["name"] == "TestError")
+    assert {v["name"]: v["constructible"] for v in error["variants"]} == {
+        "NotFound": False,
+        "CustomMessage": True,
+        "InvalidInput": True,
+        "NumericError": False,
+        "Fatal": False,
+    }
+    assert {v["name"]: v["is_unit"] for v in error["variants"]} == {
+        "NotFound": False,
+        "CustomMessage": True,
+        "InvalidInput": False,
+        "NumericError": False,
+        "Fatal": False,
+    }
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(

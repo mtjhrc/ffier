@@ -15,7 +15,75 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
-mod callback_errors;
+mod callback_errors {
+    use super as api;
+
+    fn init() {}
+
+    include!("callback_errors.rs");
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod weak_callback_errors {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+
+        mod tests {
+            use super as api;
+
+            fn init() {
+                use api::Symbol;
+                api::require(
+                    None,
+                    &[
+                        Symbol::FtErrorNew,
+                        Symbol::FtErrorDestroy,
+                        Symbol::FtErrorMessage,
+                        Symbol::FtErrorResult,
+                        Symbol::FtErrorPayload,
+                        Symbol::FtWidgetNew,
+                        Symbol::FtWidgetDestroy,
+                        Symbol::FtWidgetFailAlways,
+                        Symbol::FtWidgetFailWithValue,
+                        Symbol::FtWidgetFailWithNumber,
+                        Symbol::FtWidgetParseCount,
+                        Symbol::FtTestErrorDropCount,
+                        Symbol::FtRoundtripCallbackError,
+                    ],
+                )
+                .unwrap();
+            }
+
+            include!("callback_errors.rs");
+        }
+    }
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod unloaded_fieldless_errors {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn fieldless_values_need_no_symbols_and_missing_destroy_prevents_allocation() {
+        let custom = api::TestError::CustomMessage;
+        let invalid = api::TestError::InvalidInput();
+        assert!(matches!(custom, api::TestError::CustomMessage));
+        assert!(matches!(invalid, api::TestError::InvalidInput()));
+        drop(custom);
+        drop(invalid);
+
+        use api::Symbol;
+        api::require(None, &[Symbol::FtErrorNew, Symbol::FtTestErrorDropCount]).unwrap();
+        let before = api::test_error_drop_count();
+        let result = std::panic::catch_unwind(|| api::TestError::InvalidInput().to_string());
+        assert!(result.is_err());
+        assert_eq!(api::test_error_drop_count(), before);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -125,7 +193,7 @@ mod tests {
     fn method_returning_result_void_err() {
         let w = Widget::new();
         let err = w.fail_always().unwrap_err();
-        assert!(matches!(err, TestError::CustomMessage(..)));
+        assert!(matches!(err, TestError::CustomMessage));
     }
 
     #[test]

@@ -624,6 +624,9 @@ int32_t ft_consume_foreign_item(FlForeignItem item);
 FlForeignItem ft_create_foreign_item(FtStr label, int32_t score);
 /** Create a foreign config, returning Result with foreign ok type. */
 FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtError* err_out);
+/* Create an owned fieldless error; returns NULL for payload variants or unknown codes.
+ * Destroy once with error_destroy or transfer ownership to a callback caller. */
+void* ft_error_new(FtResult r);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 

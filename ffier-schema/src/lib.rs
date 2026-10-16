@@ -577,7 +577,14 @@ pub struct ErrorVariant {
     pub code: u32,
     /// Human-readable message.
     pub message: String,
-    /// Payload fields carried by this variant. Empty for unit variants.
+    /// Whether clients can construct this variant via `{prefix}_error_new`.
+    /// False for payload variants, even when their fields are opaque.
+    #[serde(default)]
+    pub constructible: bool,
+    /// Whether the native variant is declared without parentheses.
+    #[serde(default)]
+    pub is_unit: bool,
+    /// Marshallable payload fields. Empty for fieldless and opaque variants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fields: Vec<ErrorField>,
 }
