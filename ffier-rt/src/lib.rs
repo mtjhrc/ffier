@@ -282,37 +282,45 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
 // VtableHandle --- payload for exported trait handles
 // ---------------------------------------------------------------------------
 
+/// Common 8-byte prefix of every exported trait vtable.
+#[repr(C)]
+pub struct VtableHeader {
+    /// Number of virtual method slots (excluding drop), including reserved gaps.
+    pub num_slots: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
+}
+
 /// Vtable handle payload — stored inline in the handle's payload region
 /// for exported trait handles.
 #[repr(C)]
 pub struct VtableHandle {
     pub vtable_ptr: *const c_void,
     pub user_data: *const c_void,
-    /// Size of the vtable struct as provided by the caller (truncated to
-    /// `u16`; max 65535 bytes — more than enough for any vtable). Used for
-    /// forward/backward compatibility: fields at offsets beyond this size
-    /// are treated as `None` (default dispatch). This allows older clients
-    /// (smaller vtable) to work with newer libraries (larger vtable) and
-    /// vice versa.
-    pub vtable_size: u16,
 }
 
 impl VtableHandle {
-    /// Read an `Option<extern "C" fn(...)>` vtable field with bounds checking.
+    /// Read an `Option<extern "C" fn(...)>` vtable slot with bounds checking.
     ///
-    /// Returns `None` if the field extends beyond `self.vtable_size`,
-    /// providing forward/backward-compatible default dispatch for fields
-    /// not present in the vtable.
+    /// Slot 0 is always drop. Method index N occupies slot N + 1 and is
+    /// present when N is less than the vtable header's `num_slots`.
+    /// Returns `None` for absent slots or null function pointers.
     ///
     /// # Safety
-    /// - `vtable_ptr` must point to a valid vtable struct of at least
-    ///   `self.vtable_size` bytes.
-    /// - `field_offset` must be the correct offset of an `Option<F>` field.
+    /// - `vtable_ptr` must point to a valid, aligned [`VtableHeader`]
+    ///   followed by an aligned, initialized drop slot and `num_slots`
+    ///   aligned, initialized virtual method slots.
+    /// - `F` must be the function-pointer type of the requested slot.
     #[inline]
-    pub unsafe fn field_or_none<F: Copy>(&self, field_offset: usize) -> Option<F> {
-        if field_offset + core::mem::size_of::<Option<F>>() > self.vtable_size as usize {
+    pub unsafe fn field_or_none<F: Copy>(&self, slot: usize) -> Option<F> {
+        let num_slots = unsafe { *(self.vtable_ptr as *const u16) };
+        if slot > usize::from(num_slots) {
             None
         } else {
+            let field_offset =
+                core::mem::size_of::<VtableHeader>() + slot * core::mem::size_of::<Option<F>>();
             unsafe { *(self.vtable_ptr.byte_add(field_offset) as *const Option<F>) }
         }
     }
