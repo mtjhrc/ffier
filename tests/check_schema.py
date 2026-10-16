@@ -37,6 +37,24 @@ def check_schema(schema_path: Path) -> None:
     if any("max_vtable_slot" in trait for trait in traits.values()):
         raise AssertionError("trait schema must store slot counts, not highest indices")
 
+    error = next(item for item in schema["errors"] if item["name"] == "TestError")
+    variants = {v["name"]: v for v in error["variants"]}
+    for name in ["CustomMessage", "InvalidInput"]:
+        assert variants[name]["data"] == {"kind": "tuple", "fields": []}
+    for name in ["Fatal", "OpaqueUnit"]:
+        assert variants[name]["data"] == {"kind": "tuple", "fields": [{"kind": "opaque"}]}
+    mixed = variants["MixedError"]["data"]
+    assert mixed["kind"] == "tuple"
+    assert [f["kind"] for f in mixed["fields"]] == ["typed", "opaque", "typed"]
+    assert mixed["fields"][0]["type_ref"]["type"] == "i32"
+    assert mixed["fields"][2]["type_ref"]["type"] == "u64"
+    for name, type_name in [("NotFound", "str"), ("NumericError", "i32")]:
+        data = variants[name]["data"]
+        assert data["kind"] == "tuple"
+        assert len(data["fields"]) == 1
+        assert data["fields"][0]["kind"] == "typed"
+        assert data["fields"][0]["type_ref"]["type"] == type_name
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(

@@ -540,6 +540,17 @@ fn emit_free_functions(
 
 fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &Options) {
     let result_c = blessed_c_type(lib, ffier_schema::Blessing::Result);
+    if !lib.errors.is_empty() {
+        out.push_str("/* Borrow a field by native tuple index. Invalid/opaque indices and undersized buffers abort.\n");
+        out.push_str(" * Returned data must not outlive the error handle. */\n");
+        write_decl(
+            out,
+            "void",
+            &format!("{fn_pfx}error_payload"),
+            "const void* handle, size_t index, void* out_buf, size_t buf_size",
+            opts,
+        );
+    }
     let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
     let result_name_fn = format!("{fn_pfx}result_name");
     let result_name_cstr_fn = format!("{fn_pfx}result_name_cstr");

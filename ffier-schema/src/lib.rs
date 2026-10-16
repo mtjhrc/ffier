@@ -577,17 +577,49 @@ pub struct ErrorVariant {
     pub code: u32,
     /// Human-readable message.
     pub message: String,
-    /// Payload fields carried by this variant. Empty for unit variants.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub fields: Vec<ErrorField>,
+    /// Native declaration shape, including opaque field positions.
+    pub data: ErrorVariantData,
+}
+
+/// Distinguishes `Variant` from `Variant(...)`, including `Variant()`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "fields", rename_all = "snake_case")]
+pub enum ErrorVariantData {
+    /// `Variant` — no fields and no parentheses.
+    Fieldless,
+    /// `Variant(...)` — the vector may be empty.
+    Tuple(Vec<ErrorField>),
+}
+
+impl ErrorVariantData {
+    /// All fields in native declaration order. Opaque fields retain their slots.
+    pub fn fields(&self) -> &[ErrorField] {
+        match self {
+            Self::Fieldless => &[],
+            Self::Tuple(fields) => fields,
+        }
+    }
+
+    /// Marshallable fields paired with their original native field indices.
+    pub fn typed_fields(&self) -> impl Iterator<Item = (usize, &TypeRef)> {
+        self.fields()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, field)| match field {
+                ErrorField::Typed(type_ref) => Some((index, type_ref)),
+                ErrorField::Opaque => None,
+            })
+    }
 }
 
 /// A payload field in a data-carrying error variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ErrorField {
+#[serde(tag = "kind", content = "type_ref", rename_all = "snake_case")]
+pub enum ErrorField {
     /// Field type reference (e.g. `str` for `Box<str>`).
-    #[serde(flatten)]
-    pub type_ref: TypeRef,
+    Typed(TypeRef),
+    /// A native field that cannot be marshalled. No Rust type is exposed.
+    Opaque,
 }
 
 // ---------------------------------------------------------------------------

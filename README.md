@@ -113,6 +113,13 @@ lifetimes, `impl Trait` dispatch, file descriptors, and more.
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
   the feature is off
 
+## Error payload inspection
+
+Clients can inspect and forward received tuple payloads. Mark one field
+`#[ffier(opaque)]` to hide it, or mark the variant opaque to hide all its fields.
+Other fields remain inspectable. Payload messages use native `Display`,
+including details from opaque fields.
+
 ## String representation
 
 Strings are represented as a `ptr + len` struct pair (e.g. `MylibStr`) rather

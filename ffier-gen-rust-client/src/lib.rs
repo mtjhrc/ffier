@@ -397,6 +397,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                 &payload_fn,
                 vec![
                     "handle: *const core::ffi::c_void".to_string(),
+                    "index: usize".to_string(),
                     "out_buf: *mut core::ffi::c_void".to_string(),
                     "buf_size: usize".to_string(),
                 ],
@@ -573,7 +574,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
 
     // Per-variant data structs for data-carrying variants
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.data.fields().is_empty() {
             continue;
         }
         let data_name = format!("{}{}Data", err.name, v.name);
@@ -582,11 +583,11 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
         // Getter per field — calls ft_error_payload, returns borrowed data.
         // The payload borrows from the handle, so the getter returns a
         // reference tied to &self (which keeps the handle alive).
-        for (i, field) in v.fields.iter().enumerate() {
+        for (i, type_ref) in v.data.typed_fields() {
             let getter_name = format!("field_{i}");
             // The field type in the schema is the owned type (e.g. Box<str>),
             // but the getter borrows — return &str for Box<str>, etc.
-            let borrow_ref = field.type_ref.as_borrowed();
+            let borrow_ref = type_ref.as_borrowed();
             let borrow_ty = borrow_ref.to_rust_type();
             let borrow_ty_static = borrow_ref.to_rust_type_static();
             writeln!(out, "    pub fn {getter_name}(&self) -> {borrow_ty} {{").unwrap();
@@ -597,7 +598,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{borrow_ty_static} as FfiType>::CRepr>()) }};"
+                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, {i}, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{borrow_ty_static} as FfiType>::CRepr>()) }};"
             )
             .unwrap();
             writeln!(
@@ -624,7 +625,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "#[derive(Debug)]").unwrap();
     writeln!(out, "pub enum {} {{", err.name).unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.data.fields().is_empty() {
             writeln!(out, "    {}({handle_name}),", v.name).unwrap();
         } else {
             let data_name = format!("{}{}Data", err.name, v.name);
@@ -670,7 +671,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "        let handle = {handle_name}(err_handle);").unwrap();
     writeln!(out, "        match code {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.data.fields().is_empty() {
             writeln!(
                 out,
                 "            {}u32 => Self::{}(handle),",
@@ -706,7 +707,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(out, "        let (code, handle) = match self {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.data.fields().is_empty() {
             writeln!(
                 out,
                 "            Self::{}(handle) => ({}u32, handle),",
@@ -736,7 +737,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     writeln!(out, "    fn handle_ptr(&self) -> *mut core::ffi::c_void {{").unwrap();
     writeln!(out, "        match self {{").unwrap();
     for v in &err.variants {
-        if v.fields.is_empty() {
+        if v.data.fields().is_empty() {
             writeln!(out, "            Self::{}(h) => h.handle(),", v.name).unwrap();
         } else {
             writeln!(out, "            Self::{}(d) => d.0.handle(),", v.name).unwrap();

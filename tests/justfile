@@ -67,6 +67,8 @@ c: build gen-header
         -Wl,-rpath,{{root}}/target/debug \
         -Wl,--disable-new-dtags
     ./c/test_main
+    # Expected aborts bypass cleanup; check them outside the Valgrind run.
+    ./c/test_main --payload-abort-tests
 
 # Run C tests under valgrind
 valgrind: c
