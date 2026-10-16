@@ -287,11 +287,11 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
 pub struct VtableHeader {
     /// Number of function-pointer slots, including drop and reserved slots.
     /// Drop occupies slot 0; method index N occupies slot N + 1.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
 }
 
 /// Vtable handle payload — stored inline in the handle's payload region
@@ -306,11 +306,11 @@ impl VtableHandle {
     /// Read an `Option<extern "C" fn(...)>` vtable slot with bounds checking.
     ///
     /// Returns `None` for slots at or beyond the vtable header's
-    /// `vtable_len`, or for slots containing a null function pointer.
+    /// `_vtable_len`, or for slots containing a null function pointer.
     ///
     /// # Safety
     /// - `vtable_ptr` must point to a valid, aligned [`VtableHeader`]
-    ///   followed by `vtable_len` aligned, initialized function-pointer slots.
+    ///   followed by `_vtable_len` aligned, initialized function-pointer slots.
     /// - `F` must be the function-pointer type of the requested slot.
     #[inline]
     pub unsafe fn field_or_none<F: Copy>(&self, slot: usize) -> Option<F> {

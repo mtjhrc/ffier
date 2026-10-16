@@ -1645,11 +1645,11 @@ fn emit_vtable_struct(
         "    /// Number of function-pointer slots, including drop and reserved slots."
     )
     .unwrap();
-    writeln!(out, "    pub vtable_len: u16,").unwrap();
+    writeln!(out, "    pub _vtable_len: u16,").unwrap();
     writeln!(out, "    /// Reserved for future use; initialize to zero.").unwrap();
-    writeln!(out, "    pub __reserved_u16: u16,").unwrap();
+    writeln!(out, "    pub _reserved1: u16,").unwrap();
     writeln!(out, "    /// Reserved for future use; initialize to zero.").unwrap();
-    writeln!(out, "    pub __reserved_u32: u32,").unwrap();
+    writeln!(out, "    pub _reserved2: u32,").unwrap();
     writeln!(
         out,
         "    pub drop: Option<unsafe extern \"C\" fn(*mut core::ffi::c_void)>,"
@@ -1693,9 +1693,9 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     let vtable_len = u16::try_from(tr.max_vtable_slot + 2).expect("vtable_len exceeds u16::MAX");
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
-    writeln!(out, "            vtable_len: {vtable_len},").unwrap();
-    writeln!(out, "            __reserved_u16: 0,").unwrap();
-    writeln!(out, "            __reserved_u32: 0,").unwrap();
+    writeln!(out, "            _vtable_len: {vtable_len},").unwrap();
+    writeln!(out, "            _reserved1: 0,").unwrap();
+    writeln!(out, "            _reserved2: 0,").unwrap();
 
     // drop trampoline
     writeln!(out, "            drop: Some({{").unwrap();

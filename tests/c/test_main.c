@@ -457,9 +457,9 @@ static void* make_processor_handle(void* user_data) {
 void vtable_initializer_macro(void) {
     /* A sparse vtable still counts all slots, not just initialized methods. */
     typedef struct {
-        uint16_t vtable_len;
-        uint16_t __reserved_u16;
-        uint32_t __reserved_u32;
+        uint16_t _vtable_len;
+        uint16_t _reserved1;
+        uint32_t _reserved2;
         void (*drop)(void*);
         void (*__reserved_0)(void);
         void (*__reserved_1)(void);
@@ -472,15 +472,15 @@ void vtable_initializer_macro(void) {
 
     _Static_assert(offsetof(FtProcessorVtable, drop) == 8, "vtable header must be 8 bytes");
     _Static_assert(FT_VTABLE_LEN(FtProcessorVtable) == 3, "drop plus two methods");
-    assert(g_test_vtable.vtable_len == 3);
-    assert(g_test_vtable.__reserved_u16 == 0);
-    assert(g_test_vtable.__reserved_u32 == 0);
-    assert(sparse.vtable_len == 4);
+    assert(g_test_vtable._vtable_len == 3);
+    assert(g_test_vtable._reserved1 == 0);
+    assert(g_test_vtable._reserved2 == 0);
+    assert(sparse._vtable_len == 4);
     assert(sparse.drop == NULL);
     assert(sparse.__reserved_0 == NULL);
     assert(sparse.__reserved_1 == NULL);
     assert(sparse.process(NULL, 21) == 42);
-    assert(empty.vtable_len == 3);
+    assert(empty._vtable_len == 3);
     assert(empty.drop == NULL);
     assert(empty.process == NULL);
     assert(empty.name == NULL);

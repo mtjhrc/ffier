@@ -512,9 +512,9 @@ pub trait PushStr {
         Self: Sized,
     {
         &PushStrVtable {
-            vtable_len: 2,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 2,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -555,11 +555,11 @@ pub trait PushStr {
 #[repr(C)]
 pub struct PushStrVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub push: Option<
         unsafe extern "C" fn(

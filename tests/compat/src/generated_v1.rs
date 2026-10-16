@@ -2549,9 +2549,9 @@ pub trait ErrorForwarder {
         Self: Sized,
     {
         &ErrorForwarderVtable {
-            vtable_len: 4,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 4,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2639,11 +2639,11 @@ pub trait ErrorForwarder {
 #[repr(C)]
 pub struct ErrorForwarderVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub forward_value: Option<
         unsafe extern "C" fn(
@@ -2689,9 +2689,9 @@ pub trait Processor {
         Self: Sized,
     {
         &ProcessorVtable {
-            vtable_len: 3,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 3,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2742,11 +2742,11 @@ pub trait Processor {
 #[repr(C)]
 pub struct ProcessorVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub process: Option<
         unsafe extern "C" fn(
@@ -2782,9 +2782,9 @@ pub trait Fruit {
         Self: Sized,
     {
         &FruitVtable {
-            vtable_len: 5,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 5,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2865,11 +2865,11 @@ pub trait Fruit {
 #[repr(C)]
 pub struct FruitVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
     pub __reserved_1: Option<unsafe extern "C" fn()>,
@@ -2912,9 +2912,9 @@ pub trait Weighable {
         Self: Sized,
     {
         &WeighableVtable {
-            vtable_len: 2,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 2,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2954,11 +2954,11 @@ pub trait Weighable {
 #[repr(C)]
 pub struct WeighableVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub weight_grams:
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
@@ -2986,9 +2986,9 @@ pub trait PushStr {
         Self: Sized,
     {
         &PushStrVtable {
-            vtable_len: 2,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 2,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -3029,11 +3029,11 @@ pub trait PushStr {
 #[repr(C)]
 pub struct PushStrVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub push: Option<
         unsafe extern "C" fn(
@@ -3072,9 +3072,9 @@ pub trait OptionalWorker {
         Self: Sized,
     {
         &OptionalWorkerVtable {
-            vtable_len: 2,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _vtable_len: 2,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -3115,11 +3115,11 @@ pub trait OptionalWorker {
 #[repr(C)]
 pub struct OptionalWorkerVtable {
     /// Number of function-pointer slots, including drop and reserved slots.
-    pub vtable_len: u16,
+    pub _vtable_len: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u16: u16,
+    pub _reserved1: u16,
     /// Reserved for future use; initialize to zero.
-    pub __reserved_u32: u32,
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub amplify: Option<
         unsafe extern "C" fn(
