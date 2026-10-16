@@ -3,6 +3,8 @@
 
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
+use ffier_test_foreign_lib_via_cdylib::ForeignItem;
+
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
@@ -315,7 +317,7 @@ impl Widget {
     /// Apply a foreign config to this widget (tests foreign param on a method).
     pub fn apply_config(
         &mut self,
-        #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
+        #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
         config: &ffier_test_foreign_lib_via_cdylib::ForeignConfig,
     ) {
         self.name = config.name().to_owned();
@@ -325,7 +327,7 @@ impl Widget {
     /// Read a lifetime-bearing foreign handle.
     pub fn read_foreign_borrowed<'a>(
         &self,
-        #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignBorrowed"))]
+        #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignBorrowed"))]
         value: &ffier_test_foreign_lib_via_cdylib::ForeignBorrowed<'a>,
     ) -> i32 {
         value.value().len() as i32
@@ -1231,7 +1233,7 @@ pub use optional_api::{
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn apply_foreign_config(
     widget: &mut Widget,
-    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
+    #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
     config: &ffier_test_foreign_lib_via_cdylib::ForeignConfig,
 ) {
     widget.name = config.name().to_owned();
@@ -1241,15 +1243,15 @@ pub fn apply_foreign_config(
 /// Read a foreign item's score.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn read_foreign_item_score(
-    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
-    item: &ffier_test_foreign_lib_via_cdylib::ForeignItem,
+    #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
+    item: &ForeignItem,
 ) -> i32 {
     item.score()
 }
 
 /// Create a foreign item from our library's data (tests foreign return type).
 #[cfg_attr(feature = "ffi", ffier::export)]
-#[cfg_attr(feature = "ffi", ffier(foreign_return = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
+#[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
 pub fn create_foreign_item(
     label: &str,
     score: i32,
@@ -1260,8 +1262,8 @@ pub fn create_foreign_item(
 /// Mutate a foreign item's score (tests &mut foreign param).
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn double_foreign_item_score(
-    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
-    item: &mut ffier_test_foreign_lib_via_cdylib::ForeignItem,
+    #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
+    item: &mut ::ffier_test_foreign_lib_via_cdylib::ForeignItem,
 ) {
     let current = item.score();
     item.set_score(current * 2);
@@ -1270,7 +1272,7 @@ pub fn double_foreign_item_score(
 /// Consume a foreign item and return its score (tests by-value foreign param).
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn consume_foreign_item(
-    #[cfg_attr(feature = "ffi", ffier(foreign = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
+    #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignItem"))]
     item: ffier_test_foreign_lib_via_cdylib::ForeignItem,
 ) -> i32 {
     item.score()
@@ -1278,7 +1280,7 @@ pub fn consume_foreign_item(
 
 /// Create a foreign config, returning Result with foreign ok type.
 #[cfg_attr(feature = "ffi", ffier::export)]
-#[cfg_attr(feature = "ffi", ffier(foreign_return = ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
+#[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
 pub fn create_foreign_config_checked(
     name: &str,
     value: i32,

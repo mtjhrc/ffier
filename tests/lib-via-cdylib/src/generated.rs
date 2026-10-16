@@ -207,71 +207,72 @@ impl<T: FfiHandle + 'static> FfiType for &mut T {
 
 impl<'a> FfiHandle for ForeignBorrowed<'a> {
     const C_HANDLE_NAME: &'static str =
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+        <ForeignBorrowed<'a> as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
     const TYPE_TAG: u32 =
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+        <ForeignBorrowed<'a> as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+        unsafe { ::ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
     fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+        <ForeignBorrowed<'a> as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
     }
 }
 impl<'a> FfiType for ForeignBorrowed<'a> {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str =
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+        <ForeignBorrowed<'a> as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
     fn into_c(self) -> *mut core::ffi::c_void {
-        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+        ::ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignBorrowed<'a> as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        <ForeignBorrowed<'a> as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
     }
 }
 
 impl FfiHandle for ForeignConfig {
     const C_HANDLE_NAME: &'static str =
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
-    const TYPE_TAG: u32 = <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+        <ForeignConfig as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    const TYPE_TAG: u32 =
+        <ForeignConfig as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+        unsafe { ::ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
     fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+        <ForeignConfig as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
     }
 }
 impl FfiType for ForeignConfig {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str =
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+        <ForeignConfig as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
     fn into_c(self) -> *mut core::ffi::c_void {
-        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+        ::ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignConfig as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        <ForeignConfig as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
     }
 }
 
 impl FfiHandle for ForeignItem {
     const C_HANDLE_NAME: &'static str =
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
-    const TYPE_TAG: u32 = <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
+        <ForeignItem as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+    const TYPE_TAG: u32 = <ForeignItem as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::TYPE_TAG;
     unsafe fn as_handle(&self) -> *mut core::ffi::c_void {
-        unsafe { ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
+        unsafe { ::ffier_test_foreign_lib_via_cdylib::FfiHandle::as_handle(self) }
     }
     fn __from_raw(handle: *mut core::ffi::c_void) -> Self {
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
+        <ForeignItem as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(handle)
     }
 }
 impl FfiType for ForeignItem {
     type CRepr = *mut core::ffi::c_void;
     const C_TYPE_NAME: &'static str =
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
+        <ForeignItem as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::C_HANDLE_NAME;
     fn into_c(self) -> *mut core::ffi::c_void {
-        ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
+        ::ffier_test_foreign_lib_via_cdylib::FfiType::into_c(self)
     }
     unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-        <ForeignItem as ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
+        <ForeignItem as ::ffier_test_foreign_lib_via_cdylib::FfiHandle>::__from_raw(repr)
     }
 }
 

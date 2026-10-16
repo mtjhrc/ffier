@@ -5,7 +5,9 @@
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
+use syn::spanned::Spanned;
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::meta::{
@@ -2332,7 +2334,7 @@ fn emit_json(
         enum_constants,
         bitflags_constants,
         free_fns,
-    );
+    )?;
     // Standard Option/Box/Result syntax has already been converted. Any remaining
     // use of these names would collide with that syntax in generated bindings.
     let payload_types = library
@@ -2388,6 +2390,7 @@ fn emit_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ffier_schema::{Blessing, TypeEntry, TypeKind};
 
     #[test]
     fn qualified_paths_preserve_schema_type_information() {
@@ -2409,6 +2412,254 @@ mod tests {
                 "source: {source:?}",
             );
         }
+    }
+
+    #[test]
+    fn registry_rejects_duplicate_declarations_without_overwriting() {
+        let mut registry = SchemaRegistry::default();
+        let entry = TypeEntry {
+            kind: TypeKind::Error {
+                c_name: "TestError".to_string(),
+            },
+            type_tag: Some(1),
+            bless: None,
+            lifetime_params: vec![],
+        };
+        registry
+            .register(
+                "Error",
+                entry.clone(),
+                RegistrySource::Declaration,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        // Even an identical declaration is a duplicate, not a reference.
+        assert!(
+            registry
+                .register(
+                    "Error",
+                    entry.clone(),
+                    RegistrySource::Declaration,
+                    proc_macro2::Span::call_site()
+                )
+                .is_err()
+        );
+        let conflicting = TypeEntry {
+            kind: TypeKind::Trait {
+                c_name: "TestError".to_string(),
+            },
+            type_tag: Some(2),
+            bless: Some(Blessing::ErrorTrait),
+            lifetime_params: vec![],
+        };
+        let error = registry
+            .register(
+                "Error",
+                conflicting,
+                RegistrySource::Declaration,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("FFI type name `Error` is already registered")
+        );
+        assert_eq!(registry.into_entries()["Error"], entry);
+    }
+
+    #[test]
+    fn registry_compares_foreign_metadata_without_lifetime_names() {
+        let mut registry = SchemaRegistry::default();
+        let entry = TypeEntry {
+            kind: TypeKind::ForeignHandle {
+                foreign_crate: "foreign".to_string(),
+                c_name: "ForeignView".to_string(),
+            },
+            type_tag: None,
+            bless: None,
+            lifetime_params: vec!["a".to_string()],
+        };
+        registry
+            .register(
+                "View",
+                entry.clone(),
+                RegistrySource::ForeignReference,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        let renamed = TypeEntry {
+            lifetime_params: vec!["b".to_string()],
+            ..entry.clone()
+        };
+        registry
+            .register(
+                "View",
+                renamed.clone(),
+                RegistrySource::ForeignReference,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        registry
+            .register(
+                "View",
+                TypeEntry {
+                    lifetime_params: vec!["static".to_string()],
+                    ..entry.clone()
+                },
+                RegistrySource::ForeignReference,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        for conflicting in [
+            TypeEntry {
+                lifetime_params: vec![],
+                ..renamed.clone()
+            },
+            TypeEntry {
+                type_tag: Some(1),
+                ..renamed.clone()
+            },
+            TypeEntry {
+                bless: Some(Blessing::Object),
+                ..renamed.clone()
+            },
+            TypeEntry {
+                kind: TypeKind::ForeignHandle {
+                    foreign_crate: "another".to_string(),
+                    c_name: "ForeignView".to_string(),
+                },
+                ..renamed.clone()
+            },
+            TypeEntry {
+                kind: TypeKind::ForeignHandle {
+                    foreign_crate: "foreign".to_string(),
+                    c_name: "AnotherView".to_string(),
+                },
+                ..renamed.clone()
+            },
+        ] {
+            assert!(
+                registry
+                    .register(
+                        "View",
+                        conflicting,
+                        RegistrySource::ForeignReference,
+                        proc_macro2::Span::call_site()
+                    )
+                    .is_err()
+            );
+        }
+        // A second declaration still conflicts with an existing reference.
+        assert!(
+            registry
+                .register(
+                    "View",
+                    renamed,
+                    RegistrySource::Declaration,
+                    proc_macro2::Span::call_site()
+                )
+                .is_err()
+        );
+        assert_eq!(registry.into_entries()["View"], entry);
+    }
+
+    #[test]
+    fn registry_preserves_declared_trait_metadata_across_impl_references() {
+        let mut registry = SchemaRegistry::default();
+        let entry = TypeEntry {
+            kind: TypeKind::Trait {
+                c_name: "TestTrait".to_string(),
+            },
+            type_tag: Some(10),
+            bless: Some(Blessing::ErrorTrait),
+            lifetime_params: vec!["a".to_string()],
+        };
+        registry
+            .register(
+                "Trait",
+                entry.clone(),
+                RegistrySource::Declaration,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        let reference = TypeEntry {
+            type_tag: None,
+            bless: None,
+            lifetime_params: vec!["b".to_string()],
+            ..entry.clone()
+        };
+        registry
+            .register(
+                "Trait",
+                reference.clone(),
+                RegistrySource::TraitReference,
+                proc_macro2::Span::call_site(),
+            )
+            .unwrap();
+        for conflicting in [
+            TypeEntry {
+                type_tag: Some(11),
+                ..reference.clone()
+            },
+            TypeEntry {
+                bless: Some(Blessing::PushStr),
+                ..reference.clone()
+            },
+            TypeEntry {
+                lifetime_params: vec![],
+                ..reference.clone()
+            },
+        ] {
+            assert!(
+                registry
+                    .register(
+                        "Trait",
+                        conflicting,
+                        RegistrySource::TraitReference,
+                        proc_macro2::Span::call_site(),
+                    )
+                    .is_err()
+            );
+        }
+        assert!(
+            registry
+                .register(
+                    "Trait",
+                    reference,
+                    RegistrySource::Declaration,
+                    proc_macro2::Span::call_site()
+                )
+                .is_err()
+        );
+        assert_eq!(registry.into_entries()["Trait"], entry);
+    }
+
+    #[test]
+    fn registry_accepts_repeated_impl_only_trait_references() {
+        let mut registry = SchemaRegistry::default();
+        let entry = TypeEntry {
+            kind: TypeKind::Trait {
+                c_name: "TestSnapshot".to_string(),
+            },
+            type_tag: None,
+            bless: None,
+            lifetime_params: vec!["a".to_string()],
+        };
+        for lifetime in ["a", "b"] {
+            registry
+                .register(
+                    "Snapshot",
+                    TypeEntry {
+                        lifetime_params: vec![lifetime.to_string()],
+                        ..entry.clone()
+                    },
+                    RegistrySource::TraitReference,
+                    proc_macro2::Span::call_site(),
+                )
+                .unwrap();
+        }
+        assert_eq!(registry.into_entries()["Snapshot"], entry);
     }
 }
 
@@ -2627,6 +2878,78 @@ fn is_c_void(ty: &syn::Type) -> bool {
     }
 }
 
+/// Construction-time provenance; not part of the serialized schema.
+enum RegistrySource {
+    /// A declaration owns its registry name; another declaration is an error.
+    Declaration,
+    /// An impl reuses the trait entry without declaring another trait.
+    TraitReference,
+    /// Foreign identity comes from the registered name, crate, and C name.
+    ForeignReference,
+}
+
+struct RegisteredType {
+    entry: ffier_schema::TypeEntry,
+    source: RegistrySource,
+}
+
+#[derive(Default)]
+struct SchemaRegistry {
+    types: BTreeMap<String, RegisteredType>,
+}
+
+impl SchemaRegistry {
+    /// Reject duplicate declarations and merge only matching references.
+    fn register(
+        &mut self,
+        name: &str,
+        mut entry: ffier_schema::TypeEntry,
+        source: RegistrySource,
+        span: proc_macro2::Span,
+    ) -> syn::Result<()> {
+        match self.types.entry(name.to_string()) {
+            Entry::Vacant(slot) => {
+                slot.insert(RegisteredType { entry, source });
+                Ok(())
+            }
+            Entry::Occupied(slot) => {
+                let existing = slot.get();
+                let same_reference = match (&existing.source, &source) {
+                    (
+                        RegistrySource::Declaration | RegistrySource::TraitReference,
+                        RegistrySource::TraitReference,
+                    ) => {
+                        // An impl references a trait; it does not assign its tag
+                        // or blessing. Keep those from the trait declaration.
+                        entry.type_tag = entry.type_tag.or(existing.entry.type_tag);
+                        entry.bless = entry.bless.or(existing.entry.bless);
+                        true
+                    }
+                    (RegistrySource::ForeignReference, RegistrySource::ForeignReference) => true,
+                    _ => false,
+                };
+                if same_reference && existing.entry.same_registration(&entry) {
+                    Ok(())
+                } else {
+                    Err(syn::Error::new(
+                        span,
+                        format!(
+                            "FFI type name `{name}` is already registered; rename the conflicting type"
+                        ),
+                    ))
+                }
+            }
+        }
+    }
+
+    fn into_entries(self) -> BTreeMap<String, ffier_schema::TypeEntry> {
+        self.types
+            .into_iter()
+            .map(|(name, registered)| (name, registered.entry))
+            .collect()
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_schema(
     prefix: &str,
@@ -2638,7 +2961,7 @@ fn build_schema(
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
     free_fns: &[TokenStream2],
-) -> ffier_schema::Library {
+) -> syn::Result<ffier_schema::Library> {
     let errors_parsed: Vec<_> = errors
         .iter()
         .map(|item| {
@@ -2706,7 +3029,7 @@ fn build_schema(
     };
 
     // Build type registry
-    let mut type_registry = BTreeMap::new();
+    let mut registry = SchemaRegistry::default();
 
     // Primitives
     for (name, c_type) in &[
@@ -2726,8 +3049,8 @@ fn build_schema(
         (ffier_schema::C_VOID_PTR, "void*"),
         (ffier_schema::C_VOID_CONST_PTR, "const void*"),
     ] {
-        type_registry.insert(
-            name.to_string(),
+        registry.register(
+            name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Primitive {
                     c_type: c_type.to_string(),
@@ -2736,12 +3059,14 @@ fn build_schema(
                 bless: None,
                 lifetime_params: vec![],
             },
-        );
+            RegistrySource::Declaration,
+            proc_macro2::Span::call_site(),
+        )?;
     }
 
     // Builtins — use primitives prefix for C names
-    type_registry.insert(
-        "str".to_string(),
+    registry.register(
+        "str",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::String {
                 c_name: format!("{prim_type_pfx}Str"),
@@ -2750,9 +3075,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::Str),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "[u8]".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "[u8]",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Bytes {
                 c_name: format!("{prim_type_pfx}Bytes"),
@@ -2761,11 +3088,13 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::Bytes),
             lifetime_params: vec![],
         },
-    );
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
 
     // Framework types — ABI scaffolding used by generators.
-    type_registry.insert(
-        "FfierResult".to_string(),
+    registry.register(
+        "FfierResult",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: format!("{prim_type_pfx}Result"),
@@ -2774,9 +3103,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::Result),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "FfierPath".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "FfierPath",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Bytes {
                 c_name: format!("{prim_type_pfx}Path"),
@@ -2785,9 +3116,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::Path),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "FfierVtableHandle".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "FfierVtableHandle",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: format!("{prim_type_pfx}VtableHandle"),
@@ -2796,9 +3129,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::VtableHandle),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "FfierObjectArray".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "FfierObjectArray",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: format!("{prim_type_pfx}ObjectArray"),
@@ -2807,9 +3142,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::ObjectArray),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "FfierObject".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "FfierObject",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: format!("{prim_type_pfx}Object"),
@@ -2818,11 +3155,13 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::Object),
             lifetime_params: vec![],
         },
-    );
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
 
     // Std type aliases
-    type_registry.insert(
-        "RawFd".to_string(),
+    registry.register(
+        "RawFd",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: "int".to_string(),
@@ -2831,9 +3170,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::RawFd),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "BorrowedFd".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "BorrowedFd",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawFd".to_string(),
@@ -2842,9 +3183,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::BorrowedFd),
             lifetime_params: vec!["fd".to_string()],
         },
-    );
-    type_registry.insert(
-        "OwnedFd".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "OwnedFd",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawFd".to_string(),
@@ -2853,9 +3196,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::OwnedFd),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "RawHandle".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "RawHandle",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: "void *".to_string(),
@@ -2864,9 +3209,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::RawHandle),
             lifetime_params: vec![],
         },
-    );
-    type_registry.insert(
-        "BorrowedHandle".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "BorrowedHandle",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawHandle".to_string(),
@@ -2875,9 +3222,11 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::BorrowedHandle),
             lifetime_params: vec!["handle".to_string()],
         },
-    );
-    type_registry.insert(
-        "OwnedHandle".to_string(),
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
+    registry.register(
+        "OwnedHandle",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Alias {
                 alias_of: "RawHandle".to_string(),
@@ -2886,13 +3235,15 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::OwnedHandle),
             lifetime_params: vec![],
         },
-    );
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
 
     // Enum constants
     for e in &enums_parsed {
         let name = e.name.to_string();
-        type_registry.insert(
-            name.clone(),
+        registry.register(
+            &name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Enum {
                     alias_of: e.repr.clone(),
@@ -2901,14 +3252,16 @@ fn build_schema(
                 bless: None,
                 lifetime_params: vec![],
             },
-        );
+            RegistrySource::Declaration,
+            e.name.span(),
+        )?;
     }
 
     // Bitflags constants
     for bf in &bitflags_parsed {
         let name = bf.name.to_string();
-        type_registry.insert(
-            name.clone(),
+        registry.register(
+            &name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Bitflags {
                     alias_of: bf.repr.clone(),
@@ -2917,14 +3270,16 @@ fn build_schema(
                 bless: None,
                 lifetime_params: vec![],
             },
-        );
+            RegistrySource::Declaration,
+            bf.name.span(),
+        )?;
     }
 
     // Handles (exported types)
     for e in &exportables_parsed {
         let name = e.struct_name.to_string();
-        type_registry.insert(
-            name.clone(),
+        registry.register(
+            &name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Handle {
                     c_name: resolver.handle_c_name(&name),
@@ -2933,14 +3288,16 @@ fn build_schema(
                 bless: None,
                 lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
             },
-        );
+            RegistrySource::Declaration,
+            e.struct_name.span(),
+        )?;
     }
 
     // Errors
     for e in &errors_parsed {
         let name = e.name.to_string();
-        type_registry.insert(
-            name.clone(),
+        registry.register(
+            &name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Error {
                     c_name: resolver.handle_c_name(&name),
@@ -2949,14 +3306,16 @@ fn build_schema(
                 bless: None,
                 lifetime_params: vec![],
             },
-        );
+            RegistrySource::Declaration,
+            e.name.span(),
+        )?;
     }
 
     // Implementable traits
     for i in &implementables_parsed {
         let name = i.trait_name.to_string();
-        type_registry.insert(
-            name.clone(),
+        registry.register(
+            &name,
             ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Trait {
                     c_name: resolver.handle_c_name(&name),
@@ -2969,35 +3328,35 @@ fn build_schema(
                 }),
                 lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
             },
-        );
+            RegistrySource::Declaration,
+            i.trait_name.span(),
+        )?;
     }
 
     // Traits discovered via trait_impls (no @implementable metadata entry).
-    // Infer lifetime params from the trait_lifetime_args of the impls
-    // (filtering out 'static which is a concrete binding, not a param).
+    // Concrete 'static arguments still occupy a lifetime parameter position.
+    // Keep all positions for registration comparison; impl metadata is unchanged.
     for ti in &trait_impls_parsed {
         let name = ti.trait_name.to_string();
-        let lifetime_params: Vec<String> = ti
-            .trait_lifetime_args
-            .iter()
-            .filter(|lt| *lt != "static")
-            .cloned()
-            .collect();
-        type_registry
-            .entry(name.clone())
-            .or_insert_with(|| ffier_schema::TypeEntry {
+        let lifetime_params = ti.trait_lifetime_args.clone();
+        registry.register(
+            &name,
+            ffier_schema::TypeEntry {
                 kind: ffier_schema::TypeKind::Trait {
                     c_name: resolver.handle_c_name(&name),
                 },
                 type_tag: None,
                 bless: None,
                 lifetime_params,
-            });
+            },
+            RegistrySource::TraitReference,
+            ti.trait_name.span(),
+        )?;
     }
 
     // Self sentinel — methods returning Self are void at C ABI level.
-    type_registry.insert(
-        ffier_schema::SELF_TYPE.to_string(),
+    registry.register(
+        ffier_schema::SELF_TYPE,
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {
                 c_type: "void".to_string(),
@@ -3006,26 +3365,38 @@ fn build_schema(
             bless: Some(ffier_schema::Blessing::ReplacesSelf),
             lifetime_params: vec![],
         },
-    );
+        RegistrySource::Declaration,
+        proc_macro2::Span::call_site(),
+    )?;
 
     // Foreign handle types — scan all methods/free-functions for foreign type
     // references and register them so generators know they are opaque handles
     // from another ffier library.
     {
-        // Map type_name → (foreign_crate, c_name, lifetime_params).
-        let mut foreign_types =
-            std::collections::HashMap::<String, (String, Option<String>, Vec<String>)>::new();
-        let mut record_foreign = |tp: &MetaTypePair| {
+        let mut record_foreign = |tp: &MetaTypePair| -> syn::Result<()> {
             if let Some(fc) = &tp.foreign_crate {
                 let type_ref = resolver.type_ref_from_tokens(&tp.rust_type);
                 let type_name = type_ref.type_name;
                 let crate_path = fc.to_string().replace(' ', "");
-                foreign_types.entry(type_name).or_insert((
-                    crate_path,
-                    tp.foreign_c_name.clone(),
-                    type_ref.type_args,
-                ));
+                let entry = ffier_schema::TypeEntry {
+                    kind: ffier_schema::TypeKind::ForeignHandle {
+                        foreign_crate: crate_path,
+                        c_name: tp.foreign_c_name.clone().expect(
+                            "foreign type missing c_name (should have been caught earlier)",
+                        ),
+                    },
+                    type_tag: None,
+                    bless: None,
+                    lifetime_params: type_ref.type_args,
+                };
+                registry.register(
+                    &type_name,
+                    entry,
+                    RegistrySource::ForeignReference,
+                    tp.rust_type.span(),
+                )?;
             }
+            Ok(())
         };
         let all_methods = free_fns_parsed
             .iter()
@@ -3036,31 +3407,18 @@ fn build_schema(
         for m in all_methods {
             for p in &m.params {
                 if let MetaParamKind::Regular(tp) = &p.kind {
-                    record_foreign(tp);
+                    record_foreign(tp)?;
                 }
             }
             match &m.ret {
-                MetaReturn::Value(tp) => record_foreign(tp),
-                MetaReturn::Result { ok: Some(tp), .. } => record_foreign(tp),
+                MetaReturn::Value(tp) => record_foreign(tp)?,
+                MetaReturn::Result { ok: Some(tp), .. } => record_foreign(tp)?,
                 _ => {}
             }
         }
-        for (name, (crate_path, c_name, lifetime_params)) in foreign_types {
-            type_registry
-                .entry(name.clone())
-                .or_insert_with(|| ffier_schema::TypeEntry {
-                    kind: ffier_schema::TypeKind::ForeignHandle {
-                        foreign_crate: crate_path,
-                        c_name: c_name.expect(
-                            "foreign type missing c_name (should have been caught earlier)",
-                        ),
-                    },
-                    type_tag: None,
-                    bless: None,
-                    lifetime_params,
-                });
-        }
     }
+
+    let type_registry = registry.into_entries();
 
     // Build schema fields while type_registry is still borrowable.
     let exported_types: Vec<_> = exportables_parsed
@@ -3105,7 +3463,7 @@ fn build_schema(
         trait_impls,
     };
     library.prune_unreferenced_types();
-    library
+    Ok(library)
 }
 
 /// Render a cfg predicate to a string for the JSON schema — the schema is a
