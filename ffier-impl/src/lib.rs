@@ -495,11 +495,11 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         }
 
         // Parse method-level #[ffier(...)] for foreign_return
-        let method_ffier = parse_ffier_method_attrs(&method.attrs).ok();
-        if method_ffier
-            .as_ref()
-            .is_some_and(|a| a.foreign_return.is_some() && a.foreign_return_c_name.is_none())
-        {
+        let method_ffier = match parse_ffier_method_attrs(&method.attrs) {
+            Ok(attrs) => attrs,
+            Err(error) => return error.to_compile_error().into(),
+        };
+        if method_ffier.foreign_return.is_some() && method_ffier.foreign_return_c_name.is_none() {
             return syn::Error::new_spanned(
                 &method.sig.ident,
                 "#[ffier(foreign_return = ...)] requires c_name = \"...\" \
@@ -508,12 +508,8 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
             .to_compile_error()
             .into();
         }
-        let foreign_ret = method_ffier
-            .as_ref()
-            .and_then(|a| a.foreign_return.as_ref());
-        let foreign_ret_c = method_ffier
-            .as_ref()
-            .and_then(|a| a.foreign_return_c_name.as_deref());
+        let foreign_ret = method_ffier.foreign_return.as_ref();
+        let foreign_ret_c = method_ffier.foreign_return_c_name.as_deref();
         match parse_method_sig(
             &method.sig,
             &method.attrs,
@@ -1087,11 +1083,11 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
     let mut ctx = AliasContext::new(helper_mod_name.clone());
 
     // Parse the function signature as a static method (no self)
-    let method_ffier = parse_ffier_method_attrs(&input.attrs).ok();
-    if method_ffier
-        .as_ref()
-        .is_some_and(|a| a.foreign_return.is_some() && a.foreign_return_c_name.is_none())
-    {
+    let method_ffier = match parse_ffier_method_attrs(&input.attrs) {
+        Ok(attrs) => attrs,
+        Err(error) => return error.to_compile_error().into(),
+    };
+    if method_ffier.foreign_return.is_some() && method_ffier.foreign_return_c_name.is_none() {
         return syn::Error::new_spanned(
             &input.sig.ident,
             "#[ffier(foreign_return = ...)] requires c_name = \"...\" \
@@ -1100,12 +1096,8 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
         .to_compile_error()
         .into();
     }
-    let foreign_ret = method_ffier
-        .as_ref()
-        .and_then(|a| a.foreign_return.as_ref());
-    let foreign_ret_c = method_ffier
-        .as_ref()
-        .and_then(|a| a.foreign_return_c_name.as_deref());
+    let foreign_ret = method_ffier.foreign_return.as_ref();
+    let foreign_ret_c = method_ffier.foreign_return_c_name.as_deref();
     let mut method = match parse_method_sig(
         &input.sig,
         &input.attrs,
@@ -1801,10 +1793,21 @@ fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVaria
 /// Recognized `#[ffier(...)]` attributes on a parameter.
 struct FfierParamAttrs {
     dispatch: Option<String>,
-    /// Foreign ffier library crate path (e.g. `other_lib`).
+    /// Absolute foreign ffier library crate path (e.g. `::other_lib`).
     foreign_crate: Option<syn::Path>,
     /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
     foreign_c_name: Option<String>,
+}
+
+fn parse_foreign_crate_path(input: syn::parse::ParseStream) -> syn::Result<syn::Path> {
+    let path: syn::Path = input.parse()?;
+    if path.leading_colon.is_none() {
+        return Err(syn::Error::new_spanned(
+            path,
+            "foreign crate path must start with `::`",
+        ));
+    }
+    Ok(path)
 }
 
 fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierParamAttrs> {
@@ -1823,9 +1826,7 @@ fn parse_ffier_param_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierParamAt
                 let mode: syn::Ident = value.parse()?;
                 result.dispatch = Some(mode.to_string());
             } else if meta.path.is_ident("foreign") {
-                let value = meta.value()?;
-                let path: syn::Path = value.parse()?;
-                result.foreign_crate = Some(path);
+                result.foreign_crate = Some(parse_foreign_crate_path(meta.value()?)?);
             } else if meta.path.is_ident("c_name") {
                 let value = meta.value()?;
                 let lit: syn::LitStr = value.parse()?;
@@ -1848,7 +1849,7 @@ struct FfierMethodAttrs {
     raw_handle: bool,
     dispatch: Option<String>,
     skip: bool,
-    /// Foreign ffier library crate path for the return type.
+    /// Absolute foreign ffier library crate path for the return type.
     foreign_return: Option<syn::Path>,
     /// C typedef name for the foreign return handle type.
     foreign_return_c_name: Option<String>,
@@ -1884,9 +1885,7 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
             } else if meta.path.is_ident("skip") {
                 result.skip = true;
             } else if meta.path.is_ident("foreign_return") {
-                let value = meta.value()?;
-                let path: syn::Path = value.parse()?;
-                result.foreign_return = Some(path);
+                result.foreign_return = Some(parse_foreign_crate_path(meta.value()?)?);
             } else if meta.path.is_ident("c_name") {
                 let value = meta.value()?;
                 let lit: syn::LitStr = value.parse()?;

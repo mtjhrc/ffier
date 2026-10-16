@@ -106,6 +106,17 @@ pub struct TypeEntry {
     pub lifetime_params: Vec<String>,
 }
 
+impl TypeEntry {
+    /// Compare registration metadata without comparing lifetime parameter names.
+    /// Lifetime names may differ between references to the same type.
+    pub fn same_registration(&self, other: &Self) -> bool {
+        self.kind == other.kind
+            && self.type_tag == other.type_tag
+            && self.bless == other.bless
+            && self.lifetime_params.len() == other.lifetime_params.len()
+    }
+}
+
 /// The kind of a type in the registry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
