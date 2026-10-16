@@ -1,0 +1,10 @@
+[package]
+name = "conditional-provider"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ffier.workspace = true
+
+[features]
+a_feature = []

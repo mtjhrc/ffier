@@ -1,0 +1,11 @@
+[package]
+name = "conditional-facade"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+ffier.workspace = true
+conditional-provider = { path = "../provider", default-features = false }
+
+[features]
+a_feature = ["conditional-provider/a_feature"]

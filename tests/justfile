@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail valgrind miri consumer compat cargo-test
+default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail conditional-bridge valgrind miri consumer compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -115,3 +115,20 @@ cargo-test: build
 # Verify compile-fail fixture diagnostics.
 compile-fail:
     python3 compile-fail/check.py
+
+# Expand with the same a_feature enabled in all three crates, then disabled in all.
+conditional-bridge: conditional-bridge-enabled conditional-bridge-disabled
+
+# Forward bridge -> facade -> provider features and call the exported C functions.
+conditional-bridge-enabled:
+    cargo test --offline --manifest-path conditional-bridge/Cargo.toml \
+        --target-dir {{root}}/target/conditional-bridge -p conditional-bridge \
+        --features a_feature
+
+# With all three features disabled, the cdylib must export no Widget bridge functions.
+conditional-bridge-disabled:
+    cargo build --offline --manifest-path conditional-bridge/Cargo.toml \
+        --target-dir {{root}}/target/conditional-bridge -p conditional-bridge
+    nm --dynamic --defined-only {{root}}/target/conditional-bridge/debug/libconditional_bridge.so \
+        > {{root}}/target/conditional-bridge/disabled-symbols.txt
+    ! grep ' conditional_widget_' {{root}}/target/conditional-bridge/disabled-symbols.txt

@@ -1,0 +1,15 @@
+[package]
+name = "conditional-bridge"
+version = "0.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ffier.workspace = true
+conditional-facade = { path = "../facade", default-features = false }
+
+[features]
+# Forward the same feature through the facade to the provider.
+a_feature = ["conditional-facade/a_feature"]
