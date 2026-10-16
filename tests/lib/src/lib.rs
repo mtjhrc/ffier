@@ -1537,9 +1537,9 @@ mod tests {
         }
 
         let vtable = PushStrVtable {
-            num_slots: 1,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _num_slots: 1,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: None,
             push: Some(push_to_string),
         };
@@ -2310,12 +2310,12 @@ mod tests {
         use ffier::{VtableHandle, VtableHeader};
 
         assert_eq!(size_of::<VtableHeader>(), 8);
-        assert_eq!(offset_of!(VtableHeader, num_slots), 0);
-        assert_eq!(offset_of!(VtableHeader, __reserved_u16), 2);
-        assert_eq!(offset_of!(VtableHeader, __reserved_u32), 4);
-        assert_eq!(offset_of!(ProcessorVtable, num_slots), 0);
-        assert_eq!(offset_of!(ProcessorVtable, __reserved_u16), 2);
-        assert_eq!(offset_of!(ProcessorVtable, __reserved_u32), 4);
+        assert_eq!(offset_of!(VtableHeader, _num_slots), 0);
+        assert_eq!(offset_of!(VtableHeader, _reserved1), 2);
+        assert_eq!(offset_of!(VtableHeader, _reserved2), 4);
+        assert_eq!(offset_of!(ProcessorVtable, _num_slots), 0);
+        assert_eq!(offset_of!(ProcessorVtable, _reserved1), 2);
+        assert_eq!(offset_of!(ProcessorVtable, _reserved2), 4);
         assert_eq!(offset_of!(ProcessorVtable, drop), size_of::<VtableHeader>());
         assert_eq!(size_of::<VtableHandle>(), 2 * size_of::<*const ()>());
     }
@@ -2338,9 +2338,9 @@ mod tests {
     }
 
     static PROCESSOR_VTABLE: ProcessorVtable = ProcessorVtable {
-        num_slots: 2,
-        __reserved_u16: 0,
-        __reserved_u32: 0,
+        _num_slots: 2,
+        _reserved1: 0,
+        _reserved2: 0,
         drop: Some(test_drop),
         process: Some(test_process),
         name: Some(test_processor_name),
@@ -2403,9 +2403,9 @@ mod tests {
     }
 
     static FRUIT_VT_WITH_COUNT_TAGS: FruitVtable = FruitVtable {
-        num_slots: 4,
-        __reserved_u16: 0,
-        __reserved_u32: 0,
+        _num_slots: 4,
+        _reserved1: 0,
+        _reserved2: 0,
         drop: Some(fruit_drop),
         value: Some(fruit_value),
         label: None,
@@ -2417,9 +2417,9 @@ mod tests {
 
     // Static vtable variants for fruit tests — vtable must outlive handles.
     static FRUIT_VT_DROP_VALUE: FruitVtable = FruitVtable {
-        num_slots: 4,
-        __reserved_u16: 0,
-        __reserved_u32: 0,
+        _num_slots: 4,
+        _reserved1: 0,
+        _reserved2: 0,
         drop: Some(fruit_drop),
         value: Some(fruit_value),
         label: None,
@@ -2428,9 +2428,9 @@ mod tests {
     };
 
     static FRUIT_VT_VALUE_ONLY: FruitVtable = FruitVtable {
-        num_slots: 4,
-        __reserved_u16: 0,
-        __reserved_u32: 0,
+        _num_slots: 4,
+        _reserved1: 0,
+        _reserved2: 0,
         drop: None,
         value: Some(fruit_value),
         label: None,
@@ -2730,9 +2730,9 @@ mod tests {
     }
 
     static FRUIT_VT_CUSTOM_LABEL: FruitVtable = FruitVtable {
-        num_slots: 4,
-        __reserved_u16: 0,
-        __reserved_u32: 0,
+        _num_slots: 4,
+        _reserved1: 0,
+        _reserved2: 0,
         drop: Some(fruit_drop),
         value: Some(fruit_value),
         label: Some(custom_label),
@@ -2775,9 +2775,9 @@ mod tests {
         }
         static VTABLE: ShortFruitVtable = ShortFruitVtable {
             header: ffier::VtableHeader {
-                num_slots: 1,
-                __reserved_u16: 0,
-                __reserved_u32: 0,
+                _num_slots: 1,
+                _reserved1: 0,
+                _reserved2: 0,
             },
             drop: Some(fruit_drop),
             value: Some(fruit_value),
@@ -2801,7 +2801,7 @@ mod tests {
         }
         static VTABLE: LongFruitVtable = LongFruitVtable {
             fruit: FruitVtable {
-                num_slots: 12,
+                _num_slots: 12,
                 ..FRUIT_VT_CUSTOM_LABEL
             },
             extra: [None; 8],
@@ -2830,17 +2830,17 @@ mod tests {
         static VTABLES: [DropOnlyVtable; 2] = [
             DropOnlyVtable {
                 header: ffier::VtableHeader {
-                    num_slots: 0,
-                    __reserved_u16: 0,
-                    __reserved_u32: 0,
+                    _num_slots: 0,
+                    _reserved1: 0,
+                    _reserved2: 0,
                 },
                 drop: None,
             },
             DropOnlyVtable {
                 header: ffier::VtableHeader {
-                    num_slots: 0,
-                    __reserved_u16: 0,
-                    __reserved_u32: 0,
+                    _num_slots: 0,
+                    _reserved1: 0,
+                    _reserved2: 0,
                 },
                 drop: Some(mark_dropped),
             },
@@ -3118,9 +3118,9 @@ mod tests {
         }
 
         static WEIGHABLE_VT: WeighableVtable = WeighableVtable {
-            num_slots: 1,
-            __reserved_u16: 0,
-            __reserved_u32: 0,
+            _num_slots: 1,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: None,
             weight_grams: Some(custom_weight),
         };

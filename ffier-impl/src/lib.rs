@@ -5,8 +5,8 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
     Data, DeriveInput, FnArg, GenericArgument, ImplItem, ItemImpl, ItemTrait, ItemUse, LitStr, Pat,
-    PathArguments, ReturnType, Token, TraitItem, Type, parse::Parse, parse_macro_input,
-    visit_mut::VisitMut,
+    PathArguments, ReturnType, Token, TraitItem, Type, ext::IdentExt, parse::Parse,
+    parse_macro_input, visit_mut::VisitMut,
 };
 
 mod bridge;
@@ -2140,6 +2140,16 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    let name = sig.ident.unraw().to_string();
+    if name.starts_with('_') {
+        return Err(syn::Error::new_spanned(
+            &sig.ident,
+            format!(
+                "exported function or method name `{name}` starts with `_`, which is reserved for generated code"
+            ),
+        ));
+    }
+
     // --- Determine receiver ---
     let receiver = if raw_handle {
         Receiver::None
@@ -4899,11 +4909,11 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         #[repr(C)]
         pub struct #vtable_struct {
             /// Number of virtual method slots (excluding drop), including reserved gaps.
-            pub num_slots: u16,
+            pub _num_slots: u16,
             /// Reserved for future use; initialize to zero.
-            pub __reserved_u16: u16,
+            pub _reserved1: u16,
             /// Reserved for future use; initialize to zero.
-            pub __reserved_u32: u32,
+            pub _reserved2: u32,
             pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
             #(#vtable_fields,)*
         }

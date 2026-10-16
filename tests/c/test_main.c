@@ -457,9 +457,9 @@ static void* make_processor_handle(void* user_data) {
 void vtable_initializer_macro(void) {
     /* A sparse vtable counts all method slots, not just initialized methods. */
     typedef struct {
-        uint16_t num_slots;
-        uint16_t __reserved_u16;
-        uint32_t __reserved_u32;
+        uint16_t _num_slots;
+        uint16_t _reserved1;
+        uint32_t _reserved2;
         void (*drop)(void*);
         void (*__reserved_0)(void);
         void (*__reserved_1)(void);
@@ -470,9 +470,9 @@ void vtable_initializer_macro(void) {
     );
     static const FtProcessorVtable empty = FT_VTABLE(FtProcessorVtable, );
     typedef struct {
-        uint16_t num_slots;
-        uint16_t __reserved_u16;
-        uint32_t __reserved_u32;
+        uint16_t _num_slots;
+        uint16_t _reserved1;
+        uint32_t _reserved2;
         void (*drop)(void*);
     } DropOnlyVtable;
     static const DropOnlyVtable drop_only = FT_VTABLE(DropOnlyVtable,
@@ -482,19 +482,19 @@ void vtable_initializer_macro(void) {
     _Static_assert(offsetof(FtProcessorVtable, drop) == 8, "vtable header must be 8 bytes");
     _Static_assert(FT_VTABLE_LEN(FtProcessorVtable) == 2, "two virtual method slots, excluding drop");
     _Static_assert(FT_VTABLE_LEN(DropOnlyVtable) == 0, "drop does not count as a virtual method slot");
-    assert(g_test_vtable.num_slots == 2);
-    assert(g_test_vtable.__reserved_u16 == 0);
-    assert(g_test_vtable.__reserved_u32 == 0);
-    assert(sparse.num_slots == 3);
+    assert(g_test_vtable._num_slots == 2);
+    assert(g_test_vtable._reserved1 == 0);
+    assert(g_test_vtable._reserved2 == 0);
+    assert(sparse._num_slots == 3);
     assert(sparse.drop == NULL);
     assert(sparse.__reserved_0 == NULL);
     assert(sparse.__reserved_1 == NULL);
     assert(sparse.process(NULL, 21) == 42);
-    assert(empty.num_slots == 2);
+    assert(empty._num_slots == 2);
     assert(empty.drop == NULL);
     assert(empty.process == NULL);
     assert(empty.name == NULL);
-    assert(drop_only.num_slots == 0);
+    assert(drop_only._num_slots == 0);
     assert(drop_only.drop == test_drop);
 }
 
