@@ -535,6 +535,10 @@ pub fn generate_from_file_with_options(
 fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     let push_str_info = find_push_str_trait(lib);
     let prefix = &lib.prefix;
+    let error_type_tag = lib
+        .type_entry(&err.name)
+        .and_then(|entry| entry.type_tag)
+        .expect("error type must have a type tag");
     let (_, error_destroy_fn) = find_error_dispatch_fns(lib);
     let payload_fn = format!("{prefix}_error_payload");
 
@@ -690,6 +694,42 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     )
     .unwrap();
     writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+
+    // Return the library's error handle to a callback caller. Forgetting the
+    // wrapper transfers ownership, so its Drop implementation must not run.
+    writeln!(out, "    #[allow(dead_code)]").unwrap();
+    writeln!(
+        out,
+        "    fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {{"
+    )
+    .unwrap();
+    writeln!(out, "        let (code, handle) = match self {{").unwrap();
+    for v in &err.variants {
+        if v.fields.is_empty() {
+            writeln!(
+                out,
+                "            Self::{}(handle) => ({}u32, handle),",
+                v.name, v.code
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                "            Self::{}(data) => ({}u32, data.0),",
+                v.name, v.code
+            )
+            .unwrap();
+        }
+    }
+    writeln!(out, "        }};").unwrap();
+    writeln!(out, "        let raw = handle.handle();").unwrap();
+    writeln!(out, "        core::mem::forget(handle);").unwrap();
+    writeln!(
+        out,
+        "        (ffier::ffier_result({error_type_tag}u32, code), raw)"
+    )
+    .unwrap();
     writeln!(out, "    }}").unwrap();
 
     // message() — calls ft_error_message with a PushStr handle wrapping a String
@@ -1455,7 +1495,7 @@ fn emit_implementable_trait(
         "    fn __ffier_vtable() -> &'static {vtable_name} where Self: Sized {{"
     )
     .unwrap();
-    emit_vtable_constructor(out, tr, lib);
+    emit_vtable_constructor(out, tr);
     writeln!(out, "    }}").unwrap();
 
     // __into_raw_handle
@@ -1651,7 +1691,7 @@ fn emit_vtable_struct(
     writeln!(out).unwrap();
 }
 
-fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     let vtable_name = &tr.vtable_struct_name;
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
@@ -1768,15 +1808,9 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                     .unwrap();
                 }
                 Return::Result {
-                    ok,
-                    c_convention,
-                    err_type,
+                    ok, c_convention, ..
                 } => {
                     use ffier_schema::CResultConvention;
-                    let err_type_tag = lib
-                        .type_entry(err_type)
-                        .and_then(|e| e.type_tag)
-                        .unwrap_or(0);
                     writeln!(out, "                    match __result {{").unwrap();
                     match c_convention {
                         CResultConvention::HandleOrNull => {
@@ -1794,7 +1828,16 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            unsafe {{ *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void }};").unwrap();
+                            writeln!(
+                                out,
+                                "                            let (_, __handle) = __e.into_ffi();"
+                            )
+                            .unwrap();
+                            writeln!(
+                                out,
+                                "                            unsafe {{ *err_out = __handle }};"
+                            )
+                            .unwrap();
                             writeln!(out, "                            core::ptr::null_mut()")
                                 .unwrap();
                             writeln!(out, "                        }}").unwrap();
@@ -1818,14 +1861,13 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Libr
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            unsafe {{ *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void }};").unwrap();
-                            // Any non-zero FfierResult signals error. The bridge reads
-                            // the error handle from err_out, not the packed code.
+                            writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
                                 out,
-                                "                            ffier::ffier_result({err_type_tag}, 1)"
+                                "                            unsafe {{ *err_out = __handle }};"
                             )
                             .unwrap();
+                            writeln!(out, "                            __code").unwrap();
                             writeln!(out, "                        }}").unwrap();
                         }
                     }

@@ -33,6 +33,61 @@ pub enum TestError {
     Fatal(anyhow::Error),
 }
 
+thread_local! {
+    static TEST_ERROR_DROPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+impl Drop for TestError {
+    fn drop(&mut self) {
+        TEST_ERROR_DROPS.with(|drops| drops.set(drops.get() + 1));
+    }
+}
+
+/// Test instrumentation: native errors destroyed on the current thread.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn test_error_drop_count() -> usize {
+    TEST_ERROR_DROPS.with(std::cell::Cell::get)
+}
+
+/// Exercise error forwarding with each callback return convention.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ErrorForwarder {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn forward_value(&self) -> Result<i32, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn forward_handle(&self) -> Result<Gadget, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn forward_unit(&self) -> Result<(), TestError>;
+}
+
+/// Reconstruct a callback error as its native type, then return it to the client.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn roundtrip_callback_error(
+    callback: impl ErrorForwarder,
+    method: u32,
+) -> Result<(), TestError> {
+    let error = match method {
+        0 => callback.forward_value().unwrap_err(),
+        1 => callback.forward_handle().err().expect("callback must fail"),
+        2 => callback.forward_unit().unwrap_err(),
+        _ => panic!("unknown callback method"),
+    };
+    // Inspect the native enum, not merely the client wrapper or its type tag.
+    match &error {
+        TestError::CustomMessage() => assert_eq!(error.to_string(), "custom error message"),
+        TestError::InvalidInput() => assert_eq!(error.to_string(), "invalid input"),
+        TestError::NumericError(value) => {
+            assert_eq!(*value, 76);
+            assert_eq!(error.to_string(), "numeric error: 76");
+        }
+        TestError::NotFound(value) => assert_eq!(&**value, "error"),
+        TestError::Fatal(_) => panic!("unexpected opaque error"),
+    }
+    Err(error)
+}
+
 // ---------------------------------------------------------------------------
 // Widget — primary type exercising most param/return patterns
 // ---------------------------------------------------------------------------
@@ -1349,6 +1404,9 @@ mod error_tests {
 #[cfg(feature = "ffi")]
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
+    trait ErrorForwarder = 30,
+    fn test_error_drop_count,
+    fn roundtrip_callback_error,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
     View<'_> = 7, ViewFactory = 8,

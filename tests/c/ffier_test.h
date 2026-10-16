@@ -34,6 +34,7 @@ typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtCategorizable; /* FtApple | FtOrange */
 typedef void* FtError; /* FtTestError | FtVtableError */
+typedef void* FtErrorForwarder; /* FtVtableErrorForwarder */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
@@ -426,6 +427,24 @@ FtOptionalWidget ft_optional_widget_new(int32_t base);
 int32_t ft_optional_widget_base(FtOptionalWidget handle);
 void ft_optional_widget_destroy(FtOptionalWidget handle);
 
+/* FtErrorForwarderVtable -------------------------------------------- */
+
+#define FT_ERROR_FORWARDER_TYPE_TAG 16777246
+
+typedef struct {
+    void (*drop)(void* self_data);
+    FtResult (*forward_value)(void* self_data, int32_t* result, FtError* err_out);
+    FtGadget (*forward_handle)(void* self_data, FtError* err_out);
+    FtResult (*forward_unit)(void* self_data, FtError* err_out);
+} FtErrorForwarderVtable;
+
+/* ErrorForwarder (dispatch) ----------------------------------------- */
+
+FtResult ft_error_forwarder_forward_value(FtErrorForwarder handle, int32_t* result, FtError* err_out);
+FtGadget ft_error_forwarder_forward_handle(FtErrorForwarder handle, FtError* err_out);
+FtResult ft_error_forwarder_forward_unit(FtErrorForwarder handle, FtError* err_out);
+void ft_error_forwarder_destroy(FtErrorForwarder handle);
+
 /* FtProcessorVtable ------------------------------------------------- */
 
 #define FT_PROCESSOR_TYPE_TAG 16777226
@@ -569,6 +588,10 @@ int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
 
+/** Test instrumentation: native errors destroyed on the current thread. */
+size_t ft_test_error_drop_count(void);
+/** Reconstruct a callback error as its native type, then return it to the client. */
+FtResult ft_roundtrip_callback_error(FtErrorForwarder callback, uint32_t method, FtError* err_out);
 /** Describe a log level as a string. */
 FtStr ft_log_level_name(uint32_t level);
 /** Check if a log level is enabled (everything above Off). */
