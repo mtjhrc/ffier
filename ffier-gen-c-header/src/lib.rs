@@ -233,7 +233,7 @@ fn emit_shared_types(
     out.push_str("/* Initialize a vtable with its slot count and zeroed reserved fields. */\n");
     out.push_str(&format!("#define {vtable_macro}(T, ...) \\\n"));
     out.push_str(&format!(
-        "    {{ .num_slots = {num_slots_macro}(T), .__reserved_u16 = 0, .__reserved_u32 = 0, __VA_ARGS__ }}\n\n"
+        "    {{ ._num_slots = {num_slots_macro}(T), ._reserved1 = 0, ._reserved2 = 0, __VA_ARGS__ }}\n\n"
     ));
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
@@ -399,10 +399,10 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     out.push_str("typedef struct {\n");
 
     out.push_str(
-        "    uint16_t num_slots; /* number of virtual method slots (excluding drop), including reserved gaps */\n",
+        "    uint16_t _num_slots; /* number of virtual method slots (excluding drop), including reserved gaps */\n",
     );
-    out.push_str("    uint16_t __reserved_u16; /* must be zero */\n");
-    out.push_str("    uint32_t __reserved_u32; /* must be zero */\n");
+    out.push_str("    uint16_t _reserved1; /* must be zero */\n");
+    out.push_str("    uint32_t _reserved2; /* must be zero */\n");
 
     // Slot 0 is always drop
     out.push_str("    void (*drop)(void* self_data);\n");
