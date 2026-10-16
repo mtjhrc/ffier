@@ -13,6 +13,16 @@
   `foreign_return` annotations, for example `foreign = ::other_lib`. Users must
   update relative annotation paths to avoid module shadowing and ambiguous
   registry comparisons.
+- Move vtable length from each handle into an 8-byte vtable header:
+  `_vtable_len: u16`, `_reserved1: u16`, and `_reserved2: u32`. Length counts
+  function-pointer slots, including drop and reserved gaps, rather than bytes.
+  Handle payloads now contain only the vtable and user-data pointers. Regenerate
+  bindings and use the generated C `PREFIX_VTABLE(Type, ...)` macro to initialize
+  length from the caller's compiled vtable type and zero the reserved fields.
+- Reject all exported function and method names starting with `_`, including
+  raw identifiers, with a compile-time diagnostic. This prefix is reserved for
+  generated code. Users must rename affected functions and methods, including
+  methods on traits exported with `no_vtable`.
 
 ### Fixed
 

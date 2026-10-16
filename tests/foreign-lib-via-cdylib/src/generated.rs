@@ -257,7 +257,6 @@ impl std::fmt::Display for ForeignError {
             value: ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
                 user_data: &mut __writer as *mut FmtWriter as *const core::ffi::c_void,
-                vtable_size: core::mem::size_of::<PushStrVtable>() as u16,
             },
         };
         let __writer_handle =
@@ -513,6 +512,9 @@ pub trait PushStr {
         Self: Sized,
     {
         &PushStrVtable {
+            _vtable_len: 2,
+            _reserved1: 0,
+            _reserved2: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -539,16 +541,12 @@ pub trait PushStr {
     {
         let __vtable: &'static PushStrVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             33554436u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -556,6 +554,12 @@ pub trait PushStr {
 
 #[repr(C)]
 pub struct PushStrVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub _vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved1: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved2: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub push: Option<
         unsafe extern "C" fn(

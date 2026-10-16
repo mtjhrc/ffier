@@ -789,12 +789,6 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
         "                user_data: &mut __writer as *mut FmtWriter as *const core::ffi::c_void,"
     )
     .unwrap();
-    writeln!(
-        out,
-        "                vtable_size: core::mem::size_of::<{}>() as u16,",
-        push_str_info.vtable_name
-    )
-    .unwrap();
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
     writeln!(
@@ -1515,7 +1509,6 @@ fn emit_implementable_trait(
         "        let __user_data = Box::into_raw(Box::new(self));"
     )
     .unwrap();
-    writeln!(out, "        let vtable_size: u16 = core::mem::size_of::<{vtable_name}>().try_into().expect(\"vtable_size exceeds u16::MAX\");").unwrap();
     writeln!(
         out,
         "        ffier::ffier_handle_new_with_metadata({type_tag}u32, 0, ffier::VtableHandle {{"
@@ -1531,7 +1524,6 @@ fn emit_implementable_trait(
         "            user_data: __user_data as *const core::ffi::c_void,"
     )
     .unwrap();
-    writeln!(out, "            vtable_size,").unwrap();
     writeln!(out, "        }})").unwrap();
     writeln!(out, "    }}").unwrap();
 
@@ -1625,11 +1617,6 @@ fn emit_default_dispatch_body(
         "                user_data: self as *const Self as *const core::ffi::c_void,"
     )
     .unwrap();
-    writeln!(
-        out,
-        "                vtable_size: core::mem::size_of::<{vtable_name}>() as u16,"
-    )
-    .unwrap();
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
 
@@ -1653,6 +1640,16 @@ fn emit_vtable_struct(
 ) {
     writeln!(out, "#[repr(C)]").unwrap();
     writeln!(out, "pub struct {vtable_name} {{").unwrap();
+    writeln!(
+        out,
+        "    /// Number of function-pointer slots, including drop and reserved slots."
+    )
+    .unwrap();
+    writeln!(out, "    pub _vtable_len: u16,").unwrap();
+    writeln!(out, "    /// Reserved for future use; initialize to zero.").unwrap();
+    writeln!(out, "    pub _reserved1: u16,").unwrap();
+    writeln!(out, "    /// Reserved for future use; initialize to zero.").unwrap();
+    writeln!(out, "    pub _reserved2: u32,").unwrap();
     writeln!(
         out,
         "    pub drop: Option<unsafe extern \"C\" fn(*mut core::ffi::c_void)>,"
@@ -1693,8 +1690,12 @@ fn emit_vtable_struct(
 
 fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     let vtable_name = &tr.vtable_struct_name;
+    let vtable_len = u16::try_from(tr.max_vtable_slot + 2).expect("vtable_len exceeds u16::MAX");
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
+    writeln!(out, "            _vtable_len: {vtable_len},").unwrap();
+    writeln!(out, "            _reserved1: 0,").unwrap();
+    writeln!(out, "            _reserved2: 0,").unwrap();
 
     // drop trampoline
     writeln!(out, "            drop: Some({{").unwrap();
