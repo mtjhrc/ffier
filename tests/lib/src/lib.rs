@@ -979,15 +979,6 @@ impl Sprocket {
             name: name.to_owned(),
         }
     }
-
-    /// Returns `Err(Error::Failed())` when name is "broken".
-    pub fn try_spin(&self) -> Result<(), Error> {
-        if self.name == "broken" {
-            Err(Error::Failed())
-        } else {
-            Ok(())
-        }
-    }
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1320,19 +1311,6 @@ pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
     ptr as usize
 }
 
-// ---------------------------------------------------------------------------
-// Error — deliberately named `Error` to catch collisions with std::error::Error
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, PartialEq, Eq, thiserror::Error)]
-#[cfg_attr(feature = "ffi", derive(ffier::FfiError))]
-#[non_exhaustive]
-pub enum Error {
-    #[error("generic failure")]
-    #[cfg_attr(feature = "ffi", ffier(code = 1))]
-    Failed(),
-}
-
 #[cfg(test)]
 mod error_tests {
     use super::TestError;
@@ -1399,8 +1377,6 @@ ffier::library_definition!("ft", library_tag = 1,
     trait ffier_builtins::PushStr = 24,
     trait ffier_builtins::Error = 25,
     Error for TestError,
-    Error = 26,
-    Error for Error,
     #[cfg(feature = "optional-entry")]
     crate::optional_api::OptionalWidget = 27,
     #[cfg(feature = "optional-entry")]
@@ -3031,35 +3007,6 @@ mod tests {
             // Free the array (does NOT destroy the gadgets — they're borrowed)
             ffier::ffier_object_array_free(arr);
             ft_widget_destroy(w);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Error-named error type (regression: name collides with std::error::Error)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn error_named_error_type_ok() {
-        unsafe {
-            let s = ft_sprocket_new(ffier::FfierBytes::from_str("ok"));
-            let mut err: *mut core::ffi::c_void = core::ptr::null_mut();
-            let r = ft_sprocket_try_spin(s, &mut err);
-            assert_eq!(r, 0);
-            assert!(err.is_null());
-            ft_sprocket_destroy(s);
-        }
-    }
-
-    #[test]
-    fn error_named_error_type_err() {
-        unsafe {
-            let s = ft_sprocket_new(ffier::FfierBytes::from_str("broken"));
-            let mut err: *mut core::ffi::c_void = core::ptr::null_mut();
-            let r = ft_sprocket_try_spin(s, &mut err);
-            assert_ne!(r, 0);
-            assert!(!err.is_null());
-            ft_error_destroy(err);
-            ft_sprocket_destroy(s);
         }
     }
 
