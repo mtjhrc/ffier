@@ -12,7 +12,6 @@
 #endif
 
 typedef void* FtTestError;
-typedef void* FtError;
 typedef void* FtWidget;
 typedef void* FtGadget;
 typedef void* FtConfig;
@@ -34,7 +33,7 @@ typedef void* FtSprocket;
 typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtCategorizable; /* FtApple | FtOrange */
-typedef void* FtError; /* FtTestError | FtError | FtVtableError */
+typedef void* FtError; /* FtTestError | FtVtableError */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
@@ -48,7 +47,7 @@ typedef void* FlForeignItem;
 #ifndef FT_PRIMITIVES_DEFINED
 #define FT_PRIMITIVES_DEFINED
 
-typedef void* FtObject; /* FtTestError | FtError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtOptionalWidget */
+typedef void* FtObject; /* FtTestError | FtWidget | FtGadget | FtConfig | FtGizmo | FtGizmoBuilder | FtView | FtViewFactory | FtPipeline | FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtMixer | FtSprocket | FtOptionalWidget */
 
 typedef uint64_t FtResult;
 #define FT_RESULT_SUCCESS 0
@@ -161,10 +160,6 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
 #define FT_ERROR_TEST_NUMERIC_ERROR ((uint64_t)16777217 << 32 | 4)
 #define FT_ERROR_TEST_FATAL ((uint64_t)16777217 << 32 | 5)
-
-/* Error ------------------------------------------------------------- */
-
-#define FT_ERROR__FAILED ((uint64_t)16777241 << 32 | 1)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -423,8 +418,6 @@ void ft_mixer_destroy(FtMixer handle);
 /* Sprocket ---------------------------------------------------------- */
 
 FtSprocket ft_sprocket_new(FtStr name);
-/** Returns `Err(Error::Failed())` when name is "broken". */
-FtResult ft_sprocket_try_spin(FtSprocket handle, FtError* err_out);
 void ft_sprocket_destroy(FtSprocket handle);
 
 /* OptionalWidget ---------------------------------------------------- */
@@ -572,8 +565,6 @@ int32_t ft_gadget_snap_source_count(FtGadget handle);
 int32_t ft_apple_weight_grams(FtApple handle);
 uint32_t ft_test_error_code(FtTestError handle);
 void ft_test_error_message(FtTestError handle, FtPushStr writer);
-uint32_t ft_error_code(FtError handle);
-void ft_error_message(FtError handle, FtPushStr writer);
 int32_t ft_optional_widget_amplify(FtOptionalWidget handle, int32_t input);
 
 /* Free functions ---------------------------------------------------- */
