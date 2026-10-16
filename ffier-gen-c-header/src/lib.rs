@@ -225,6 +225,17 @@ fn emit_shared_types(
         out.push_str("#endif\n\n");
     }
 
+    let vtable_len_macro = format!("{prim_upper_pfx}VTABLE_LEN");
+    let vtable_macro = format!("{prim_upper_pfx}VTABLE");
+    out.push_str("/* Count all function-pointer slots in the caller's vtable type, including drop and gaps. */\n");
+    out.push_str(&format!("#define {vtable_len_macro}(T) \\\n"));
+    out.push_str("    ((uint16_t)((sizeof(T) - offsetof(T, drop)) / sizeof(((T*)0)->drop)))\n\n");
+    out.push_str("/* Initialize a vtable with its slot count and zeroed reserved fields. */\n");
+    out.push_str(&format!("#define {vtable_macro}(T, ...) \\\n"));
+    out.push_str(&format!(
+        "    {{ .vtable_len = {vtable_len_macro}(T), .__reserved_u16 = 0, .__reserved_u32 = 0, __VA_ARGS__ }}\n\n"
+    ));
+
     // FIXME: This struct layout is hardcoded — should come from the schema.
     let vtable_handle_macro = format!("{prim_upper_pfx}VTABLE_HANDLE");
     out.push_str("/**\n");
@@ -236,7 +247,6 @@ fn emit_shared_types(
     out.push_str("    uint32_t metadata;\n");
     out.push_str("    const void *vtable_ptr;\n");
     out.push_str("    const void *user_data;\n");
-    out.push_str("    uint16_t vtable_size;\n");
     out.push_str(&format!("}} {vtable_handle_c};\n\n"));
     out.push_str(&format!(
         "#define {vtable_handle_macro}(tag, vtable, self_data) \\\n"
@@ -244,8 +254,7 @@ fn emit_shared_types(
     out.push_str(&format!(
         "    (({vtable_handle_c}){{ .type_tag = (tag), .metadata = 0, \\\n"
     ));
-    out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data), \\\n");
-    out.push_str("      .vtable_size = sizeof(vtable) })\n\n");
+    out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data) })\n\n");
 
     // ObjectArrayEntry — opaque 16-byte element matching FfierBorrowedHandle layout.
     // ObjectArray — contiguous array of these entries.
@@ -388,6 +397,12 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     }
 
     out.push_str("typedef struct {\n");
+
+    out.push_str(
+        "    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */\n",
+    );
+    out.push_str("    uint16_t __reserved_u16; /* must be zero */\n");
+    out.push_str("    uint32_t __reserved_u32; /* must be zero */\n");
 
     // Slot 0 is always drop
     out.push_str("    void (*drop)(void* self_data);\n");

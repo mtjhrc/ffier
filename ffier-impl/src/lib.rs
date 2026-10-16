@@ -3017,10 +3017,9 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             //
             // The proc macro output uses bare names (FfiType, FfiHandle, etc.)
             // which are brought into scope by `use $crate::*` inside const _.
-            // The vtable struct is emitted OUTSIDE the const block (it needs
-            // to be visible for offset_of! from other impls) but its field
-            // types use fully-qualified paths that the proc macro embeds
-            // from the bridge_type tokens in the metadata.
+            // The vtable struct is emitted OUTSIDE the const block so clients
+            // can construct it. Its field types use fully-qualified paths
+            // embedded from the bridge_type tokens in the metadata.
             ffier::__generate_vtable! {
                 vtable_struct = #vtable_struct_name;
                 wrapper = #wrapper_name;
@@ -3043,9 +3042,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             impl Drop for #wrapper_name {
                 fn drop(&mut self) {
                     let drop_field: Option<unsafe extern "C" fn(*mut core::ffi::c_void)> = unsafe {
-                        self.value.field_or_none(
-                            core::mem::offset_of!(#vtable_struct_name, drop),
-                        )
+                        self.value.field_or_none(0)
                     };
                     if let Some(drop_fn) = drop_field {
                         unsafe { drop_fn(self.value.user_data as *mut core::ffi::c_void) };
@@ -4682,6 +4679,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         .enumerate()
         .map(|(i, m)| {
             let method_name = &m.name;
+            let slot = m.index() + 1;
 
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
@@ -4862,9 +4860,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             quote! {
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
-                        self.value.field_or_none(
-                            core::mem::offset_of!(#vtable_struct, #method_name),
-                        )
+                        self.value.field_or_none(#slot)
                     };
                     match __field {
                         Some(__f) => { #vtable_branch }
@@ -4902,6 +4898,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let output = quote! {
         #[repr(C)]
         pub struct #vtable_struct {
+            /// Number of function-pointer slots, including drop and reserved slots.
+            pub vtable_len: u16,
+            /// Reserved for future use; initialize to zero.
+            pub __reserved_u16: u16,
+            /// Reserved for future use; initialize to zero.
+            pub __reserved_u32: u32,
             pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
             #(#vtable_fields,)*
         }

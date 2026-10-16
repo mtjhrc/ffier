@@ -555,7 +555,6 @@ impl std::fmt::Display for TestError {
             value: ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
                 user_data: &mut __writer as *mut FmtWriter as *const core::ffi::c_void,
-                vtable_size: core::mem::size_of::<PushStrVtable>() as u16,
             },
         };
         let __writer_handle =
@@ -2550,6 +2549,9 @@ pub trait ErrorForwarder {
         Self: Sized,
     {
         &ErrorForwarderVtable {
+            vtable_len: 4,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2623,16 +2625,12 @@ pub trait ErrorForwarder {
     {
         let __vtable: &'static ErrorForwarderVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<ErrorForwarderVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777246u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const ErrorForwarderVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -2640,6 +2638,12 @@ pub trait ErrorForwarder {
 
 #[repr(C)]
 pub struct ErrorForwarderVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub forward_value: Option<
         unsafe extern "C" fn(
@@ -2685,6 +2689,9 @@ pub trait Processor {
         Self: Sized,
     {
         &ProcessorVtable {
+            vtable_len: 3,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2721,16 +2728,12 @@ pub trait Processor {
     {
         let __vtable: &'static ProcessorVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<ProcessorVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777226u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const ProcessorVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -2738,6 +2741,12 @@ pub trait Processor {
 
 #[repr(C)]
 pub struct ProcessorVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub process: Option<
         unsafe extern "C" fn(
@@ -2777,7 +2786,6 @@ pub trait Fruit {
             value: ffier::VtableHandle {
                 vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
                 user_data: self as *const Self as *const core::ffi::c_void,
-                vtable_size: core::mem::size_of::<FruitVtable>() as u16,
             },
         };
         let __raw = unsafe {
@@ -2796,6 +2804,9 @@ pub trait Fruit {
         Self: Sized,
     {
         &FruitVtable {
+            vtable_len: 5,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2871,16 +2882,12 @@ pub trait Fruit {
     {
         let __vtable: &'static FruitVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<FruitVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777236u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const FruitVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -2888,6 +2895,12 @@ pub trait Fruit {
 
 #[repr(C)]
 pub struct FruitVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub value: Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
     pub label:
@@ -2935,6 +2948,9 @@ pub trait Weighable {
         Self: Sized,
     {
         &WeighableVtable {
+            vtable_len: 2,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -2960,16 +2976,12 @@ pub trait Weighable {
     {
         let __vtable: &'static WeighableVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<WeighableVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777239u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const WeighableVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -2977,6 +2989,12 @@ pub trait Weighable {
 
 #[repr(C)]
 pub struct WeighableVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub weight_grams:
         Option<unsafe extern "C" fn(*mut core::ffi::c_void) -> <i32 as FfiType>::CRepr>,
@@ -3004,6 +3022,9 @@ pub trait PushStr {
         Self: Sized,
     {
         &PushStrVtable {
+            vtable_len: 2,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -3030,16 +3051,12 @@ pub trait PushStr {
     {
         let __vtable: &'static PushStrVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<PushStrVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777240u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const PushStrVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -3047,6 +3064,12 @@ pub trait PushStr {
 
 #[repr(C)]
 pub struct PushStrVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub push: Option<
         unsafe extern "C" fn(
@@ -3085,6 +3108,9 @@ pub trait OptionalWorker {
         Self: Sized,
     {
         &OptionalWorkerVtable {
+            vtable_len: 2,
+            __reserved_u16: 0,
+            __reserved_u32: 0,
             drop: Some({
                 unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
                     unsafe { drop(Box::from_raw(__ud as *mut __T)) };
@@ -3111,16 +3137,12 @@ pub trait OptionalWorker {
     {
         let __vtable: &'static OptionalWorkerVtable = Self::__ffier_vtable();
         let __user_data = Box::into_raw(Box::new(self));
-        let vtable_size: u16 = core::mem::size_of::<OptionalWorkerVtable>()
-            .try_into()
-            .expect("vtable_size exceeds u16::MAX");
         ffier::ffier_handle_new_with_metadata(
             16777244u32,
             0,
             ffier::VtableHandle {
                 vtable_ptr: __vtable as *const OptionalWorkerVtable as *const core::ffi::c_void,
                 user_data: __user_data as *const core::ffi::c_void,
-                vtable_size,
             },
         )
     }
@@ -3128,6 +3150,12 @@ pub trait OptionalWorker {
 
 #[repr(C)]
 pub struct OptionalWorkerVtable {
+    /// Number of function-pointer slots, including drop and reserved slots.
+    pub vtable_len: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u16: u16,
+    /// Reserved for future use; initialize to zero.
+    pub __reserved_u32: u32,
     pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
     pub amplify: Option<
         unsafe extern "C" fn(

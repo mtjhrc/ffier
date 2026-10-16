@@ -77,6 +77,14 @@ typedef struct {
     ((FtBytes){ .data = (const uint8_t*)(arr), .len = sizeof(arr) })
 #endif
 
+/* Count all function-pointer slots in the caller's vtable type, including drop and gaps. */
+#define FT_VTABLE_LEN(T) \
+    ((uint16_t)((sizeof(T) - offsetof(T, drop)) / sizeof(((T*)0)->drop)))
+
+/* Initialize a vtable with its slot count and zeroed reserved fields. */
+#define FT_VTABLE(T, ...) \
+    { .vtable_len = FT_VTABLE_LEN(T), .__reserved_u16 = 0, .__reserved_u32 = 0, __VA_ARGS__ }
+
 /**
  * Stack-allocated temporary handle for passing vtable-based objects.
  * Only valid for the duration of the call — the callee borrows, not owns.
@@ -86,13 +94,11 @@ typedef struct {
     uint32_t metadata;
     const void *vtable_ptr;
     const void *user_data;
-    uint16_t vtable_size;
 } FtVtableHandle;
 
 #define FT_VTABLE_HANDLE(tag, vtable, self_data) \
     ((FtVtableHandle){ .type_tag = (tag), .metadata = 0, \
-      .vtable_ptr = &(vtable), .user_data = (self_data), \
-      .vtable_size = sizeof(vtable) })
+      .vtable_ptr = &(vtable), .user_data = (self_data) })
 
 /**
  * Opaque 16-byte handle entry in an object array.
@@ -432,6 +438,9 @@ void ft_optional_widget_destroy(FtOptionalWidget handle);
 #define FT_ERROR_FORWARDER_TYPE_TAG 16777246
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     FtResult (*forward_value)(void* self_data, int32_t* result, FtError* err_out);
     FtGadget (*forward_handle)(void* self_data, FtError* err_out);
@@ -450,6 +459,9 @@ void ft_error_forwarder_destroy(FtErrorForwarder handle);
 #define FT_PROCESSOR_TYPE_TAG 16777226
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     int32_t (*process)(void* self_data, int32_t input);
     FtStr (*name)(void* self_data);
@@ -466,6 +478,9 @@ void ft_processor_destroy(FtProcessor handle);
 #define FT_FRUIT_TYPE_TAG 16777236
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     int32_t (*value)(void* self_data);
     FtStr (*label)(void* self_data);
@@ -492,6 +507,9 @@ void ft_fruit_destroy(FtFruit handle);
 #define FT_WEIGHABLE_TYPE_TAG 16777239
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     int32_t (*weight_grams)(void* self_data);
 } FtWeighableVtable;
@@ -510,6 +528,9 @@ void ft_categorizable_destroy(FtCategorizable handle);
 #define FT_PUSH_STR_TYPE_TAG 16777240
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     bool (*push)(void* self_data, FtStr s);
 } FtPushStrVtable;
@@ -524,6 +545,9 @@ void ft_push_str_destroy(FtPushStr handle);
 #define FT_ERROR_TYPE_TAG 16777241
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     uint32_t (*code)(void* self_data);
     void (*message)(void* self_data, FtPushStr writer);
@@ -542,6 +566,9 @@ void ft_error_destroy(FtError handle);
 #define FT_OPTIONAL_WORKER_TYPE_TAG 16777244
 
 typedef struct {
+    uint16_t vtable_len; /* function-pointer slots, including drop and gaps */
+    uint16_t __reserved_u16; /* must be zero */
+    uint32_t __reserved_u32; /* must be zero */
     void (*drop)(void* self_data);
     int32_t (*amplify)(void* self_data, int32_t input);
 } FtOptionalWorkerVtable;

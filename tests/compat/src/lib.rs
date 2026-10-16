@@ -44,6 +44,9 @@ mod tests {
     #[test]
     fn v1_custom_type_gets_v2_default_for_label() {
         // Require bindings generated without label, not a v2 default trampoline.
+        assert_eq!(Pear::__ffier_vtable().vtable_len, 5);
+        assert_eq!(Pear::__ffier_vtable().__reserved_u16, 0);
+        assert_eq!(Pear::__ffier_vtable().__reserved_u32, 0);
         assert!(Pear::__ffier_vtable().__reserved_1.is_none());
         // The v2 library sees the empty slot and uses "fruit" (len 5).
         let m = Mixer::new();

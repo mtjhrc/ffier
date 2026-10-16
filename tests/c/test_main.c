@@ -390,24 +390,11 @@ static bool push_str_to_buf(void* self_data, FtStr s) {
 /* Helper: construct a stack-local PushStr handle wrapping push_str_to_buf */
 static void error_message_to_buf(FtError err, struct push_str_buf* buf) {
     buf->len = 0;
-    FtPushStrVtable vtable = {
+    FtPushStrVtable vtable = FT_VTABLE(FtPushStrVtable,
         .drop = NULL,
         .push = push_str_to_buf,
-    };
-    /* Stack-local FfierHandle layout: [type_tag(u32) | metadata(u32) | VtableHandle] */
-    struct {
-        uint32_t type_tag;
-        uint32_t metadata;
-        const void* vtable_ptr;
-        const void* user_data;
-        uint16_t vtable_size;
-    } handle = {
-        .type_tag = FT_PUSH_STR_TYPE_TAG,
-        .metadata = 0,
-        .vtable_ptr = &vtable,
-        .user_data = buf,
-        .vtable_size = sizeof(vtable),
-    };
+    );
+    FtVtableHandle handle = FT_VTABLE_HANDLE(FT_PUSH_STR_TYPE_TAG, vtable, buf);
     if (err == NULL) return; /* self-dispatch doesn't accept null handles */
     ft_error_message(err, &handle);
 }
@@ -453,28 +440,50 @@ static void test_drop(void* self_data) {
     g_drop_called = 1;
 }
 
-static const FtProcessorVtable g_test_vtable = {
+static const FtProcessorVtable g_test_vtable = FT_VTABLE(FtProcessorVtable,
     .drop = test_drop,
     .process = test_process,
     .name = test_processor_name,
-};
+);
 
 /* Construct a heap-allocated processor handle (same layout as FfierHandle<VtableHandle>).
  * In real usage this would be a library-provided macro or function. */
 static void* make_processor_handle(void* user_data) {
-    struct {
-        uint32_t type_tag;
-        uint32_t metadata;
-        const void* vtable_ptr;
-        const void* user_data;
-        uint16_t vtable_size;
-    } *handle = malloc(sizeof(*handle));
-    handle->type_tag = FT_PROCESSOR_TYPE_TAG;
-    handle->metadata = 0;
-    handle->vtable_ptr = &g_test_vtable;
-    handle->user_data = user_data;
-    handle->vtable_size = sizeof(g_test_vtable);
+    FtVtableHandle *handle = malloc(sizeof(*handle));
+    *handle = FT_VTABLE_HANDLE(FT_PROCESSOR_TYPE_TAG, g_test_vtable, user_data);
     return handle;
+}
+
+void vtable_initializer_macro(void) {
+    /* A sparse vtable still counts all slots, not just initialized methods. */
+    typedef struct {
+        uint16_t vtable_len;
+        uint16_t __reserved_u16;
+        uint32_t __reserved_u32;
+        void (*drop)(void*);
+        void (*__reserved_0)(void);
+        void (*__reserved_1)(void);
+        int32_t (*process)(void*, int32_t);
+    } SparseVtable;
+    static const SparseVtable sparse = FT_VTABLE(SparseVtable,
+        .process = test_process,
+    );
+    static const FtProcessorVtable empty = FT_VTABLE(FtProcessorVtable, );
+
+    _Static_assert(offsetof(FtProcessorVtable, drop) == 8, "vtable header must be 8 bytes");
+    _Static_assert(FT_VTABLE_LEN(FtProcessorVtable) == 3, "drop plus two methods");
+    assert(g_test_vtable.vtable_len == 3);
+    assert(g_test_vtable.__reserved_u16 == 0);
+    assert(g_test_vtable.__reserved_u32 == 0);
+    assert(sparse.vtable_len == 4);
+    assert(sparse.drop == NULL);
+    assert(sparse.__reserved_0 == NULL);
+    assert(sparse.__reserved_1 == NULL);
+    assert(sparse.process(NULL, 21) == 42);
+    assert(empty.vtable_len == 3);
+    assert(empty.drop == NULL);
+    assert(empty.process == NULL);
+    assert(empty.name == NULL);
 }
 
 void vtable_constructor(void) {
@@ -650,6 +659,7 @@ int main(void) {
     RUN_TEST(error_handle_null_safe);
 
     printf("\n[vtable/implementable]\n");
+    RUN_TEST(vtable_initializer_macro);
     RUN_TEST(vtable_dyn_dispatch_process);
 
     RUN_TEST(vtable_drop_callback);
