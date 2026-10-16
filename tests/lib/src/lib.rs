@@ -19,7 +19,7 @@ pub enum TestError {
     NotFound(Box<str>),
     #[error("custom error message")]
     #[cfg_attr(feature = "ffi", ffier(code = 2))]
-    CustomMessage(),
+    CustomMessage,
     #[error("invalid input")]
     #[cfg_attr(feature = "ffi", ffier(code = 3))]
     InvalidInput(),
@@ -76,7 +76,7 @@ pub fn roundtrip_callback_error(
     };
     // Inspect the native enum, not merely the client wrapper or its type tag.
     match &error {
-        TestError::CustomMessage() => assert_eq!(error.to_string(), "custom error message"),
+        TestError::CustomMessage => assert_eq!(error.to_string(), "custom error message"),
         TestError::InvalidInput() => assert_eq!(error.to_string(), "invalid input"),
         TestError::NumericError(value) => {
             assert_eq!(*value, 76);
@@ -226,7 +226,7 @@ impl Widget {
 
     /// Always fails with an error.
     pub fn fail_always(&self) -> Result<(), TestError> {
-        Err(TestError::CustomMessage())
+        Err(TestError::CustomMessage)
     }
 
     /// Always fails with an error (value variant).
@@ -1372,6 +1372,7 @@ pub fn opaque_ptr_to_int(ptr: *const c_void) -> usize {
 mod error_tests {
     use super::TestError;
     use anyhow::anyhow;
+    #[cfg(feature = "ffi")]
     use ffier::FfiError as _;
 
     #[test]
@@ -1381,6 +1382,7 @@ mod error_tests {
     }
 
     #[test]
+    #[cfg(feature = "ffi")]
     fn fatal_variant_ffi_code() {
         let err = TestError::Fatal(anyhow!("boom"));
         assert_eq!(err.code(), 5);
@@ -1395,6 +1397,18 @@ mod error_tests {
         // Display shows only the outermost context message
         assert_eq!(err.to_string(), "failed to open socket");
     }
+}
+
+#[cfg(test)]
+mod fieldless_error_client_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../fieldless_error_client.rs"
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -2226,6 +2240,37 @@ mod tests {
             assert_eq!(msg, "custom error message");
             ft_error_destroy(err);
             ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn error_factory_constructs_only_native_fieldless_variants() {
+        use ffier::FfiError as _;
+
+        for code in [0, 1, 4, 5, 6, u32::MAX] {
+            assert!(TestError::from_code(code).is_none());
+            assert!(ft_error_new(ffier::ffier_result(TestError::TYPE_TAG, code)).is_null());
+        }
+        assert!(ft_error_new(0).is_null());
+        assert!(ft_error_new(ffier::ffier_result(u32::MAX, 2)).is_null());
+        for (code, message) in [(2, "custom error message"), (3, "invalid input")] {
+            let before = test_error_drop_count();
+            let handle = ft_error_new(ffier::ffier_result(TestError::TYPE_TAG, code));
+            assert!(!handle.is_null());
+            unsafe {
+                assert_eq!(ffier::handle_type_tag(handle), TestError::TYPE_TAG);
+                assert_eq!(error_message_to_string(handle), message);
+                let error = TestError::from_c(handle);
+                assert_eq!(ffier::FfiError::code(&error), code);
+                match code {
+                    2 => assert!(matches!(error, TestError::CustomMessage)),
+                    3 => assert!(matches!(error, TestError::InvalidInput())),
+                    _ => unreachable!(),
+                }
+                assert_eq!(test_error_drop_count(), before);
+                drop(error);
+            }
+            assert_eq!(test_error_drop_count(), before + 1);
         }
     }
 

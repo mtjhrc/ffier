@@ -113,6 +113,38 @@ lifetimes, `impl Trait` dispatch, file descriptors, and more.
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
   the feature is off
 
+## Errors in generated Rust clients
+
+`FfiError` accepts unit variants (`CustomMessage`) and empty-tuple variants
+(`InvalidInput()`). Generated Rust bindings preserve that construction and
+pattern syntax, so native Rust and generated clients can share callbacks:
+
+```rust
+Err(api::TestError::InvalidInput())
+```
+
+Fieldless variants are plain client values. Constructing or dropping them
+needs no native allocation or loaded symbols. Returning one from a callback
+creates an owned native error through `{prefix}_error_new` and transfers it
+to the caller. Importing a fieldless error destroys its native handle
+immediately. `Display` creates and destroys a temporary native error to keep
+the native formatting behavior. Native `Drop` therefore runs earlier on
+import than when clients retained the original handle.
+
+Payload errors retain their native handles for inspection, formatting, and
+forwarding. Opaque payloads also retain their handles and remain
+forwarding-only. The generic `{prefix}_error_new` factory constructs only
+fieldless variants and returns null for payload variants, unknown types, or
+unknown codes.
+
+Weak clients must load the factory and required error dispatch symbols with
+`require` before returning or formatting errors. Rebuild native bridges and
+regenerate schemas, headers, and bindings together.
+
+Importing a raw handle with `Error::from_ffi` remains unsafe: the handle must
+be valid, uniquely owned, and match the packed result's native type and
+variant. Generated `Result` wrappers perform that import internally.
+
 ## String representation
 
 Strings are represented as a `ptr + len` struct pair (e.g. `MylibStr`) rather

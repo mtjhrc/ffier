@@ -92,7 +92,7 @@ mod tests {
     #[test]
     fn test_result_err() {
         let err = result_err_path().unwrap_err();
-        assert!(matches!(err, api::TestError::CustomMessage(..)));
+        assert!(matches!(err, api::TestError::CustomMessage));
     }
 
     #[test]
@@ -245,9 +245,6 @@ mod tests {
             self.sweetness
         }
         fn try_count(&self, input: i32) -> Result<i32, api::TestError> {
-            // Only native mode can construct TestError directly
-            // (via-cdylib TestError wraps an error handle that requires FFI)
-            #[cfg(feature = "native")]
             if input < 0 {
                 return Err(api::TestError::InvalidInput());
             }
