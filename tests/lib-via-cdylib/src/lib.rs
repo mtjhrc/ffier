@@ -15,6 +15,9 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
+mod callback_errors;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

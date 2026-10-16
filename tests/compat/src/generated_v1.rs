@@ -511,6 +511,19 @@ impl TestError {
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
+    #[allow(dead_code)]
+    fn into_ffi(self) -> (ffier::FfierResult, *mut core::ffi::c_void) {
+        let (code, handle) = match self {
+            Self::NotFound(data) => (1u32, data.0),
+            Self::CustomMessage(handle) => (2u32, handle),
+            Self::InvalidInput(handle) => (3u32, handle),
+            Self::NumericError(data) => (4u32, data.0),
+            Self::Fatal(handle) => (5u32, handle),
+        };
+        let raw = handle.handle();
+        core::mem::forget(handle);
+        (ffier::ffier_result(16777217u32, code), raw)
+    }
     fn handle_ptr(&self) -> *mut core::ffi::c_void {
         match self {
             Self::NotFound(d) => d.0.handle(),
@@ -2527,6 +2540,142 @@ impl Drop for OptionalWidget {
     }
 }
 
+pub trait ErrorForwarder {
+    fn forward_value(&self) -> Result<i32, TestError>;
+    fn forward_handle(&self) -> Result<Gadget, TestError>;
+    fn forward_unit(&self) -> Result<(), TestError>;
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static ErrorForwarderVtable
+    where
+        Self: Sized,
+    {
+        &ErrorForwarderVtable {
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+            forward_value: Some({
+                unsafe extern "C" fn __trampoline<__T: ErrorForwarder>(
+                    __ud: *mut core::ffi::c_void,
+                    result: *mut <i32 as FfiType>::CRepr,
+                    err_out: *mut *mut core::ffi::c_void,
+                ) -> ffier::FfierResult {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.forward_value();
+                    match __result {
+                        Ok(__ok) => {
+                            unsafe { result.write(<i32 as FfiType>::into_c(__ok)) };
+                            0 // FFIER_RESULT_SUCCESS
+                        }
+                        Err(__e) => {
+                            let (__code, __handle) = __e.into_ffi();
+                            unsafe { *err_out = __handle };
+                            __code
+                        }
+                    }
+                }
+                __trampoline::<Self>
+            }),
+            forward_handle: Some({
+                unsafe extern "C" fn __trampoline<__T: ErrorForwarder>(
+                    __ud: *mut core::ffi::c_void,
+                    err_out: *mut *mut core::ffi::c_void,
+                ) -> *mut core::ffi::c_void {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.forward_handle();
+                    match __result {
+                        Ok(__ok) => <Gadget as FfiType>::into_c(__ok),
+                        Err(__e) => {
+                            let (_, __handle) = __e.into_ffi();
+                            unsafe { *err_out = __handle };
+                            core::ptr::null_mut()
+                        }
+                    }
+                }
+                __trampoline::<Self>
+            }),
+            forward_unit: Some({
+                unsafe extern "C" fn __trampoline<__T: ErrorForwarder>(
+                    __ud: *mut core::ffi::c_void,
+                    err_out: *mut *mut core::ffi::c_void,
+                ) -> ffier::FfierResult {
+                    let __val = unsafe { &*(__ud as *const __T) };
+                    let __result = __val.forward_unit();
+                    match __result {
+                        Ok(()) => 0, // FFIER_RESULT_SUCCESS
+                        Err(__e) => {
+                            let (__code, __handle) = __e.into_ffi();
+                            unsafe { *err_out = __handle };
+                            __code
+                        }
+                    }
+                }
+                __trampoline::<Self>
+            }),
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static ErrorForwarderVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        let vtable_size: u16 = core::mem::size_of::<ErrorForwarderVtable>()
+            .try_into()
+            .expect("vtable_size exceeds u16::MAX");
+        ffier::ffier_handle_new_with_metadata(
+            16777246u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const ErrorForwarderVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+                vtable_size,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct ErrorForwarderVtable {
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub forward_value: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *mut <i32 as FfiType>::CRepr,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult,
+    >,
+    pub forward_handle: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *mut *mut core::ffi::c_void,
+        ) -> *mut core::ffi::c_void,
+    >,
+    pub forward_unit: Option<
+        unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult,
+    >,
+}
+
+pub struct VtableErrorForwarder(*mut core::ffi::c_void);
+
+impl VtableErrorForwarder {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableErrorForwarder {
+    fn drop(&mut self) {}
+}
+
 pub trait Processor {
     fn process(&self, input: i32) -> i32;
     fn name(&self) -> &str;
@@ -2656,10 +2805,9 @@ pub trait Fruit {
                             0 // FFIER_RESULT_SUCCESS
                         }
                         Err(__e) => {
-                            unsafe {
-                                *err_out = Box::into_raw(Box::new(__e)) as *mut core::ffi::c_void
-                            };
-                            ffier::ffier_result(16777217, 1)
+                            let (__code, __handle) = __e.into_ffi();
+                            unsafe { *err_out = __handle };
+                            __code
                         }
                     }
                 }
@@ -3509,6 +3657,44 @@ impl OptionalWorker for OptionalWidget {
     fn __into_raw_handle(self) -> *mut core::ffi::c_void {
         let this = std::mem::ManuallyDrop::new(self);
         this.0
+    }
+}
+
+unsafe extern "C" {
+    pub fn ft_test_error_drop_count() -> <usize as FfiType>::CRepr;
+}
+
+#[doc = " Test instrumentation: native errors destroyed on the current thread."]
+pub fn test_error_drop_count() -> usize {
+    let __raw = unsafe { ft_test_error_drop_count() };
+    unsafe { <usize as FfiType>::from_c(__raw) }
+}
+
+unsafe extern "C" {
+    pub fn ft_roundtrip_callback_error(
+        callback: *mut core::ffi::c_void,
+        method: <u32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+}
+
+#[doc = " Reconstruct a callback error as its native type, then return it to the client."]
+pub fn roundtrip_callback_error(
+    callback: impl ErrorForwarder,
+    method: u32,
+) -> Result<(), TestError> {
+    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+    let __r = unsafe {
+        ft_roundtrip_callback_error(
+            callback.__into_raw_handle(),
+            <u32 as FfiType>::into_c(method),
+            &mut __err as *mut *mut core::ffi::c_void,
+        )
+    };
+    if __r == 0 {
+        Ok(())
+    } else {
+        Err(unsafe { TestError::from_ffi(__r, __err) })
     }
 }
 

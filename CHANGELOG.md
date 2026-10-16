@@ -14,4 +14,10 @@
   update relative annotation paths to avoid module shadowing and ambiguous
   registry comparisons.
 
+### Fixed
+
+- Forward native error handles from generated Rust callbacks instead of boxing
+  client wrappers as native handles. Preserve error type tags, variant codes,
+  and ownership when returning library errors through callbacks.
+
 ## 0.2.0
