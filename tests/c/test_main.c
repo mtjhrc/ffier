@@ -1,7 +1,10 @@
 #include <assert.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #include "ffier_test.h"
 
@@ -418,6 +421,51 @@ void error_handle_null_safe(void) {
     ft_error_destroy(NULL); /* should not crash */
 }
 
+void error_payload_uses_native_field_indices(void) {
+    FtWidget widget = ft_widget_new();
+    FtError error = NULL;
+    assert(ft_widget_fail_with_mixed(widget, &error) == FT_ERROR_TEST_MIXED_ERROR);
+    assert(error != NULL);
+    int32_t first = 0;
+    uint64_t last = 0;
+    ft_error_payload(error, 0, &first, sizeof(first));
+    ft_error_payload(error, 2, &last, sizeof(last));
+    assert(first == 17);
+    assert(last == 900);
+    ft_error_destroy(error);
+    ft_widget_destroy(widget);
+}
+
+static void assert_payload_access_aborts(FtError error, size_t index, size_t buf_size) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        struct rlimit limit = { 0, 0 };
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        assert(freopen("/dev/null", "w", stderr) != NULL);
+        uint64_t output = 0;
+        ft_error_payload(error, index, &output, buf_size);
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status));
+    assert(WTERMSIG(status) == SIGABRT);
+}
+
+void error_payload_invalid_access_aborts(void) {
+    FtWidget widget = ft_widget_new();
+    FtError error = NULL;
+    assert(ft_widget_fail_with_mixed(widget, &error) == FT_ERROR_TEST_MIXED_ERROR);
+    assert(error != NULL);
+    assert_payload_access_aborts(error, 1, sizeof(uint64_t));
+    assert_payload_access_aborts(error, 3, sizeof(uint64_t));
+    assert_payload_access_aborts(error, SIZE_MAX, sizeof(uint64_t));
+    assert_payload_access_aborts(error, 0, 0);
+    ft_error_destroy(error);
+    ft_widget_destroy(widget);
+}
+
 /* ===================================================================== */
 /* Vtable / implementable                                                */
 /* ===================================================================== */
@@ -610,7 +658,12 @@ void destroy_null_handle(void) {
 /* Main                                                                  */
 /* ===================================================================== */
 
-int main(void) {
+int main(int argc, char** argv) {
+    if (argc == 2 && strcmp(argv[1], "--payload-abort-tests") == 0) {
+        RUN_TEST(error_payload_invalid_access_aborts);
+        return 0;
+    }
+    assert(argc == 1);
     printf("Running ffier C integration tests...\n");
 
     printf("\n[constructors]\n");
@@ -670,6 +723,7 @@ int main(void) {
     RUN_TEST(error_name_success);
     RUN_TEST(error_handle_message_and_destroy);
     RUN_TEST(error_handle_null_safe);
+    RUN_TEST(error_payload_uses_native_field_indices);
 
     printf("\n[vtable/implementable]\n");
     RUN_TEST(vtable_initializer_macro);

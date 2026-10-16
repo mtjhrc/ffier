@@ -12,7 +12,9 @@ use syn::{
 mod bridge;
 mod meta;
 
-use meta::{camel_to_snake, camel_to_upper_snake, erase_lifetimes};
+use meta::{
+    MetaErrorField, MetaErrorVariantData, camel_to_snake, camel_to_upper_snake, erase_lifetimes,
+};
 
 /// Counter for generating unique `#[macro_export]` macro names.
 /// The exported name is an implementation detail — users access the macro
@@ -1455,19 +1457,21 @@ fn is_external_crate_path(ty: &Type) -> bool {
 // #[derive(FfiError)]
 // ---------------------------------------------------------------------------
 
-/// Derive `ffier::FfiError` for a unit enum.
+/// Derive `ffier::FfiError` for an error enum.
 ///
 /// Each variant must have `#[ffier(code = N)]` and optionally
 /// `#[ffier(code = N, message = "...")]`. Without an explicit message,
-/// the variant name is humanized (`DivisionByZero` → `"division by zero"`).
+/// the static message is the variant name with a payload suffix when present.
+/// Fieldless variants use `Variant()` syntax.
 ///
 /// ```ignore
 /// #[derive(ffier::FfiError)]
+/// #[non_exhaustive]
 /// pub enum CalcError {
 ///     #[ffier(code = 1)]
-///     DivisionByZero,
+///     DivisionByZero(),
 ///     #[ffier(code = 2, message = "integer overflow")]
-///     Overflow,
+///     Overflow(),
 /// }
 /// ```
 #[proc_macro_derive(FfiError, attributes(ffier))]
@@ -1492,7 +1496,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             .into();
     }
 
-    // Validate: no unit variants (use `Variant()` instead of `Variant`)
     for variant in &data_enum.variants {
         if matches!(variant.fields, syn::Fields::Unit) {
             return syn::Error::new_spanned(
@@ -1529,14 +1532,11 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
-        // Static message for strerror: #[ffier(message="...")] > raw variant name
-        // Data-carrying variants get "Name(...)" / "Name{..}" to signal
-        // that ft_error_message() has richer detail.
         let message = attrs.message.unwrap_or_else(|| {
             let name = var_ident.to_string();
             match &variant.fields {
                 syn::Fields::Unit => name,
-                syn::Fields::Unnamed(f) if f.unnamed.is_empty() => name,
+                syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => name,
                 syn::Fields::Unnamed(_) => format!("{name}(...)"),
                 syn::Fields::Named(_) => format!("{name}{{..}}"),
             }
@@ -1559,77 +1559,73 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
             }
         });
 
-        // Collect field types for data-carrying variants.
-        // Each type is emitted as a parenthesized token group `(Type)` so the
-        // meta crate can parse it back as a TokenStream without stringifying.
-        // Opaque variants have no marshallable fields: exclude them from metadata.
-        let field_types: Vec<_> = if attrs.opaque {
-            vec![]
-        } else {
-            match &variant.fields {
-                syn::Fields::Unit => vec![],
-                syn::Fields::Unnamed(fields) => fields
+        let data = match &variant.fields {
+            syn::Fields::Unit => MetaErrorVariantData::Fieldless,
+            syn::Fields::Unnamed(fields) => {
+                let fields = match fields
                     .unnamed
                     .iter()
-                    .map(|f| {
-                        let ty = &f.ty;
-                        quote! { (#ty) }
-                    })
-                    .collect(),
-                syn::Fields::Named(_) => {
-                    return syn::Error::new_spanned(
-                        variant,
-                        "FfiError: named fields in variants are not yet supported; \
-                         use tuple variants like Variant(Box<str>)",
-                    )
-                    .to_compile_error()
-                    .into();
-                }
+                    .map(|field| parse_ffier_error_field(field, attrs.opaque))
+                    .collect::<syn::Result<Vec<_>>>()
+                {
+                    Ok(fields) => fields,
+                    Err(error) => return error.to_compile_error().into(),
+                };
+                MetaErrorVariantData::Tuple(fields)
             }
+            syn::Fields::Named(_) => unreachable!("named fields rejected above"),
         };
 
-        // Build payload arm for this variant.
-        // Opaque variants suppress marshalling — the inner value is
-        // Rust-only and not transferable across the C boundary.
-        if attrs.opaque {
+        if let MetaErrorVariantData::Tuple(fields) = &data {
+            let field_count = fields.len();
+            let mut bindings = Vec::new();
+            let mut field_arms = Vec::new();
+            for (index, field) in fields.iter().enumerate() {
+                match field {
+                    MetaErrorField::Opaque => {
+                        bindings.push(quote! { _ });
+                        field_arms.push(quote! {
+                            #index => panic!("{}::{} field {} is opaque", stringify!(#name), stringify!(#var_ident), index)
+                        });
+                    }
+                    MetaErrorField::Typed(field_ty) => {
+                        let binding = format_ident!("__field_{index}");
+                        bindings.push(quote! { #binding });
+                        field_arms.push(quote! {
+                            #index => {
+                                let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
+                                assert!(
+                                    buf_size >= expected,
+                                    "error payload buffer too small: got {} bytes, need {}",
+                                    buf_size, expected,
+                                );
+                                let c_val = <#field_ty as FfiBorrow>::borrow_as_c(#binding);
+                                unsafe {
+                                    core::ptr::write(
+                                        out_buf as *mut <#field_ty as FfiType>::CRepr,
+                                        c_val,
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
+            }
             payload_arms.push(quote! {
-                #name::#var_ident(..) => {}
+                #name::#var_ident(#(#bindings),*) => match index {
+                    #(#field_arms,)*
+                    _ => panic!("{}::{} field index {} out of bounds for {} fields", stringify!(#name), stringify!(#var_ident), index, #field_count),
+                }
             });
         } else {
-            match &variant.fields {
-                syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
-                    // Empty-tuple variant — no payload to write
-                    payload_arms.push(quote! {
-                        #name::#var_ident(..) => {}
-                    });
-                }
-                syn::Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
-                    let field_ty = &fields.unnamed[0].ty;
-                    payload_arms.push(quote! {
-                        #name::#var_ident(val, ..) => {
-                            let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
-                            assert!(
-                                buf_size >= expected,
-                                "error payload buffer too small: got {} bytes, need {}",
-                                buf_size, expected,
-                            );
-                            let c_val = <#field_ty as FfiBorrow>::borrow_as_c(val);
-                            unsafe {
-                                core::ptr::write(
-                                    out_buf as *mut <#field_ty as FfiType>::CRepr,
-                                    c_val,
-                                );
-                            }
-                        }
-                    });
-                }
-                _ => {} // already rejected above
-            }
+            payload_arms.push(quote! {
+                #name::#var_ident => panic!("{}::{} field index {} out of bounds for 0 fields", stringify!(#name), stringify!(#var_ident), index),
+            });
         }
 
         codes_entries.push(quote! { (#upper_name, #code) });
         variant_meta_tokens.push(quote! {
-            { name = #var_ident, code = #code, message = #message, fields = [#(#field_types),*], }
+            { name = #var_ident, code = #code, message = #message, data = #data, }
         });
     }
 
@@ -1671,11 +1667,9 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
                 &[#(#codes_entries),*]
             }
 
-            unsafe fn payload(&self, out_buf: *mut core::ffi::c_void, buf_size: usize) {
+            unsafe fn payload(&self, index: usize, out_buf: *mut core::ffi::c_void, buf_size: usize) {
                 match self {
                     #(#payload_arms)*
-                    #[allow(unreachable_patterns)]
-                    _ => {}
                 }
             }
         }
@@ -1736,10 +1730,35 @@ struct FfierVariantAttrs {
     code: u32,
     message: Option<String>,
     /// When true, the variant's field (if any) is not marshalled across FFI.
-    /// The payload arm becomes a no-op and the field is excluded from schema
-    /// metadata. Use this for fields whose types don't implement `FfiType`
+    /// Payload access panics; metadata keeps an opaque entry for each field.
+    /// Use this for fields whose types don't implement `FfiType`
     /// (e.g. `anyhow::Error`).
     opaque: bool,
+}
+
+fn parse_ffier_error_field(
+    field: &syn::Field,
+    variant_opaque: bool,
+) -> syn::Result<MetaErrorField> {
+    let mut result = if variant_opaque {
+        MetaErrorField::Opaque
+    } else {
+        MetaErrorField::Typed(field.ty.to_token_stream())
+    };
+    for raw_attr in &field.attrs {
+        let Some(attr) = extract_ffier_attr(raw_attr) else {
+            continue;
+        };
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("opaque") {
+                result = MetaErrorField::Opaque;
+                Ok(())
+            } else {
+                Err(meta.error("expected `opaque`"))
+            }
+        })?;
+    }
+    Ok(result)
 }
 
 fn parse_ffier_variant_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierVariantAttrs> {

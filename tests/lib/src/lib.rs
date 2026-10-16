@@ -31,6 +31,16 @@ pub enum TestError {
     #[error(transparent)]
     #[cfg_attr(feature = "ffi", ffier(code = 5, opaque))]
     Fatal(anyhow::Error),
+    #[error("mixed error: {0}, {1}, {2}")]
+    #[cfg_attr(feature = "ffi", ffier(code = 6))]
+    MixedError(
+        i32,
+        #[cfg_attr(feature = "ffi", ffier(opaque))] anyhow::Error,
+        u64,
+    ),
+    #[error("opaque unit payload")]
+    #[cfg_attr(feature = "ffi", ffier(code = 7, opaque))]
+    OpaqueUnit(()),
 }
 
 thread_local! {
@@ -83,7 +93,15 @@ pub fn roundtrip_callback_error(
             assert_eq!(error.to_string(), "numeric error: 76");
         }
         TestError::NotFound(value) => assert_eq!(&**value, "error"),
-        TestError::Fatal(_) => panic!("unexpected opaque error"),
+        TestError::Fatal(error) => {
+            assert_eq!(error.to_string(), "opaque callback error");
+            assert_eq!(error.root_cause().to_string(), "hidden detail");
+        }
+        TestError::MixedError(first, hidden, last) => {
+            assert_eq!((*first, *last), (17, 900));
+            assert_eq!(hidden.to_string(), "hidden detail");
+        }
+        TestError::OpaqueUnit(()) => {}
     }
     Err(error)
 }
@@ -237,6 +255,26 @@ impl Widget {
     /// Always fails with a numeric error carrying an i32 payload.
     pub fn fail_with_number(&self, n: i32) -> Result<(), TestError> {
         Err(TestError::NumericError(n))
+    }
+
+    /// Fail with typed fields around an opaque payload field.
+    pub fn fail_with_mixed(&self) -> Result<(), TestError> {
+        Err(TestError::MixedError(
+            17,
+            anyhow::anyhow!("hidden detail"),
+            900,
+        ))
+    }
+
+    /// Fail with opaque fields, including a zero-sized native payload.
+    pub fn fail_with_opaque(&self, unit_payload: bool) -> Result<(), TestError> {
+        if unit_payload {
+            Err(TestError::OpaqueUnit(()))
+        } else {
+            Err(TestError::Fatal(
+                anyhow::anyhow!("hidden detail").context("opaque callback error"),
+            ))
+        }
     }
 
     /// Set tags from a string slice.
@@ -1528,7 +1566,7 @@ pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
 mod tests {
     use super::*;
     use FfiHandle;
-    use std::ffi::CStr;
+    use std::ffi::{CStr, c_void};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -1886,6 +1924,7 @@ mod tests {
             let mut payload_buf = core::mem::MaybeUninit::<ffier::FfierBytes>::uninit();
             ft_error_payload(
                 err as *const core::ffi::c_void,
+                0,
                 payload_buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<ffier::FfierBytes>(),
             );
@@ -1912,6 +1951,7 @@ mod tests {
             let mut payload_buf = core::mem::MaybeUninit::<i32>::uninit();
             ft_error_payload(
                 err as *const core::ffi::c_void,
+                0,
                 payload_buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<i32>(),
             );
@@ -1919,6 +1959,136 @@ mod tests {
             ft_error_destroy(err);
             ft_widget_destroy(w);
         }
+    }
+
+    #[test]
+    fn error_payload_indices_preserve_opaque_slots() {
+        unsafe {
+            let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
+            let handle = error.into_c();
+            let mut first = 0i32;
+            let mut last = 0u64;
+            ft_error_payload(
+                handle,
+                0,
+                &mut first as *mut i32 as *mut c_void,
+                size_of::<i32>(),
+            );
+            ft_error_payload(
+                handle,
+                2,
+                &mut last as *mut u64 as *mut c_void,
+                size_of::<u64>(),
+            );
+            assert_eq!((first, last), (17, 900));
+            ft_error_destroy(handle);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TestError::MixedError field 1 is opaque")]
+    fn error_payload_rejects_opaque_index() {
+        let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                1,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TestError::MixedError field index 3 out of bounds for 3 fields")]
+    fn error_payload_rejects_out_of_bounds_index() {
+        let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                3,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "out of bounds for 3 fields")]
+    fn error_payload_rejects_maximum_index() {
+        let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                usize::MAX,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TestError::InvalidInput field index 0 out of bounds for 0 fields")]
+    fn error_payload_rejects_empty_tuple_access() {
+        let error = TestError::InvalidInput();
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                0,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TestError::OpaqueUnit field 0 is opaque")]
+    fn error_payload_rejects_wholly_opaque_variant_access() {
+        let error = TestError::OpaqueUnit(());
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                0,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "TestError::Fatal field 0 is opaque")]
+    fn error_payload_rejects_variant_level_opaque_access() {
+        let error = TestError::Fatal(anyhow::anyhow!("hidden detail"));
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(
+                &error,
+                0,
+                (&mut output as *mut u64).cast(),
+                size_of::<u64>(),
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "error payload buffer too small")]
+    fn error_payload_rejects_small_buffer() {
+        let error = TestError::NumericError(17);
+        let mut output = 0u64;
+        unsafe {
+            ffier::FfiError::payload(&error, 0, (&mut output as *mut u64).cast(), 0);
+        }
+    }
+
+    #[test]
+    fn opaque_unit_payload_is_not_an_empty_tuple() {
+        let error = TestError::OpaqueUnit(());
+        assert!(matches!(error, TestError::OpaqueUnit(())));
     }
 
     #[test]
@@ -2195,7 +2365,6 @@ mod tests {
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_widget_fail_always(w, &mut err as *mut *mut core::ffi::c_void);
             assert_ne!(r, 0);
-            // strerror returns raw variant name, not Display output
             let msg = CStr::from_ptr(ft_result_name_cstr(r)).to_str().unwrap();
             assert_eq!(msg, "CustomMessage");
             ft_error_destroy(err);

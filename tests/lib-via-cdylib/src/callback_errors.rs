@@ -2,8 +2,8 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use super::{
-    ErrorForwarder, Gadget, TestError, Widget, ft_error_result, roundtrip_callback_error,
-    test_error_drop_count,
+    ErrorForwarder, Gadget, TestError, TestErrorFatalData, TestErrorOpaqueUnitData, Widget,
+    ft_error_result, roundtrip_callback_error, test_error_drop_count,
 };
 
 struct ForwardingError {
@@ -40,14 +40,31 @@ impl Drop for ForwardingError {
     }
 }
 
-fn native_errors() -> [TestError; 4] {
+fn native_errors() -> [TestError; 7] {
     let widget = Widget::new();
     [
         widget.fail_always().unwrap_err(),
         widget.fail_with_value().unwrap_err(),
         widget.fail_with_number(76).unwrap_err(),
         widget.parse_count("error").unwrap_err(),
+        widget.fail_with_mixed().unwrap_err(),
+        widget.fail_with_opaque(false).unwrap_err(),
+        widget.fail_with_opaque(true).unwrap_err(),
     ]
+}
+
+#[test]
+fn opaque_payloads_use_the_same_variant_data_wrapper() {
+    assert_eq!(
+        size_of::<TestErrorFatalData>(),
+        size_of::<*mut core::ffi::c_void>()
+    );
+    assert_eq!(
+        size_of::<TestErrorOpaqueUnitData>(),
+        size_of::<*mut core::ffi::c_void>()
+    );
+    let _: fn(TestErrorFatalData) -> TestError = TestError::Fatal;
+    let _: fn(TestErrorOpaqueUnitData) -> TestError = TestError::OpaqueUnit;
 }
 
 #[test]
@@ -112,6 +129,9 @@ fn callback_error_preserves_native_handle_and_result() {
             if let TestError::NumericError(data) = &returned_error {
                 assert_eq!(data.field_0(), 76);
             }
+            if let TestError::MixedError(data) = &returned_error {
+                assert_eq!((data.field_0(), data.field_2()), (17, 900));
+            }
             drop(callback);
             assert_eq!(drops.get(), 1);
             assert_eq!(test_error_drop_count(), before);
@@ -143,6 +163,9 @@ fn callback_error_roundtrip_reconstructs_native_error_and_destroys_once() {
             assert_eq!(error.to_string(), message);
             if let TestError::NumericError(data) = &error {
                 assert_eq!(data.field_0(), 76);
+            }
+            if let TestError::MixedError(data) = &error {
+                assert_eq!((data.field_0(), data.field_2()), (17, 900));
             }
             drop(error);
             assert_eq!(test_error_drop_count(), before + 1);

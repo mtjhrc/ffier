@@ -4,6 +4,13 @@
 
 ### Breaking changes
 
+- The C `{prefix}_error_payload` getter and Rust `FfiError::payload` now accept
+  a field index. Update calls and manual implementations, then rebuild with
+  regenerated declarations. JSON error variants use explicit `Fieldless`/`Tuple`
+  data and `Typed`/`Opaque` fields, retaining opaque field positions.
+  Accessing an opaque field, an out-of-bounds index, or a fieldless variant
+  panics instead of silently leaving the output untouched. At the C ABI
+  boundary, these panics abort the process.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
@@ -27,6 +34,12 @@
 - Replace trait schema field `max_vtable_slot` with `num_slots`. Users reading
   trait metadata must use the method-slot count directly instead of adding one
   to a highest index.
+
+### Added
+
+- Inspect payload fields by native tuple index, including fields beside an
+  opaque field. Field-level `#[ffier(opaque)]` hides one field; variant-level
+  opacity applies it to every field. Generated Rust getters keep native indices.
 
 ### Fixed
 

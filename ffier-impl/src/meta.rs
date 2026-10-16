@@ -5,7 +5,7 @@
 //! these tokens back into the types defined here, then produce code.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
@@ -386,9 +386,35 @@ pub struct MetaErrorVariant {
     pub name: Ident,
     pub code: u32,
     pub message: String,
-    /// Type tokens for data-carrying variant fields (e.g. `Box<str>`).
-    /// Empty for unit variants.
-    pub field_types: Vec<TokenStream>,
+    pub data: MetaErrorVariantData,
+}
+
+pub enum MetaErrorVariantData {
+    Fieldless,
+    Tuple(Vec<MetaErrorField>),
+}
+
+pub enum MetaErrorField {
+    Typed(TokenStream),
+    Opaque,
+}
+
+impl ToTokens for MetaErrorVariantData {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(match self {
+            Self::Fieldless => quote! { fieldless },
+            Self::Tuple(fields) => quote! { tuple [#(#fields),*] },
+        });
+    }
+}
+
+impl ToTokens for MetaErrorField {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        tokens.extend(match self {
+            Self::Typed(ty) => quote! { typed(#ty) },
+            Self::Opaque => quote! { opaque },
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,18 +1045,14 @@ impl syn::parse::Parse for MetaError {
             expect_key(&inner, "message")?;
             let message = parse_string(&inner)?;
             parse_comma(&inner)?;
-            expect_key(&inner, "fields")?;
-            let field_types = parse_bracketed_list(&inner, |content| {
-                let ts = parse_parenthesized_tokens(content)?;
-                parse_comma(content)?;
-                Ok(ts)
-            })?;
+            expect_key(&inner, "data")?;
+            let data = inner.parse()?;
             parse_comma(&inner)?;
             Ok(MetaErrorVariant {
                 name,
                 code,
                 message,
-                field_types,
+                data,
             })
         })?;
         parse_comma(input)?;
@@ -1042,6 +1064,33 @@ impl syn::parse::Parse for MetaError {
             type_tag,
             variants,
         })
+    }
+}
+
+impl syn::parse::Parse for MetaErrorVariantData {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let kind: Ident = input.parse()?;
+        match kind.to_string().as_str() {
+            "fieldless" => Ok(Self::Fieldless),
+            "tuple" => Ok(Self::Tuple(parse_bracketed_list(input, |content| {
+                content.parse()
+            })?)),
+            _ => Err(syn::Error::new(
+                kind.span(),
+                "expected `fieldless` or `tuple`",
+            )),
+        }
+    }
+}
+
+impl syn::parse::Parse for MetaErrorField {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let kind: Ident = input.parse()?;
+        match kind.to_string().as_str() {
+            "typed" => Ok(Self::Typed(parse_parenthesized_tokens(input)?)),
+            "opaque" => Ok(Self::Opaque),
+            _ => Err(syn::Error::new(kind.span(), "expected `typed` or `opaque`")),
+        }
     }
 }
 

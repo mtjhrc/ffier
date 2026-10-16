@@ -413,6 +413,7 @@ impl FfiType for Permissions {
 unsafe extern "C" {
     fn ft_error_payload(
         handle: *const core::ffi::c_void,
+        index: usize,
         out_buf: *mut core::ffi::c_void,
         buf_size: usize,
     );
@@ -444,6 +445,7 @@ impl TestErrorNotFoundData {
         unsafe {
             ft_error_payload(
                 self.0.handle() as *const core::ffi::c_void,
+                0,
                 __buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<<&'static str as FfiType>::CRepr>(),
             )
@@ -464,6 +466,7 @@ impl TestErrorNumericErrorData {
         unsafe {
             ft_error_payload(
                 self.0.handle() as *const core::ffi::c_void,
+                0,
                 __buf.as_mut_ptr() as *mut core::ffi::c_void,
                 core::mem::size_of::<<i32 as FfiType>::CRepr>(),
             )
@@ -477,13 +480,64 @@ impl std::fmt::Debug for TestErrorNumericErrorData {
     }
 }
 
+pub struct TestErrorFatalData(TestErrorErrorHandle);
+impl TestErrorFatalData {}
+impl std::fmt::Debug for TestErrorFatalData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Fatal(...)")
+    }
+}
+
+pub struct TestErrorMixedErrorData(TestErrorErrorHandle);
+impl TestErrorMixedErrorData {
+    pub fn field_0(&self) -> i32 {
+        let mut __buf = std::mem::MaybeUninit::<<i32 as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_payload(
+                self.0.handle() as *const core::ffi::c_void,
+                0,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<i32 as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <i32 as FfiType>::from_c(__buf.assume_init()) }
+    }
+    pub fn field_2(&self) -> u64 {
+        let mut __buf = std::mem::MaybeUninit::<<u64 as FfiType>::CRepr>::uninit();
+        unsafe {
+            ft_error_payload(
+                self.0.handle() as *const core::ffi::c_void,
+                2,
+                __buf.as_mut_ptr() as *mut core::ffi::c_void,
+                core::mem::size_of::<<u64 as FfiType>::CRepr>(),
+            )
+        };
+        unsafe { <u64 as FfiType>::from_c(__buf.assume_init()) }
+    }
+}
+impl std::fmt::Debug for TestErrorMixedErrorData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "MixedError(...)")
+    }
+}
+
+pub struct TestErrorOpaqueUnitData(TestErrorErrorHandle);
+impl TestErrorOpaqueUnitData {}
+impl std::fmt::Debug for TestErrorOpaqueUnitData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "OpaqueUnit(...)")
+    }
+}
+
 #[derive(Debug)]
 pub enum TestError {
     NotFound(TestErrorNotFoundData),
     CustomMessage(TestErrorErrorHandle),
     InvalidInput(TestErrorErrorHandle),
     NumericError(TestErrorNumericErrorData),
-    Fatal(TestErrorErrorHandle),
+    Fatal(TestErrorFatalData),
+    MixedError(TestErrorMixedErrorData),
+    OpaqueUnit(TestErrorOpaqueUnitData),
 }
 
 impl TestError {
@@ -507,7 +561,9 @@ impl TestError {
             2u32 => Self::CustomMessage(handle),
             3u32 => Self::InvalidInput(handle),
             4u32 => Self::NumericError(TestErrorNumericErrorData(handle)),
-            5u32 => Self::Fatal(handle),
+            5u32 => Self::Fatal(TestErrorFatalData(handle)),
+            6u32 => Self::MixedError(TestErrorMixedErrorData(handle)),
+            7u32 => Self::OpaqueUnit(TestErrorOpaqueUnitData(handle)),
             other => panic!("unknown {} error code {}", "TestError", other),
         }
     }
@@ -518,7 +574,9 @@ impl TestError {
             Self::CustomMessage(handle) => (2u32, handle),
             Self::InvalidInput(handle) => (3u32, handle),
             Self::NumericError(data) => (4u32, data.0),
-            Self::Fatal(handle) => (5u32, handle),
+            Self::Fatal(data) => (5u32, data.0),
+            Self::MixedError(data) => (6u32, data.0),
+            Self::OpaqueUnit(data) => (7u32, data.0),
         };
         let raw = handle.handle();
         core::mem::forget(handle);
@@ -530,7 +588,9 @@ impl TestError {
             Self::CustomMessage(h) => h.handle(),
             Self::InvalidInput(h) => h.handle(),
             Self::NumericError(d) => d.0.handle(),
-            Self::Fatal(h) => h.handle(),
+            Self::Fatal(d) => d.0.handle(),
+            Self::MixedError(d) => d.0.handle(),
+            Self::OpaqueUnit(d) => d.0.handle(),
         }
     }
 }
@@ -630,6 +690,15 @@ unsafe extern "C" {
     pub fn ft_widget_fail_with_number(
         handle: *mut core::ffi::c_void,
         n: <i32 as FfiType>::CRepr,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_with_mixed(
+        handle: *mut core::ffi::c_void,
+        err_out: *mut *mut core::ffi::c_void,
+    ) -> ffier::FfierResult;
+    pub fn ft_widget_fail_with_opaque(
+        handle: *mut core::ffi::c_void,
+        unit_payload: <bool as FfiType>::CRepr,
         err_out: *mut *mut core::ffi::c_void,
     ) -> ffier::FfierResult;
     pub fn ft_widget_set_tags(
@@ -920,6 +989,33 @@ impl Widget {
             ft_widget_fail_with_number(
                 self.0,
                 <i32 as FfiType>::into_c(n),
+                &mut __err as *mut *mut core::ffi::c_void,
+            )
+        };
+        if __r == 0 {
+            Ok(())
+        } else {
+            Err(unsafe { TestError::from_ffi(__r, __err) })
+        }
+    }
+    #[doc = " Fail with typed fields around an opaque payload field."]
+    pub fn fail_with_mixed(&self) -> Result<(), TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r =
+            unsafe { ft_widget_fail_with_mixed(self.0, &mut __err as *mut *mut core::ffi::c_void) };
+        if __r == 0 {
+            Ok(())
+        } else {
+            Err(unsafe { TestError::from_ffi(__r, __err) })
+        }
+    }
+    #[doc = " Fail with opaque fields, including a zero-sized native payload."]
+    pub fn fail_with_opaque(&self, unit_payload: bool) -> Result<(), TestError> {
+        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+        let __r = unsafe {
+            ft_widget_fail_with_opaque(
+                self.0,
+                <bool as FfiType>::into_c(unit_payload),
                 &mut __err as *mut *mut core::ffi::c_void,
             )
         };

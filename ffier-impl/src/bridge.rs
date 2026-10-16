@@ -11,11 +11,11 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::meta::{
-    HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaExportable, MetaFreeFunction,
-    MetaImplementable, MetaMethod, MetaMethodContext, MetaParam, MetaParamKind, MetaReceiver,
-    MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake, camel_to_upper_snake,
-    cfg_predicate_attr, extract_result_ok_type, is_result_ok_handle, peek_meta_field,
-    peek_meta_tag,
+    HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaErrorField, MetaErrorVariantData,
+    MetaExportable, MetaFreeFunction, MetaImplementable, MetaMethod, MetaMethodContext, MetaParam,
+    MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake,
+    camel_to_upper_snake, cfg_predicate_attr, extract_result_ok_type, is_result_ok_handle,
+    peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -581,8 +581,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
     }
 
-    // Generate strerror dispatch function — dispatches by type tag to per-error
-    // static_message tables.
+    // Generate strerror dispatch function from packed result codes.
     let strerror_fn = generate_strerror_bridge(&first_prefix, &errors, &lib_crate);
 
     // Generate per-variant field getters for data-carrying error variants
@@ -628,15 +627,15 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
 }
 
 // ===========================================================================
-// Error payload getter — borrows field data from the handle
+// Error payload getter
 // ===========================================================================
 
-/// Generate `{prefix}_error_payload(handle, out_buf, buf_size)` — shallow-
-/// copies the variant's CRepr into caller-provided storage, *borrowing* the
+/// Generate `{prefix}_error_payload(handle, index, out_buf, buf_size)` — shallow-
+/// copies the indexed field's CRepr into caller-provided storage, *borrowing* the
 /// data from the handle (handle stays alive, caller must not outlive it).
 ///
 /// For `Box<str>` payloads this writes a `FfierBytes { data, len }` pointing
-/// into the handle's owned string. Fieldless variants are a no-op.
+/// into the handle's owned string. Invalid or opaque field access panics.
 fn generate_error_getters(
     prefix: &str,
     errors: &[TokenStream2],
@@ -657,20 +656,22 @@ fn generate_error_getters(
         dispatch_arms.push(quote! {
             #type_tag => {
                 let err: &#path = unsafe { ffier::ffier_handle_borrow(handle) };
-                unsafe { ffier::FfiError::payload(err, out_buf, buf_size) };
+                unsafe { ffier::FfiError::payload(err, index, out_buf, buf_size) };
             }
         });
     }
 
     quote! {
-        /// Shallow-copy the error variant's payload into caller-provided
+        /// Shallow-copy the indexed error field into caller-provided
         /// storage. The written CRepr borrows from the handle — the
         /// handle must stay alive while the caller uses the data.
         ///
-        /// Fieldless variants are a no-op (out_buf untouched).
+        /// Invalid or opaque field access and undersized buffers panic. Panics
+        /// abort the process at the C ABI boundary; they do not unwind into C.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn #payload_fn(
             handle: *const core::ffi::c_void,
+            index: usize,
             out_buf: *mut core::ffi::c_void,
             buf_size: usize,
         ) {
@@ -744,7 +745,6 @@ fn generate_strerror_bridge(
     let result_name_cstr_fn = format_ident!("{fn_pfx}result_name_cstr");
     let result_name_fn = format_ident!("{fn_pfx}result_name");
 
-    // Build dispatch arms for result_name (packed FfierResult → static CStr)
     let mut result_name_dispatch_arms = Vec::new();
     for item in errors {
         if let Ok(meta) = syn::parse2::<MetaError>(item.clone()) {
@@ -786,6 +786,7 @@ fn generate_strerror_bridge(
             let len = unsafe { core::ffi::CStr::from_ptr(ptr) }.to_bytes().len();
             ffier::FfierBytes { data: ptr as *const u8, len }
         }
+
     }
 }
 
@@ -2341,8 +2342,8 @@ fn emit_json(
         .errors
         .iter()
         .flat_map(|error| &error.variants)
-        .flat_map(|variant| &variant.fields)
-        .map(|field| field.type_ref.type_name.as_str());
+        .flat_map(|variant| variant.data.typed_fields())
+        .map(|(_, type_ref)| type_ref.type_name.as_str());
     for name in library
         .type_registry
         .keys()
@@ -2391,6 +2392,87 @@ fn emit_json(
 mod tests {
     use super::*;
     use ffier_schema::{Blessing, TypeEntry, TypeKind};
+
+    #[test]
+    fn error_metadata_preserves_shape_and_opaque_field_positions() {
+        use ffier_schema::{ErrorField, ErrorVariantData};
+
+        let mut meta: MetaError = syn::parse2(quote! {
+            @exported_error,
+            name = Example,
+            path = (crate::Example),
+            prefix = "test",
+            type_tag = 1,
+            variants = [
+                { name = Plain, code = 1, message = "plain", data = fieldless, },
+                { name = Empty, code = 2, message = "empty", data = tuple [], },
+                { name = UnitPayload, code = 3, message = "unit payload", data = tuple [typed(())], },
+                { name = Mixed, code = 4, message = "mixed", data = tuple [typed(i32), opaque, typed(u64)], },
+                { name = Hidden, code = 5, message = "hidden", data = tuple [opaque, opaque], },
+            ],
+        }).unwrap();
+        let error = convert_error(&meta, &CTypeResolver::new("test", None));
+        assert_eq!(error.variants[0].data, ErrorVariantData::Fieldless);
+        assert_eq!(error.variants[1].data, ErrorVariantData::Tuple(vec![]));
+        assert_eq!(error.variants[2].data.fields().len(), 1);
+        assert!(matches!(
+            error.variants[2].data.fields(),
+            [ErrorField::Typed(_)]
+        ));
+        let mixed = &error.variants[3].data;
+        assert!(matches!(
+            mixed.fields(),
+            [
+                ErrorField::Typed(_),
+                ErrorField::Opaque,
+                ErrorField::Typed(_)
+            ]
+        ));
+        assert_eq!(
+            mixed
+                .typed_fields()
+                .map(|(index, _)| index)
+                .collect::<Vec<_>>(),
+            vec![0, 2]
+        );
+        assert_eq!(
+            error.variants[4].data,
+            ErrorVariantData::Tuple(vec![ErrorField::Opaque, ErrorField::Opaque])
+        );
+        let expected = serde_json::to_value(&error.variants[4]).unwrap();
+        for variant in [
+            syn::parse_quote! {
+                #[ffier(code = 5, message = "hidden", opaque)]
+                Hidden(i32, anyhow::Error)
+            },
+            syn::parse_quote! {
+                #[ffier(code = 5, message = "hidden")]
+                Hidden(#[ffier(opaque)] i32, #[ffier(opaque)] anyhow::Error)
+            },
+        ] {
+            let variant: syn::Variant = variant;
+            let attrs = crate::parse_ffier_variant_attrs(&variant.attrs).unwrap();
+            let syn::Fields::Unnamed(fields) = &variant.fields else {
+                panic!("expected tuple variant");
+            };
+            let fields = fields
+                .unnamed
+                .iter()
+                .map(|field| crate::parse_ffier_error_field(field, attrs.opaque).unwrap())
+                .collect();
+            meta.variants = vec![crate::meta::MetaErrorVariant {
+                name: variant.ident,
+                code: attrs.code,
+                message: attrs.message.unwrap(),
+                data: MetaErrorVariantData::Tuple(fields),
+            }];
+            let converted = convert_error(&meta, &CTypeResolver::new("test", None));
+            assert_eq!(
+                serde_json::to_value(&converted.variants[0]).unwrap(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn qualified_paths_preserve_schema_type_information() {
@@ -3575,19 +3657,26 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
             .variants
             .iter()
             .map(|v| {
-                let fields = v
-                    .field_types
-                    .iter()
-                    .map(|ty_tokens| ffier_schema::ErrorField {
-                        type_ref: r.type_ref_from_tokens(ty_tokens),
-                    })
-                    .collect();
+                let data = match &v.data {
+                    MetaErrorVariantData::Fieldless => ffier_schema::ErrorVariantData::Fieldless,
+                    MetaErrorVariantData::Tuple(fields) => ffier_schema::ErrorVariantData::Tuple(
+                        fields
+                            .iter()
+                            .map(|field| match field {
+                                MetaErrorField::Typed(tokens) => {
+                                    ffier_schema::ErrorField::Typed(r.type_ref_from_tokens(tokens))
+                                }
+                                MetaErrorField::Opaque => ffier_schema::ErrorField::Opaque,
+                            })
+                            .collect(),
+                    ),
+                };
                 ffier_schema::ErrorVariant {
                     name: v.name.to_string(),
                     c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
                     code: v.code,
                     message: v.message.clone(),
-                    fields,
+                    data,
                 }
             })
             .collect(),

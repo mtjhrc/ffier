@@ -489,15 +489,21 @@ pub trait FfiError: std::error::Error + Sized {
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
     fn codes() -> &'static [(&'static str, u32)];
 
-    /// Shallow-copy the variant's payload CRepr into `out_buf`.
+    /// Shallow-copy the indexed payload field's CRepr into `out_buf`.
     /// The written CRepr borrows from `&self` — the caller must not
     /// outlive the error value. `buf_size` is checked for safety.
-    /// Fieldless (empty-tuple) variants are a no-op.
+    /// Indices refer to native tuple positions, including opaque fields.
+    ///
+    /// # Panics
+    /// Panics if the index is out of bounds, the field is opaque, or the buffer
+    /// is too small. Fieldless variants have no valid field indices.
     ///
     /// # Safety
-    /// `out_buf` must point to a valid, aligned buffer of at least
-    /// `buf_size` bytes.
-    unsafe fn payload(&self, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {}
+    /// `out_buf` must be valid and aligned for the selected field's CRepr,
+    /// with at least `buf_size` bytes. Returned data must not outlive `self`.
+    unsafe fn payload(&self, index: usize, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {
+        panic!("error payload field index {index} out of bounds for 0 fields");
+    }
 }
 
 // ---------------------------------------------------------------------------

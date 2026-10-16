@@ -169,6 +169,8 @@ void ft_free_object_array(FtObjectArray a);
 #define FT_ERROR_TEST_INVALID_INPUT ((uint64_t)16777217 << 32 | 3)
 #define FT_ERROR_TEST_NUMERIC_ERROR ((uint64_t)16777217 << 32 | 4)
 #define FT_ERROR_TEST_FATAL ((uint64_t)16777217 << 32 | 5)
+#define FT_ERROR_TEST_MIXED_ERROR ((uint64_t)16777217 << 32 | 6)
+#define FT_ERROR_TEST_OPAQUE_UNIT ((uint64_t)16777217 << 32 | 7)
 
 /* Widget ------------------------------------------------------------ */
 
@@ -225,6 +227,10 @@ FtResult ft_widget_fail_always(FtWidget handle, FtError* err_out);
 FtResult ft_widget_fail_with_value(FtWidget handle, int32_t* result, FtError* err_out);
 /** Always fails with a numeric error carrying an i32 payload. */
 FtResult ft_widget_fail_with_number(FtWidget handle, int32_t n, FtError* err_out);
+/** Fail with typed fields around an opaque payload field. */
+FtResult ft_widget_fail_with_mixed(FtWidget handle, FtError* err_out);
+/** Fail with opaque fields, including a zero-sized native payload. */
+FtResult ft_widget_fail_with_opaque(FtWidget handle, bool unit_payload, FtError* err_out);
 /** Set tags from a string slice. */
 void ft_widget_set_tags(FtWidget handle, const FtStr* tags, size_t tags_len);
 /** Get joined tags. */
@@ -686,6 +692,9 @@ int32_t ft_consume_foreign_item(FlForeignItem item);
 FlForeignItem ft_create_foreign_item(FtStr label, int32_t score);
 /** Create a foreign config, returning Result with foreign ok type. */
 FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtError* err_out);
+/* Borrow a field by native tuple index. Invalid/opaque indices and undersized buffers abort.
+ * Returned data must not outlive the error handle. */
+void ft_error_payload(const void* handle, size_t index, void* out_buf, size_t buf_size);
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
 
