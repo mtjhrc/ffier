@@ -3,6 +3,11 @@ name = "ffier-test-compat"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+fruit-label = []
+optional-entry = []
+
 [dependencies]
 bitflags = "2"
 ffier = { path = "../../ffier" }
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }

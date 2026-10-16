@@ -1,13 +1,13 @@
 // Vtable backward-compatibility test.
 //
 // This crate includes "v1" generated client bindings where the Fruit trait
-// does NOT have a `label` method (and FruitVtable has no `label` field).
+// does NOT have a `label` method. FruitVtable reserves its interior slot.
 // It links against the current (v2) cdylib which DOES have `label` with a
 // default implementation returning "fruit".
 //
 // The test verifies that when the library calls `label()` on a handle created
-// by this v1 client, it sees the vtable field as out of bounds (smaller
-// vtable_size), treats it as None, and uses the library's default.
+// by this v1 client, it sees the empty reserved slot and uses the library's
+// default. The vtable size stays unchanged because later slots still exist.
 #![allow(clippy::should_implement_trait)]
 #![cfg(unix)]
 
@@ -16,6 +16,14 @@ include!("generated_v1.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Probe supplied by v2; v1 bindings keep its fruit-label gate disabled.
+    unsafe extern "C" {
+        fn ft_mixer_fruit_label_len(
+            handle: *mut core::ffi::c_void,
+            fruit: *mut core::ffi::c_void,
+        ) -> i32;
+    }
 
     struct Pear {
         weight: i32,
@@ -35,18 +43,19 @@ mod tests {
 
     #[test]
     fn v1_custom_type_gets_v2_default_for_label() {
-        // Pear implements v1 Fruit (only `value`). When passed to
-        // fruit_label_len, the library calls label() on the handle.
-        // The v1 vtable is smaller — no label field — so the library
-        // uses its default implementation ("fruit", len 5).
+        // Require bindings generated without label, not a v2 default trampoline.
+        assert!(Pear::__ffier_vtable().__reserved_1.is_none());
+        // The v2 library sees the empty slot and uses "fruit" (len 5).
         let m = Mixer::new();
-        assert_eq!(m.fruit_label_len(Pear { weight: 42 }), 5);
+        let label_len = unsafe {
+            ft_mixer_fruit_label_len(m.as_handle(), Pear { weight: 42 }.__into_raw_handle())
+        };
+        assert_eq!(label_len, 5);
     }
 
     #[test]
     fn v1_custom_type_value_still_works() {
-        // Verify that value() still dispatches correctly through the
-        // v1 vtable even though the library has a larger vtable struct.
+        // value() must still dispatch correctly with an empty label slot.
         let m = Mixer::new().add(Pear { weight: 17 });
         assert_eq!(m.total(), 17);
     }

@@ -36,6 +36,14 @@ gen-foreign-client: build-foreign
 # Update the generated client bindings
 update-generated-client: gen-rust-client gen-foreign-client
 
+# Refresh compatibility bindings without Fruit::label, then restore the v2 library.
+gen-compat-client: build-foreign
+    cargo clean --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
+    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features --features ffi --crate-type cdylib
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} | rustfmt > compat/src/generated_v1.rs
+    cargo clean --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
+    just --justfile {{root}}/tests/justfile build
+
 # Check the header snapshot and compile it without additional includes.
 check-header: gen-header
     diff expected_header.h c/ffier_test.h
@@ -87,10 +95,9 @@ consumer-cdylib: build
 # Test consumer crate in both linking modes
 consumer: consumer-native consumer-cdylib
 
-# The v1 compat bindings (compat/src/generated_v1.rs) are a checked-in
-# snapshot — they represent a v1 client without the fruit-label feature.
-# The compat test verifies vtable backward compatibility by linking the
-# v1 client against the current v2 library.
+# The checked-in compatibility bindings omit fruit-label and reserve its slot.
+# Refresh them with gen-compat-client, not gen-rust-client. The compatibility
+# test checks the empty-slot fallback against the current v2 library.
 
 # Run vtable backward-compatibility tests (v1 client → v2 library)
 compat: build
