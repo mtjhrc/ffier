@@ -692,10 +692,17 @@ int32_t ft_consume_foreign_item(FlForeignItem item);
 FlForeignItem ft_create_foreign_item(FtStr label, int32_t score);
 /** Create a foreign config, returning Result with foreign ok type. */
 FlForeignConfig ft_create_foreign_config_checked(FtStr name, int32_t value, FtError* err_out);
+/* Create an owned fieldless error; returns NULL for payload variants or unknown codes.
+ * Destroy once with error_destroy or transfer ownership to a callback caller. */
+void* ft_error_new(FtResult r);
 /* Borrow a field by native tuple index. Invalid/opaque indices and undersized buffers abort.
  * Returned data must not outlive the error handle. */
 void ft_error_payload(const void* handle, size_t index, void* out_buf, size_t buf_size);
+/* Raw variant name, independent of the static message or native Display. */
 FtStr ft_result_name(FtResult r);
 const char* ft_result_name_cstr(FtResult r);
+/* Static message or raw variant name when omitted. No payload or error handle is needed.
+ * Returned strings remain valid while the library is loaded. */
+FtStr ft_result_message(FtResult r);
 
 #endif /* FFIER_FT_H */

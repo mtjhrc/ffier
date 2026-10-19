@@ -113,12 +113,25 @@ lifetimes, `impl Trait` dispatch, file descriptors, and more.
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
   the feature is off
 
-## Error payload inspection
+## Errors
 
-Clients can inspect and forward received tuple payloads. Mark one field
-`#[ffier(opaque)]` to hide it, or mark the variant opaque to hide all its fields.
-Other fields remain inspectable. Payload messages use native `Display`,
-including details from opaque fields.
+`FfiError` exposes error codes, variant names, messages, and tuple payloads.
+Generated Rust clients can construct fieldless errors with the same syntax
+as native Rust, including in callbacks: `Error::InvalidInput` or `Error::InvalidInput()`.
+
+Fieldless client `Display` uses `ffier(message = "...")`, falling back to the
+variant name. Keep it consistent with native `Display` so callers see the same text:
+
+```rust
+#[error("invalid input")]
+#[ffier(code = 3, message = "invalid input")]
+InvalidInput,
+```
+
+Clients can inspect and forward received payload errors, but cannot yet
+construct new ones. Mark a tuple field `#[ffier(opaque)]` to hide it, or mark
+the variant opaque to hide all its fields. Other fields remain inspectable.
+Payload errors use native `Display`, including details from opaque fields.
 
 ## String representation
 

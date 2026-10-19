@@ -39,10 +39,14 @@ def check_schema(schema_path: Path) -> None:
 
     error = next(item for item in schema["errors"] if item["name"] == "TestError")
     variants = {v["name"]: v for v in error["variants"]}
-    for name in ["CustomMessage", "InvalidInput"]:
-        assert variants[name]["data"] == {"kind": "tuple", "fields": []}
-    for name in ["Fatal", "OpaqueUnit"]:
-        assert variants[name]["data"] == {"kind": "tuple", "fields": [{"kind": "opaque"}]}
+    assert variants["CustomMessage"]["data"] == {"kind": "fieldless"}
+    assert variants["InvalidInput"]["data"] == {"kind": "tuple", "fields": []}
+    assert variants["Fatal"]["data"] == {
+        "kind": "tuple", "fields": [{"kind": "opaque"}]
+    }
+    assert variants["OpaqueUnit"]["data"] == {
+        "kind": "tuple", "fields": [{"kind": "opaque"}]
+    }
     mixed = variants["MixedError"]["data"]
     assert mixed["kind"] == "tuple"
     assert [f["kind"] for f in mixed["fields"]] == ["typed", "opaque", "typed"]
@@ -54,6 +58,7 @@ def check_schema(schema_path: Path) -> None:
         assert len(data["fields"]) == 1
         assert data["fields"][0]["kind"] == "typed"
         assert data["fields"][0]["type_ref"]["type"] == type_name
+    assert all("constructible" not in v and "is_unit" not in v for v in error["variants"])
 
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:

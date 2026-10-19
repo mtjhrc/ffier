@@ -9,7 +9,7 @@
 //! - Trait impl bridge functions
 //! - Self-dispatch functions for exported traits
 //! - Error handle functions
-//! - Utility functions (result_name)
+//! - Utility functions (result_name, result_message)
 
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method, Param,
@@ -541,6 +541,17 @@ fn emit_free_functions(
 fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &Options) {
     let result_c = blessed_c_type(lib, ffier_schema::Blessing::Result);
     if !lib.errors.is_empty() {
+        out.push_str("/* Create an owned fieldless error; returns NULL for payload variants or unknown codes.\n");
+        out.push_str(
+            " * Destroy once with error_destroy or transfer ownership to a callback caller. */\n",
+        );
+        write_decl(
+            out,
+            "void*",
+            &format!("{fn_pfx}error_new"),
+            &format!("{result_c} r"),
+            opts,
+        );
         out.push_str("/* Borrow a field by native tuple index. Invalid/opaque indices and undersized buffers abort.\n");
         out.push_str(" * Returned data must not outlive the error handle. */\n");
         write_decl(
@@ -554,11 +565,21 @@ fn emit_utility_functions(out: &mut String, fn_pfx: &str, lib: &Library, opts: &
     let str_c = blessed_c_type(lib, ffier_schema::Blessing::Str);
     let result_name_fn = format!("{fn_pfx}result_name");
     let result_name_cstr_fn = format!("{fn_pfx}result_name_cstr");
+    out.push_str("/* Raw variant name, independent of the static message or native Display. */\n");
     write_decl(out, &str_c, &result_name_fn, &format!("{result_c} r"), opts);
     write_decl(
         out,
         "const char*",
         &result_name_cstr_fn,
+        &format!("{result_c} r"),
+        opts,
+    );
+    out.push_str("/* Static message or raw variant name when omitted. No payload or error handle is needed.\n");
+    out.push_str(" * Returned strings remain valid while the library is loaded. */\n");
+    write_decl(
+        out,
+        &str_c,
+        &format!("{fn_pfx}result_message"),
         &format!("{result_c} r"),
         opts,
     );

@@ -15,7 +15,85 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
-mod callback_errors;
+mod callback_errors {
+    use super as api;
+
+    fn init() {}
+
+    include!("callback_errors.rs");
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod weak_callback_errors {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+
+        mod tests {
+            use super as api;
+
+            fn init() {
+                use api::Symbol;
+                api::require(
+                    None,
+                    &[
+                        Symbol::FtErrorNew,
+                        Symbol::FtErrorDestroy,
+                        Symbol::FtErrorMessage,
+                        Symbol::FtErrorResult,
+                        Symbol::FtErrorPayload,
+                        Symbol::FtResultMessage,
+                        Symbol::FtWidgetNew,
+                        Symbol::FtWidgetDestroy,
+                        Symbol::FtWidgetFailAlways,
+                        Symbol::FtWidgetFailWithValue,
+                        Symbol::FtWidgetFailWithNumber,
+                        Symbol::FtWidgetFailWithMixed,
+                        Symbol::FtWidgetFailWithOpaque,
+                        Symbol::FtWidgetParseCount,
+                        Symbol::FtTestErrorDropCount,
+                        Symbol::FtRoundtripCallbackError,
+                    ],
+                )
+                .unwrap();
+            }
+
+            include!("callback_errors.rs");
+        }
+    }
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
+mod unloaded_fieldless_errors {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    #[test]
+    fn fieldless_values_need_no_symbols_and_display_only_needs_result_message() {
+        let custom = api::TestError::CustomMessage;
+        let invalid = api::TestError::InvalidInput();
+        assert!(matches!(custom, api::TestError::CustomMessage));
+        assert!(matches!(invalid, api::TestError::InvalidInput()));
+        drop(custom);
+        drop(invalid);
+
+        use api::Symbol;
+        api::require(
+            None,
+            &[Symbol::FtResultMessage, Symbol::FtTestErrorDropCount],
+        )
+        .unwrap();
+        let before = api::test_error_drop_count();
+        assert_eq!(
+            api::TestError::CustomMessage.to_string(),
+            "custom error message"
+        );
+        assert_eq!(api::TestError::InvalidInput().to_string(), "invalid input");
+        assert_eq!(api::test_error_drop_count(), before);
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -168,7 +246,7 @@ mod tests {
     fn method_returning_result_void_err() {
         let w = Widget::new();
         let err = w.fail_always().unwrap_err();
-        assert!(matches!(err, TestError::CustomMessage(..)));
+        assert!(matches!(err, TestError::CustomMessage));
     }
 
     #[test]
@@ -320,8 +398,7 @@ mod tests {
 
     #[test]
     fn error_display() {
-        // Client-side Display calls ft_error_message through a PushStr
-        // vtable — tests the real library Display impl, no hardcoded strings.
+        // Payloads use native Display; fieldless variants use static ABI messages.
         let w = Widget::new();
         // describe(99) → NotFound("code 99")
         let err = w.describe(99).unwrap_err();

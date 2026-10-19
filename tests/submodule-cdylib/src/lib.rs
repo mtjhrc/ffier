@@ -12,6 +12,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_bridge_separates_result_names_and_messages() {
+        use ffier_test_submodule_lib::{FfiHandle, SubError};
+
+        for (code, name, message) in [
+            (1, "Oops", "Oops"),
+            (2, "BadThing", "something went wrong"),
+            (3, "Mixed", "Mixed"),
+        ] {
+            let result = ffier::ffier_result(SubError::TYPE_TAG, code);
+            unsafe {
+                assert_eq!(subtest_result_name(result).as_str_unchecked(), name);
+                assert_eq!(subtest_result_message(result).as_str_unchecked(), message);
+            }
+        }
+    }
+
+    #[test]
+    fn fieldless_error_factory_uses_defining_crate_constructor() {
+        use ffier_test_submodule_lib::{FfiHandle, FfiType, SubError};
+
+        for code in [1, 2] {
+            let handle = subtest_error_new(ffier::ffier_result(SubError::TYPE_TAG, code));
+            assert!(!handle.is_null());
+            let error = unsafe { SubError::from_c(handle) };
+            match code {
+                1 => assert!(matches!(error, SubError::Oops)),
+                2 => assert!(matches!(error, SubError::BadThing())),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
     fn external_bridge_preserves_payload_field_indices() {
         use ffier_test_submodule_lib::{FfiType, SubError};
 
