@@ -2772,6 +2772,134 @@ impl Drop for VtableProcessor {
     fn drop(&mut self) {}
 }
 
+pub trait EmptyTrait {
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static EmptyTraitVtable
+    where
+        Self: Sized,
+    {
+        &EmptyTraitVtable {
+            _num_slots: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static EmptyTraitVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        ffier::ffier_handle_new_with_metadata(
+            16777247u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const EmptyTraitVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct EmptyTraitVtable {
+    /// Number of virtual method slots (excluding drop), including reserved gaps.
+    pub _num_slots: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved1: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved2: u32,
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+}
+
+pub struct VtableEmptyTrait(*mut core::ffi::c_void);
+
+impl VtableEmptyTrait {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableEmptyTrait {
+    fn drop(&mut self) {}
+}
+
+pub trait RetiredTrait {
+    #[doc(hidden)]
+    fn __ffier_vtable() -> &'static RetiredTraitVtable
+    where
+        Self: Sized,
+    {
+        &RetiredTraitVtable {
+            _num_slots: 3,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: Some({
+                unsafe extern "C" fn __drop_trampoline<__T>(__ud: *mut core::ffi::c_void) {
+                    unsafe { drop(Box::from_raw(__ud as *mut __T)) };
+                }
+                __drop_trampoline::<Self>
+            }),
+            __reserved_0: None,
+            __reserved_1: None,
+            __reserved_2: None,
+        }
+    }
+    #[doc(hidden)]
+    fn __into_raw_handle(self) -> *mut core::ffi::c_void
+    where
+        Self: Sized,
+    {
+        let __vtable: &'static RetiredTraitVtable = Self::__ffier_vtable();
+        let __user_data = Box::into_raw(Box::new(self));
+        ffier::ffier_handle_new_with_metadata(
+            16777248u32,
+            0,
+            ffier::VtableHandle {
+                vtable_ptr: __vtable as *const RetiredTraitVtable as *const core::ffi::c_void,
+                user_data: __user_data as *const core::ffi::c_void,
+            },
+        )
+    }
+}
+
+#[repr(C)]
+pub struct RetiredTraitVtable {
+    /// Number of virtual method slots (excluding drop), including reserved gaps.
+    pub _num_slots: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved1: u16,
+    /// Reserved for future use; initialize to zero.
+    pub _reserved2: u32,
+    pub drop: Option<unsafe extern "C" fn(*mut core::ffi::c_void)>,
+    pub __reserved_0: Option<unsafe extern "C" fn()>,
+    pub __reserved_1: Option<unsafe extern "C" fn()>,
+    pub __reserved_2: Option<unsafe extern "C" fn()>,
+}
+
+pub struct VtableRetiredTrait(*mut core::ffi::c_void);
+
+impl VtableRetiredTrait {
+    #[doc(hidden)]
+    pub fn __into_raw(self) -> *mut core::ffi::c_void {
+        let this = std::mem::ManuallyDrop::new(self);
+        this.0
+    }
+}
+
+impl Drop for VtableRetiredTrait {
+    fn drop(&mut self) {}
+}
+
 pub trait Fruit {
     fn value(&self) -> i32;
     fn try_count(&self, input: i32) -> Result<i32, TestError>;

@@ -480,9 +480,8 @@ pub struct MetaImplementable {
     pub own_method_count: usize,
     /// Optional blessing tag for well-known types (e.g. `"error_trait"`).
     pub bless: Option<String>,
-    /// Highest vtable slot index (including reserved/retired slots).
-    /// Used by code generators to pad the vtable struct up to this slot.
-    pub max_vtable_slot: usize,
+    /// Number of virtual method slots, including reserved gaps but excluding drop.
+    pub num_slots: usize,
     /// If true, no vtable wrapper type is generated. C callers cannot
     /// implement this trait — only concrete Rust implementors are dispatched.
     /// Useful for marker traits and traits with supertrait bounds.
@@ -1248,9 +1247,9 @@ impl syn::parse::Parse for MetaImplementable {
         let own_method_count = own_method_count.base10_parse::<usize>()?;
         parse_comma(input)?;
 
-        expect_key(input, "max_vtable_slot")?;
-        let max_vtable_slot: syn::LitInt = input.parse()?;
-        let max_vtable_slot = max_vtable_slot.base10_parse::<usize>()?;
+        expect_key(input, "num_slots")?;
+        let num_slots: syn::LitInt = input.parse()?;
+        let num_slots = num_slots.base10_parse::<usize>()?;
         parse_comma(input)?;
 
         expect_key(input, "bless")?;
@@ -1294,7 +1293,7 @@ impl syn::parse::Parse for MetaImplementable {
             trait_lifetimes,
             methods,
             own_method_count,
-            max_vtable_slot,
+            num_slots,
             bless,
             no_vtable,
             cfg_predicate,

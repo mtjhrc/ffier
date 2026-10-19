@@ -416,9 +416,9 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
         }
     }
 
-    // Emit method slots 0..=max_vtable_slot (after drop at struct position 0).
+    // Emit virtual method slots after drop at struct position 0.
     // Method index N occupies struct position N+1.
-    for slot in 0..=tr.max_vtable_slot {
+    for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
             // Build the function pointer signature
             let mut params = vec!["void* self_data".to_string()];

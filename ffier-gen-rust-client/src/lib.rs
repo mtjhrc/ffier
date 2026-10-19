@@ -1663,7 +1663,7 @@ fn emit_vtable_struct(
         }
     }
 
-    for slot in 0..=tr.max_vtable_slot {
+    for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
             push_extern_param_types(&m.params, &mut params);
@@ -1690,7 +1690,7 @@ fn emit_vtable_struct(
 
 fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     let vtable_name = &tr.vtable_struct_name;
-    let num_slots = u16::try_from(tr.max_vtable_slot + 1).expect("num_slots exceeds u16::MAX");
+    let num_slots = u16::try_from(tr.num_slots).expect("num_slots exceeds u16::MAX");
 
     writeln!(out, "        &{vtable_name} {{").unwrap();
     writeln!(out, "            _num_slots: {num_slots},").unwrap();
@@ -1716,7 +1716,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
         }
     }
 
-    for slot in 0..=tr.max_vtable_slot {
+    for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
             let is_mut = m.receiver == Receiver::Mut;
             let borrow = if is_mut { "&mut *" } else { "&*" };

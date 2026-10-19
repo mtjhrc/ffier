@@ -33,12 +33,14 @@ typedef void* FtSprocket;
 typedef void* FtOptionalWidget;
 typedef void* FtAttachment; /* FtSprocket */
 typedef void* FtCategorizable; /* FtApple | FtOrange */
+typedef void* FtEmptyTrait; /* FtVtableEmptyTrait */
 typedef void* FtError; /* FtTestError | FtVtableError */
 typedef void* FtErrorForwarder; /* FtVtableErrorForwarder */
 typedef void* FtFruit; /* FtApple | FtOrange | FtBanana | FtMango | FtPeach | FtPlum | FtGrape | FtLemon | FtVtableFruit */
 typedef void* FtOptionalWorker; /* FtOptionalWidget | FtVtableOptionalWorker */
 typedef void* FtProcessor; /* FtVtableProcessor */
 typedef void* FtPushStr; /* FtVtablePushStr */
+typedef void* FtRetiredTrait; /* FtVtableRetiredTrait */
 typedef void* FtSnapshot; /* FtView | FtWidget | FtGadget */
 typedef void* FtWeighable; /* FtApple | FtVtableWeighable */
 typedef void* FlForeignBorrowed;
@@ -472,6 +474,39 @@ typedef struct {
 int32_t ft_processor_process(FtProcessor handle, int32_t input);
 FtStr ft_processor_name(FtProcessor handle);
 void ft_processor_destroy(FtProcessor handle);
+
+/* FtEmptyTraitVtable ------------------------------------------------ */
+
+#define FT_EMPTY_TRAIT_TYPE_TAG 16777247
+
+typedef struct {
+    uint16_t _num_slots; /* number of virtual method slots (excluding drop), including reserved gaps */
+    uint16_t _reserved1; /* must be zero */
+    uint32_t _reserved2; /* must be zero */
+    void (*drop)(void* self_data);
+} FtEmptyTraitVtable;
+
+/* EmptyTrait (dispatch) --------------------------------------------- */
+
+void ft_empty_trait_destroy(FtEmptyTrait handle);
+
+/* FtRetiredTraitVtable ---------------------------------------------- */
+
+#define FT_RETIRED_TRAIT_TYPE_TAG 16777248
+
+typedef struct {
+    uint16_t _num_slots; /* number of virtual method slots (excluding drop), including reserved gaps */
+    uint16_t _reserved1; /* must be zero */
+    uint32_t _reserved2; /* must be zero */
+    void (*drop)(void* self_data);
+    void (*__reserved_0)(void); /* reserved slot 0 */
+    void (*__reserved_1)(void); /* reserved slot 1 */
+    void (*__reserved_2)(void); /* reserved slot 2 */
+} FtRetiredTraitVtable;
+
+/* RetiredTrait (dispatch) ------------------------------------------- */
+
+void ft_retired_trait_destroy(FtRetiredTrait handle);
 
 /* FtFruitVtable ----------------------------------------------------- */
 

@@ -3618,7 +3618,7 @@ fn convert_implementable(
             .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types, type_registry))
             .collect(),
         own_method_count: meta.own_method_count,
-        max_vtable_slot: meta.max_vtable_slot,
+        num_slots: meta.num_slots,
         no_vtable: meta.no_vtable,
         cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
     }

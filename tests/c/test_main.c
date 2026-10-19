@@ -469,19 +469,16 @@ void vtable_initializer_macro(void) {
         .process = test_process,
     );
     static const FtProcessorVtable empty = FT_VTABLE(FtProcessorVtable, );
-    typedef struct {
-        uint16_t _num_slots;
-        uint16_t _reserved1;
-        uint32_t _reserved2;
-        void (*drop)(void*);
-    } DropOnlyVtable;
-    static const DropOnlyVtable drop_only = FT_VTABLE(DropOnlyVtable,
+    static const FtEmptyTraitVtable drop_only = FT_VTABLE(FtEmptyTraitVtable,
         .drop = test_drop,
     );
+    static const FtRetiredTraitVtable retired = FT_VTABLE(FtRetiredTraitVtable, );
 
     _Static_assert(offsetof(FtProcessorVtable, drop) == 8, "vtable header must be 8 bytes");
     _Static_assert(FT_VTABLE_LEN(FtProcessorVtable) == 2, "two virtual method slots, excluding drop");
-    _Static_assert(FT_VTABLE_LEN(DropOnlyVtable) == 0, "drop does not count as a virtual method slot");
+    _Static_assert(FT_VTABLE_LEN(FtEmptyTraitVtable) == 0, "empty trait has no virtual method slots");
+    _Static_assert(sizeof(FtEmptyTraitVtable) == 8 + sizeof(drop_only.drop), "empty trait contains only header and drop");
+    _Static_assert(FT_VTABLE_LEN(FtRetiredTraitVtable) == 3, "retired slots and gaps still count");
     assert(g_test_vtable._num_slots == 2);
     assert(g_test_vtable._reserved1 == 0);
     assert(g_test_vtable._reserved2 == 0);
@@ -496,6 +493,10 @@ void vtable_initializer_macro(void) {
     assert(empty.name == NULL);
     assert(drop_only._num_slots == 0);
     assert(drop_only.drop == test_drop);
+    assert(retired._num_slots == 3);
+    assert(retired.__reserved_0 == NULL);
+    assert(retired.__reserved_1 == NULL);
+    assert(retired.__reserved_2 == NULL);
 }
 
 void vtable_constructor(void) {

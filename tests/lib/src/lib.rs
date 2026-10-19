@@ -636,6 +636,14 @@ pub trait Processor {
     fn name(&self) -> &str;
 }
 
+/// Empty traits have no virtual method slots, only the fixed drop callback.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait EmptyTrait {}
+
+/// Retired slots still count even when no virtual methods remain.
+#[cfg_attr(feature = "ffi", ffier::export(reserved(0, 2)))]
+pub trait RetiredTrait {}
+
 // ---------------------------------------------------------------------------
 // Pipeline — uses dyn_param with Processor
 // ---------------------------------------------------------------------------
@@ -1412,6 +1420,8 @@ ffier::library_definition!("ft", library_tag = 1,
     View<'_> = 7, ViewFactory = 8,
     Pipeline = 9,
     trait Processor = 10,
+    trait EmptyTrait = 31,
+    trait RetiredTrait = 32,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,
     Peach = 15, Plum = 16, Grape = 17, Lemon = 18,
     trait Fruit = 20,
@@ -2318,6 +2328,44 @@ mod tests {
         assert_eq!(offset_of!(ProcessorVtable, _reserved2), 4);
         assert_eq!(offset_of!(ProcessorVtable, drop), size_of::<VtableHeader>());
         assert_eq!(size_of::<VtableHandle>(), 2 * size_of::<*const ()>());
+    }
+
+    #[test]
+    fn empty_trait_vtable_has_no_method_slots() {
+        use core::mem::{size_of, size_of_val};
+
+        let vtable = EmptyTraitVtable {
+            _num_slots: 0,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: None,
+        };
+        let slot_size = size_of::<Option<unsafe extern "C" fn()>>();
+        assert_eq!(
+            size_of_val(&vtable),
+            size_of::<ffier::VtableHeader>() + slot_size
+        );
+        let wrapper = VtableEmptyTrait {
+            value: ffier::VtableHandle {
+                vtable_ptr: &vtable as *const _ as *const core::ffi::c_void,
+                user_data: ptr::null(),
+            },
+        };
+        drop(wrapper);
+
+        let retired = RetiredTraitVtable {
+            _num_slots: 3,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: None,
+            __reserved_0: None,
+            __reserved_1: None,
+            __reserved_2: None,
+        };
+        assert_eq!(
+            size_of_val(&retired),
+            size_of::<ffier::VtableHeader>() + 4 * slot_size,
+        );
     }
 
     static DROP_CALLED: AtomicBool = AtomicBool::new(false);
