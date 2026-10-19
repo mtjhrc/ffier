@@ -24,9 +24,15 @@
   raw identifiers, with a compile-time diagnostic. This prefix is reserved for
   generated code. Users must rename affected functions and methods, including
   methods on traits exported with `no_vtable`.
+- Replace trait schema field `max_vtable_slot` with `num_slots`. Users reading
+  trait metadata must use the method-slot count directly instead of adding one
+  to a highest index.
 
 ### Fixed
 
+- Generate empty trait vtables with zero virtual method slots and only header
+  plus drop callback. Native, C, and Rust generators use the same slot count;
+  explicitly reserved slots still count when no methods remain.
 - Forward native error handles from generated Rust callbacks instead of boxing
   client wrappers as native handles. Preserve error type tags, variant codes,
   and ownership when returning library errors through callbacks.

@@ -663,8 +663,8 @@ pub struct ImplementableTrait {
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,
-    /// Highest vtable slot index (including reserved/retired slots).
-    pub max_vtable_slot: usize,
+    /// Number of virtual method slots, including reserved gaps but excluding drop.
+    pub num_slots: usize,
     /// If true, no vtable wrapper type exists. C callers cannot implement
     /// this trait — only concrete Rust implementors are dispatched.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

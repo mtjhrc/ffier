@@ -2931,16 +2931,14 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     // These are used inside the @on_library_export macro arm. The vtable struct is
     // a sibling (also in @on_library_export), so bare names resolve correctly.
 
-    // --- Compute max vtable slot for metadata ---
-    // The highest slot index that needs to be padded in the vtable struct.
-    // This accounts for both method indices and reserved (retired) slots.
-    let max_method_index = vtable_methods.iter().map(|m| m.index).max();
-    let max_reserved_index = args.reserved.iter().copied().max();
-    let max_vtable_slot_val: usize = match (max_method_index, max_reserved_index) {
-        (Some(mi), Some(ri)) => mi.max(ri),
-        (Some(v), None) | (None, Some(v)) => v,
-        (None, None) => 0,
-    };
+    // Count virtual method slots, including reserved gaps but excluding drop.
+    // An empty trait has zero slots, unlike a trait with method index 0.
+    let num_slots = vtable_methods
+        .iter()
+        .map(|m| m.index)
+        .chain(args.reserved.iter().copied())
+        .max()
+        .map_or(0, |index| index + 1);
 
     // --- Metadata emission ---
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -2978,8 +2976,6 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             quote! { #method_ident => ($crate::#helper_ident) }
         })
         .collect();
-
-    let reserved_lits: Vec<_> = args.reserved.iter().map(|r| quote! { #r }).collect();
 
     let trait_path_tokens = quote! { $crate::#trait_name };
 
@@ -3037,7 +3033,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 trait_generics = (#trait_ty_generics);
                 crate_path = ($crate);
                 handles = [$($__handle),*];
-                reserved = [#(#reserved_lits),*];
+                num_slots = #num_slots;
                 own_method_count = #own_method_count;
                 methods = [#(#vtable_method_meta),*];
                 method_sigs = [#(#vtable_method_sigs),*];
@@ -3133,7 +3129,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     trait_lifetimes = (#(#trait_lifetime_idents),*),
                     vtable_methods = [#(#vtable_method_meta),*],
                     own_method_count = #own_method_count,
-                    max_vtable_slot = #max_vtable_slot_val,
+                    num_slots = #num_slots,
                     bless = #bless_tokens,
                     no_vtable = #no_vtable_tokens,
                     #cfg_pred_tokens
@@ -4369,7 +4365,7 @@ impl Parse for LibraryInput {
 /// trait_generics = (token tokens);  // e.g. <'static> or empty
 /// crate_path = (token tokens);      // typically $crate
 /// handles = [Ident, Ident, ...];
-/// reserved = [N, N, ...];
+/// num_slots = N;
 /// methods = [ {method_meta}, ... ];
 /// default_helpers = [ method_name => (path tokens), ... ];
 /// ```
@@ -4380,7 +4376,7 @@ struct GenerateVtableInput {
     trait_generics: proc_macro2::TokenStream,
     crate_path: proc_macro2::TokenStream,
     handles: Vec<syn::Ident>,
-    reserved: Vec<usize>,
+    num_slots: usize,
     own_method_count: usize,
     methods: Vec<proc_macro2::TokenStream>,
     method_sigs: Vec<syn::Signature>,
@@ -4396,7 +4392,7 @@ impl Parse for GenerateVtableInput {
         let mut crate_path = None;
         let mut handles = Vec::new();
         let mut own_method_count = 0usize;
-        let mut reserved = Vec::new();
+        let mut num_slots = None;
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
         let mut method_sigs: Vec<syn::Signature> = Vec::new();
         let mut default_helpers = Vec::new();
@@ -4460,15 +4456,8 @@ impl Parse for GenerateVtableInput {
                     }
                     input.parse::<Token![;]>()?;
                 }
-                "reserved" => {
-                    let content;
-                    syn::bracketed!(content in input);
-                    while !content.is_empty() {
-                        reserved.push(content.parse::<syn::LitInt>()?.base10_parse()?);
-                        if !content.is_empty() {
-                            content.parse::<Token![,]>()?;
-                        }
-                    }
+                "num_slots" => {
+                    num_slots = Some(input.parse::<syn::LitInt>()?.base10_parse()?);
                     input.parse::<Token![;]>()?;
                 }
                 "methods" => {
@@ -4528,7 +4517,9 @@ impl Parse for GenerateVtableInput {
                 syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path")
             })?,
             handles,
-            reserved,
+            num_slots: num_slots.ok_or_else(|| {
+                syn::Error::new(proc_macro2::Span::call_site(), "missing num_slots")
+            })?,
             own_method_count,
             methods,
             method_sigs,
@@ -4666,16 +4657,14 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         next_slot = idx + 1;
     }
 
-    // Trailing padding for reserved slots
-    if let Some(&max_reserved) = inp.reserved.iter().max() {
-        while next_slot <= max_reserved {
-            let pad_name = format_ident!("__reserved_{next_slot}");
-            vtable_fields.push(quote! {
-                #[doc(hidden)]
-                pub #pad_name: Option<unsafe extern "C" fn()>
-            });
-            next_slot += 1;
-        }
+    // Pad remaining slots, including retired slots and raw-handle methods.
+    while next_slot < inp.num_slots {
+        let pad_name = format_ident!("__reserved_{next_slot}");
+        vtable_fields.push(quote! {
+            #[doc(hidden)]
+            pub #pad_name: Option<unsafe extern "C" fn()>
+        });
+        next_slot += 1;
     }
 
     // --- Trait impl methods ---

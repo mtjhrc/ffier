@@ -29,6 +29,14 @@ def check_schema(schema_path: Path) -> None:
     schema = json.loads(schema_path.read_text())
     schema_text = json.dumps(schema)
 
+    traits = {trait["name"]: trait for trait in schema["traits"]}
+    expected_slots = {"EmptyTrait": 0, "RetiredTrait": 3, "Processor": 2, "Fruit": 4}
+    for name, count in expected_slots.items():
+        if traits[name]["num_slots"] != count:
+            raise AssertionError(f"{name}: expected {count} virtual method slots")
+    if any("max_vtable_slot" in trait for trait in traits.values()):
+        raise AssertionError("trait schema must store slot counts, not highest indices")
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(

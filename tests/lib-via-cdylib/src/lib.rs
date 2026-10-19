@@ -21,6 +21,49 @@ mod callback_errors;
 mod tests {
     use super::*;
 
+    #[test]
+    fn generated_empty_trait_vtable_has_no_method_slots() {
+        use std::cell::Cell;
+        use std::mem::size_of;
+        use std::rc::Rc;
+
+        unsafe extern "C" {
+            fn ft_empty_trait_destroy(handle: *mut core::ffi::c_void);
+            fn ft_retired_trait_destroy(handle: *mut core::ffi::c_void);
+        }
+
+        struct Marker(Rc<Cell<usize>>);
+        impl EmptyTrait for Marker {}
+        impl RetiredTrait for Marker {}
+        impl Drop for Marker {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+
+        let slot_size = size_of::<Option<unsafe extern "C" fn()>>();
+        let header_size = size_of::<ffier::VtableHeader>();
+        let empty = <Marker as EmptyTrait>::__ffier_vtable();
+        assert_eq!(empty._num_slots, 0);
+        assert_eq!(size_of::<EmptyTraitVtable>(), header_size + slot_size);
+        let retired = <Marker as RetiredTrait>::__ffier_vtable();
+        assert_eq!(retired._num_slots, 3);
+        assert_eq!(size_of::<RetiredTraitVtable>(), header_size + 4 * slot_size);
+        assert!(retired.__reserved_0.is_none());
+        assert!(retired.__reserved_1.is_none());
+        assert!(retired.__reserved_2.is_none());
+
+        let drops = Rc::new(Cell::new(0));
+        unsafe {
+            ft_empty_trait_destroy(EmptyTrait::__into_raw_handle(Marker(drops.clone())));
+        }
+        assert_eq!(drops.get(), 1);
+        unsafe {
+            ft_retired_trait_destroy(RetiredTrait::__into_raw_handle(Marker(drops.clone())));
+        }
+        assert_eq!(drops.get(), 2);
+    }
+
     // ================================================================
     // Constructors
     // ================================================================
