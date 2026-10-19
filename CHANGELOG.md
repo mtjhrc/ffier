@@ -67,6 +67,8 @@
 - Generate empty trait vtables with zero virtual method slots and only header
   plus drop callback. Native, C, and Rust generators use the same slot count;
   explicitly reserved slots still count when no methods remain.
+- Retain registry types referenced only by typed error payload fields during
+  schema pruning, including their alias, enum, and bitflags dependencies.
 - Forward native error handles from generated Rust callbacks instead of boxing
   client wrappers as native handles. Preserve error type tags, variant codes,
   and ownership when returning library errors through callbacks.
