@@ -848,6 +848,11 @@ impl Library {
         }
         for err in &self.errors {
             refs.insert(err.name.as_str());
+            for variant in &err.variants {
+                for (_, type_ref) in variant.data.typed_fields() {
+                    refs.insert(type_ref.type_name.as_str());
+                }
+            }
         }
         for en in &self.enum_constants {
             refs.insert(en.name.as_str());
