@@ -483,11 +483,20 @@ pub trait FfiError: std::error::Error + Sized {
     /// Variant code (lower 32 bits of `FfierResult`).
     fn code(&self) -> u32;
 
-    /// Static human-readable message for a variant code (no allocation).
+    /// Static message for a variant code (no allocation), defaulting to the
+    /// raw variant name in derived implementations. Generated fieldless Display
+    /// uses this message; native Display should match to avoid confusing text.
     fn static_message(code: u32) -> &'static CStr;
 
     /// `(CONSTANT_NAME, value)` pairs for C `#define` generation.
     fn codes() -> &'static [(&'static str, u32)];
+
+    /// Construct a fieldless (unit or empty-tuple) variant from its code.
+    /// Returns `None` for unknown codes and variants with payloads,
+    /// including opaque payloads.
+    fn from_code(_code: u32) -> Option<Self> {
+        None
+    }
 
     /// Shallow-copy the indexed payload field's CRepr into `out_buf`.
     /// The written CRepr borrows from `&self` — the caller must not

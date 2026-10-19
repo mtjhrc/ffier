@@ -1461,17 +1461,19 @@ fn is_external_crate_path(ty: &Type) -> bool {
 ///
 /// Each variant must have `#[ffier(code = N)]` and optionally
 /// `#[ffier(code = N, message = "...")]`. Without an explicit message,
-/// the static message is the variant name with a payload suffix when present.
-/// Fieldless variants use `Variant()` syntax.
+/// the static message is the variant name. Fieldless variants may use either
+/// `Variant` or `Variant()` syntax; generated clients preserve that choice.
+/// Generated fieldless `Display` uses this static message, not native `Display`.
+/// Keep both messages consistent to avoid confusing differences across FFI.
 ///
 /// ```ignore
 /// #[derive(ffier::FfiError)]
 /// #[non_exhaustive]
 /// pub enum CalcError {
 ///     #[ffier(code = 1)]
-///     DivisionByZero(),
+///     DivisionByZero,
 ///     #[ffier(code = 2, message = "integer overflow")]
-///     Overflow(),
+///     Overflow,
 /// }
 /// ```
 #[proc_macro_derive(FfiError, attributes(ffier))]
@@ -1497,15 +1499,6 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     }
 
     for variant in &data_enum.variants {
-        if matches!(variant.fields, syn::Fields::Unit) {
-            return syn::Error::new_spanned(
-                variant,
-                "FfiError variants must not be unit variants; \
-                 use `Variant()` instead of `Variant` for FFI compatibility",
-            )
-            .to_compile_error()
-            .into();
-        }
         if matches!(variant.fields, syn::Fields::Named(_)) {
             return syn::Error::new_spanned(
                 variant,
@@ -1522,6 +1515,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut codes_entries = Vec::new();
     let mut variant_meta_tokens = Vec::new();
     let mut payload_arms = Vec::new();
+    let mut from_code_arms = Vec::new();
 
     for variant in &data_enum.variants {
         let var_ident = &variant.ident;
@@ -1532,15 +1526,14 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         };
 
         let code = attrs.code;
-        let message = attrs.message.unwrap_or_else(|| {
-            let name = var_ident.to_string();
-            match &variant.fields {
-                syn::Fields::Unit => name,
-                syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => name,
-                syn::Fields::Unnamed(_) => format!("{name}(...)"),
-                syn::Fields::Named(_) => format!("{name}{{..}}"),
+        match &variant.fields {
+            syn::Fields::Unit => from_code_arms.push(quote! { #code => Some(Self::#var_ident) }),
+            syn::Fields::Unnamed(fields) if fields.unnamed.is_empty() => {
+                from_code_arms.push(quote! { #code => Some(Self::#var_ident()) });
             }
-        });
+            _ => {}
+        }
+        let message = attrs.message.unwrap_or_else(|| var_ident.to_string());
         let upper_name = camel_to_upper_snake(&var_ident.to_string());
 
         // Wildcard pattern for variants with fields
@@ -1665,6 +1658,13 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
 
             fn codes() -> &'static [(&'static str, u32)] {
                 &[#(#codes_entries),*]
+            }
+
+            fn from_code(code: u32) -> Option<Self> {
+                match code {
+                    #(#from_code_arms,)*
+                    _ => None,
+                }
             }
 
             unsafe fn payload(&self, index: usize, out_buf: *mut core::ffi::c_void, buf_size: usize) {

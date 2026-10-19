@@ -355,6 +355,9 @@ void error_name_custom_message(void) {
     const char* msg = ft_result_name_cstr(r);
     assert(msg != NULL);
     assert(strcmp(msg, "CustomMessage") == 0);
+    FtStr message = ft_result_message(r);
+    assert(message.len == strlen("custom error message"));
+    assert(memcmp(message.data, "custom error message", message.len) == 0);
     ft_widget_destroy(w);
 }
 
@@ -365,7 +368,10 @@ void error_name_not_found(void) {
     assert(r == FT_ERROR_TEST_NOT_FOUND);
     const char* msg = ft_result_name_cstr(r);
     assert(msg != NULL);
-    assert(strcmp(msg, "NotFound(...)") == 0);
+    assert(strcmp(msg, "NotFound") == 0);
+    FtStr message = ft_result_message(r);
+    assert(message.len == strlen("NotFound"));
+    assert(memcmp(message.data, "NotFound", message.len) == 0);
     ft_widget_destroy(w);
 }
 
@@ -421,6 +427,29 @@ void error_handle_null_safe(void) {
     ft_error_destroy(NULL); /* should not crash */
 }
 
+void error_factory_constructs_fieldless_variants_only(void) {
+    FtResult results[] = { FT_ERROR_TEST_CUSTOM_MESSAGE, FT_ERROR_TEST_INVALID_INPUT };
+    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+        size_t before = ft_test_error_drop_count();
+        FtError err = ft_error_new(results[i]);
+        assert(err != NULL);
+        assert(ft_error_result(err) == results[i]);
+        struct push_str_buf buf;
+        error_message_to_buf(err, &buf);
+        assert(buf.len > 0);
+        assert(ft_test_error_drop_count() == before);
+        ft_error_destroy(err);
+        assert(ft_test_error_drop_count() == before + 1);
+    }
+    assert(ft_error_new(FT_RESULT_SUCCESS) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_NOT_FOUND) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_NUMERIC_ERROR) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_FATAL) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_MIXED_ERROR) == NULL);
+    assert(ft_error_new(FT_ERROR_TEST_OPAQUE_UNIT) == NULL);
+    assert(ft_error_new(UINT64_MAX) == NULL);
+}
+
 void error_payload_uses_native_field_indices(void) {
     FtWidget widget = ft_widget_new();
     FtError error = NULL;
@@ -464,6 +493,14 @@ void error_payload_invalid_access_aborts(void) {
     assert_payload_access_aborts(error, 0, 0);
     ft_error_destroy(error);
     ft_widget_destroy(widget);
+
+    FtResult fieldless[] = { FT_ERROR_TEST_CUSTOM_MESSAGE, FT_ERROR_TEST_INVALID_INPUT };
+    for (size_t i = 0; i < sizeof(fieldless) / sizeof(fieldless[0]); i++) {
+        error = ft_error_new(fieldless[i]);
+        assert(error != NULL);
+        assert_payload_access_aborts(error, 0, sizeof(uint64_t));
+        ft_error_destroy(error);
+    }
 }
 
 /* ===================================================================== */
@@ -723,6 +760,7 @@ int main(int argc, char** argv) {
     RUN_TEST(error_name_success);
     RUN_TEST(error_handle_message_and_destroy);
     RUN_TEST(error_handle_null_safe);
+    RUN_TEST(error_factory_constructs_fieldless_variants_only);
     RUN_TEST(error_payload_uses_native_field_indices);
 
     printf("\n[vtable/implementable]\n");

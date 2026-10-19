@@ -4,13 +4,6 @@
 
 ### Breaking changes
 
-- The C `{prefix}_error_payload` getter and Rust `FfiError::payload` now accept
-  a field index. Update calls and manual implementations, then rebuild with
-  regenerated declarations. JSON error variants use explicit `Fieldless`/`Tuple`
-  data and `Typed`/`Opaque` fields, retaining opaque field positions.
-  Accessing an opaque field, an out-of-bounds index, or a fieldless variant
-  panics instead of silently leaving the output untouched. At the C ABI
-  boundary, these panics abort the process.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
@@ -34,12 +27,40 @@
 - Replace trait schema field `max_vtable_slot` with `num_slots`. Users reading
   trait metadata must use the method-slot count directly instead of adding one
   to a highest index.
+- Generated Rust fieldless error variants now preserve native `Variant` or
+  `Variant()` syntax instead of storing an error handle. Imported fieldless
+  errors destroy their native handle immediately; callback returns create
+  native errors to transfer to the caller. Fieldless `Display` uses static
+  metadata instead of native formatting and creates no native handle. Rebuild
+  bridges and regenerate schemas, headers, and bindings together for the new
+  `error_new` symbol and variant metadata. Payload errors retain their native
+  handles in `VariantData` wrappers.
+- The C `{prefix}_error_payload` getter now accepts a field index after the
+  error handle. Rust `FfiError::payload` also accepts an index; update manual
+  implementations and calls. Rebuild callers with regenerated declarations.
+  JSON error variants now use explicit `Fieldless`/`Tuple` data and
+  `Typed`/`Opaque` fields instead of flags and a filtered field list.
+  Accessing an opaque field, an out-of-bounds index, or a fieldless variant
+  panics instead of silently leaving the output untouched. At the C ABI
+  boundary, these panics abort the process.
+- `result_name` and `result_name_cstr` now always return the raw variant name,
+  without message overrides or payload suffixes. Use `result_message` for
+  human-readable static text. Keep fieldless static messages and native
+  `Display` consistent. Otherwise, native and generated callers show
+  different text for the same error.
 
 ### Added
 
+- Construct fieldless errors directly in generated Rust clients, including
+  callback implementations shared with native Rust. `FfiError` derives accept
+  unit variants and implement `from_code`; the native `{prefix}_error_new`
+  factory rejects payload variants and unknown error types or codes.
 - Inspect payload fields by native tuple index, including fields beside an
   opaque field. Field-level `#[ffier(opaque)]` hides one field; variant-level
   opacity applies it to every field. Generated Rust getters keep native indices.
+- Look up static error messages through `{prefix}_result_message`, returning
+  `FtStr` without an error handle or allocation. Generated fieldless `Display`
+  writes this string directly; payload errors keep native formatting.
 
 ### Fixed
 
