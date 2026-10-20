@@ -53,6 +53,7 @@ mod weak_callback_errors {
                         Symbol::FtWidgetParseCount,
                         Symbol::FtTestErrorDropCount,
                         Symbol::FtRoundtripCallbackError,
+                        Symbol::FtVtableHandleNew,
                     ],
                 )
                 .unwrap();
@@ -121,10 +122,10 @@ mod tests {
 
         let slot_size = size_of::<Option<unsafe extern "C" fn()>>();
         let header_size = size_of::<ffier::VtableHeader>();
-        let empty = <Marker as EmptyTrait>::__ffier_vtable();
+        let empty = __ffier_vtable_EmptyTrait::<Marker>();
         assert_eq!(empty._num_slots, 0);
         assert_eq!(size_of::<EmptyTraitVtable>(), header_size + slot_size);
-        let retired = <Marker as RetiredTrait>::__ffier_vtable();
+        let retired = __ffier_vtable_RetiredTrait::<Marker>();
         assert_eq!(retired._num_slots, 3);
         assert_eq!(size_of::<RetiredTraitVtable>(), header_size + 4 * slot_size);
         assert!(retired.__reserved_0.is_none());

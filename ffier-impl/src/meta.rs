@@ -6,6 +6,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
+use syn::ext::IdentExt;
 use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
@@ -343,6 +344,8 @@ pub enum MetaParamKind {
         ref_kind: ImplTraitRefKind,
         /// Lifetime arguments on the trait at this usage site (e.g. `["a"]` for `impl Snapshot<'a>`).
         trait_lifetime_args: Vec<Ident>,
+        lifetime_bounds: Vec<Ident>,
+        ref_lifetime: Option<Ident>,
     },
 }
 
@@ -512,6 +515,8 @@ pub struct MetaImplementable {
     /// implement this trait — only concrete Rust implementors are dispatched.
     /// Useful for marker traits and traits with supertrait bounds.
     pub no_vtable: bool,
+    /// Owned/borrowed dynamic forwarding was generated for this trait.
+    pub dyn_dispatch: bool,
     /// `#[cfg(...)]` predicate for the entire trait. `None` = unconditional.
     pub cfg_predicate: Option<TokenStream>,
 }
@@ -930,14 +935,25 @@ impl syn::parse::Parse for MetaParam {
                 };
                 parse_comma(input)?;
                 expect_key(input, "trait_lifetime_args")?;
-                let trait_lifetime_args =
-                    parse_bracketed_list(input, |inner| inner.parse::<Ident>())?;
+                let trait_lifetime_args = parse_bracketed_list(input, Ident::parse_any)?;
+                parse_comma(input)?;
+                expect_key(input, "lifetime_bounds")?;
+                let lifetime_bounds = parse_bracketed_list(input, Ident::parse_any)?;
+                parse_comma(input)?;
+                expect_key(input, "ref_lifetime")?;
+                let reference = parse_bracketed_list(input, Ident::parse_any)?;
+                if reference.len() > 1 {
+                    return Err(input.error("impl Trait reference has more than one lifetime"));
+                }
+                let ref_lifetime = reference.into_iter().next();
                 parse_comma(input)?;
                 MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
                     ref_kind,
                     trait_lifetime_args,
+                    lifetime_bounds,
+                    ref_lifetime,
                 }
             }
             other => {
@@ -1331,6 +1347,11 @@ impl syn::parse::Parse for MetaImplementable {
         };
         parse_comma(input)?;
 
+        expect_key(input, "dyn_dispatch")?;
+        let dyn_dispatch: LitBool = input.parse()?;
+        let dyn_dispatch = dyn_dispatch.value;
+        parse_comma(input)?;
+
         let cfg_predicate = parse_optional_cfg_predicate(input)?;
 
         Ok(MetaImplementable {
@@ -1345,6 +1366,7 @@ impl syn::parse::Parse for MetaImplementable {
             num_slots,
             bless,
             no_vtable,
+            dyn_dispatch,
             cfg_predicate,
         })
     }

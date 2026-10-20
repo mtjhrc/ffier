@@ -17,6 +17,172 @@ mod tests {
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
     };
 
+    struct BorrowedFruit<'a> {
+        value: &'a i32,
+        drops: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl api::Fruit for BorrowedFruit<'_> {
+        fn value(&self) -> i32 {
+            *self.value
+        }
+        fn try_count(&self, input: i32) -> Result<i32, api::TestError> {
+            Ok(*self.value + input)
+        }
+        fn count_tags(&self, tags: &[&str]) -> i32 {
+            tags.len() as i32
+        }
+    }
+
+    impl Drop for BorrowedFruit<'_> {
+        fn drop(&mut self) {
+            self.drops.set(self.drops.get() + 1);
+        }
+    }
+
+    #[test]
+    fn retained_owned_callback_lifetime_and_destruction() {
+        let value = 42;
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        for mode in 0..3 {
+            let fruit = BorrowedFruit {
+                value: &value,
+                drops: drops.clone(),
+            };
+            let retained = match mode {
+                0 => api::RetainedFruit::new(fruit),
+                1 => api::RetainedFruit::new_dynamic(fruit),
+                _ => api::retain_fruit(fruit),
+            };
+            assert_eq!(retained.value(), 42);
+            let before = drops.get();
+            assert_eq!(retained.value(), 42);
+            assert_eq!(drops.get(), before);
+            drop(retained);
+            assert_eq!(drops.get(), before + 1);
+        }
+        // An unbounded owned callback may borrow local data too.
+        assert_eq!(
+            api::Mixer::new()
+                .add(BorrowedFruit {
+                    value: &value,
+                    drops: drops.clone()
+                })
+                .total(),
+            42
+        );
+        assert_eq!(drops.get(), 4);
+        static STATIC_VALUE: i32 = 91;
+        let retained = api::RetainedFruit::new_static(BorrowedFruit {
+            value: &STATIC_VALUE,
+            drops: drops.clone(),
+        });
+        assert_eq!(retained.value(), 91);
+        assert_eq!(drops.get(), 4);
+        drop(retained);
+        assert_eq!(drops.get(), 5);
+    }
+
+    #[test]
+    fn borrowed_callbacks_do_not_transfer_ownership() {
+        let value = 17;
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut fruit = BorrowedFruit {
+            value: &value,
+            drops: drops.clone(),
+        };
+        let retained = api::RetainedFruit::new_static(api::Apple::new(1));
+        assert_eq!(retained.borrowed_value(&fruit), 17);
+        assert_eq!(retained.borrowed_value_dynamic(&fruit), 17);
+        assert_eq!(retained.borrowed_mut_value(&mut fruit), 17);
+        assert_eq!(drops.get(), 0);
+        drop(fruit);
+        assert_eq!(drops.get(), 1);
+        let known = api::Apple::new(23);
+        assert_eq!(retained.borrowed_value(&known), 23);
+        assert_eq!(retained.borrowed_value_dynamic(&known), 23);
+    }
+
+    #[cfg(feature = "via-cdylib")]
+    #[test]
+    fn untransferred_callback_handle_destroys_value_once() {
+        use api::Fruit;
+        let value = 9;
+        let drops = std::rc::Rc::new(std::cell::Cell::new(0));
+        let handle = BorrowedFruit {
+            value: &value,
+            drops: drops.clone(),
+        }
+        .__into_callback_handle();
+        assert_eq!(drops.get(), 0);
+        drop(handle);
+        assert_eq!(drops.get(), 1);
+        drop(api::Apple::new(1).__into_callback_handle());
+    }
+
+    #[test]
+    fn test_event_queue_error_paths() {
+        let queue = api::EventQueue::new();
+        assert_eq!(queue.try_peek_vendor(true).unwrap(), 0x1af5);
+        assert!(matches!(
+            queue.try_peek_vendor(false),
+            Err(api::TestError::InvalidInput(..))
+        ));
+    }
+
+    struct CallbackBackend {
+        vendor: u16,
+        value: Option<i32>,
+        error: Option<api::TestError>,
+    }
+
+    impl api::InputBackend for CallbackBackend {
+        fn current_vendor(&self) -> Result<u16, api::TestError> {
+            Ok(self.vendor)
+        }
+
+        fn peek_vendor_result(&self) -> Result<u16, api::TestError> {
+            Ok(self.vendor)
+        }
+
+        fn bump_vendor(&mut self) -> Result<u16, api::TestError> {
+            self.vendor += 1;
+            Ok(self.vendor)
+        }
+
+        fn next_value(&mut self, fail: bool) -> Result<i32, api::TestError> {
+            if fail {
+                Err(self.error.take().unwrap())
+            } else {
+                Ok(self.value.take().unwrap_or(0))
+            }
+        }
+    }
+
+    #[test]
+    fn test_input_backend_vtable_callbacks() {
+        let backend = CallbackBackend {
+            vendor: 0x1af5,
+            value: Some(42),
+            error: api::EventQueue::new().try_peek_vendor(false).err(),
+        };
+        assert_eq!(
+            api::probe_input_backend_values(backend).unwrap(),
+            0x1af5 + 0x1af5 + 0x1af6 + 42
+        );
+
+        let mut backend = CallbackBackend {
+            vendor: 0x1af5,
+            value: Some(42),
+            error: api::EventQueue::new().try_peek_vendor(false).err(),
+        };
+        assert_eq!(
+            api::probe_borrowed_input_backend_values(&mut backend).unwrap(),
+            0x1af5 + 0x1af5 + 0x1af6 + 42
+        );
+        assert_eq!(backend.vendor, 0x1af6);
+    }
+
     fn make_widget() -> Widget {
         Widget::new()
     }
@@ -230,6 +396,9 @@ mod tests {
         // lifetime parameter to the Gadget struct.
         assert_eq!(g.snap_description(), "gadget");
         assert_eq!(g.snap_source_count(), 42);
+        let view = View::create(&w);
+        assert_eq!(view.snapshot_count(g), 42);
+        assert_eq!(view.snapshot_count(View::create(&w)), 42);
     }
 
     // ================================================================
@@ -305,7 +474,8 @@ mod tests {
 
         /// Peek at a handle's dispatch kind. Consumes and destroys the handle.
         fn dispatch_kind_of(fruit: impl api::Fruit) -> String {
-            let handle = fruit.__into_raw_handle();
+            // The next FFI call consumes this handle and runs its destructor.
+            let handle = unsafe { fruit.__into_raw_handle() };
             let kind = unsafe { api::ft_debug_fruit_dispatch_kind(handle) };
             unsafe { kind.as_str_unchecked() }.to_owned()
         }

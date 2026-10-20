@@ -1,6 +1,6 @@
 use api::{
-    TestErrorFatalData, TestErrorOpaqueUnitData, Widget, ft_error_result, roundtrip_callback_error,
-    test_error_drop_count,
+    TestErrorFatalData, TestErrorOpaqueUnitData, Widget, __ffier_vtable_ErrorForwarder,
+    ft_error_result, roundtrip_callback_error, test_error_drop_count,
 };
 
 include!(concat!(
@@ -48,7 +48,7 @@ fn invoke_callback(
     callback: &ForwardingError,
     method: u32,
 ) -> (Option<ffier::FfierResult>, *mut core::ffi::c_void) {
-    let vtable = ForwardingError::__ffier_vtable();
+    let vtable = __ffier_vtable_ErrorForwarder::<ForwardingError>();
     let user_data = callback as *const ForwardingError as *mut core::ffi::c_void;
     let mut returned_handle = core::ptr::null_mut();
     let result = unsafe {

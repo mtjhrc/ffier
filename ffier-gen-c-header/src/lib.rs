@@ -433,6 +433,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     out.push_str("    uint32_t _reserved2; /* must be zero */\n");
 
     // Slot 0 is always drop
+    out.push_str("    /* Releases transferred user_data exactly once; never called for borrowed parameters. */\n");
     out.push_str("    void (*drop)(void* self_data);\n");
 
     // Build a map of index → method for gap detection
@@ -631,9 +632,42 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
                     out.push(format!("{} {}", cp.c_type, cp.name));
                 }
             }
-            ParamType::ImplTrait { trait_name, .. } => {
+            ParamType::ImplTrait {
+                trait_name,
+                type_args,
+                lifetime_bounds,
+                ref_kind,
+                ref_lifetime,
+            } => {
                 let c_type = lib.c_type_of(trait_name);
-                out.push(format!("{} {}", c_type, p.name));
+                let ownership = match ref_kind {
+                    ffier_schema::RefKind::None => "owned callback; valid until release",
+                    ffier_schema::RefKind::Shared => "shared borrowed callback; call-scoped",
+                    ffier_schema::RefKind::Mut => "mutable borrowed callback; call-scoped",
+                };
+                let mut requirements = vec![ownership.to_string()];
+                for (label, lifetimes) in [
+                    ("trait arguments", type_args),
+                    ("value bounds", lifetime_bounds),
+                ] {
+                    if !lifetimes.is_empty() {
+                        let lifetimes = lifetimes
+                            .iter()
+                            .map(|lt| format!("'{lt}"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        requirements.push(format!("{label}: {lifetimes}"));
+                    }
+                }
+                if let Some(lifetime) = ref_lifetime {
+                    requirements.push(format!("reference lifetime: '{lifetime}"));
+                }
+                out.push(format!(
+                    "{} {} /* {} */",
+                    c_type,
+                    p.name,
+                    requirements.join("; ")
+                ));
             }
         }
     }
