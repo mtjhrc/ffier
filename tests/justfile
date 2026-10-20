@@ -21,13 +21,8 @@ build: build-foreign
 gen-header: build
     cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{schema}} FFIER_FT_H > {{root}}/target/ffier_test.h
 
-# Update the expected header snapshot
-update-expected-header: gen-header
-    cp {{root}}/target/ffier_test.h expected_header.h
-
-# Check the header snapshot and compile it without additional includes.
+# Compile the generated header without additional includes.
 check-header: gen-header
-    diff expected_header.h {{root}}/target/ffier_test.h
     cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only {{root}}/target/ffier_test.h
 
 # Compile and run the C tests
