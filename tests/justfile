@@ -110,3 +110,8 @@ conditional-bridge-disabled:
     nm --dynamic --defined-only {{root}}/target/conditional-bridge/debug/libconditional_bridge.so \
         > {{root}}/target/conditional-bridge/disabled-symbols.txt
     ! grep ' conditional_widget_' {{root}}/target/conditional-bridge/disabled-symbols.txt
+
+# Render generated-artifact diffs against a base ref (default origin/main).
+# Writes to stdout; GitHub Actions appends to the job summary.
+codegen-diff base="origin/main":
+    python3 render-codegen-diff.py {{base}}
