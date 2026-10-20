@@ -9,6 +9,12 @@
   exported implementations of thread-safe traits require matching inherent
   `send`/`sync` annotations. Unsupported constraints and stronger use-site
   marker bounds now produce errors instead of being discarded.
+- Require explicit `covariant`, `contravariant`, or `invariant` annotations
+  for every exported opaque lifetime. Rust verifies claimed covariance and
+  contravariance against the native type. Schema `lifetime_params` now contains
+  ordered objects with `name` and `variance`; old name-only lists are rejected.
+  Regenerate schemas and Rust clients together. C ABI does not change for
+  variance representation.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
@@ -81,10 +87,9 @@
 - Forward native error handles from generated Rust callbacks instead of boxing
   client wrappers as native handles. Preserve error type tags, variant codes,
   and ownership when returning library errors through callbacks.
-- Keep every lifetime parameter of opaque generated client handles invariant
-  (`PhantomData<*mut &'lt ()>`). Shared references to a client handle can no
-  longer shorten its lifetimes and install shorter-lived borrows through
-  interior-mutable native types.
+- Preserve declared, compiler-verified variance for opaque client lifetimes.
+  Invariant native lifetimes cannot shorten through shared client references
+  and install shorter-lived borrows through interior-mutable native types.
 - Preserve receiver mutability and the receiver tie of elided output
   lifetimes in extracted trait default helpers. `&mut self` defaults now
   extract to `__self: &'lt mut (impl Trait + ?Sized)` and elided returns

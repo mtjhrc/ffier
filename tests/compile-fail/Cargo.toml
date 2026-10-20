@@ -10,9 +10,12 @@ ffier = { path = "../../ffier" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib", optional = true }
 ffier-test-lib = { path = "../lib", optional = true }
 ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
+bitflags = { version = "2", optional = true }
+libloading = { version = "0.8", optional = true }
 
 [features]
 native = ["dep:ffier-test-lib"]
 via-cdylib = ["dep:ffier-test-lib-via-cdylib"]
+weak-client = ["dep:bitflags", "dep:libloading", "dep:ffier-test-foreign-lib-via-cdylib"]
 # Generated-client escape fixtures: link the cdylib client bindings.
 receiver-escapes = ["dep:ffier-test-lib-via-cdylib", "dep:ffier-test-foreign-lib-via-cdylib"]

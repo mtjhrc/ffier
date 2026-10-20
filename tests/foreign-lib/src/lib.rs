@@ -61,7 +61,7 @@ pub struct ForeignBorrowed<'a> {
     value: &'a str,
 }
 
-#[ffier::export]
+#[ffier::export(invariant('a))]
 impl<'a> ForeignBorrowed<'a> {
     pub fn new(value: &'a str) -> Self {
         Self { value }

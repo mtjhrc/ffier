@@ -8,6 +8,8 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 use syn::spanned::Spanned;
 
+use ffier_schema::{LifetimeParam, LifetimeVariance};
+
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -2672,6 +2674,13 @@ mod tests {
     use super::*;
     use ffier_schema::{Blessing, TypeEntry, TypeKind};
 
+    fn lifetime(name: &str, variance: Option<LifetimeVariance>) -> LifetimeParam {
+        LifetimeParam {
+            name: name.to_string(),
+            variance,
+        }
+    }
+
     #[test]
     fn error_metadata_preserves_shape_and_opaque_field_positions() {
         use ffier_schema::{ErrorField, ErrorVariantData};
@@ -2839,7 +2848,7 @@ mod tests {
             },
             type_tag: None,
             bless: None,
-            lifetime_params: vec!["a".to_string()],
+            lifetime_params: vec![lifetime("a", None)],
         };
         registry
             .register(
@@ -2850,7 +2859,7 @@ mod tests {
             )
             .unwrap();
         let renamed = TypeEntry {
-            lifetime_params: vec!["b".to_string()],
+            lifetime_params: vec![lifetime("b", None)],
             ..entry.clone()
         };
         registry
@@ -2865,7 +2874,7 @@ mod tests {
             .register(
                 "View",
                 TypeEntry {
-                    lifetime_params: vec!["static".to_string()],
+                    lifetime_params: vec![lifetime("static", None)],
                     ..entry.clone()
                 },
                 RegistrySource::ForeignReference,
@@ -2934,7 +2943,7 @@ mod tests {
             },
             type_tag: Some(10),
             bless: Some(Blessing::ErrorTrait),
-            lifetime_params: vec!["a".to_string()],
+            lifetime_params: vec![lifetime("a", Some(LifetimeVariance::Invariant))],
         };
         registry
             .register(
@@ -2947,7 +2956,7 @@ mod tests {
         let reference = TypeEntry {
             type_tag: None,
             bless: None,
-            lifetime_params: vec!["b".to_string()],
+            lifetime_params: vec![lifetime("b", Some(LifetimeVariance::Invariant))],
             ..entry.clone()
         };
         registry
@@ -3005,14 +3014,17 @@ mod tests {
             },
             type_tag: None,
             bless: None,
-            lifetime_params: vec!["a".to_string()],
+            lifetime_params: vec![lifetime("a", Some(LifetimeVariance::Invariant))],
         };
-        for lifetime in ["a", "b"] {
+        for lifetime_name in ["a", "b"] {
             registry
                 .register(
                     "Snapshot",
                     TypeEntry {
-                        lifetime_params: vec![lifetime.to_string()],
+                        lifetime_params: vec![lifetime(
+                            lifetime_name,
+                            Some(LifetimeVariance::Invariant),
+                        )],
                         ..entry.clone()
                     },
                     RegistrySource::TraitReference,
@@ -3542,7 +3554,10 @@ fn build_schema(
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::BorrowedFd),
-            lifetime_params: vec!["fd".to_string()],
+            lifetime_params: vec![LifetimeParam {
+                name: "fd".into(),
+                variance: Some(LifetimeVariance::Covariant),
+            }],
         },
         RegistrySource::Declaration,
         proc_macro2::Span::call_site(),
@@ -3581,7 +3596,10 @@ fn build_schema(
             },
             type_tag: None,
             bless: Some(ffier_schema::Blessing::BorrowedHandle),
-            lifetime_params: vec!["handle".to_string()],
+            lifetime_params: vec![LifetimeParam {
+                name: "handle".into(),
+                variance: Some(LifetimeVariance::Covariant),
+            }],
         },
         RegistrySource::Declaration,
         proc_macro2::Span::call_site(),
@@ -3647,7 +3665,14 @@ fn build_schema(
                 },
                 type_tag: Some(e.type_tag),
                 bless: None,
-                lifetime_params: e.lifetimes.iter().map(|lt| lt.to_string()).collect(),
+                lifetime_params: e
+                    .lifetimes
+                    .iter()
+                    .map(|(name, variance)| LifetimeParam {
+                        name: name.to_string(),
+                        variance: Some(*variance),
+                    })
+                    .collect(),
             },
             RegistrySource::Declaration,
             e.struct_name.span(),
@@ -3687,7 +3712,15 @@ fn build_schema(
                     "push_str" => ffier_schema::Blessing::PushStr,
                     _ => panic!("unknown bless value `{b}` — add a Blessing variant for it"),
                 }),
-                lifetime_params: i.trait_lifetimes.iter().map(|lt| lt.to_string()).collect(),
+                // Rust trait lifetime arguments are invariant.
+                lifetime_params: i
+                    .trait_lifetimes
+                    .iter()
+                    .map(|lt| LifetimeParam {
+                        name: lt.to_string(),
+                        variance: Some(LifetimeVariance::Invariant),
+                    })
+                    .collect(),
             },
             RegistrySource::Declaration,
             i.trait_name.span(),
@@ -3699,7 +3732,15 @@ fn build_schema(
     // Keep all positions for registration comparison; impl metadata is unchanged.
     for ti in &trait_impls_parsed {
         let name = ti.trait_name.to_string();
-        let lifetime_params = ti.trait_lifetime_args.clone();
+        // Rust trait lifetime arguments are invariant.
+        let lifetime_params: Vec<LifetimeParam> = ti
+            .trait_lifetime_args
+            .iter()
+            .map(|lt| LifetimeParam {
+                name: lt.clone(),
+                variance: Some(LifetimeVariance::Invariant),
+            })
+            .collect();
         registry.register(
             &name,
             ffier_schema::TypeEntry {
@@ -3748,7 +3789,14 @@ fn build_schema(
                     },
                     type_tag: None,
                     bless: None,
-                    lifetime_params: type_ref.type_args,
+                    lifetime_params: type_ref
+                        .type_args
+                        .into_iter()
+                        .map(|name| LifetimeParam {
+                            name,
+                            variance: None,
+                        })
+                        .collect(),
                 };
                 registry.register(
                     &type_name,

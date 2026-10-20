@@ -92,6 +92,8 @@ cargo-test: build
 
 # Verify compile-fail fixture diagnostics.
 compile-fail:
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- \
+        {{schema}} --weak > {{root}}/target/variance-weak-client.rs
     python3 compile-fail/check.py
 
 # Expand with the same a_feature enabled in all three crates, then disabled in all.

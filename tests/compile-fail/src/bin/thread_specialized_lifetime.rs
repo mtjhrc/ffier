@@ -1,4 +1,4 @@
-//! expected-error: ffier send/sync annotations require exporting the type for all its lifetime parameters
+//! expected-error: ffier opaque exports require all lifetime parameters in declaration order, without specialized type arguments
 
 struct Borrowed<'a>(&'a i32);
 

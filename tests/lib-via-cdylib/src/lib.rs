@@ -90,6 +90,42 @@ mod receiver_default_tests {
 }
 
 #[cfg(all(test, feature = "weak-tests"))]
+mod weak_variance_tests {
+    #[allow(dead_code)]
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+    }
+
+    fn init() {
+        use api::Symbol;
+        api::require(
+            None,
+            &[
+                Symbol::FtCovariantTextNew,
+                Symbol::FtCovariantTextValue,
+                Symbol::FtCovariantTextDestroy,
+                Symbol::FtContravariantConsumerNew,
+                Symbol::FtContravariantConsumerConsume,
+                Symbol::FtContravariantConsumerDestroy,
+                Symbol::FtMixedVarianceNew,
+                Symbol::FtMixedVarianceRead,
+                Symbol::FtMixedVarianceConsume,
+                Symbol::FtMixedVarianceReplace,
+                Symbol::FtMixedVarianceSlotLen,
+                Symbol::FtMixedVarianceRetained,
+                Symbol::FtMixedVarianceDestroy,
+            ],
+        )
+        .unwrap();
+    }
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../variance_client.rs"
+    ));
+}
+
+#[cfg(all(test, feature = "weak-tests"))]
 mod weak_callback_errors {
     #[allow(dead_code)]
     mod api {

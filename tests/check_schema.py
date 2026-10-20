@@ -29,6 +29,20 @@ def check_schema(schema_path: Path) -> None:
     schema = json.loads(schema_path.read_text())
     schema_text = json.dumps(schema)
 
+    lifetimes = schema["type_registry"]
+    assert lifetimes["CovariantText"]["lifetime_params"] == [
+        {"name": "a", "variance": "covariant"}
+    ]
+    assert lifetimes["ContravariantConsumer"]["lifetime_params"] == [
+        {"name": "a", "variance": "contravariant"}
+    ]
+    assert lifetimes["MixedVariance"]["lifetime_params"] == [
+        {"name": "a", "variance": "covariant"},
+        {"name": "b", "variance": "contravariant"},
+        {"name": "c", "variance": "invariant"},
+        {"name": "d", "variance": "covariant"},
+    ]
+
     traits = {trait["name"]: trait for trait in schema["traits"]}
     expected_slots = {"EmptyTrait": 0, "RetiredTrait": 3, "Processor": 2, "Fruit": 4}
     for name, count in expected_slots.items():

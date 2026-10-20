@@ -24,6 +24,18 @@ mod receiver_default_tests {
 }
 
 #[cfg(all(test, unix))]
+mod variance_tests {
+    use super::api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../variance_client.rs"
+    ));
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::api::{
         self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,

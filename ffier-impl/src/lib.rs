@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ffier_schema::ThreadSafety;
+use ffier_schema::{LifetimeVariance, ThreadSafety};
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -343,6 +343,8 @@ fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
 /// All item kinds also accept `cfg = "predicate"` — see [`ExportCfg`].
 /// Inherent impls accept `send` and `sync`, checked against the exported type.
 /// Traits use native `Send`/`Sync` supertraits.
+/// Every opaque lifetime requires `covariant('a)`, `contravariant('a)`, or
+/// `invariant('a)`. Covariance and contravariance are compiler checked.
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item2: proc_macro2::TokenStream = item.clone().into();
@@ -367,7 +369,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
-        if let Err(error) = export_cfg.reject_thread_safety(&enum_item) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&enum_item) {
             return error.to_compile_error().into();
         }
         return exportable_enum(enum_item, &export_cfg);
@@ -375,7 +377,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // 3. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
-        if let Err(error) = export_cfg.reject_thread_safety(&fn_item) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&fn_item) {
             return error.to_compile_error().into();
         }
         return exportable_free_fn(fn_item, &export_cfg);
@@ -384,7 +386,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     // 4. Impl block — trait impl or inherent impl
     let input = parse_macro_input!(item as ItemImpl);
     if input.trait_.is_some() {
-        if let Err(error) = export_cfg.reject_thread_safety(&input) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&input) {
             return error.to_compile_error().into();
         }
         return trait_impl_inner(input, &export_cfg);
@@ -402,12 +404,14 @@ struct ExportCfg {
     cfg: Option<proc_macro2::TokenStream>,
     /// Compiler-verified Send/Sync guarantees for the exported opaque handle.
     thread_safety: ThreadSafety,
+    lifetime_variance: Vec<(syn::Lifetime, LifetimeVariance)>,
 }
 
 impl Parse for ExportCfg {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut cfg = None;
         let mut thread_safety = ThreadSafety::default();
+        let mut lifetime_variance = Vec::new();
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "cfg" {
@@ -418,26 +422,68 @@ impl Parse for ExportCfg {
                 thread_safety.send = true;
             } else if key == "sync" {
                 thread_safety.sync = true;
+            } else if matches!(
+                key.to_string().as_str(),
+                "covariant" | "contravariant" | "invariant"
+            ) {
+                let variance = match key.to_string().as_str() {
+                    "covariant" => LifetimeVariance::Covariant,
+                    "contravariant" => LifetimeVariance::Contravariant,
+                    _ => LifetimeVariance::Invariant,
+                };
+                let content;
+                syn::parenthesized!(content in input);
+                let lifetimes = content.parse_terminated(syn::Lifetime::parse, Token![,])?;
+                if lifetimes.is_empty() {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "ffier variance groups require at least one lifetime",
+                    ));
+                }
+                for lifetime in lifetimes {
+                    if lifetime_variance
+                        .iter()
+                        .any(|(previous, _)| previous == &lifetime)
+                    {
+                        return Err(syn::Error::new_spanned(
+                            lifetime,
+                            "ffier lifetime variance must be declared exactly once",
+                        ));
+                    }
+                    lifetime_variance.push((lifetime, variance));
+                }
             } else {
                 return Err(syn::Error::new(
                     key.span(),
                     format!(
-                        "unknown #[ffier::export] argument `{key}`; expected `cfg`, `send`, or `sync`"
+                        "unknown #[ffier::export] argument `{key}`; expected `cfg`, `send`, `sync`, `covariant`, `contravariant`, or `invariant`"
                     ),
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
-        Ok(ExportCfg { cfg, thread_safety })
+        Ok(ExportCfg {
+            cfg,
+            thread_safety,
+            lifetime_variance,
+        })
     }
 }
 
 impl ExportCfg {
-    fn reject_thread_safety(&self, item: &impl ToTokens) -> syn::Result<()> {
+    /// Send/sync and variance groups apply only to inherent impls.
+    /// Everything else — enums, free functions, trait impls — must reject them.
+    fn reject_inherent_contracts(&self, item: &impl ToTokens) -> syn::Result<()> {
         if !self.thread_safety.is_empty() {
             return Err(syn::Error::new_spanned(
                 item,
                 "ffier send/sync annotations are supported only on inherent impls; traits use native supertraits",
+            ));
+        }
+        if !self.lifetime_variance.is_empty() {
+            return Err(syn::Error::new_spanned(
+                item,
+                "ffier lifetime variance annotations are supported only on inherent impls",
             ));
         }
         Ok(())
@@ -513,6 +559,133 @@ fn thread_safety_assertion(
     }
 }
 
+/// The client cannot express lifetime constraints or specialized opaque types.
+/// Require a complete declaration for the same independent parameters we emit.
+fn validate_handle_variance(
+    input: &ItemImpl,
+    cfg: &ExportCfg,
+) -> syn::Result<Vec<LifetimeVariance>> {
+    if input.generics.type_params().next().is_some()
+        || input.generics.const_params().next().is_some()
+        || input.generics.where_clause.is_some()
+        || input.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
+    {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "ffier opaque exports require only unconstrained lifetime parameters",
+        ));
+    }
+    let Type::Path(path) = &*input.self_ty else {
+        return Err(syn::Error::new_spanned(
+            &input.self_ty,
+            "expected a named struct type",
+        ));
+    };
+    let parameters: Vec<_> = input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
+    let arguments: Vec<_> = match &path.path.segments.last().unwrap().arguments {
+        PathArguments::None => Vec::new(),
+        PathArguments::AngleBracketed(args) => args.args.iter().collect(),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.self_ty,
+                "unsupported opaque type arguments",
+            ));
+        }
+    };
+    if arguments.len() != parameters.len()
+        || !arguments
+            .iter()
+            .zip(&parameters)
+            .all(|(arg, param)| matches!(arg, GenericArgument::Lifetime(lt) if lt == *param))
+    {
+        return Err(syn::Error::new_spanned(
+            &input.self_ty,
+            "ffier opaque exports require all lifetime parameters in declaration order, without specialized type arguments",
+        ));
+    }
+    for (lifetime, _) in &cfg.lifetime_variance {
+        if !parameters.contains(&lifetime) {
+            return Err(syn::Error::new_spanned(
+                lifetime,
+                "ffier variance annotation names an unknown lifetime parameter",
+            ));
+        }
+    }
+    let mut variances = Vec::with_capacity(parameters.len());
+    for lifetime in parameters {
+        let Some((_, variance)) = cfg.lifetime_variance.iter().find(|(lt, _)| lt == lifetime)
+        else {
+            return Err(syn::Error::new_spanned(
+                lifetime,
+                format!(
+                    "ffier opaque lifetime {lifetime} requires an explicit variance annotation: covariant({lifetime}), contravariant({lifetime}), or invariant({lifetime})"
+                ),
+            ));
+        };
+        variances.push(*variance);
+    }
+    Ok(variances)
+}
+
+/// Check one parameter at a time, preserving every other lifetime verbatim.
+/// No native type appears in the well-formedness function's signature: otherwise
+/// Rust's implied bounds could hide constraints and make coercions vacuous.
+fn lifetime_variance_assertions(
+    input: &ItemImpl,
+    variances: &[LifetimeVariance],
+) -> proc_macro2::TokenStream {
+    if variances.is_empty() {
+        return quote! {};
+    }
+    let parameters: Vec<&syn::Lifetime> =
+        input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
+    let ty = &input.self_ty;
+    let checks =
+        parameters
+            .iter()
+            .zip(variances)
+            .enumerate()
+            .filter_map(|(index, (short, variance))| {
+                if *variance == LifetimeVariance::Invariant {
+                    return None;
+                }
+                let long = fresh_helper_lifetime(&parameters, index);
+                struct ReplaceLifetime<'a>(&'a syn::Lifetime, &'a syn::Lifetime);
+                impl VisitMut for ReplaceLifetime<'_> {
+                    fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+                        if lt == self.0 {
+                            *lt = self.1.clone();
+                        }
+                    }
+                }
+                let mut long_ty = (**ty).clone();
+                ReplaceLifetime(short, &long).visit_type_mut(&mut long_ty);
+                let (source, target) = match variance {
+                    LifetimeVariance::Covariant => (long_ty, (**ty).clone()),
+                    LifetimeVariance::Contravariant => ((**ty).clone(), long_ty),
+                    LifetimeVariance::Invariant => unreachable!(),
+                };
+                // Parameter index, not lifetime text: the user may declare '_a,
+                // which would collide with the reserved '__ffier_variance_long'
+                // prefix and produce an unused-lifetime warning under
+                // deny(warnings).
+                let name = format_ident!("__ffier_check_{}_param_{}", variance.as_str(), index);
+                Some(quote! {
+                    #[allow(clippy::needless_lifetimes)]
+                    fn #name<#(#parameters,)* #long: #short>(value: #source) -> #target { value }
+                })
+            });
+    quote! {
+        const _: () = {
+            #[allow(clippy::extra_unused_lifetimes)]
+            fn __ffier_check_variance_parameters<#(#parameters),*>() {
+                let _: ::core::option::Option<#ty> = ::core::option::Option::None;
+            }
+            #(#checks)*
+        };
+    }
+}
+
 /// Only explicit standard marker paths are supported. A compiler assertion
 /// also verifies unqualified names, which could otherwise shadow marker traits.
 fn thread_safety_bound(bound: &syn::TypeParamBound) -> Option<ThreadSafety> {
@@ -565,6 +738,16 @@ fn trait_thread_safety(trait_item: &ItemTrait) -> ThreadSafety {
         })
 }
 
+/// Pick a synthetic helper lifetime that never collides with a declared
+/// parameter and never shares its text.
+fn fresh_helper_lifetime(parameters: &[&syn::Lifetime], index: usize) -> syn::Lifetime {
+    let mut long_name = format!("__ffier_variance_long_{index}");
+    while parameters.iter().any(|lt| lt.ident == long_name) {
+        long_name.push('_');
+    }
+    syn::Lifetime::new(&format!("'{long_name}"), proc_macro2::Span::call_site())
+}
+
 fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
     if !export_cfg.thread_safety.is_empty()
         && (input.generics.type_params().next().is_some()
@@ -576,6 +759,14 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
             "ffier send/sync annotations require an inherent impl with only unconstrained lifetime parameters")
             .to_compile_error().into();
     }
+
+    // Reject type/const generics, bounded lifetimes, and specialization now:
+    // every later helper assumes unconstrained lifetime parameters only.
+    let variances = match validate_handle_variance(&input, export_cfg) {
+        Ok(variances) => variances,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
@@ -757,6 +948,16 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
+    let lifetime_meta: Vec<_> = lifetime_idents
+        .iter()
+        .zip(&variances)
+        .map(|(name, variance)| {
+            let variance = format_ident!("{}", variance.as_str());
+            quote! { (#name, #variance) }
+        })
+        .collect();
+    let variance_checks = lifetime_variance_assertions(&input, &variances);
+
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
     let ThreadSafety { send, sync } = export_cfg.thread_safety;
@@ -773,6 +974,9 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
 
         #cfg_attr
         #thread_safety_check
+
+        #cfg_attr
+        #variance_checks
 
         #(#warnings)*
 
@@ -816,7 +1020,7 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
                     type_tag = $type_tag,
-                    lifetimes = (#(#lifetime_idents),*),
+                    lifetimes = (#(#lifetime_meta),*),
                     send = #send,
                     sync = #sync,
                     methods = [#(#method_meta_tokens),*],
@@ -1036,6 +1240,7 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let export_cfg = ExportCfg {
         cfg: combine_cfg_predicates(&parsed.cfg_predicates),
         thread_safety: ThreadSafety::default(),
+        lifetime_variance: Vec::new(),
     };
 
     let mut variants_meta = Vec::new();
@@ -2505,6 +2710,7 @@ impl Parse for ImplementableArgs {
             export_cfg: ExportCfg {
                 cfg,
                 thread_safety: ThreadSafety::default(),
+                lifetime_variance: Vec::new(),
             },
         })
     }
@@ -5884,4 +6090,286 @@ pub fn generate_bridge(input: TokenStream) -> TokenStream {
     }
 
     quote! { #path!(#mode, #schema_output); }.into()
+}
+
+#[cfg(test)]
+mod variance_tests {
+    use super::ExportCfg;
+    use ffier_schema::LifetimeVariance;
+
+    fn parse_cfg(tokens: proc_macro2::TokenStream) -> Result<ExportCfg, syn::Error> {
+        syn::parse2(tokens)
+    }
+
+    fn expect_err(result: Result<ExportCfg, syn::Error>) -> syn::Error {
+        match result {
+            Ok(_) => panic!("expected parse error"),
+            Err(error) => error,
+        }
+    }
+
+    #[test]
+    fn parses_grouped_variance_annotations() {
+        let error = expect_err(parse_cfg(quote::quote! {
+            covariant('a, 'b), contravariant('c), invariant()
+        }));
+        assert!(error.to_string().contains("at least one lifetime"));
+
+        let cfg = parse_cfg(quote::quote! {
+            covariant('a, 'b), contravariant('c)
+        })
+        .expect("grouped annotation must parse");
+        let find = |name: &str| {
+            cfg.lifetime_variance
+                .iter()
+                .find(|(lt, _)| lt.ident == name)
+                .map(|(_, v)| *v)
+        };
+        assert_eq!(find("a"), Some(ffier_schema::LifetimeVariance::Covariant));
+        assert_eq!(find("b"), Some(ffier_schema::LifetimeVariance::Covariant));
+        assert_eq!(
+            find("c"),
+            Some(ffier_schema::LifetimeVariance::Contravariant)
+        );
+    }
+
+    #[test]
+    fn rejects_duplicate_variance_declarations() {
+        let error = expect_err(parse_cfg(quote::quote! {
+            covariant('a), invariant('a)
+        }));
+        assert!(error.to_string().contains("exactly once"));
+    }
+
+    #[test]
+    fn rejects_unknown_export_argument() {
+        let error = expect_err(parse_cfg(quote::quote! { bivariant('a) }));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown #[ffier::export] argument")
+        );
+    }
+
+    #[test]
+    fn fresh_helper_lifetime_avoids_declared_names() {
+        let declared: Vec<syn::Lifetime> = ["_a", "__ffier_variance_long_1"]
+            .iter()
+            .map(|name| syn::Lifetime::new(&format!("'{name}"), proc_macro2::Span::call_site()))
+            .collect();
+        let parameters: Vec<&syn::Lifetime> = declared.iter().collect();
+        let long = super::fresh_helper_lifetime(&parameters, 1);
+        // Must differ from both '__ffier_variance_long_1' and '_a' by text,
+        // not by prefix: '_a' would otherwise pass a naive prefix check
+        // while still being a valid fresh name.
+        assert_ne!(long.ident.to_string(), "_a");
+        assert_ne!(long.ident.to_string(), "__ffier_variance_long_1");
+        assert!(long.ident.to_string().starts_with("__ffier_variance_long"));
+    }
+
+    #[test]
+    fn check_helper_names_use_parameter_index() {
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'_a, 'b> View<'_a, 'b> {}
+        };
+        let checks = super::lifetime_variance_assertions(
+            &item,
+            &[LifetimeVariance::Covariant, LifetimeVariance::Contravariant],
+        );
+        let checks: syn::File = syn::parse2(checks).expect("variance checks parse as Rust items");
+        let syn::Item::Const(block) = &checks.items[0] else {
+            panic!("variance checks must remain scoped in a const");
+        };
+        let syn::Expr::Block(block) = &*block.expr else {
+            panic!("variance checks must have a block");
+        };
+        let helpers: Vec<_> = block
+            .block
+            .stmts
+            .iter()
+            .filter_map(|statement| match statement {
+                syn::Stmt::Item(syn::Item::Fn(function)) => Some(function.sig.ident.to_string()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            helpers,
+            [
+                "__ffier_check_variance_parameters",
+                "__ffier_check_covariant_param_0",
+                "__ffier_check_contravariant_param_1",
+            ]
+        );
+    }
+
+    #[test]
+    fn validates_complete_strict_coverage() {
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'a, 'b> View<'a, 'b> {}
+        };
+        // Complete baseline used by later sub-cases.
+        let cfg = parse_cfg(quote::quote! {
+            covariant('a, 'b)
+        })
+        .expect("grouped annotation must parse");
+        let variances =
+            super::validate_handle_variance(&item, &cfg).expect("baseline must validate");
+        assert_eq!(variances.len(), 2);
+
+        // Incomplete: 'b missing → error naming the missing lifetime.
+        let incomplete_cfg = parse_cfg(quote::quote! {
+            covariant('a)
+        })
+        .expect("grouped annotation must parse");
+        let incomplete = super::validate_handle_variance(&item, &incomplete_cfg).unwrap_err();
+        assert!(incomplete.to_string().contains("'b"));
+
+        // Duplicate-in-effect coverage via repeated group rejected at parse.
+        let error = expect_err(parse_cfg(quote::quote! {
+            covariant('a), covariant('b), invariant('b)
+        }));
+        assert!(error.to_string().contains("exactly once"));
+
+        // Unknown lifetime named by an annotation.
+        let cfg = parse_cfg(quote::quote! {
+            covariant('a, 'b, 'c)
+        })
+        .expect("grouped annotation must parse");
+        let unknown = super::validate_handle_variance(&item, &cfg).unwrap_err();
+        assert!(unknown.to_string().contains("unknown lifetime"));
+
+        // Complete coverage with mixed variances passes.
+        let mixed_cfg = parse_cfg(quote::quote! {
+            covariant('a), invariant('b)
+        })
+        .expect("grouped annotation must parse");
+        let variances = super::validate_handle_variance(&item, &mixed_cfg)
+            .expect("complete declaration must validate");
+        assert_eq!(variances.len(), 2);
+    }
+
+    #[test]
+    fn validates_only_unconstrained_lifetime_parameters() {
+        // Bounded lifetime → rejected.
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'a: 'b, 'b> View<'a, 'b> {}
+        };
+        let cfg = parse_cfg(quote::quote! {
+            covariant('a), invariant('b)
+        })
+        .expect("grouped annotation must parse");
+        let error = super::validate_handle_variance(&item, &cfg).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unconstrained lifetime parameters")
+        );
+
+        // Type parameters → rejected.
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'a, T> View<'a, T> {}
+        };
+        let error = super::validate_handle_variance(&item, &cfg).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unconstrained lifetime parameters")
+        );
+
+        // Specialized type arguments → rejected.
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'a, 'b> View<'a, 'static> {}
+        };
+        let error = super::validate_handle_variance(&item, &cfg).unwrap_err();
+        assert!(error.to_string().contains("declaration order"));
+
+        // Reordered arguments → rejected.
+        let item: syn::ItemImpl = syn::parse_quote! {
+            impl<'a, 'b> View<'b, 'a> {}
+        };
+        let error = super::validate_handle_variance(&item, &cfg).unwrap_err();
+        assert!(error.to_string().contains("declaration order"));
+
+        // Parenthesized (Fn-style) type arguments cannot appear in an impl
+        // self type in parseable Rust source; the guard remains for
+        // rejecting programmatically constructed ASTs.
+    }
+
+    #[test]
+    fn reject_inherent_contracts_flags_variance_groups() {
+        let cfg = parse_cfg(quote::quote! {
+            covariant('a)
+        })
+        .expect("grouped annotation must parse");
+        let fn_item: syn::ItemFn = syn::parse_quote! {
+            fn free() {}
+        };
+        let error = cfg.reject_inherent_contracts(&fn_item).unwrap_err();
+        assert!(error.to_string().contains("only on inherent impls"));
+
+        let empty = parse_cfg(quote::quote! {}).expect("empty cfg must parse");
+        assert!(empty.reject_inherent_contracts(&fn_item).is_ok());
+    }
+
+    #[test]
+    fn meta_exportable_parses_ordered_variance_pairs() {
+        use crate::meta::MetaExportable;
+        let meta: MetaExportable = syn::parse_quote! {
+            @exported_impl,
+            name = View,
+            struct_path = ($crate::View),
+            prefix = "ft",
+            type_tag = 2,
+            lifetimes = ((a, covariant), (b, invariant)),
+            send = false,
+            sync = false,
+            methods = [],
+        };
+        let lifetimes: Vec<(String, _)> = meta
+            .lifetimes
+            .iter()
+            .map(|(name, variance)| (name.to_string(), *variance))
+            .collect();
+        assert_eq!(
+            lifetimes,
+            vec![
+                ("a".to_string(), ffier_schema::LifetimeVariance::Covariant),
+                ("b".to_string(), ffier_schema::LifetimeVariance::Invariant),
+            ]
+        );
+
+        // Unknown variance token → rejected.
+        let error = match syn::parse2::<MetaExportable>(quote::quote! {
+            @exported_impl,
+            name = View,
+            struct_path = ($crate::View),
+            prefix = "ft",
+            type_tag = 2,
+            lifetimes = ((a, bivariant),),
+            send = false,
+            sync = false,
+            methods = [],
+        }) {
+            Ok(_) => panic!("unknown variance must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("expected lifetime variance"));
+
+        // Trailing junk inside a pair → rejected.
+        let error = match syn::parse2::<MetaExportable>(quote::quote! {
+            @exported_impl,
+            name = View,
+            struct_path = ($crate::View),
+            prefix = "ft",
+            type_tag = 2,
+            lifetimes = ((a, covariant, extra),),
+            send = false,
+            sync = false,
+            methods = [],
+        }) {
+            Ok(_) => panic!("extra pair content must be rejected"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("unexpected lifetime metadata"));
+    }
 }
