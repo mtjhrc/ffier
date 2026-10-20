@@ -60,6 +60,34 @@ def check_schema(schema_path: Path) -> None:
         assert data["fields"][0]["type_ref"]["type"] == type_name
     assert all("constructible" not in v and "is_unit" not in v for v in error["variants"])
 
+    widget = next(item for item in schema["exported_types"] if item["name"] == "Widget")
+    methods = {method["name"]: method for method in widget["methods"]}
+    for name in ["view", "view_mut", "replace_view", "name_bytes", "replace_foreign_borrowed"]:
+        assert methods[name]["receiver_lifetime"] == "a"
+        assert methods[name]["method_lifetimes"] == ["a"]
+    assert "receiver_lifetime" not in methods["new"]
+    assert "receiver_lifetime" not in methods["name"]
+    foreign = next(p for p in methods["replace_foreign_borrowed"]["params"] if p["name"] == "value")
+    assert foreign["type_args"] == ["a"]
+    assert foreign["ref_kind"] == "mut"
+    processor = next(item for item in schema["traits"] if item["name"] == "Processor")
+    name = next(method for method in processor["methods"] if method["name"] == "name")
+    assert name["receiver_lifetime"] == "a"
+    assert name["ret"]["ref_lifetime"] == "a"
+    receiver_defaults = next(
+        item for item in schema["traits"] if item["name"] == "ReceiverDefaults"
+    )
+    assert receiver_defaults["num_slots"] == 6
+    choose = next(
+        method for method in receiver_defaults["methods"] if method["name"] == "choose"
+    )
+    assert choose["receiver_lifetime"] == "a"
+    assert choose["method_lifetimes"] == ["a"]
+    choose_elided = next(
+        method for method in receiver_defaults["methods"] if method["name"] == "choose_elided"
+    )
+    assert "receiver_lifetime" not in choose_elided
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(

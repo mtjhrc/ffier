@@ -6,8 +6,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
-use syn::ext::IdentExt;
-use syn::{Ident, LitBool, LitStr, Token, parse::ParseStream};
+use syn::{Ident, LitBool, LitStr, Token, ext::IdentExt, parse::ParseStream};
 
 // ---------------------------------------------------------------------------
 // String case conversion helpers
@@ -211,6 +210,9 @@ pub struct MetaTypePair {
 pub struct MetaMethod {
     pub name: Ident,
     pub receiver: MetaReceiver,
+    /// Explicit reference lifetime of a shared or mutable receiver.
+    /// Elided and `'_` receivers use `None`.
+    pub receiver_lifetime: Option<Ident>,
     /// Doc comment lines, verbatim.
     pub doc: Vec<String>,
     /// Method-level lifetime params (e.g. `[a, b]` from `fn foo<'a, 'b>(...)`).
@@ -729,6 +731,14 @@ impl syn::parse::Parse for MetaMethod {
         };
         parse_comma(input)?;
 
+        expect_key(input, "receiver_lifetime")?;
+        let receiver_lifetimes = parse_bracketed_list(input, Ident::parse_any)?;
+        if receiver_lifetimes.len() > 1 {
+            return Err(input.error("receiver has more than one lifetime"));
+        }
+        let receiver_lifetime = receiver_lifetimes.into_iter().next();
+        parse_comma(input)?;
+
         // Parse kind-specific fields based on the explicit method_kind tag.
         expect_key(input, "method_kind")?;
         let kind_tag: Ident = input.parse()?;
@@ -812,6 +822,7 @@ impl syn::parse::Parse for MetaMethod {
         Ok(MetaMethod {
             name,
             receiver,
+            receiver_lifetime,
             doc,
             method_lifetimes,
             params,

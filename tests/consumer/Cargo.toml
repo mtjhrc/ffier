@@ -9,5 +9,6 @@ native = ["dep:ffier-test-lib"]
 via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib?/optional-entry"]
 
 [dependencies]
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
 ffier-test-lib = { path = "../lib", optional = true }
 ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
