@@ -25,14 +25,6 @@ gen-header: build
 update-expected-header: gen-header
     cp {{root}}/target/ffier_test.h expected_header.h
 
-# Refresh compatibility bindings without Fruit::label, then restore the v2 library.
-gen-compat-client: build-foreign
-    cargo clean --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
-    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features --features ffi --crate-type cdylib
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} | rustfmt > compat/src/generated_v1.rs
-    cargo clean --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
-    just --justfile {{root}}/tests/justfile build
-
 # Check the header snapshot and compile it without additional includes.
 check-header: gen-header
     diff expected_header.h {{root}}/target/ffier_test.h
@@ -81,10 +73,6 @@ consumer: consumer-native consumer-cdylib
 # Exercise fieldless error construction and forwarding through weak bindings.
 weak-client: build
     cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features weak-tests
-
-# The checked-in compatibility bindings omit fruit-label and reserve its slot.
-# Refresh them with gen-compat-client, not gen-rust-client. The compatibility
-# test checks the empty-slot fallback against the current v2 library.
 
 # Run vtable backward-compatibility tests (v1 client → v2 library)
 compat: build
