@@ -12,7 +12,11 @@ fmt:
     cargo fmt --manifest-path tests/conditional-bridge/Cargo.toml --all
 
 # Run clippy
+# Builds the test cdylibs first: the client crates' build scripts emit
+# link directives for them, so a fresh checkout cannot type-check the
+# workspace until the .so files exist.
 clippy:
+    just --justfile tests/justfile build
     cargo clippy --workspace -- -D warnings
     cargo clippy --manifest-path tests/conditional-bridge/Cargo.toml \
         --target-dir target/conditional-bridge --workspace --all-targets \

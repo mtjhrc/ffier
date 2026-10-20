@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header check-generated-client check-generated-foreign-client compile-fail conditional-bridge valgrind miri consumer weak-client compat cargo-test
+default: no-codegen check-cfg-library-entry check-header compile-fail conditional-bridge valgrind miri consumer weak-client compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -17,24 +17,13 @@ build-foreign:
 build: build-foreign
     cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --crate-type cdylib
 
-# Generate the C header
+# Generate the C header into target/
 gen-header: build
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{schema}} > c/ffier_test.h
-
-# Generate Rust client bindings source
-gen-rust-client: build
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} | rustfmt > lib-via-cdylib/src/generated.rs
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{schema}} FFIER_FT_H > {{root}}/target/ffier_test.h
 
 # Update the expected header snapshot
 update-expected-header: gen-header
-    cp c/ffier_test.h expected_header.h
-
-# Generate Rust client bindings for foreign lib
-gen-foreign-client: build-foreign
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{foreign_schema}} | rustfmt > foreign-lib-via-cdylib/src/generated.rs
-
-# Update the generated client bindings
-update-generated-client: gen-rust-client gen-foreign-client
+    cp {{root}}/target/ffier_test.h expected_header.h
 
 # Refresh compatibility bindings without Fruit::label, then restore the v2 library.
 gen-compat-client: build-foreign
@@ -46,34 +35,26 @@ gen-compat-client: build-foreign
 
 # Check the header snapshot and compile it without additional includes.
 check-header: gen-header
-    diff expected_header.h c/ffier_test.h
-    cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only c/ffier_test.h
-
-# Check generated client matches checked-in version
-check-generated-client: build
-    diff lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{schema}} 2>/dev/null | rustfmt)
-
-# Check generated foreign client matches checked-in version
-check-generated-foreign-client: build-foreign
-    diff foreign-lib-via-cdylib/src/generated.rs <(cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-rust-client -- {{foreign_schema}} 2>/dev/null | rustfmt)
+    diff expected_header.h {{root}}/target/ffier_test.h
+    cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only {{root}}/target/ffier_test.h
 
 # Compile and run the C tests
 c: build gen-header
-    cc -Wall -Wextra -Werror -g -o c/test_main c/test_main.c \
-        -I c \
+    cc -Wall -Wextra -Werror -g -o {{root}}/target/c_test_main c/test_main.c \
+        -I {{root}}/target \
         -L {{root}}/target/debug \
         -lffier_test_lib \
         -lffier_test_foreign_lib \
         -Wl,-rpath,{{root}}/target/debug \
         -Wl,--disable-new-dtags
-    ./c/test_main
+    {{root}}/target/c_test_main
     # Expected aborts bypass cleanup; check them outside the Valgrind run.
-    ./c/test_main --payload-abort-tests
+    {{root}}/target/c_test_main --payload-abort-tests
 
 # Run C tests under valgrind
 valgrind: c
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 \
-        ./c/test_main
+        {{root}}/target/c_test_main
 
 # Run Miri with Stacked Borrows (default model)
 miri-stacked:

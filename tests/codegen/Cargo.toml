@@ -1,0 +1,11 @@
+[package]
+name = "ffier-test-codegen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ffier-gen-c-header = { path = "../../ffier-gen-c-header" }
+ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
+ffier-schema = { path = "../../ffier-schema" }
+serde_json = "1"
