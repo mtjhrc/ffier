@@ -5,3 +5,11 @@ edition = "2024"
 
 [dependencies]
 ffier = { path = "../../ffier" }
+
+[build-dependencies]
+# Build-dependency on the schema producer: cargo builds ffier-test-foreign-lib
+# (writing target/ffier-fl.json via generate_bridge!) before this crate's
+# build script runs, so a fresh `cargo test -p ffier-test-foreign-lib-via-cdylib`
+# works without a prior `just build`.
+ffier-test-codegen = { path = "../codegen" }
+ffier-test-foreign-lib = { path = "../foreign-lib" }

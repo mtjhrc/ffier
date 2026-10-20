@@ -3,11 +3,11 @@
 // via the cdylib (linked by build.rs).
 //
 // The bindings below are generated source code, NOT macro invocations.
-// Regenerate with: just gen-rust-client
+// build.rs regenerates them from the library's JSON schema on every build.
 #![allow(clippy::should_implement_trait)]
 #![cfg(unix)]
 
-include!("generated.rs");
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 // Manual extern for the hand-written debug bridge function.
 unsafe extern "C" {

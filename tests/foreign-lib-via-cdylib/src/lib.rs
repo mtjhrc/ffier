@@ -2,7 +2,7 @@
 // unconditionally even when unused. Remove once the generator is fixed.
 #![allow(dead_code)]
 
-include!("generated.rs");
+include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[cfg(test)]
 mod tests {

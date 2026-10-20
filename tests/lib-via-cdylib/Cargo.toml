@@ -16,4 +16,9 @@ ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
 libloading = { version = "0.8", optional = true }
 
 [build-dependencies]
-ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
+# Build-dependency on the schema producer: cargo builds ffier-test-lib
+# (writing target/ffier-ft.json via generate_bridge!) before this crate's
+# build script runs, so a fresh `cargo test -p ffier-test-lib-via-cdylib`
+# works without a prior `just build`.
+ffier-test-codegen = { path = "../codegen" }
+ffier-test-lib = { path = "../lib" }
