@@ -119,6 +119,21 @@ def check_schema(schema_path: Path) -> None:
     assert retain["lifetimes"] == ["a"]
     assert retain["ret"]["type_args"] == ["a"]
 
+    def guarantees(section: str, name: str) -> dict:
+        item = next(item for item in schema[section] if item["name"] == name)
+        return item.get("thread_safety", {})
+
+    assert guarantees("exported_types", "Widget") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "View") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "SendCounter") == {"send": True}
+    assert guarantees("exported_types", "SyncCounter") == {"sync": True}
+    assert guarantees("exported_types", "BackendWorker") == {"send": True}
+    assert guarantees("exported_types", "Gadget") == {}
+    assert guarantees("traits", "SendBackend") == {"send": True}
+    assert guarantees("traits", "SyncBackend") == {"sync": True}
+    assert guarantees("traits", "ThreadBackend") == {"send": True, "sync": True}
+    assert guarantees("traits", "Fruit") == {}
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate generated ffier schema")

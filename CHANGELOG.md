@@ -4,6 +4,11 @@
 
 ### Breaking changes
 
+- Preserve native Send/Sync contracts in exported traits and callbacks. Traits
+  used in callback signatures require registered exported definitions. Concrete
+  exported implementations of thread-safe traits require matching inherent
+  `send`/`sync` annotations. Unsupported constraints and stronger use-site
+  marker bounds now produce errors instead of being discarded.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates

@@ -175,8 +175,8 @@ temporary handles cannot support retention beyond the call. Borrowed callbacks
 with lifetime-bearing returns are rejected too. Callback vtables with trait
 lifetime parameters are also rejected; lifetime-parameterized
 traits remain usable through concrete dispatch. Higher-ranked bounds,
-additional trait bounds, and method lifetime bounds/where clauses are rejected
-instead of discarded. Foreign traits and unsupported dynamic forwarding
+additional non-marker trait bounds, and method lifetime bounds/where clauses
+are rejected instead of discarded. Foreign traits and unsupported dynamic forwarding
 require concrete dispatch.
 
 C callers must enforce lifetimes themselves:
@@ -192,7 +192,55 @@ C callers must enforce lifetimes themselves:
   releases `user_data`; it must not free the consumed handle shell again.
 - Borrowed callbacks must not be retained, destroyed, or used after call return.
 - `+ 'static` forbids expiring borrows. Other bounds require release before
-  borrowed data expires. These rules add no Send/Sync support.
+  borrowed data expires. Thread guarantees remain independent of these bounds.
+
+## Thread safety
+
+Opaque handle types opt in on their inherent export:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
+impl Widget {
+    // ...
+}
+```
+
+Use `send`, `sync`, or both independently. Rust verifies the actual native type
+for every unconstrained lifetime parameter. Generated handles implement only
+declared auto traits. Unannotated handles remain non-`Send`, non-`Sync` even when
+their native value satisfies those bounds. Specialized or constrained exports
+cannot claim type-wide guarantees.
+
+Exported traits use native supertraits, not export arguments:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait Backend: Send + Sync {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn poll(&mut self) -> i32;
+}
+```
+
+Every trait used in an exported `impl Trait` callback signature needs its
+exported definition registered in `library_definition!`. Use `no_vtable` for
+concrete dispatch only. Trait-impl-only registration still exposes methods,
+but does not define callback contracts. Concrete exported implementations of
+thread-safe traits must declare matching opaque `send`/`sync` guarantees.
+
+Stronger use-site marker bounds remain unsupported. Declare requirements on
+the exported trait. Redundant bounds stay in the schema; generated signatures
+omit only bounds already implied by trait supertraits. Unsupported supertraits
+and where clauses produce errors rather than disappearing from clients.
+
+`Send` permits ownership transfer and destruction on another thread. `Sync`
+permits concurrent shared access, not simultaneous mutable access. Shared
+borrowed callbacks transfer only with `Sync`; mutable borrowed callbacks require
+`Send`. Dynamic shared forwarding for `Send`-only traits needs `Sync` or concrete
+dispatch. Lifetime bounds remain separate: `Send` never implies `'static`.
+
+C callbacks must uphold guarantees for `user_data`, vtable storage, callback
+functions, and destruction. Keep vtable storage valid and immutable during use.
+Raw handles and `VtableHandle` gain no blanket Send/Sync implementations.
 
 ## How it works
 

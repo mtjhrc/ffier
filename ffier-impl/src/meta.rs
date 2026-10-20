@@ -4,6 +4,7 @@
 //! Generator proc macros (`generate`) parse
 //! these tokens back into the types defined here, then produce code.
 
+use ffier_schema::ThreadSafety;
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{Ident, LitBool, LitStr, Token, ext::IdentExt, parse::ParseStream};
@@ -168,6 +169,8 @@ pub struct MetaExportable {
     /// Stable type tag assigned in `library_definition!`. Nonzero when set.
     pub type_tag: u32,
     pub lifetimes: Vec<Ident>,
+    /// Compiler-verified guarantees from the inherent export's annotations.
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<MetaMethod>,
     /// `#[cfg(...)]` predicate for the entire type (e.g. `feature = "x"`).
     /// `None` = unconditional.
@@ -348,6 +351,9 @@ pub enum MetaParamKind {
         trait_lifetime_args: Vec<Ident>,
         lifetime_bounds: Vec<Ident>,
         ref_lifetime: Option<Ident>,
+        /// Explicit use-site Send/Sync marker bounds, kept separate from the
+        /// trait's native supertraits.
+        thread_safety: ThreadSafety,
     },
 }
 
@@ -519,6 +525,8 @@ pub struct MetaImplementable {
     pub no_vtable: bool,
     /// Owned/borrowed dynamic forwarding was generated for this trait.
     pub dyn_dispatch: bool,
+    /// Native Send/Sync supertraits on the trait definition.
+    pub thread_safety: ThreadSafety,
     /// `#[cfg(...)]` predicate for the entire trait. `None` = unconditional.
     pub cfg_predicate: Option<TokenStream>,
 }
@@ -592,6 +600,16 @@ fn parse_parenthesized_tokens(input: ParseStream) -> syn::Result<TokenStream> {
 fn parse_bool(input: ParseStream) -> syn::Result<bool> {
     let lit: LitBool = input.parse()?;
     Ok(lit.value())
+}
+
+fn parse_thread_safety(input: ParseStream) -> syn::Result<ThreadSafety> {
+    expect_key(input, "send")?;
+    let send = parse_bool(input)?;
+    parse_comma(input)?;
+    expect_key(input, "sync")?;
+    let sync = parse_bool(input)?;
+    parse_comma(input)?;
+    Ok(ThreadSafety { send, sync })
 }
 
 fn parse_string(input: ParseStream) -> syn::Result<String> {
@@ -681,6 +699,8 @@ impl syn::parse::Parse for MetaExportable {
         let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
         parse_comma(input)?;
 
+        let thread_safety = parse_thread_safety(input)?;
+
         expect_key(input, "methods")?;
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
@@ -693,6 +713,7 @@ impl syn::parse::Parse for MetaExportable {
             prefix,
             type_tag,
             lifetimes,
+            thread_safety,
             methods,
             cfg_predicate,
         })
@@ -958,6 +979,7 @@ impl syn::parse::Parse for MetaParam {
                 }
                 let ref_lifetime = reference.into_iter().next();
                 parse_comma(input)?;
+                let thread_safety = parse_thread_safety(input)?;
                 MetaParamKind::ImplTrait {
                     trait_name,
                     dispatch,
@@ -965,6 +987,7 @@ impl syn::parse::Parse for MetaParam {
                     trait_lifetime_args,
                     lifetime_bounds,
                     ref_lifetime,
+                    thread_safety,
                 }
             }
             other => {
@@ -1363,6 +1386,8 @@ impl syn::parse::Parse for MetaImplementable {
         let dyn_dispatch = dyn_dispatch.value;
         parse_comma(input)?;
 
+        let thread_safety = parse_thread_safety(input)?;
+
         let cfg_predicate = parse_optional_cfg_predicate(input)?;
 
         Ok(MetaImplementable {
@@ -1378,6 +1403,7 @@ impl syn::parse::Parse for MetaImplementable {
             bless,
             no_vtable,
             dyn_dispatch,
+            thread_safety,
             cfg_predicate,
         })
     }
