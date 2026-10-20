@@ -13,7 +13,7 @@ jobs:
       - name: Install Rust toolchains
         run: |
           rustup toolchain install stable --component rustfmt,clippy
-          rustup toolchain install nightly --component miri
+          rustup toolchain install nightly --component miri,rustfmt
           rustup default stable
 
       - name: Install system dependencies
@@ -23,3 +23,7 @@ jobs:
 
       - name: just check
         run: just check
+
+      - name: Generated-code diff summary
+        if: github.event_name == 'pull_request'
+        run: python3 tests/render-codegen-diff.py origin/${{ github.base_ref }}
