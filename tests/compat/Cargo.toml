@@ -11,3 +11,11 @@ optional-entry = []
 bitflags = "2"
 ffier = { path = "../../ffier" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
+
+[build-dependencies]
+# Build-dependency on the schema producer: cargo builds ffier-test-lib
+# (writing target/ffier-ft.json via generate_bridge!) before this crate's
+# build script runs, so a fresh `cargo test -p ffier-test-compat` works
+# without a prior `just build`.
+ffier-test-codegen = { path = "../codegen" }
+ffier-test-lib = { path = "../lib" }

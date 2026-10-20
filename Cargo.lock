@@ -189,7 +189,9 @@ version = "0.1.0"
 dependencies = [
  "bitflags",
  "ffier",
+ "ffier-test-codegen",
  "ffier-test-foreign-lib-via-cdylib",
+ "ffier-test-lib",
 ]
 
 [[package]]
