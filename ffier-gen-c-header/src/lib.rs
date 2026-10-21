@@ -237,10 +237,18 @@ fn emit_shared_types(
     ));
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
-    let vtable_handle_macro = format!("{prim_upper_pfx}VTABLE_HANDLE");
+    let vtable_handle_macro = format!("{prim_upper_pfx}TEMP_OBJ");
     out.push_str("/**\n");
-    out.push_str(" * Stack-allocated temporary handle for passing vtable-based objects.\n");
-    out.push_str(" * Only valid for the duration of the call — the callee borrows, not owns.\n");
+    out.push_str(" * Construct a temporary object for borrowed parameters.\n");
+    out.push_str(" *\n");
+    out.push_str(" * Valid ONLY for calls that do not take ownership. The caller owns the\n");
+    out.push_str(" * handle, so the callee must not retain or destroy it.\n");
+    out.push_str(" *\n");
+    out.push_str(" * Do NOT pass it to a function that consumes or retains its argument.\n");
+    out.push_str(" * Consuming an unowned object aborts at runtime. To transfer ownership,\n");
+    out.push_str(&format!(" * use {fn_pfx}vtable_handle_new() instead.\n"));
+    out.push_str(" *\n");
+    out.push_str(" * Both vtable and user_data must remain valid until the call returns.\n");
     out.push_str(" */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    uint32_t type_tag;\n");
@@ -254,8 +262,7 @@ fn emit_shared_types(
     out.push_str(&format!(
         "    (({vtable_handle_c}){{ .type_tag = (tag), .metadata = 0, \\\n"
     ));
-    out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data) })\n\n");
-
+    out.push_str("      .vtable_ptr = (vtable), .user_data = (self_data) })\n\n");
     // ObjectArrayEntry — opaque 16-byte element matching FfierBorrowedHandle layout.
     // ObjectArray — contiguous array of these entries.
     if let Some(object_array_c) = try_blessed_c_type(lib, Blessing::ObjectArray) {
@@ -296,6 +303,34 @@ fn emit_shared_types(
     }
 
     out.push_str(&format!("#endif /* {prim_guard} */\n\n"));
+
+    // vtable_handle_new — uses the library prefix, NOT the primitives prefix.
+    // The constructor belongs to this library's allocator, so two libraries
+    // sharing a primitives prefix must each declare their own.
+    if lib.traits.iter().any(|tr| !tr.no_vtable) {
+        out.push_str("/**\n");
+        out.push_str(" * Allocate a vtable object for parameters that take ownership.\n");
+        out.push_str(" *\n");
+        out.push_str(&format!(
+            " * This is the owned counterpart of {}TEMP_OBJ. The library\n",
+            prim_upper_pfx
+        ));
+        out.push_str(" * allocates the handle so it can free it with the same allocator, so\n");
+        out.push_str(" * never allocate the handle yourself.\n");
+        out.push_str(" *\n");
+        out.push_str(" * The library calls the vtable drop callback when it releases the\n");
+        out.push_str(" * object, so release user_data there. Keep vtable and user_data valid\n");
+        out.push_str(" * until then.\n");
+        out.push_str(" */\n");
+        write_decl(
+            out,
+            "void*",
+            &format!("{fn_pfx}vtable_handle_new"),
+            "uint32_t type_tag, const void* vtable, const void* user_data",
+            opts,
+        );
+        out.push('\n');
+    }
 
     // str_free — uses the library prefix, NOT the primitives prefix.
     // Each library has its own allocator so str_free must be library-specific.

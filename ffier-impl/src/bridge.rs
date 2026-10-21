@@ -562,6 +562,45 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
     };
 
+    // Owned vtable handle constructor for C callers: owned parameters accept
+    // vtable-based objects, and the handle allocation must come from this
+    // library so its allocator matches on free.
+    let vtable_handle_new_fn = {
+        let ctor_name = format_ident!("{first_prefix}_vtable_handle_new");
+        quote! {
+            /// Allocate an owned vtable handle from this library's allocator.
+            ///
+            /// The only sound way for non-Rust callers to create a handle for
+            /// an owned parameter accepting a vtable-based object. The handle
+            /// allocation is made by this library, so its consume and destroy
+            /// paths may free it. Stack-allocated or foreign-heap vtable
+            /// handles must only be passed to borrowed parameters.
+            ///
+            /// The vtable's `drop` callback (slot 0, if present) releases
+            /// `user_data`; it must not free the handle itself.
+            ///
+            /// # Safety
+            /// - `vtable` must point to a valid vtable for the trait matching
+            ///   `type_tag`, starting with its `VtableHeader`.
+            /// - `user_data` must stay valid until the vtable `drop` callback
+            ///   runs.
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn #ctor_name(
+                type_tag: u32,
+                vtable: *const core::ffi::c_void,
+                user_data: *const core::ffi::c_void,
+            ) -> *mut core::ffi::c_void {
+                ffier::ffier_handle_new(
+                    type_tag,
+                    ffier::VtableHandle {
+                        vtable_ptr: vtable,
+                        user_data,
+                    },
+                )
+            }
+        }
+    };
+
     // Pass 3: Generate self-dispatch functions for exported traits.
     // For each trait with an @implementable entry, generate per-trait dispatching
     // C functions that read the type tag and dispatch to the concrete implementor.
@@ -614,6 +653,8 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         #dispatch_helpers
 
         #debug_fn
+
+        #vtable_handle_new_fn
 
         #(#all_code)*
 

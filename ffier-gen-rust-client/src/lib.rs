@@ -781,7 +781,7 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
     writeln!(out).unwrap();
 
     // Fieldless Display writes the static ABI message directly. Payload errors
-    // keep native formatting through a stack-local PushStr VtableHandle.
+    // keep native formatting through a temporary PushStr VtableHandle.
     writeln!(out, "impl std::fmt::Display for {} {{", err.name).unwrap();
     writeln!(
         out,

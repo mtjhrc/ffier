@@ -403,7 +403,7 @@ static void error_message_to_buf(FtError err, struct push_str_buf* buf) {
         .drop = NULL,
         .push = push_str_to_buf,
     );
-    FtVtableHandle handle = FT_VTABLE_HANDLE(FT_PUSH_STR_TYPE_TAG, vtable, buf);
+    FtVtableHandle handle = FT_TEMP_OBJ(FT_PUSH_STR_TYPE_TAG, &vtable, buf);
     if (err == NULL) return; /* self-dispatch doesn't accept null handles */
     ft_error_message(err, &handle);
 }
@@ -531,12 +531,9 @@ static const FtProcessorVtable g_test_vtable = FT_VTABLE(FtProcessorVtable,
     .name = test_processor_name,
 );
 
-/* Construct a heap-allocated processor handle (same layout as FfierHandle<VtableHandle>).
- * In real usage this would be a library-provided macro or function. */
+/* Construct a heap-allocated processor handle through the library. */
 static void* make_processor_handle(void* user_data) {
-    FtVtableHandle *handle = malloc(sizeof(*handle));
-    *handle = FT_VTABLE_HANDLE(FT_PROCESSOR_TYPE_TAG, g_test_vtable, user_data);
-    return handle;
+    return ft_vtable_handle_new(FT_PROCESSOR_TYPE_TAG, &g_test_vtable, user_data);
 }
 
 void vtable_initializer_macro(void) {

@@ -4,6 +4,13 @@
 
 ### Breaking changes
 
+- Rename the C `PREFIX_VTABLE_HANDLE` macro to `PREFIX_TEMP_OBJ` and require
+  owned vtable handles to come from the generated `PREFIX_vtable_handle_new`
+  function. The macro builds a borrowed, call-scoped object that must only be
+  passed to borrowed parameters; consuming an unowned handle now aborts at
+  runtime instead of freeing foreign memory. Callers that hand-allocated a
+  handle for an owned parameter, or relied on their allocator matching Rust's,
+  must switch to the constructor. Generated Rust client bindings already do.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
