@@ -237,10 +237,20 @@ fn emit_shared_types(
     ));
 
     // FIXME: This struct layout is hardcoded — should come from the schema.
-    let vtable_handle_macro = format!("{prim_upper_pfx}VTABLE_HANDLE");
+    let vtable_handle_macro = format!("{prim_upper_pfx}TEMP_OBJ");
     out.push_str("/**\n");
-    out.push_str(" * Stack-allocated temporary handle for passing vtable-based objects.\n");
-    out.push_str(" * Only valid for the duration of the call — the callee borrows, not owns.\n");
+    out.push_str(" * Construct a temporary, stack-allocated object for borrowed parameters.\n");
+    out.push_str(" *\n");
+    out.push_str(" * Valid ONLY for the duration of a direct function call. The callee borrows\n");
+    out.push_str(" * the object and will not retain or destroy it.\n");
+    out.push_str(" *\n");
+    out.push_str(
+        " * DO NOT pass to functions that take ownership or retain objects across calls.\n",
+    );
+    out.push_str(" * Consuming an unowned object aborts at runtime. For owned parameters,\n");
+    out.push_str(" * allocate with ft_vtable_handle_new() instead.\n");
+    out.push_str(" *\n");
+    out.push_str(" * Both vtable and user_data must remain valid until the call returns.\n");
     out.push_str(" */\n");
     out.push_str("typedef struct {\n");
     out.push_str("    uint32_t type_tag;\n");
@@ -255,6 +265,24 @@ fn emit_shared_types(
         "    (({vtable_handle_c}){{ .type_tag = (tag), .metadata = 0, \\\n"
     ));
     out.push_str("      .vtable_ptr = &(vtable), .user_data = (self_data) })\n\n");
+    out.push_str("/**\n");
+    out.push_str(" * Allocate an owned vtable handle on this library's heap.\n");
+    out.push_str(" *\n");
+    out.push_str(" * The only sound way to create a handle for an owned parameter\n");
+    out.push_str(" * accepting a vtable-based object. This library owns the handle\n");
+    out.push_str(" * allocation: the callee destroys the handle exactly once when\n");
+    out.push_str(" * released, calling the vtable drop callback once if present.\n");
+    out.push_str(" * Never allocate the handle yourself — ffier cannot free foreign\n");
+    out.push_str(" * memory. Stack handles are only valid for borrowed parameters.\n");
+    out.push_str(" *\n");
+    out.push_str(" * Keep vtable and user_data valid until that destruction.\n");
+    out.push_str(" */\n");
+    out.push_str("#ifdef __cplusplus\n");
+    out.push_str("extern \"C\"\n");
+    out.push_str("#endif\n");
+    out.push_str(&format!(
+        "void* {fn_pfx}vtable_handle_new(uint32_t type_tag, const void* vtable, const void* user_data);\n\n"
+    ));
 
     // ObjectArrayEntry — opaque 16-byte element matching FfierBorrowedHandle layout.
     // ObjectArray — contiguous array of these entries.

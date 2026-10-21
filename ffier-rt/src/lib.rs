@@ -219,21 +219,32 @@ pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T 
 
 /// Consume a handle: move the value out and free the allocation.
 ///
-/// Only valid for **owned** handles. Panics (in debug) on borrowed handles.
+/// Only valid for **owned** handles — `METADATA_OWNED` must be set. Panics
+/// (in all builds) on borrowed or unowned handles, including stack-allocated
+/// vtable handles passed to consuming parameters.
 ///
 /// # Safety
-/// - `handle` must point to a valid, heap-allocated `FfierHandle<T>`.
+/// - `handle` must point to a valid, heap-allocated `FfierHandle<T>` created
+///   by ffier (so `METADATA_OWNED` is set and the allocation came from
+///   Rust's allocator).
 /// - After this call the handle pointer is dangling.
 #[inline]
 pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
-    debug_assert!(!handle.is_null(), "consuming null handle");
-    debug_assert!(
+    assert!(!handle.is_null(), "consuming null handle");
+    assert!(
         unsafe { handle_type_tag(handle) } != 0,
         "consuming uninitialized handle"
     );
-    debug_assert!(
-        unsafe { handle_metadata(handle) } & METADATA_BORROWED == 0,
+    let meta = unsafe { handle_metadata(handle) };
+    assert!(
+        meta & METADATA_BORROWED == 0,
         "cannot consume a borrowed handle"
+    );
+    assert!(
+        meta & METADATA_OWNED != 0,
+        "cannot consume an unowned handle — only handles allocated by ffier \
+         may be consumed; this handle was allocated elsewhere, and freeing \
+         foreign memory through Rust's allocator would be unsound"
     );
     let boxed = unsafe { Box::from_raw(handle as *mut FfierHandle<T>) };
     boxed.value
