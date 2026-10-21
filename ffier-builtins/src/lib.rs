@@ -16,7 +16,7 @@ pub use ffier_rt::ffier_result;
 
 /// Streaming string writer for error messages (and other display output).
 ///
-/// C callers construct a stack-local handle wrapping a callback function.
+/// C callers construct a temporary handle wrapping a callback function.
 /// Rust bridge code uses the `fmt::Write` impl to stream `Display` output
 /// into the callback without allocating.
 ///

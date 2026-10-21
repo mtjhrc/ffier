@@ -1584,7 +1584,7 @@ mod tests {
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    /// Helper: stream ft_error_message into a String via a stack-local PushStr handle.
+    /// Helper: stream ft_error_message into a String via a temporary PushStr handle.
     unsafe fn error_message_to_string(err: *mut core::ffi::c_void) -> String {
         use core::ffi::c_void;
 
