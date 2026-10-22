@@ -101,19 +101,36 @@ pub struct TypeEntry {
     /// Generators use this to locate special types without hardcoding names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bless: Option<Blessing>,
-    /// Lifetime parameters on the type definition (e.g. `["a"]` for `View<'a>`).
+    /// Lifetime parameters on the type definition, in declaration order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lifetime_params: Vec<String>,
+    pub lifetime_params: Vec<LifetimeParam>,
+}
+
+/// A type lifetime parameter. Locally exported opaque handles require an
+/// explicit variance. Foreign handles inherit their variance from the imported
+/// Rust binding, so their parameter names alone are recorded here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifetimeParam {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variance: Option<LifetimeVariance>,
 }
 
 impl TypeEntry {
     /// Compare registration metadata without comparing lifetime parameter names.
     /// Lifetime names may differ between references to the same type.
+    /// Variance is part of the registration contract: a mismatch is a
+    /// conflicting registration, not the same one.
     pub fn same_registration(&self, other: &Self) -> bool {
         self.kind == other.kind
             && self.type_tag == other.type_tag
             && self.bless == other.bless
             && self.lifetime_params.len() == other.lifetime_params.len()
+            && self
+                .lifetime_params
+                .iter()
+                .zip(&other.lifetime_params)
+                .all(|(a, b)| a.variance == b.variance)
     }
 }
 
@@ -362,6 +379,27 @@ impl ThreadSafety {
         ]
         .into_iter()
         .flatten()
+    }
+}
+
+/// Declared lifetime variance of an opaque handle. Covariance and contravariance
+/// are checked by the Rust compiler against the native type before export.
+/// Invariance conservatively restricts either native variance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifetimeVariance {
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+impl LifetimeVariance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Covariant => "covariant",
+            Self::Contravariant => "contravariant",
+            Self::Invariant => "invariant",
+        }
     }
 }
 
@@ -804,7 +842,27 @@ impl Library {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let lib: Self = serde_json::from_str(json)?;
+        for (name, entry) in &lib.type_registry {
+            for (index, lifetime) in entry.lifetime_params.iter().enumerate() {
+                if entry.lifetime_params[..index]
+                    .iter()
+                    .any(|lt| lt.name == lifetime.name)
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "type `{name}` repeats lifetime '{}'",
+                        lifetime.name
+                    )));
+                }
+                if matches!(entry.kind, TypeKind::Handle { .. }) && lifetime.variance.is_none() {
+                    return Err(serde::de::Error::custom(format!(
+                        "opaque type `{name}` is missing variance for lifetime '{}'",
+                        lifetime.name
+                    )));
+                }
+            }
+        }
+        Ok(lib)
     }
 
     /// Look up a type entry by name.
@@ -1019,5 +1077,147 @@ impl Library {
             panic!("multiple types blessed as {tag:?} (duplicate: `{dup}`)");
         }
         result.map(|(name, entry)| (name.as_str(), entry))
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+
+    fn library_with_lifetimes(kind: TypeKind, params: Vec<LifetimeParam>) -> Library {
+        let mut lib = Library::from_json(
+            r#"{
+            "prefix":"test", "type_registry":{}, "exported_types":[],
+            "errors":[], "traits":[], "trait_impls":[]
+        }"#,
+        )
+        .unwrap();
+        lib.type_registry.insert(
+            "Opaque".into(),
+            TypeEntry {
+                kind,
+                type_tag: Some(1),
+                bless: None,
+                lifetime_params: params,
+            },
+        );
+        lib
+    }
+
+    fn handle() -> TypeKind {
+        TypeKind::Handle {
+            c_name: "TestOpaque".into(),
+        }
+    }
+
+    fn foreign_handle() -> TypeKind {
+        TypeKind::ForeignHandle {
+            foreign_crate: "ffier_test_foreign".into(),
+            c_name: "FtForeignOpaque".into(),
+        }
+    }
+
+    fn param(name: &str, variance: Option<LifetimeVariance>) -> LifetimeParam {
+        LifetimeParam {
+            name: name.into(),
+            variance,
+        }
+    }
+
+    #[test]
+    fn opaque_schema_rejects_missing_or_duplicate_variance_entries() {
+        let missing = library_with_lifetimes(handle(), vec![param("a", None)]);
+        assert!(
+            Library::from_json(&missing.to_json())
+                .unwrap_err()
+                .to_string()
+                .contains("missing variance")
+        );
+        let duplicate = library_with_lifetimes(
+            handle(),
+            vec![
+                param("a", Some(LifetimeVariance::Covariant)),
+                param("a", None),
+            ],
+        );
+        assert!(
+            Library::from_json(&duplicate.to_json())
+                .unwrap_err()
+                .to_string()
+                .contains("repeats lifetime")
+        );
+    }
+
+    #[test]
+    fn foreign_handles_may_omit_variance() {
+        let lib = library_with_lifetimes(foreign_handle(), vec![param("a", None)]);
+        let parsed = Library::from_json(&lib.to_json()).unwrap();
+        assert_eq!(
+            parsed.type_registry["Opaque"].lifetime_params,
+            vec![param("a", None)]
+        );
+    }
+
+    #[test]
+    fn structured_lifetimes_preserve_order_and_reject_old_name_lists() {
+        let params = vec![
+            param("z", Some(LifetimeVariance::Contravariant)),
+            param("a", Some(LifetimeVariance::Invariant)),
+        ];
+        let lib = library_with_lifetimes(handle(), params.clone());
+        let parsed = Library::from_json(&lib.to_json()).unwrap();
+        assert_eq!(parsed.type_registry["Opaque"].lifetime_params, params);
+        let mut old = serde_json::to_value(&lib).unwrap();
+        old["type_registry"]["Opaque"]["lifetime_params"] = serde_json::json!(["z", "a"]);
+        assert!(Library::from_json(&old.to_string()).is_err());
+    }
+
+    #[test]
+    fn same_registration_ignores_names_but_compares_variance() {
+        let base = library_with_lifetimes(
+            handle(),
+            vec![param("a", Some(LifetimeVariance::Covariant))],
+        );
+        let renamed = library_with_lifetimes(
+            handle(),
+            vec![param("b", Some(LifetimeVariance::Covariant))],
+        );
+        assert!(base.type_registry["Opaque"].same_registration(&renamed.type_registry["Opaque"]));
+
+        let shifted = library_with_lifetimes(
+            handle(),
+            vec![
+                param("x", Some(LifetimeVariance::Invariant)),
+                param("y", Some(LifetimeVariance::Covariant)),
+            ],
+        );
+        assert!(!base.type_registry["Opaque"].same_registration(&shifted.type_registry["Opaque"]));
+
+        let mismatched = library_with_lifetimes(
+            handle(),
+            vec![param("a", Some(LifetimeVariance::Contravariant))],
+        );
+        assert!(
+            !base.type_registry["Opaque"].same_registration(&mismatched.type_registry["Opaque"])
+        );
+
+        // Kind mismatch is still a registration conflict regardless of lifetimes.
+        let foreign = library_with_lifetimes(foreign_handle(), vec![param("a", None)]);
+        assert!(!base.type_registry["Opaque"].same_registration(&foreign.type_registry["Opaque"]));
+    }
+
+    #[test]
+    fn variance_as_str_round_trips_through_serde() {
+        for (variant, s) in [
+            (LifetimeVariance::Covariant, "covariant"),
+            (LifetimeVariance::Contravariant, "contravariant"),
+            (LifetimeVariance::Invariant, "invariant"),
+        ] {
+            assert_eq!(variant.as_str(), s);
+            let encoded = serde_json::to_value(variant).unwrap();
+            assert_eq!(encoded, serde_json::json!(s));
+            let decoded: LifetimeVariance = serde_json::from_value(encoded).unwrap();
+            assert_eq!(decoded, variant);
+        }
     }
 }

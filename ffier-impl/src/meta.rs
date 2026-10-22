@@ -4,7 +4,7 @@
 //! Generator proc macros (`generate`) parse
 //! these tokens back into the types defined here, then produce code.
 
-use ffier_schema::ThreadSafety;
+use ffier_schema::{LifetimeVariance, ThreadSafety};
 use proc_macro2::TokenStream;
 use quote::{ToTokens, quote};
 use syn::{Ident, LitBool, LitStr, Token, ext::IdentExt, parse::ParseStream};
@@ -168,7 +168,8 @@ pub struct MetaExportable {
     pub prefix: String,
     /// Stable type tag assigned in `library_definition!`. Nonzero when set.
     pub type_tag: u32,
-    pub lifetimes: Vec<Ident>,
+    /// Lifetime parameters with their declared variance, in declaration order.
+    pub lifetimes: Vec<(Ident, LifetimeVariance)>,
     /// Compiler-verified guarantees from the inherent export's annotations.
     pub thread_safety: ThreadSafety,
     pub methods: Vec<MetaMethod>,
@@ -696,7 +697,28 @@ impl syn::parse::Parse for MetaExportable {
         parse_comma(input)?;
 
         expect_key(input, "lifetimes")?;
-        let lifetimes = parse_parenthesized_list(input, |inner| inner.parse::<Ident>())?;
+        let lifetimes = parse_parenthesized_list(input, |inner| {
+            let content;
+            syn::parenthesized!(content in inner);
+            let name = content.parse::<Ident>()?;
+            parse_comma(&content)?;
+            let variance = content.parse::<Ident>()?;
+            let variance = match variance.to_string().as_str() {
+                "covariant" => LifetimeVariance::Covariant,
+                "contravariant" => LifetimeVariance::Contravariant,
+                "invariant" => LifetimeVariance::Invariant,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        variance,
+                        "expected lifetime variance",
+                    ));
+                }
+            };
+            if !content.is_empty() {
+                return Err(content.error("unexpected lifetime metadata"));
+            }
+            Ok((name, variance))
+        })?;
         parse_comma(input)?;
 
         let thread_safety = parse_thread_safety(input)?;

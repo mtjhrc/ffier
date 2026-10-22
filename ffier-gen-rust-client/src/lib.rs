@@ -9,8 +9,8 @@
 
 use ffier_schema::{
     EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
-    ImplementableTrait, Library, Method, ParamType, Receiver, Return, ThreadSafety, TraitImpl,
-    TypeKind,
+    ImplementableTrait, Library, LifetimeVariance, Method, ParamType, Receiver, Return,
+    ThreadSafety, TraitImpl, TypeKind,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -313,7 +313,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             let lifetime_args = entry
                 .lifetime_params
                 .iter()
-                .map(|lt| format!("'{lt}"))
+                .map(|lt| format!("'{}", lt.name))
                 .collect::<Vec<_>>()
                 .join(", ");
             let impl_generics = if lifetime_args.is_empty() {
@@ -1038,7 +1038,7 @@ fn emit_exported_type(
             "<{}>",
             lifetimes
                 .iter()
-                .map(|lt| format!("'{lt}"))
+                .map(|lt| format!("'{}", lt.name))
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -1061,20 +1061,26 @@ fn emit_exported_type(
     // Struct definition
     emit_cfg_attr(out, ty.cfg.as_deref(), weak);
     if has_lifetimes {
-        // The schema does not describe variance of the hidden Rust fields.
-        // Keep each lifetime invariant so shared refs cannot shorten it and
-        // write shorter-lived data through an interior-mutable source type.
-        let phantom = if lifetimes.len() == 1 {
-            format!("std::marker::PhantomData<*mut &'{} ()>", lifetimes[0])
+        if lifetimes.len() > 1 {
+            writeln!(out, "#[allow(clippy::type_complexity)]").unwrap();
+        }
+        let markers: Vec<_> = lifetimes
+            .iter()
+            .map(|lt| {
+                let variance = lt
+                    .variance
+                    .expect("opaque lifetime requires explicit variance in schema");
+                match variance {
+                    LifetimeVariance::Covariant => format!("&'{} ()", lt.name),
+                    LifetimeVariance::Contravariant => format!("fn(&'{} ())", lt.name),
+                    LifetimeVariance::Invariant => format!("*mut &'{} ()", lt.name),
+                }
+            })
+            .collect();
+        let phantom = if markers.len() == 1 {
+            format!("std::marker::PhantomData<{}>", markers[0])
         } else {
-            format!(
-                "std::marker::PhantomData<({})>",
-                lifetimes
-                    .iter()
-                    .map(|lt| format!("*mut &'{lt} ()"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
+            format!("std::marker::PhantomData<({})>", markers.join(", "))
         };
         writeln!(
             out,
@@ -1105,6 +1111,13 @@ fn emit_exported_type(
         "    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self."
     )
     .unwrap();
+    if has_lifetimes {
+        writeln!(
+            out,
+            "    /// Underlying value must uphold Self's declared lifetime variance."
+        )
+        .unwrap();
+    }
     if !ty.thread_safety.is_empty() {
         writeln!(
             out,
@@ -3690,5 +3703,41 @@ mod tests {
         };
         *ref_kind = RefKind::Mut;
         assert_eq!(format_param_sig(&param, &lib), "backend: &mut impl Backend");
+    }
+}
+
+#[cfg(test)]
+mod variance_tests {
+    use super::*;
+
+    #[test]
+    fn client_modes_preserve_ordered_lifetime_variance_markers() {
+        let library = Library::from_json(
+            r#"{
+                "prefix": "variance",
+                "type_registry": {
+                    "Mixed": {
+                        "kind": {"handle": {"c_name": "VarianceMixed"}}, "type_tag": 1,
+                        "lifetime_params": [
+                            {"name": "a", "variance": "covariant"},
+                            {"name": "b", "variance": "contravariant"},
+                            {"name": "c", "variance": "invariant"}
+                        ]
+                    }
+                },
+                "exported_types": [{
+                    "name": "Mixed", "destroy_ffi_name": "variance_mixed_destroy",
+                    "is_builder_type": false, "methods": []
+                }],
+                "errors": [], "traits": [], "trait_impls": []
+            }"#,
+        )
+        .unwrap();
+
+        for weak in [false, true] {
+            let source = generate_with_options(&library, &Options { weak });
+            assert!(source.contains("pub struct Mixed<'a, 'b, 'c>("));
+            assert!(source.contains("std::marker::PhantomData<(&'a (), fn(&'b ()), *mut &'c ())>"));
+        }
     }
 }

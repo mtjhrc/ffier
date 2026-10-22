@@ -29,6 +29,10 @@ mod thread_tests {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
 }
 
+mod variance;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use variance::{ContravariantConsumer, CovariantText, MixedVariance};
+
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
@@ -643,7 +647,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
+#[cfg_attr(feature = "ffi", ffier::export(send, sync, invariant('a)))]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -1159,7 +1163,7 @@ pub struct RetainedFruit<'a> {
     fruit: Box<dyn Fruit + 'a>,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(invariant('a)))]
 impl<'a> RetainedFruit<'a> {
     pub fn new(fruit: impl Fruit + 'a) -> Self {
         Self {
@@ -1752,6 +1756,9 @@ ffier::library_definition!("ft", library_tag = 1,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
     View<'_> = 7, ViewFactory = 8,
+    CovariantText<'_> = 44,
+    ContravariantConsumer<'_> = 45,
+    MixedVariance<'_, '_, '_, '_> = 46,
     Pipeline = 9,
     trait Processor = 10,
     trait ReceiverDefaults = 43,

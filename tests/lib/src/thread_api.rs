@@ -117,7 +117,7 @@ pub struct BackendWorker<'a> {
     backend: Box<dyn SendBackend + 'a>,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export(send))]
+#[cfg_attr(feature = "ffi", ffier::export(send, invariant('a)))]
 impl<'a> BackendWorker<'a> {
     pub fn new(
         #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl SendBackend + 'a,
