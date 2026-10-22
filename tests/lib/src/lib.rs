@@ -2650,14 +2650,13 @@ mod tests {
     };
 
     fn make_processor_handle(user_data: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
-        ffier::ffier_handle_new_with_metadata(
-            VtableProcessor::TYPE_TAG,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: &PROCESSOR_VTABLE as *const _ as *const core::ffi::c_void,
-                user_data: user_data as *const core::ffi::c_void,
-            },
-        )
+        unsafe {
+            ft_vtable_handle_new(
+                VtableProcessor::TYPE_TAG,
+                &PROCESSOR_VTABLE as *const _ as *const core::ffi::c_void,
+                user_data as *const core::ffi::c_void,
+            )
+        }
     }
 
     #[test]
@@ -2745,28 +2744,26 @@ mod tests {
         user_data: *mut core::ffi::c_void,
         vtable: &'static T,
     ) -> *mut core::ffi::c_void {
-        ffier::ffier_handle_new_with_metadata(
-            VtableFruit::TYPE_TAG,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: vtable as *const _ as *const core::ffi::c_void,
-                user_data: user_data as *const core::ffi::c_void,
-            },
-        )
+        unsafe {
+            ft_vtable_handle_new(
+                VtableFruit::TYPE_TAG,
+                vtable as *const _ as *const core::ffi::c_void,
+                user_data as *const core::ffi::c_void,
+            )
+        }
     }
 
     fn make_weighable_handle(
         user_data: *mut core::ffi::c_void,
         vtable: &'static WeighableVtable,
     ) -> *mut core::ffi::c_void {
-        ffier::ffier_handle_new_with_metadata(
-            VtableWeighable::TYPE_TAG,
-            0,
-            ffier::VtableHandle {
-                vtable_ptr: vtable as *const _ as *const core::ffi::c_void,
-                user_data: user_data as *const core::ffi::c_void,
-            },
-        )
+        unsafe {
+            ft_vtable_handle_new(
+                VtableWeighable::TYPE_TAG,
+                vtable as *const _ as *const core::ffi::c_void,
+                user_data as *const core::ffi::c_void,
+            )
+        }
     }
 
     #[test]
@@ -2953,7 +2950,7 @@ mod tests {
             let h1 = ffier::ffier_object_array_get(arr, 1);
 
             // Verify the borrow chain: h0/h1 are FfierBorrowedHandle
-            // with METADATA_BORROWED | METADATA_ARRAY_ELEMENT. Reading
+            // with METADATA_INDIRECT and no ffier allocation. Reading
             // through them does ptr hop: FfierBorrowedHandle.ptr → &Gadget.
             assert_eq!(ft_gadget_get(h0), 10);
             assert_eq!(ft_gadget_get(h1), 20);
@@ -2962,7 +2959,7 @@ mod tests {
             // borrowed handle pointers but in reverse order — verifies
             // the ptr hop works on manually constructed arrays too.
             let tag = ffier::handle_type_tag(h0);
-            let meta = ffier::METADATA_BORROWED | ffier::METADATA_ARRAY_ELEMENT;
+            let meta = ffier::METADATA_INDIRECT;
             let ptr0 = (*(h0 as *const ffier::FfierBorrowedHandle)).ptr;
             let ptr1 = (*(h1 as *const ffier::FfierBorrowedHandle)).ptr;
 
@@ -3408,6 +3405,84 @@ mod tests {
             assert_eq!(ft_gadget_get(g1), 20);
 
             // Free the array (does NOT destroy the gadgets — they're borrowed)
+            ffier::ffier_object_array_free(arr);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn borrowed_shell_is_destroyable_but_does_not_drop_its_value() {
+        // A borrowed shell sets FFIER_ALLOCATED|INDIRECT and clears
+        // DROP_VALUE: the handle may be freed, the pointee must not be
+        // dropped.
+        unsafe {
+            let w = ft_widget_new();
+            let shell = ft_widget_gadget(w);
+            let meta = ffier::handle_metadata(shell);
+            assert_ne!(meta & ffier::METADATA_FFIER_ALLOCATED, 0);
+            assert_ne!(meta & ffier::METADATA_INDIRECT, 0);
+            assert_eq!(meta & ffier::METADATA_DROP_VALUE, 0);
+
+            // Freeing the shell is legitimate and must not touch the widget:
+            // reading through a fresh shell still sees the original value.
+            let expected = ft_gadget_get(shell);
+            ffier::ffier_handle_drop::<Gadget>(shell);
+            let again = ft_widget_gadget(w);
+            assert_eq!(ft_gadget_get(again), expected);
+            ffier::ffier_handle_drop::<Gadget>(again);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn indirect_handle_with_drop_value_is_rejected() {
+        // Owning a pointee behind a pointer is not implemented: dropping such a
+        // handle would free it and leak the pointee, so it must assert instead.
+        unsafe {
+            let w = ft_widget_new();
+            let shell = ft_widget_gadget(w);
+            let meta = ffier::handle_metadata(shell) | ffier::METADATA_DROP_VALUE;
+            // Rebuild the header with the impossible pair, keeping the payload.
+            let borrowed = &*(shell as *const ffier::FfierBorrowedHandle);
+            let fake = ffier::FfierBorrowedHandle {
+                type_tag: borrowed.type_tag,
+                metadata: meta,
+                ptr: borrowed.ptr,
+            };
+            let rejected = std::panic::catch_unwind(|| unsafe {
+                ffier::ffier_handle_drop::<Gadget>(&fake as *const _ as *mut core::ffi::c_void)
+            });
+            assert!(rejected.is_err(), "indirect drop must not be accepted");
+
+            // The real shell still has to be released.
+            ffier::ffier_handle_drop::<Gadget>(shell);
+            ft_widget_destroy(w);
+        }
+    }
+
+    #[test]
+    fn object_array_element_is_not_individually_destroyable() {
+        // Array elements are indirect without a ffier allocation, which is what
+        // distinguishes them from an individually freeable borrowed handle.
+        unsafe {
+            let w = ft_widget_new();
+            let arr = ft_widget_gadgets(w);
+            assert_eq!(arr.len, 2);
+
+            let element = ffier::ffier_object_array_get(arr, 0);
+            let meta = ffier::handle_metadata(element);
+            assert_ne!(meta & ffier::METADATA_INDIRECT, 0);
+            assert_eq!(meta & ffier::METADATA_FFIER_ALLOCATED, 0);
+
+            // Call the runtime directly: the extern "C" wrapper cannot unwind,
+            // so a panic there would abort instead of being observable.
+            let destroyed =
+                std::panic::catch_unwind(|| unsafe { ffier::ffier_handle_drop::<Gadget>(element) });
+            assert!(
+                destroyed.is_err(),
+                "destroying an array element must be rejected"
+            );
+
             ffier::ffier_object_array_free(arr);
             ft_widget_destroy(w);
         }

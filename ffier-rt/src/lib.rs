@@ -19,14 +19,14 @@ pub struct FfierHandle<T> {
     pub value: T,
 }
 
-/// A borrowed handle: same 8-byte header as `FfierHandle<T>`, but the
+/// An indirect handle: same 8-byte header as `FfierHandle<T>`, but the
 /// value field is a raw pointer back to the real `T` instead of an inline
 /// copy. Fixed 16 bytes regardless of T size.
 ///
-/// Allocated by `ffier_handle_new_borrowed`. The runtime functions
-/// (`ffier_handle_borrow`, `ffier_handle_drop`) check `METADATA_OWNED`
-/// to decide whether the handle is owned (value inline in `FfierHandle<T>`)
-/// or borrowed (value is a pointer in `FfierBorrowedHandle`).
+/// Allocated by `ffier_handle_new_borrowed`. The runtime functions check
+/// [`METADATA_INDIRECT`] to decide whether the value is inline or reached
+/// through the pointer, and [`METADATA_FFIER_ALLOCATED`] to decide whether
+/// the handle allocation may be freed.
 #[repr(C)]
 pub struct FfierBorrowedHandle {
     pub type_tag: u32,
@@ -35,52 +35,84 @@ pub struct FfierBorrowedHandle {
     pub ptr: *const c_void,
 }
 
-/// Metadata bit 0: the handle was Box-allocated by ffier and ffier owns the
-/// inner value. When set, `ffier_handle_drop` runs `T::drop` and deallocates.
-/// When clear, ffier will NOT run the inner destructor.
-pub const METADATA_OWNED: u32 = 1;
+/// Metadata bit 0: ffier allocated this handle. When set, ffier may free the
+/// handle allocation. When clear, the allocation belongs to someone else — a
+/// caller-owned handle or a `FfierObjectArray` element — and ffier must not
+/// free it.
+///
+/// The bit covers the handle alone, never the value. Where the value lives is
+/// [`METADATA_INDIRECT`], and whether dropping the handle also destroys the
+/// value is [`METADATA_DROP_VALUE`]. `ffier_handle_new_borrowed` sets this bit
+/// and [`METADATA_INDIRECT`] while leaving [`METADATA_DROP_VALUE`] clear: the
+/// handle is ffier's allocation and the pointee is the caller's.
+pub const METADATA_FFIER_ALLOCATED: u32 = 1;
 
-/// Metadata bit 1: the handle is a `FfierBorrowedHandle` — the value
-/// field is a `*const c_void` pointer to the real T, not an inline T.
-/// Always set by `ffier_handle_new_borrowed`. Never set for C-side
-/// stack-allocated vtable handles or owned handles.
-pub const METADATA_BORROWED: u32 = 2;
+/// Metadata bit 1: the value is reached indirectly. The handle is an
+/// `FfierBorrowedHandle` whose payload field is a `*const c_void` to the real
+/// `T`, which is owned elsewhere. When clear, the payload is an inline `T`.
+///
+/// Element state falls out of the two bits: `INDIRECT` without
+/// [`METADATA_FFIER_ALLOCATED`] is a `FfierObjectArray` element, which is
+/// freed by freeing the whole array rather than the element.
+pub const METADATA_INDIRECT: u32 = 2;
 
-/// Metadata bit 2: the handle is an element of a contiguous
-/// `FfierObjectArray` allocation. Individual destroy is invalid —
-/// the whole array must be freed via the array's destroy function.
-pub const METADATA_ARRAY_ELEMENT: u32 = 4;
+/// Metadata bit 2: the value's destructor is meaningful for this handle, so
+/// dropping the handle must run it.
+///
+/// This is a statement about the value, not about the allocation: the
+/// allocation half is [`METADATA_FFIER_ALLOCATED`] and the layout half is
+/// [`METADATA_INDIRECT`]. Setting it while [`METADATA_INDIRECT`] is also set
+/// would describe a handle whose pointee ffier must drop, which no constructor
+/// produces yet; `ffier_handle_drop` asserts against that combination instead
+/// of silently leaking the pointee.
+///
+/// Cleared for borrowed shells and object-array elements, whose pointees
+/// belong to someone else.
+pub const METADATA_DROP_VALUE: u32 = 4;
 
 /// Metadata bit 3: the handle carries default-dispatch re-entry metadata
 /// for an exported trait method.
 ///
-/// When set, the upper bits encode the trait method index. This is used by
-/// generated Rust client bindings to mark temporary vtable handles created
-/// for defaulted methods so the bridge can call the library default helper
-/// instead of recursing back through the vtable.
+/// This bit reserves bits 4 and above for the trait method index. The index
+/// field is defined only while this bit is set; when it is clear, those bits
+/// are available for other flags. Generated Rust client bindings use it to
+/// mark temporary vtable handles created for defaulted methods, so the bridge
+/// can call the library default helper instead of recursing back through the
+/// vtable.
 pub const METADATA_DEFAULT_DISPATCH: u32 = 8;
 
-/// Bit shift for the method index encoded alongside
-/// [`METADATA_DEFAULT_DISPATCH`].
+/// Bit position where [`METADATA_DEFAULT_DISPATCH`] starts the method index
+/// field. Bits below this position stay independent flags.
 pub const METADATA_DEFAULT_DISPATCH_SHIFT: u32 = 4;
 
+/// Mask covering the bits reserved for the method index while
+/// [`METADATA_DEFAULT_DISPATCH`] is set.
+pub const METADATA_DEFAULT_DISPATCH_METHOD_MASK: u32 = u32::MAX << METADATA_DEFAULT_DISPATCH_SHIFT;
+
 /// Encode metadata for a temporary handle used by default-method self-dispatch.
+///
+/// Panics when `method_index` does not fit in the reserved index field.
 #[inline]
 pub fn default_dispatch_metadata(method_index: usize) -> u32 {
     let method_index = u32::try_from(method_index).expect("method index does not fit in u32");
+    assert!(
+        method_index <= (METADATA_DEFAULT_DISPATCH_METHOD_MASK >> METADATA_DEFAULT_DISPATCH_SHIFT),
+        "method index does not fit in the reserved metadata bits"
+    );
     METADATA_DEFAULT_DISPATCH | (method_index << METADATA_DEFAULT_DISPATCH_SHIFT)
 }
 
 /// Decode the method index from default-dispatch metadata.
 ///
 /// Returns `None` when the handle metadata does not carry the
-/// [`METADATA_DEFAULT_DISPATCH`] flag.
+/// [`METADATA_DEFAULT_DISPATCH`] flag, because the reserved bits only hold an
+/// index while that flag is set.
 #[inline]
 pub fn default_dispatch_method_index(metadata: u32) -> Option<u32> {
     if metadata & METADATA_DEFAULT_DISPATCH == 0 {
         None
     } else {
-        Some(metadata >> METADATA_DEFAULT_DISPATCH_SHIFT)
+        Some((metadata & METADATA_DEFAULT_DISPATCH_METHOD_MASK) >> METADATA_DEFAULT_DISPATCH_SHIFT)
     }
 }
 
@@ -112,15 +144,15 @@ pub unsafe fn handle_metadata(handle: *const c_void) -> u32 {
 
 /// Allocate a new owned handle on the heap and return a raw pointer.
 ///
-/// Sets [`METADATA_OWNED`] — `ffier_handle_drop` will run `T::drop` and
-/// deallocate. The returned pointer must eventually be passed to
+/// Sets [`METADATA_FFIER_ALLOCATED`] — `ffier_handle_drop` will run `T::drop`
+/// and deallocate. The returned pointer must eventually be passed to
 /// `ffier_handle_drop` or `ffier_handle_consume` to avoid leaking.
 #[inline]
 pub fn ffier_handle_new<T>(tag: u32, value: T) -> *mut c_void {
     debug_assert!(tag != 0, "type tag must be nonzero");
     let handle = Box::new(FfierHandle {
         type_tag: tag,
-        metadata: METADATA_OWNED,
+        metadata: METADATA_FFIER_ALLOCATED | METADATA_DROP_VALUE,
         value,
     });
     Box::into_raw(handle) as *mut c_void
@@ -128,24 +160,30 @@ pub fn ffier_handle_new<T>(tag: u32, value: T) -> *mut c_void {
 
 /// Allocate a new owned handle with custom metadata (e.g. for vtable handles).
 ///
-/// `METADATA_OWNED` is OR'd in automatically — callers should not include it.
+/// [`METADATA_FFIER_ALLOCATED`] is OR'd in automatically — callers must not
+/// include it. [`METADATA_INDIRECT`] is rejected because the value is stored
+/// inline, so the handle could not also be an indirect shell.
 #[inline]
 pub fn ffier_handle_new_with_metadata<T>(tag: u32, metadata: u32, value: T) -> *mut c_void {
     debug_assert!(tag != 0, "type tag must be nonzero");
+    assert!(
+        metadata & METADATA_INDIRECT == 0,
+        "inline handles cannot be indirect: the value is stored in the handle"
+    );
     let handle = Box::new(FfierHandle {
         type_tag: tag,
-        metadata: metadata | METADATA_OWNED,
+        metadata: metadata | METADATA_FFIER_ALLOCATED | METADATA_DROP_VALUE,
         value,
     });
     Box::into_raw(handle) as *mut c_void
 }
 
-/// Allocate a borrowed handle: stores a raw pointer to the real `T` in
+/// Allocate an indirect handle: stores a raw pointer to the real `T` in
 /// a 16-byte `FfierBorrowedHandle` (same header layout as `FfierHandle`).
 ///
 /// The returned handle has a valid type_tag so it can be passed to methods
 /// that type-check the handle. The value is NOT copied — the pointer is
-/// stored directly. On destroy, ffier deallocates the 16-byte shell
+/// stored directly. On destroy, ffier deallocates the 16-byte handle
 /// without touching the pointed-to value.
 ///
 /// # Safety
@@ -156,7 +194,7 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
     debug_assert!(tag != 0, "type tag must be nonzero");
     let handle = Box::new(FfierBorrowedHandle {
         type_tag: tag,
-        metadata: METADATA_BORROWED, // not owned, layout is pointer
+        metadata: METADATA_FFIER_ALLOCATED | METADATA_INDIRECT,
         ptr: value as *const c_void,
     });
     Box::into_raw(handle) as *mut c_void
@@ -168,9 +206,9 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
 
 /// Borrow a shared reference to the value inside a handle.
 ///
-/// For owned handles (`METADATA_OWNED` set), the value is inline in the
-/// `FfierHandle<T>`. For borrowed handles, the value field is a pointer
-/// in a `FfierBorrowedHandle` that is followed to reach the real `T`.
+/// When [`METADATA_INDIRECT`] is clear the value is inline in the
+/// `FfierHandle<T>`. When it is set the value field is a pointer in a
+/// `FfierBorrowedHandle` that is followed to reach the real `T`.
 ///
 /// # Safety
 /// - `handle` must point to a valid `FfierHandle<T>` or `FfierBorrowedHandle`.
@@ -182,7 +220,7 @@ pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void) -> &'static T {
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
     );
-    if unsafe { handle_metadata(handle) } & METADATA_BORROWED != 0 {
+    if unsafe { handle_metadata(handle) } & METADATA_INDIRECT != 0 {
         let bh = unsafe { &*(handle as *const FfierBorrowedHandle) };
         unsafe { &*(bh.ptr as *const T) }
     } else {
@@ -192,8 +230,8 @@ pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void) -> &'static T {
 
 /// Borrow a mutable reference to the value inside a handle.
 ///
-/// For owned handles, returns a reference to the inline value. For
-/// borrowed handles, follows the stored pointer.
+/// Returns a reference to the inline value, or follows the stored pointer
+/// when [`METADATA_INDIRECT`] is set.
 ///
 /// # Safety
 /// - `handle` must point to a valid `FfierHandle<T>` or `FfierBorrowedHandle`.
@@ -205,7 +243,7 @@ pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T 
         unsafe { handle_type_tag(handle) } != 0,
         "uninitialized handle"
     );
-    if unsafe { handle_metadata(handle) } & METADATA_BORROWED != 0 {
+    if unsafe { handle_metadata(handle) } & METADATA_INDIRECT != 0 {
         let bh = unsafe { &*(handle as *const FfierBorrowedHandle) };
         unsafe { &mut *(bh.ptr as *mut T) }
     } else {
@@ -219,15 +257,15 @@ pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T 
 
 /// Consume a handle: move the value out and free the allocation.
 ///
-/// Only valid for **owned** handles — `METADATA_OWNED` must be set. Panics in
-/// all builds when the handle is borrowed, unowned, null, or uninitialized.
-/// An unowned handle may have been allocated anywhere, and freeing it through
-/// Rust's allocator would be unsound.
+/// Only valid for inline handles that ffier allocated. Panics in all builds
+/// when the handle is indirect, foreign, null, or uninitialized: an indirect
+/// value is owned elsewhere, and a foreign handle may have been allocated
+/// anywhere, so freeing either through Rust's allocator would be unsound.
 ///
 /// # Safety
 /// - `handle` must point to a valid, heap-allocated `FfierHandle<T>` created
-///   by ffier (so `METADATA_OWNED` is set and the allocation came from
-///   Rust's allocator).
+///   by ffier (so [`METADATA_FFIER_ALLOCATED`] is set, [`METADATA_INDIRECT`]
+///   is clear, and the allocation came from Rust's allocator).
 /// - After this call the handle pointer is dangling.
 #[inline]
 pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
@@ -238,14 +276,14 @@ pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
     );
     let meta = unsafe { handle_metadata(handle) };
     assert!(
-        meta & METADATA_BORROWED == 0,
-        "cannot consume a borrowed handle"
+        meta & METADATA_INDIRECT == 0,
+        "cannot consume an indirect handle: its value is owned elsewhere"
     );
     assert!(
-        meta & METADATA_OWNED != 0,
-        "cannot consume an unowned handle — only handles allocated by ffier \
-         may be consumed; this handle was allocated elsewhere, and freeing \
-         foreign memory through Rust's allocator would be unsound"
+        meta & METADATA_FFIER_ALLOCATED != 0,
+        "cannot consume a foreign handle: only handles allocated by ffier \
+         may be consumed, and freeing foreign memory through Rust's \
+         allocator would be unsound"
     );
     let boxed = unsafe { Box::from_raw(handle as *mut FfierHandle<T>) };
     boxed.value
@@ -257,11 +295,22 @@ pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
 
 /// Drop a handle and free its allocation.
 ///
-/// - **Owned** (`METADATA_OWNED` set): runs `T::drop` and frees the
-///   `Box<FfierHandle<T>>`.
-/// - **Borrowed** (`METADATA_OWNED` clear): frees the 16-byte
-///   `Box<FfierBorrowedHandle>` shell. The pointed-to value is not
-///   touched — the real owner is responsible for its lifetime.
+/// Requires [`METADATA_FFIER_ALLOCATED`]: only a handle ffier allocated may be
+/// destroyed. A caller-owned handle or an object-array element panics, because
+/// freeing either here would be unsound or would double free with the array.
+///
+/// With the allocation bit set, [`METADATA_DROP_VALUE`] decides whether the
+/// value's destructor runs:
+///
+/// - set: frees the `Box<FfierHandle<T>>`, dropping the inline value.
+/// - clear: frees the 16-byte `Box<FfierBorrowedHandle>` and leaves the
+///   pointee alone.
+///
+/// NOTE: an indirect handle that sets [`METADATA_DROP_VALUE`] would describe a
+/// pointee ffier owns. No constructor produces it, so this function asserts
+/// rather than freeing the handle and leaking the pointee. Supporting it means
+/// dropping through the pointer before freeing the handle; the payload layout
+/// alone does not decide destruction.
 ///
 /// # Safety
 /// - `handle` must point to a valid, Box-allocated `FfierHandle<T>` or
@@ -277,17 +326,28 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
     );
     let meta = unsafe { handle_metadata(handle) };
     assert!(
-        meta & METADATA_ARRAY_ELEMENT == 0,
-        "cannot destroy an individual array element — free the whole array instead"
+        meta & METADATA_FFIER_ALLOCATED != 0,
+        "cannot destroy a handle ffier did not allocate — a caller-owned \
+         handle must not be destroyed, and an object-array element is freed \
+         with the whole array"
     );
-    if meta & METADATA_BORROWED != 0 {
-        // Borrowed: dealloc the 16-byte pointer shell only.
-        drop(unsafe { Box::from_raw(handle as *mut FfierBorrowedHandle) });
-    } else if meta & METADATA_OWNED != 0 {
-        // Owned: drop inner value + dealloc.
+    // Dropping an indirect handle while claiming its value must be dropped
+    // would free the 16-byte handle and never reach the pointee. No producer
+    // sets that pair yet, so treat it as a contract violation rather than
+    // leaking silently. Supporting it means dropping the pointee through the
+    // pointer before freeing the handle.
+    assert!(
+        meta & METADATA_INDIRECT == 0 || meta & METADATA_DROP_VALUE == 0,
+        "cannot drop an indirect handle whose pointee ffier owns: dropping the \
+         value behind the pointer is not implemented"
+    );
+    if meta & METADATA_DROP_VALUE != 0 {
+        // The handle owns its value: run the destructor with the allocation.
         drop(unsafe { Box::from_raw(handle as *mut FfierHandle<T>) });
+    } else {
+        // Borrowed: dealloc the 16-byte handle and leave the pointee alone.
+        drop(unsafe { Box::from_raw(handle as *mut FfierBorrowedHandle) });
     }
-    // else: not owned, not borrowed (e.g. C stack vtable handle) — do nothing.
 }
 
 // ---------------------------------------------------------------------------

@@ -1644,7 +1644,7 @@ fn wrap_return(
                     ffier::FfierObjectArray::EMPTY
                 } else {
                     let __tag = <#bridge_type as #tc::FfiHandle>::TYPE_TAG;
-                    let __meta = ffier::METADATA_BORROWED | ffier::METADATA_ARRAY_ELEMENT;
+                    let __meta = ffier::METADATA_INDIRECT;
                     let __boxed: Box<[ffier::FfierBorrowedHandle]> = __slice.iter()
                         .map(|item| ffier::FfierBorrowedHandle {
                             type_tag: __tag,

@@ -21,6 +21,9 @@ ffier-gen-c-header     reads JSON → C header
 ffier-gen-rust-client  reads JSON → Rust client bindings
 ```
 
+Handle metadata bits and the runtime invariants they encode are documented in
+`docs/handle-metadata.md`.
+
 ### Conditional FFI
 
 Users gate FFI annotations behind a Cargo feature using standard `cfg_attr`:
