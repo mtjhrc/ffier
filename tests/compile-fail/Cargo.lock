@@ -67,6 +67,7 @@ name = "ffier-test-compile-fail"
 version = "0.1.0"
 dependencies = [
  "ffier",
+ "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
  "ffier-test-lib-via-cdylib",
 ]

@@ -198,6 +198,7 @@ dependencies = [
 name = "ffier-test-consumer"
 version = "0.1.0"
 dependencies = [
+ "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
  "ffier-test-lib-via-cdylib",
 ]

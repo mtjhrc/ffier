@@ -61,6 +61,10 @@
 - Look up static error messages through `{prefix}_result_message`, returning
   `FtStr` without an error handle or allocation. Generated fieldless `Display`
   writes this string directly; payload errors keep native formatting.
+- Preserve explicit shared and mutable receiver lifetimes in metadata,
+  schema, and native and generated method signatures. Retained local and
+  foreign handles and returned values tie to the receiver borrow, and callback
+  trampoline receivers must outlive their named borrows (`__T: Trait + 'lt`).
 
 ### Fixed
 
@@ -72,5 +76,22 @@
 - Forward native error handles from generated Rust callbacks instead of boxing
   client wrappers as native handles. Preserve error type tags, variant codes,
   and ownership when returning library errors through callbacks.
+- Keep every lifetime parameter of opaque generated client handles invariant
+  (`PhantomData<*mut &'lt ()>`). Shared references to a client handle can no
+  longer shorten its lifetimes and install shorter-lived borrows through
+  interior-mutable native types.
+- Preserve receiver mutability and the receiver tie of elided output
+  lifetimes in extracted trait default helpers. `&mut self` defaults now
+  extract to `__self: &'lt mut (impl Trait + ?Sized)` and elided returns
+  borrow from the receiver, not from other parameters.
+
+### Changed
+
+- Reject typed `self` parameters (`self: &Self`), `'static` receivers on
+  vtable traits (use a named method lifetime or `no_vtable`), lifetime bounds
+  and where clauses other than `Self: Sized` on raw-handle methods, and named
+  reference lifetimes on non-byte slice parameters. These contracts cannot be
+  represented in the schema; they now fail at the macro instead of silently
+  weakening generated client signatures.
 
 ## 0.2.0

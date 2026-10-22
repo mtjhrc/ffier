@@ -8,14 +8,30 @@ use ffier_test_lib as api;
 #[cfg(all(test, unix, feature = "via-cdylib"))]
 use ffier_test_lib_via_cdylib as api;
 
+#[cfg(all(test, unix, feature = "via-cdylib"))]
+use ffier_test_foreign_lib_via_cdylib as foreign;
+
+#[cfg(all(test, unix))]
+mod receiver_default_tests {
+    use super::api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../receiver_defaults.rs"
+    ));
+}
+
 #[cfg(all(test, unix))]
 mod tests {
-    use std::os::fd::AsRawFd;
-
     use super::api::{
         self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
     };
+    #[cfg(feature = "via-cdylib")]
+    use super::foreign;
+    use std::os::fd::AsRawFd;
 
     struct BorrowedFruit<'a> {
         value: &'a i32,
@@ -379,6 +395,32 @@ mod tests {
             v.source_count()
         };
         assert_eq!(count, 42);
+    }
+
+    #[test]
+    fn explicit_receiver_borrows_reach_retained_handles() {
+        let source = Widget::new();
+        let mut widget = Widget::with_name("retained receiver");
+        widget.set_count(76);
+        let mut view = View::create(&source);
+        widget.replace_view(&mut view);
+        assert_eq!(view.source_count(), 76);
+        assert_eq!(widget.view().source_count(), 76);
+        assert_eq!(widget.name_bytes(), b"retained receiver");
+        drop(view);
+        let view = widget.view_mut();
+        assert_eq!(view.source_count(), 76);
+        drop(view);
+        widget.set_count(42);
+    }
+
+    #[cfg(feature = "via-cdylib")]
+    #[test]
+    fn explicit_receiver_borrows_reach_foreign_handles() {
+        let widget = Widget::with_name("foreign receiver");
+        let mut value = foreign::ForeignBorrowed::new("");
+        widget.replace_foreign_borrowed(&mut value);
+        assert_eq!(value.value(), "foreign receiver");
     }
 
     // ================================================================

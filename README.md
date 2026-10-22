@@ -108,6 +108,15 @@ lifetimes, `impl Trait` dispatch, file descriptors, and more.
 - Strings as `ptr + len` (no null-terminator copies)
 - Builder pattern support (by-value self methods)
 - Lifetime-preserving borrowed handles
+- Explicit receiver lifetimes preserved in generated clients:
+  `fn apply<'a>(&'a self, overlay: &mut Overlay<'a>)` keeps the receiver
+  alive while the overlay retains its data. Opaque client handles keep every
+  lifetime invariant because the schema cannot describe the variance of
+  hidden Rust fields. Trait default helpers preserve receiver mutability and
+  the receiver tie of elided output lifetimes. Contracts the schema cannot
+  represent — typed receivers, `'static` receivers on vtable traits,
+  constrained method lifetimes, and named lifetimes on non-byte slices — are
+  rejected at the macro with a diagnostic.
 - `&[&str]` and `&[&T]` slice parameters
 - File descriptor passing (`OwnedFd`, `BorrowedFd`)
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
