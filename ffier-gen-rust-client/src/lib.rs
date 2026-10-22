@@ -431,6 +431,26 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         emit_exported_type(&mut out, ty, lib, weak, &mut symbols);
     }
 
+    // Library-side vtable handle constructor. Callback values handed to a
+    // consuming parameter must be allocated by the library, so that the
+    // callee frees them with the allocator that created them.
+    if lib.traits.iter().any(|tr| !tr.no_vtable) {
+        emit_extern_fns(
+            &mut out,
+            &[extern_fn_private(
+                &format!("{}_vtable_handle_new", lib.prefix),
+                vec![
+                    "type_tag: u32".to_string(),
+                    "vtable: *const core::ffi::c_void".to_string(),
+                    "user_data: *const core::ffi::c_void".to_string(),
+                ],
+                " -> *mut core::ffi::c_void".to_string(),
+            )],
+            weak,
+            &mut symbols,
+        );
+    }
+
     // 3. Implementable traits
     // Build trait defaults map: trait_name → vec of defaulted methods
     let mut trait_defaults: HashMap<String, Vec<&Method>> = HashMap::new();
@@ -1584,27 +1604,28 @@ fn emit_implementable_trait(
         "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
     )
     .unwrap();
+    // The consuming callee frees this handle, so the library must allocate it.
+    // The vtable drop trampoline releases user_data on the client side.
     writeln!(
         out,
         "        let __user_data = Box::into_raw(Box::new(self));"
     )
     .unwrap();
+    writeln!(out, "        unsafe {{").unwrap();
+    writeln!(out, "            {}_vtable_handle_new(", lib.prefix).unwrap();
+    writeln!(out, "                {type_tag}u32,").unwrap();
     writeln!(
         out,
-        "        ffier::ffier_handle_new_with_metadata({type_tag}u32, 0, ffier::VtableHandle {{"
+        "                __vtable as *const {vtable_name} as *const core::ffi::c_void,"
     )
     .unwrap();
     writeln!(
         out,
-        "            vtable_ptr: __vtable as *const {vtable_name} as *const core::ffi::c_void,"
+        "                __user_data as *const core::ffi::c_void,"
     )
     .unwrap();
-    writeln!(
-        out,
-        "            user_data: __user_data as *const core::ffi::c_void,"
-    )
-    .unwrap();
-    writeln!(out, "        }})").unwrap();
+    writeln!(out, "            )").unwrap();
+    writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
 
     writeln!(out, "}}").unwrap();

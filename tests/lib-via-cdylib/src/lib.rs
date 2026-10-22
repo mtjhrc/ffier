@@ -53,6 +53,7 @@ mod weak_callback_errors {
                         Symbol::FtWidgetParseCount,
                         Symbol::FtTestErrorDropCount,
                         Symbol::FtRoundtripCallbackError,
+                        Symbol::FtVtableHandleNew,
                     ],
                 )
                 .unwrap();
