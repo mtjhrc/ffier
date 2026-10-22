@@ -11,6 +11,16 @@
   runtime instead of freeing foreign memory. Callers that hand-allocated a
   handle for an owned parameter, or relied on their allocator matching Rust's,
   must switch to the constructor. Generated Rust client bindings already do.
+- Rename the handle metadata constants to state one fact each:
+  `METADATA_OWNED` becomes `METADATA_FFIER_ALLOCATED` (who allocated the
+  handle) and `METADATA_BORROWED` becomes `METADATA_INDIRECT` (payload is a
+  pointer to a value owned elsewhere). `METADATA_ARRAY_ELEMENT` is removed;
+  an object-array element is now `METADATA_INDIRECT` without
+  `METADATA_FFIER_ALLOCATED`. A new `METADATA_DROP_VALUE` bit records whether
+  the value's destructor is meaningful, so freeing the handle and dropping the
+  value are separate decisions instead of one inferred from `METADATA_INDIRECT`.
+  `METADATA_DEFAULT_DISPATCH` moves to bit 3 so its method index field starts
+  at bit 4. Code reading the raw metadata field must use the new constants.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
