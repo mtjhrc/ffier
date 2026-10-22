@@ -75,6 +75,22 @@ def check_schema(schema_path: Path) -> None:
     if len(cfg_items) < 8:
         raise AssertionError(f"expected >=8 cfg-gated items, got {len(cfg_items)}")
 
+    def method_param(owner: str, name: str) -> dict:
+        item = next(item for item in schema["exported_types"] if item["name"] == owner)
+        return next(method for method in item["methods"] if method["name"] == name)["params"][0]
+
+    assert method_param("RetainedFruit", "new_static")["lifetime_bounds"] == ["static"]
+    assert method_param("RetainedFruit", "new_dynamic")["lifetime_bounds"] == ["a"]
+    snapshot = method_param("View", "snapshot_count")
+    assert snapshot["type_args"] == ["a"]
+    assert snapshot["lifetime_bounds"] == ["b"]
+    assert method_param("RetainedFruit", "borrowed_value")["ref_kind"] == "shared"
+    assert method_param("RetainedFruit", "borrowed_value_dynamic")["ref_lifetime"] == "_"
+    assert method_param("RetainedFruit", "borrowed_mut_value")["ref_kind"] == "mut"
+    retain = next(item for item in schema["free_functions"] if item["name"] == "retain_fruit")
+    assert retain["lifetimes"] == ["a"]
+    assert retain["ret"]["type_args"] == ["a"]
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate generated ffier schema")

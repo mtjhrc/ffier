@@ -7,3 +7,9 @@ edition = "2024"
 
 [dependencies]
 ffier = { path = "../../ffier" }
+ffier-test-lib = { path = "../lib", optional = true }
+ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
+
+[features]
+native = ["dep:ffier-test-lib"]
+via-cdylib = ["dep:ffier-test-lib-via-cdylib"]

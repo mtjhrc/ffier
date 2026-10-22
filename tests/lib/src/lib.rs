@@ -629,6 +629,11 @@ impl<'a> View<'a> {
     pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
         self.label = other.snap_description().to_owned();
     }
+
+    /// Trait lifetime arguments do not imply value lifetime bounds.
+    pub fn snapshot_count<'b>(&self, other: impl Snapshot<'a> + 'b) -> i32 {
+        other.snap_source_count()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1039,61 @@ impl Default for Mixer {
     }
 }
 
+/// Retains an owned callback after its constructor returns.
+pub struct RetainedFruit<'a> {
+    fruit: Box<dyn Fruit + 'a>,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl<'a> RetainedFruit<'a> {
+    pub fn new(fruit: impl Fruit + 'a) -> Self {
+        Self {
+            fruit: Box::new(fruit),
+        }
+    }
+
+    pub fn new_dynamic(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'a,
+    ) -> Self {
+        Self::new(fruit)
+    }
+
+    pub fn new_static(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'static,
+    ) -> Self {
+        Self::new(fruit)
+    }
+
+    pub fn value(&self) -> i32 {
+        self.fruit.value()
+    }
+
+    pub fn borrowed_value(&self, fruit: &(impl Fruit + 'a)) -> i32 {
+        fruit.value()
+    }
+
+    pub fn borrowed_value_dynamic(
+        &self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: &'_ (impl Fruit + 'a),
+    ) -> i32 {
+        fruit.value()
+    }
+
+    pub fn borrowed_mut_value(
+        &self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: &mut (impl Fruit + 'a),
+    ) -> i32 {
+        fruit.value()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn retain_fruit<'a>(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'a,
+) -> RetainedFruit<'a> {
+    RetainedFruit::new(fruit)
+}
+
 // ---------------------------------------------------------------------------
 // Marker trait with supertrait — tests no_vtable (C can't implement, no
 // VtableCategorizable generated, but concrete dispatch still works)
@@ -1194,6 +1254,98 @@ ffier::export_bitflags! {
             const DELETE  = 0b1000;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Borrowed-callback dispatch over a scalar trait — the borrowed companion
+// exercises `&mut impl Trait` vtable dispatch without value structs.
+// ---------------------------------------------------------------------------
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait InputBackend {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn current_vendor(&self) -> Result<u16, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn peek_vendor_result(&self) -> Result<u16, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn bump_vendor(&mut self) -> Result<u16, TestError>;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
+    fn next_value(&mut self, fail: bool) -> Result<i32, TestError>;
+}
+
+pub struct EventQueue {
+    value: i32,
+    vendor: u16,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl EventQueue {
+    pub fn new() -> Self {
+        Self {
+            value: 42,
+            vendor: 0x1af5,
+        }
+    }
+
+    pub fn try_peek_vendor(&self, available: bool) -> Result<u16, TestError> {
+        available
+            .then_some(self.vendor)
+            .ok_or(TestError::InvalidInput())
+    }
+}
+
+impl Default for EventQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl InputBackend for EventQueue {
+    fn current_vendor(&self) -> Result<u16, TestError> {
+        Ok(self.vendor)
+    }
+
+    fn peek_vendor_result(&self) -> Result<u16, TestError> {
+        Ok(self.vendor)
+    }
+
+    fn bump_vendor(&mut self) -> Result<u16, TestError> {
+        self.vendor += 1;
+        Ok(self.vendor)
+    }
+
+    fn next_value(&mut self, fail: bool) -> Result<i32, TestError> {
+        if fail {
+            Err(TestError::InvalidInput())
+        } else {
+            Ok(std::mem::take(&mut self.value))
+        }
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_input_backend_values(mut backend: impl InputBackend) -> Result<u16, TestError> {
+    probe_borrowed_input_backend_values(&mut backend)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_borrowed_input_backend_values(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: &mut impl InputBackend,
+) -> Result<u16, TestError> {
+    let original = backend.current_vendor()?;
+    let borrowed = backend.peek_vendor_result()?;
+    let bumped = backend.bump_vendor()?;
+    assert_eq!(backend.next_value(false)?, 42);
+    assert_eq!(backend.next_value(false)?, 0);
+    assert!(matches!(
+        backend.next_value(true),
+        Err(TestError::InvalidInput(..))
+    ));
+    Ok(original + borrowed + bumped + 42)
 }
 
 // ---------------------------------------------------------------------------
@@ -1474,6 +1626,9 @@ ffier::library_definition!("ft", library_tag = 1,
     trait Processor = 10,
     trait EmptyTrait = 31,
     trait RetiredTrait = 32,
+    EventQueue = 34,
+    trait InputBackend = 35,
+    InputBackend for EventQueue,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,
     Peach = 15, Plum = 16, Grape = 17, Lemon = 18,
     trait Fruit = 20,
@@ -1486,6 +1641,7 @@ ffier::library_definition!("ft", library_tag = 1,
     Fruit for Grape,
     Fruit for Lemon,
     Mixer = 21,
+    RetainedFruit<'_> = 33,
     Sprocket = 22,
     Attachment for Sprocket,
     Snapshot for View,
@@ -1524,6 +1680,9 @@ ffier::library_definition!("ft", library_tag = 1,
     fn sum_gadget_values,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
+    fn probe_input_backend_values,
+    fn probe_borrowed_input_backend_values,
+    fn retain_fruit,
     fn apply_foreign_config,
     fn read_foreign_item_score,
     fn double_foreign_item_score,
@@ -2600,11 +2759,11 @@ mod tests {
             size_of_val(&vtable),
             size_of::<ffier::VtableHeader>() + slot_size
         );
-        let wrapper = VtableEmptyTrait {
-            value: ffier::VtableHandle {
+        let wrapper = unsafe {
+            VtableEmptyTrait::from_value(ffier::VtableHandle {
                 vtable_ptr: &vtable as *const _ as *const core::ffi::c_void,
                 user_data: ptr::null(),
-            },
+            })
         };
         drop(wrapper);
 
@@ -2648,6 +2807,66 @@ mod tests {
         process: Some(test_process),
         name: Some(test_processor_name),
     };
+
+    #[test]
+    fn retained_callback_bridge_ownership() {
+        use core::ffi::c_void;
+        use std::cell::Cell;
+
+        struct Data {
+            value: i32,
+            drops: Cell<usize>,
+        }
+        unsafe extern "C" fn value(data: *mut c_void) -> i32 {
+            unsafe { &*data.cast::<Data>() }.value
+        }
+        unsafe extern "C" fn drop_callback(data: *mut c_void) {
+            let data = unsafe { &*data.cast::<Data>() };
+            data.drops.set(data.drops.get() + 1);
+        }
+        static VTABLE: FruitVtable = FruitVtable {
+            _num_slots: 4,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: Some(drop_callback),
+            value: Some(value),
+            #[cfg(feature = "fruit-label")]
+            label: None,
+            try_count: None,
+            count_tags: None,
+        };
+        let data = Data {
+            value: 41,
+            drops: Cell::new(0),
+        };
+        let callback = || ffier::VtableHandle {
+            vtable_ptr: &VTABLE as *const _ as *const c_void,
+            user_data: &data as *const _ as *const c_void,
+        };
+        let raw = ffier::ffier_handle_new(VtableFruit::TYPE_TAG, unsafe {
+            VtableFruit::from_value(callback())
+        });
+        let retained = unsafe { ft_retained_fruit_new_dynamic(raw) };
+        assert_eq!(data.drops.get(), 0);
+        assert_eq!(unsafe { ft_retained_fruit_value(retained) }, 41);
+        let mut borrowed = ffier::FfierHandle {
+            type_tag: VtableFruit::TYPE_TAG,
+            metadata: 0,
+            value: callback(),
+        };
+        assert_eq!(
+            unsafe {
+                ft_retained_fruit_borrowed_value_dynamic(
+                    retained,
+                    &mut borrowed as *mut _ as *mut c_void,
+                )
+            },
+            41
+        );
+        assert_eq!(data.drops.get(), 0);
+        unsafe { ft_retained_fruit_destroy(retained) };
+        assert_eq!(data.drops.get(), 1);
+    }
 
     fn make_processor_handle(user_data: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
         ffier::ffier_handle_new_with_metadata(

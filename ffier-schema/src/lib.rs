@@ -445,6 +445,15 @@ pub enum ParamType {
         /// (e.g. `["a"]` for `impl Snapshot<'a>`).
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         type_args: Vec<String>,
+        /// Bounds on the callback value, distinct from trait arguments.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        lifetime_bounds: Vec<String>,
+        /// Owned, shared borrowed, or mutable borrowed callback access.
+        #[serde(default, skip_serializing_if = "is_ref_none")]
+        ref_kind: RefKind,
+        /// Lifetime on the reference, not on the callback value or trait.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ref_lifetime: Option<String>,
     },
 }
 
@@ -662,6 +671,9 @@ pub struct FreeFunction {
     /// Doc comment lines.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doc: Vec<String>,
+    /// Lifetime parameters declared by the free function.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lifetimes: Vec<String>,
     pub params: Vec<Param>,
     pub ret: Return,
     /// `#[cfg(...)]` predicate gating this function. `None` = unconditional.

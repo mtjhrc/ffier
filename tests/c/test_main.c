@@ -610,6 +610,40 @@ void vtable_drop_callback(void) {
     ft_pipeline_destroy(p);
 }
 
+static int retained_fruit_drops = 0;
+
+static int32_t retained_fruit_value(void* user_data) {
+    return *(const int32_t*)user_data;
+}
+
+static void retained_fruit_drop(void* user_data) {
+    (void)user_data;
+    retained_fruit_drops++;
+}
+
+static const FtFruitVtable retained_fruit_vtable = FT_VTABLE(FtFruitVtable,
+    .drop = retained_fruit_drop,
+    .value = retained_fruit_value,
+);
+
+void retained_owned_and_borrowed_callbacks(void) {
+    int32_t value = 73;
+    retained_fruit_drops = 0;
+    FtVtableHandle *callback =
+        ft_vtable_handle_new(FT_FRUIT_TYPE_TAG, &retained_fruit_vtable, &value);
+    FtRetainedFruit retained = ft_retained_fruit_new_dynamic(callback);
+    assert(retained_fruit_drops == 0);
+    assert(ft_retained_fruit_value(retained) == 73);
+    value = 74;
+    assert(ft_retained_fruit_value(retained) == 74);
+
+    FtVtableHandle borrowed = FT_TEMP_OBJ(FT_FRUIT_TYPE_TAG, retained_fruit_vtable, &value);
+    assert(ft_retained_fruit_borrowed_value_dynamic(retained, &borrowed) == 74);
+    assert(retained_fruit_drops == 0);
+    ft_retained_fruit_destroy(retained);
+    assert(retained_fruit_drops == 1);
+}
+
 /* ===================================================================== */
 /* Lifetime-parameterized types                                          */
 /* ===================================================================== */
@@ -765,6 +799,7 @@ int main(int argc, char** argv) {
     RUN_TEST(vtable_dyn_dispatch_process);
 
     RUN_TEST(vtable_drop_callback);
+    RUN_TEST(retained_owned_and_borrowed_callbacks);
 
     printf("\n[lifetime types]\n");
     RUN_TEST(lifetime_type_borrowing_handle);
