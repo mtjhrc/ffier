@@ -157,8 +157,10 @@ steps are independent — that separation is the point of the bit.
 - Bits 4 through 19 hold the `u16` method index only while
   `METADATA_DEFAULT_DISPATCH` is set. Without that flag they are reserved for
   future flags, and bits 20 and above are always free.
-- A vtable index must fit in `u16`, because the vtable header stores its slot
-  count as `u16`. `#[ffier(index = N)]` rejects values that do not fit.
+- A vtable index must leave room for the slot count to fit in `u16`, because
+  the vtable header stores that count as `u16`. The slot count is the highest
+  index plus one, so `#[ffier(index = N)]` accepts at most 65534 and rejects
+  65535 onward. `reserved(N)` follows the same rule.
 - A handle carrying no bits is caller-owned and inline. ffier only reads it.
 
 ## C side
