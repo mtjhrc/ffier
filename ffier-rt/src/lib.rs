@@ -159,26 +159,6 @@ pub fn ffier_handle_new<T>(tag: u32, value: T) -> *mut c_void {
     Box::into_raw(handle) as *mut c_void
 }
 
-/// Allocate a new owned handle with custom metadata (e.g. for vtable handles).
-///
-/// [`METADATA_FFIER_ALLOCATED`] is OR'd in automatically — callers must not
-/// include it. [`METADATA_INDIRECT`] is rejected because the value is stored
-/// inline, so the handle could not also be an indirect shell.
-#[inline]
-pub fn ffier_handle_new_with_metadata<T>(tag: u32, metadata: u32, value: T) -> *mut c_void {
-    debug_assert!(tag != 0, "type tag must be nonzero");
-    assert!(
-        metadata & METADATA_INDIRECT == 0,
-        "inline handles cannot be indirect: the value is stored in the handle"
-    );
-    let handle = Box::new(FfierHandle {
-        type_tag: tag,
-        metadata: metadata | METADATA_FFIER_ALLOCATED | METADATA_DROP_VALUE,
-        value,
-    });
-    Box::into_raw(handle) as *mut c_void
-}
-
 /// Allocate an indirect handle: stores a raw pointer to the real `T` in
 /// a 16-byte `FfierBorrowedHandle` (same header layout as `FfierHandle`).
 ///
