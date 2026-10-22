@@ -73,46 +73,47 @@ pub const METADATA_DROP_VALUE: u32 = 4;
 /// Metadata bit 3: the handle carries default-dispatch re-entry metadata
 /// for an exported trait method.
 ///
-/// This bit reserves bits 4 and above for the trait method index. The index
+/// This bit reserves bits 4 through 19 for the trait method index. The index
 /// field is defined only while this bit is set; when it is clear, those bits
-/// are available for other flags. Generated Rust client bindings use it to
-/// mark temporary vtable handles created for defaulted methods, so the bridge
-/// can call the library default helper instead of recursing back through the
-/// vtable.
+/// are available for other flags, and bits 20 and above are always free.
+/// Generated Rust client bindings use it to mark temporary vtable handles
+/// created for defaulted methods, so the bridge can call the library default
+/// helper instead of recursing back through the vtable.
 pub const METADATA_DEFAULT_DISPATCH: u32 = 8;
 
 /// Bit position where [`METADATA_DEFAULT_DISPATCH`] starts the method index
 /// field. Bits below this position stay independent flags.
 pub const METADATA_DEFAULT_DISPATCH_SHIFT: u32 = 4;
 
-/// Mask covering the bits reserved for the method index while
-/// [`METADATA_DEFAULT_DISPATCH`] is set.
-pub const METADATA_DEFAULT_DISPATCH_METHOD_MASK: u32 = u32::MAX << METADATA_DEFAULT_DISPATCH_SHIFT;
+/// Mask covering the method index field while [`METADATA_DEFAULT_DISPATCH`]
+/// is set. The field is `u16` wide, matching the vtable slot count.
+pub const METADATA_DEFAULT_DISPATCH_METHOD_MASK: u32 =
+    (u16::MAX as u32) << METADATA_DEFAULT_DISPATCH_SHIFT;
 
 /// Encode metadata for a temporary handle used by default-method self-dispatch.
 ///
-/// Panics when `method_index` does not fit in the reserved index field.
+/// Panics when `method_index` does not fit in the `u16` index field.
 #[inline]
 pub fn default_dispatch_metadata(method_index: usize) -> u32 {
-    let method_index = u32::try_from(method_index).expect("method index does not fit in u32");
-    assert!(
-        method_index <= (METADATA_DEFAULT_DISPATCH_METHOD_MASK >> METADATA_DEFAULT_DISPATCH_SHIFT),
-        "method index does not fit in the reserved metadata bits"
-    );
-    METADATA_DEFAULT_DISPATCH | (method_index << METADATA_DEFAULT_DISPATCH_SHIFT)
+    let method_index = u16::try_from(method_index).expect("method index does not fit in u16");
+    METADATA_DEFAULT_DISPATCH | (u32::from(method_index) << METADATA_DEFAULT_DISPATCH_SHIFT)
 }
 
 /// Decode the method index from default-dispatch metadata.
 ///
 /// Returns `None` when the handle metadata does not carry the
 /// [`METADATA_DEFAULT_DISPATCH`] flag, because the reserved bits only hold an
-/// index while that flag is set.
+/// index while that flag is set. The field is masked to `u16` so unrelated
+/// high bits cannot widen it.
 #[inline]
-pub fn default_dispatch_method_index(metadata: u32) -> Option<u32> {
+pub fn default_dispatch_method_index(metadata: u32) -> Option<u16> {
     if metadata & METADATA_DEFAULT_DISPATCH == 0 {
         None
     } else {
-        Some((metadata & METADATA_DEFAULT_DISPATCH_METHOD_MASK) >> METADATA_DEFAULT_DISPATCH_SHIFT)
+        Some(
+            ((metadata & METADATA_DEFAULT_DISPATCH_METHOD_MASK) >> METADATA_DEFAULT_DISPATCH_SHIFT)
+                as u16,
+        )
     }
 }
 

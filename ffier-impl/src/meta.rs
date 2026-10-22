@@ -750,8 +750,16 @@ impl syn::parse::Parse for MetaMethod {
                 parse_comma(input)?;
 
                 expect_key(input, "index")?;
-                let index: syn::LitInt = input.parse()?;
-                let index = index.base10_parse::<usize>()?;
+                let index_lit: syn::LitInt = input.parse()?;
+                let index = index_lit.base10_parse::<usize>()?;
+                // Slot count is index + 1, stored as u16 in the vtable header.
+                if index >= usize::from(u16::MAX) {
+                    return Err(syn::Error::new_spanned(
+                        index_lit,
+                        "vtable index must leave room for the slot count to fit \
+                         in u16, because the vtable header stores it as u16",
+                    ));
+                }
                 parse_comma(input)?;
 
                 expect_key(input, "raw_handle")?;

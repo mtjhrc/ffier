@@ -1967,7 +1967,15 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
             if meta.path.is_ident("index") {
                 let value = meta.value()?;
                 let lit: syn::LitInt = value.parse()?;
-                result.index = Some(lit.base10_parse::<usize>()?);
+                let index = lit.base10_parse::<usize>()?;
+                // Slot count is index + 1, stored as u16 in the vtable header.
+                if index >= usize::from(u16::MAX) {
+                    return Err(meta.error(
+                        "vtable index must leave room for the slot count to fit \
+                         in u16, because the vtable header stores it as u16",
+                    ));
+                }
+                result.index = Some(index);
             } else if meta.path.is_ident("raw_handle") {
                 result.raw_handle = true;
             } else if meta.path.is_ident("dispatch") {
@@ -2108,7 +2116,18 @@ impl Parse for ImplementableArgs {
                 syn::parenthesized!(content in input);
                 while !content.is_empty() {
                     let lit: syn::LitInt = content.parse()?;
-                    reserved.push(lit.base10_parse::<usize>()?);
+                    let slot = lit.base10_parse::<usize>()?;
+                    // Reserved slots also raise the slot count, which the
+                    // vtable header stores as u16.
+                    if slot >= usize::from(u16::MAX) {
+                        return Err(syn::Error::new_spanned(
+                            lit,
+                            "reserved vtable slot must leave room for the slot \
+                             count to fit in u16, because the vtable header \
+                             stores it as u16",
+                        ));
+                    }
+                    reserved.push(slot);
                     let _ = content.parse::<Token![,]>();
                 }
             } else if ident == "foreign" {

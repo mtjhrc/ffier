@@ -2161,7 +2161,9 @@ fn generate_self_dispatch_bridge(
         let pre_bindings = &cp.pre_bindings;
         let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
-        let method_index_u32 = m.index() as u32;
+        // Vtable indices are u16: the header stores its slot count as u16.
+        let method_index_u16 =
+            u16::try_from(m.index()).expect("vtable index must fit in u16 (checked at parse time)");
 
         // Default helper path for defaulted methods.
         let default_helper_path = if m.has_default() {
@@ -2207,7 +2209,7 @@ fn generate_self_dispatch_bridge(
                             quote! {
                                 let __metadata = unsafe { ffier::handle_metadata(handle) };
                                 if ffier::default_dispatch_method_index(__metadata)
-                                    == Some(#method_index_u32)
+                                    == Some(#method_index_u16)
                                 {
                                     #obj_for_default
                                     return { #default_body };

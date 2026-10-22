@@ -21,6 +21,11 @@
   value are separate decisions instead of one inferred from `METADATA_INDIRECT`.
   `METADATA_DEFAULT_DISPATCH` moves to bit 3 so its method index field starts
   at bit 4. Code reading the raw metadata field must use the new constants.
+- Bound vtable method indices to `u16`, matching the `u16` slot count in the
+  vtable header. `#[ffier(index = N)]` rejects larger values at compile time
+  instead of truncating the generated slot count and the metadata index field.
+  The default-dispatch metadata field is a `u16` index starting at bit 4, one
+  bit above the default-dispatch flag.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
