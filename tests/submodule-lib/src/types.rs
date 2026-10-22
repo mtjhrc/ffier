@@ -10,7 +10,7 @@ impl Default for Counter {
 }
 
 #[ffier::export]
-impl Counter {
+impl self::Counter {
     pub fn new() -> Self {
         Self { value: 0 }
     }

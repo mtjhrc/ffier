@@ -339,6 +339,32 @@ impl TypeRef {
 // Exported types (structs with #[ffier::export] methods)
 // ---------------------------------------------------------------------------
 
+/// Verified thread-safety guarantees for an opaque type or exported trait.
+/// These are independent: `Send` permits ownership transfer, while `Sync`
+/// permits sharing references. Neither guarantee relaxes lifetime requirements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadSafety {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub send: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sync: bool,
+}
+
+impl ThreadSafety {
+    pub fn is_empty(&self) -> bool {
+        !self.send && !self.sync
+    }
+
+    pub fn rust_bounds(self) -> impl Iterator<Item = &'static str> {
+        [
+            self.send.then_some("::core::marker::Send"),
+            self.sync.then_some("::core::marker::Sync"),
+        ]
+        .into_iter()
+        .flatten()
+    }
+}
+
 /// A struct exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedType {
@@ -350,6 +376,9 @@ pub struct ExportedType {
     /// by-value self methods in C take a pointer-to-handle so the bridge
     /// can update the handle in place.
     pub is_builder_type: bool,
+    /// Compiler-checked guarantees declared on the inherent export.
+    #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<Method>,
     /// `#[cfg(...)]` predicate gating this type (e.g. `"feature = \"x\""`,
     /// `"all(feature = \"a\", feature = \"b\")"`). `None` = unconditional.
@@ -457,6 +486,10 @@ pub enum ParamType {
         /// Lifetime on the reference, not on the callback value or trait.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ref_lifetime: Option<String>,
+        /// Explicit use-site marker bounds. Supported only when already
+        /// guaranteed by the exported trait's native supertraits.
+        #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+        thread_safety: ThreadSafety,
     },
 }
 
@@ -707,6 +740,10 @@ pub struct ImplementableTrait {
     /// Rust wrapper type name (e.g. `"VtableFruit"`).
     pub wrapper_name: String,
 
+    /// Requirements from explicit `Send`/`Sync` supertraits. Callback
+    /// implementations and foreign callers must uphold these guarantees.
+    #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
+    pub thread_safety: ThreadSafety,
     pub methods: Vec<Method>,
     /// Number of methods that belong to this trait (not supertrait methods).
     pub own_method_count: usize,
