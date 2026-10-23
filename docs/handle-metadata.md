@@ -128,6 +128,19 @@ owns a pointee reached through a pointer, which nothing constructs yet.
 `ffier_handle_drop` asserts on it rather than freeing the handle and leaking the
 pointee.
 
+## Where the code lives
+
+`ffier-rt` describes handles: the layouts, the metadata bits, and the
+read-only accessors (`handle_type_tag`, `handle_metadata`,
+`ffier_handle_borrow`, `ffier_handle_borrow_mut`, `ffier_object_array_get`).
+It performs no allocation, so it cannot pick the wrong allocator.
+
+Allocation and destruction live in the `ffier-bridge` crate:
+`ffier_handle_new`, `ffier_handle_new_borrowed`, `ffier_handle_consume`,
+`ffier_handle_drop`, and `ffier_object_array_free`. These decide which
+allocator is used, so only the library that allocates a handle may call them.
+The `ffier` facade re-exports them, so generated code keeps naming `ffier::`.
+
 ## How the runtime uses the bits
 
 `ffier_handle_borrow` / `ffier_handle_borrow_mut` read `INDIRECT` only. They

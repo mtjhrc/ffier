@@ -26,6 +26,15 @@
   instead of truncating the generated slot count and the metadata index field.
   The default-dispatch metadata field is a `u16` index starting at bit 4, one
   bit above the default-dispatch flag.
+- Move handle allocation and destruction out of `ffier-rt` into a new
+  `ffier-bridge` crate. `ffier_rt` now holds only layouts, metadata bits, and
+  read-only accessors, so it cannot allocate and cannot choose a mismatched
+  allocator. `ffier-bridge` provides `ffier_handle_new`,
+  `ffier_handle_new_borrowed`, `ffier_handle_consume`, `ffier_handle_drop`,
+  and `ffier_object_array_free`; the `ffier` facade re-exports them, so
+  `ffier::` call sites keep working, but `ffier_rt::` paths no longer resolve.
+  `FfierObjectArray` gains `items`, `len`, and `is_empty` accessors for readers
+  that must not free.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates

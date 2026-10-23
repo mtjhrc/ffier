@@ -1,0 +1,13 @@
+[package]
+name = "ffier-bridge"
+version = "0.2.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Handle allocation and destruction for ffier FFI bridges"
+
+[features]
+default = ["std"]
+std = ["ffier-rt/std"]
+
+[dependencies]
+ffier-rt = { path = "../ffier-rt" }

@@ -6,8 +6,16 @@ version = 4
 name = "ffier"
 version = "0.2.0"
 dependencies = [
+ "ffier-bridge",
  "ffier-builtins",
  "ffier-impl",
+ "ffier-rt",
+]
+
+[[package]]
+name = "ffier-bridge"
+version = "0.2.0"
+dependencies = [
  "ffier-rt",
 ]
 

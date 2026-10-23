@@ -9,12 +9,13 @@ The library API, ABI, and JSON schema are **not stable**. Breaking changes to an
 ## Architecture
 
 ```
-ffier              lib — re-exports ffier-impl + ffier-rt + ffier-builtins
+ffier              lib — re-exports ffier-impl + ffier-rt + ffier-bridge + ffier-builtins
 ffier-impl         proc-macro crate — all codegen
   src/lib.rs         #[export], #[derive(FfiError)], library_definition!, etc.
   src/meta.rs        metadata types (MetaMethod, etc.) + syn::Parse impls
   src/bridge.rs      extern "C" bridge generation + JSON schema emission
-ffier-rt           runtime types (FfierHandle, FfierBytes, VtableHandle, etc.)
+ffier-rt           handle layout, metadata bits, read-only accessors — no allocation
+ffier-bridge       handle allocation and destruction (Box::new / Box::from_raw)
 ffier-builtins     pre-annotated PushStr + Error traits
 ffier-schema       JSON schema types (serde) — read by generators
 ffier-gen-c-header     reads JSON → C header
