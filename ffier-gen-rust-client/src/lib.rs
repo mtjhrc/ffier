@@ -365,9 +365,13 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     writeln!(out).unwrap();
     writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
     writeln!(out, "    fn drop(&mut self) {{").unwrap();
+    // The array was allocated inside the library, so free it there. The
+    // runtime helper would reconstruct the allocation with this crate's
+    // allocator, which need not match.
     writeln!(
         out,
-        "        unsafe {{ ffier::ffier_object_array_free(self.raw) }};"
+        "        unsafe {{ {}_free_object_array(self.raw) }};",
+        lib.prefix
     )
     .unwrap();
     writeln!(out, "    }}").unwrap();
@@ -431,24 +435,30 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         emit_exported_type(&mut out, ty, lib, weak, &mut symbols);
     }
 
-    // Library-side vtable handle constructor. Callback values handed to a
-    // consuming parameter must be allocated by the library, so that the
-    // callee frees them with the allocator that created them.
+    // Library-side allocation helpers. Memory the library allocates must be
+    // freed by the library, so both of these are library symbols rather than
+    // ffier:: runtime helpers.
+    let mut alloc_fns = Vec::new();
     if lib.traits.iter().any(|tr| !tr.no_vtable) {
-        emit_extern_fns(
-            &mut out,
-            &[extern_fn_private(
-                &format!("{}_vtable_handle_new", lib.prefix),
-                vec![
-                    "type_tag: u32".to_string(),
-                    "vtable: *const core::ffi::c_void".to_string(),
-                    "user_data: *const core::ffi::c_void".to_string(),
-                ],
-                " -> *mut core::ffi::c_void".to_string(),
-            )],
-            weak,
-            &mut symbols,
-        );
+        alloc_fns.push(extern_fn_private(
+            &format!("{}_vtable_handle_new", lib.prefix),
+            vec![
+                "type_tag: u32".to_string(),
+                "vtable: *const core::ffi::c_void".to_string(),
+                "user_data: *const core::ffi::c_void".to_string(),
+            ],
+            " -> *mut core::ffi::c_void".to_string(),
+        ));
+    }
+    if lib.blessed(ffier_schema::Blessing::ObjectArray).is_some() {
+        alloc_fns.push(extern_fn_private(
+            &format!("{}_free_object_array", lib.prefix),
+            vec!["a: ffier::FfierObjectArray".to_string()],
+            String::new(),
+        ));
+    }
+    if !alloc_fns.is_empty() {
+        emit_extern_fns(&mut out, &alloc_fns, weak, &mut symbols);
     }
 
     // 3. Implementable traits
