@@ -37,9 +37,29 @@ pub fn generate(lib: &Library) -> String {
     generate_with_options(lib, &Options::default())
 }
 
+/// Whether the library has a function returning `&[T]` / `&[&T]`, which the
+/// bridge encodes as a `FfierObjectArray`. `ForeignSlice` and its free symbol
+/// are emitted only then, so a library without such returns carries neither.
+fn has_object_array_returns(lib: &Library) -> bool {
+    let returns = lib
+        .exported_types
+        .iter()
+        .flat_map(|ty| ty.methods.iter().map(|m| &m.ret))
+        .chain(
+            lib.traits
+                .iter()
+                .flat_map(|tr| tr.methods.iter().map(|m| &m.ret)),
+        )
+        .chain(lib.free_functions.iter().map(|f| &f.ret));
+    returns
+        .into_iter()
+        .any(|ret| matches!(ret, ffier_schema::Return::ObjectArray { .. }))
+}
+
 /// Generate complete Rust client source from a library schema with options.
 pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     let mut out = String::new();
+    let object_array_returns = has_object_array_returns(lib);
 
     // Emit imports for blessed types that need special std imports.
     // Each blessing contributes individual import symbols; collected and
@@ -303,80 +323,84 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         }
     }
 
-    // ForeignSlice — typed wrapper around FfierObjectArray
-    writeln!(
-        out,
-        "/// Borrowed slice of handles returned from FFI methods."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "/// Elements are borrowed — do NOT destroy them individually."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "/// Derefs to `&[T]`, so indexing, iteration, `len()`, etc. all work."
-    )
-    .unwrap();
-    writeln!(out, "/// Dropping this type frees the backing array.").unwrap();
-    writeln!(out, "pub struct ForeignSlice<T> {{").unwrap();
-    writeln!(out, "    raw: ffier::FfierObjectArray,").unwrap();
-    writeln!(out, "    elements: Box<[core::mem::ManuallyDrop<T>]>,").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "impl<T: FfiHandle> ForeignSlice<T> {{").unwrap();
-    writeln!(
-        out,
-        "    fn from_raw(raw: ffier::FfierObjectArray) -> Self {{"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            .map(|i| core::mem::ManuallyDrop::new(T::__from_raw("
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                unsafe {{ ffier::ffier_object_array_get(raw, i) }})))"
-    )
-    .unwrap();
-    writeln!(out, "            .collect();").unwrap();
-    writeln!(out, "        Self {{ raw, elements }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "impl<T> core::ops::Deref for ForeignSlice<T> {{").unwrap();
-    writeln!(out, "    type Target = [T];").unwrap();
-    writeln!(out, "    fn deref(&self) -> &[T] {{").unwrap();
-    writeln!(
-        out,
-        "        // SAFETY: ManuallyDrop<T> is #[repr(transparent)] over T."
-    )
-    .unwrap();
-    writeln!(out, "        unsafe {{ core::mem::transmute::<&[core::mem::ManuallyDrop<T>], &[T]>(&self.elements) }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
-    writeln!(out, "    fn drop(&mut self) {{").unwrap();
-    // The array was allocated inside the library, so free it there. The
-    // runtime helper would reconstruct the allocation with this crate's
-    // allocator, which need not match.
-    writeln!(
-        out,
-        "        unsafe {{ {}_free_object_array(self.raw) }};",
-        lib.prefix
-    )
-    .unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    // ForeignSlice — typed wrapper around FfierObjectArray. Only a library
+    // that returns handle slices needs it, so it is pruned along with its
+    // free symbol.
+    if object_array_returns {
+        writeln!(
+            out,
+            "/// Borrowed slice of handles returned from FFI methods."
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "/// Elements are borrowed — do NOT destroy them individually."
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "/// Derefs to `&[T]`, so indexing, iteration, `len()`, etc. all work."
+        )
+        .unwrap();
+        writeln!(out, "/// Dropping this type frees the backing array.").unwrap();
+        writeln!(out, "pub struct ForeignSlice<T> {{").unwrap();
+        writeln!(out, "    raw: ffier::FfierObjectArray,").unwrap();
+        writeln!(out, "    elements: Box<[core::mem::ManuallyDrop<T>]>,").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "impl<T: FfiHandle> ForeignSlice<T> {{").unwrap();
+        writeln!(
+            out,
+            "    fn from_raw(raw: ffier::FfierObjectArray) -> Self {{"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "        let elements: Box<[core::mem::ManuallyDrop<T>]> = (0..raw.len)"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "            .map(|i| core::mem::ManuallyDrop::new(T::__from_raw("
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "                unsafe {{ ffier::ffier_object_array_get(raw, i) }})))"
+        )
+        .unwrap();
+        writeln!(out, "            .collect();").unwrap();
+        writeln!(out, "        Self {{ raw, elements }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "impl<T> core::ops::Deref for ForeignSlice<T> {{").unwrap();
+        writeln!(out, "    type Target = [T];").unwrap();
+        writeln!(out, "    fn deref(&self) -> &[T] {{").unwrap();
+        writeln!(
+            out,
+            "        // SAFETY: ManuallyDrop<T> is #[repr(transparent)] over T."
+        )
+        .unwrap();
+        writeln!(out, "        unsafe {{ core::mem::transmute::<&[core::mem::ManuallyDrop<T>], &[T]>(&self.elements) }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "impl<T> Drop for ForeignSlice<T> {{").unwrap();
+        writeln!(out, "    fn drop(&mut self) {{").unwrap();
+        // The array was allocated inside the library, so free it there. The
+        // runtime helper would reconstruct the allocation with this crate's
+        // allocator, which need not match.
+        writeln!(
+            out,
+            "        unsafe {{ {}_free_object_array(self.raw) }};",
+            lib.prefix
+        )
+        .unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
 
     let weak = opts.weak;
     let mut symbols = Vec::new();
@@ -450,7 +474,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             " -> *mut core::ffi::c_void".to_string(),
         ));
     }
-    if lib.blessed(ffier_schema::Blessing::ObjectArray).is_some() {
+    if object_array_returns {
         alloc_fns.push(extern_fn_private(
             &format!("{}_free_object_array", lib.prefix),
             vec!["a: ffier::FfierObjectArray".to_string()],
