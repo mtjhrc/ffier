@@ -8,6 +8,33 @@ use std::os::windows::io::{AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 #[derive(Default)]
 pub struct HandleApi;
 
+#[cfg(feature = "owner-api")]
+#[derive(Default)]
+pub struct OptionalApi;
+
+#[ffier::export(cfg = "feature = \"owner-api\"")]
+impl OptionalApi {
+    #[cfg(unix)]
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[cfg(windows)]
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[cfg(all(unix, feature = "owner-api"))]
+    pub fn resource(&self, fd: BorrowedFd<'_>) -> RawFd {
+        fd.as_raw_fd()
+    }
+
+    #[cfg(windows)]
+    pub fn resource(&self, handle: BorrowedHandle<'_>) -> RawHandle {
+        handle.as_raw_handle()
+    }
+}
+
 #[cfg(windows)]
 #[derive(Default)]
 pub struct WindowsValue;
@@ -203,6 +230,78 @@ impl HandleApi {
             callback.number(file.as_handle())
         }
     }
+
+    #[cfg(feature = "wide")]
+    pub fn feature_width(&self, value: i64) -> i64 {
+        value + 8
+    }
+
+    #[cfg(not(feature = "wide"))]
+    pub fn feature_width(&self, value: i32) -> i32 {
+        value + 4
+    }
+
+    pub fn through_feature_callback(callback: &impl FeatureConsumer) -> usize {
+        callback.width(123) as usize
+    }
+}
+
+#[ffier::export]
+pub trait FeatureConsumer {
+    #[cfg(feature = "wide")]
+    #[ffier(index = 0)]
+    fn width(&self, value: i64) -> i64 {
+        value + 8
+    }
+
+    #[cfg(not(feature = "wide"))]
+    #[ffier(index = 0)]
+    fn width(&self, value: i32) -> i32 {
+        value + 4
+    }
+}
+
+#[ffier::export]
+impl FeatureConsumer for HandleApi {
+    #[cfg(feature = "wide")]
+    fn width(&self, value: i64) -> i64 {
+        value + 16
+    }
+}
+
+#[ffier::export(cfg = "all(feature = \"owner-api\", feature = \"wide\")")]
+impl FeatureConsumer for OptionalApi {
+    fn width(&self, value: i64) -> i64 {
+        value + 16
+    }
+}
+
+#[ffier::export]
+pub trait PlatformDefaults {
+    #[cfg(all(unix, feature = "owner-api"))]
+    #[ffier(index = 0)]
+    fn platform_value(&self) -> usize {
+        1
+    }
+
+    #[cfg(windows)]
+    #[ffier(index = 0)]
+    fn platform_value(&self) -> usize {
+        11
+    }
+}
+
+#[ffier::export(cfg = "feature = \"owner-api\"")]
+impl PlatformDefaults for HandleApi {
+    #[cfg(unix)]
+    fn platform_value(&self) -> usize {
+        77
+    }
+
+    #[cfg(windows)]
+    fn platform_value(&self) -> usize {
+        77
+    }
 }
 
 #[ffier::export]
@@ -225,7 +324,12 @@ pub trait HandleConsumer {
 }
 
 ffier::library_definition!("windows_handles", library_tag = 1,
-    HandleApi = 1, trait HandleConsumer = 2,
+    HandleApi = 1, trait HandleConsumer = 2, trait FeatureConsumer = 5,
+    FeatureConsumer for HandleApi,
+    #[cfg(all(feature = "owner-api", feature = "wide"))]
+    FeatureConsumer for OptionalApi,
+    trait PlatformDefaults = 7, PlatformDefaults for HandleApi,
+    #[cfg(feature = "owner-api")] OptionalApi = 6,
     #[cfg(windows)] WindowsValue = 3,
     #[cfg(unix)] UnixValue = 4,
     #[cfg(windows)] fn windows_value,

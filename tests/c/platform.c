@@ -4,8 +4,10 @@
 void check_platform_signatures(void) {
 #ifdef FFIER_CFG_FEATURE_WIDE
     int64_t (*width)(int64_t) = windows_handles_feature_width;
+    int64_t (*method_width)(WindowsHandlesHandleApi, int64_t) = windows_handles_handle_api_feature_width;
 #else
     int32_t (*width)(int32_t) = windows_handles_feature_width;
+    int32_t (*method_width)(WindowsHandlesHandleApi, int32_t) = windows_handles_handle_api_feature_width;
 #endif
     int32_t (*generated)(void) = windows_handles_generated_value;
     int32_t (*conditional)(void) = windows_handles_conditional_export;
@@ -30,6 +32,7 @@ void check_platform_signatures(void) {
     (void)take;
     (void)callback;
     (void)width;
+    (void)method_width;
     (void)generated;
     (void)conditional;
 }

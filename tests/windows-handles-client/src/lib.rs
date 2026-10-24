@@ -10,6 +10,11 @@ mod tests {
     use super::*;
 
     fn init() {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(init_inner);
+    }
+
+    fn init_inner() {
         #[cfg(not(feature = "strong"))]
         {
             let library = unsafe { libloading::Library::new(env!("HANDLE_LIBRARY")) }.unwrap();
@@ -29,6 +34,9 @@ mod tests {
                 Symbol::WindowsHandlesConditionalExport,
                 Symbol::WindowsHandlesGeneratedValue,
                 Symbol::WindowsHandlesHandleApiNew,
+                Symbol::WindowsHandlesHandleApiFeatureWidth,
+                Symbol::WindowsHandlesHandleApiThroughFeatureCallback,
+                Symbol::WindowsHandlesFeatureConsumerWidth,
                 Symbol::WindowsHandlesHandleApiDestroy,
                 Symbol::WindowsHandlesHandleApiResource,
                 Symbol::WindowsHandlesHandleApiOptionalRaw,
@@ -55,10 +63,39 @@ mod tests {
                 Symbol::WindowsHandlesWindowsValue,
             ]);
             require(&symbols).unwrap();
+            #[cfg(feature = "wide")]
+            require(&[Symbol::WindowsHandlesHandleApiWidth]).unwrap();
             #[cfg(unix)]
             assert!(!Symbol::WindowsHandlesWindowsValueNew.is_available());
             #[cfg(windows)]
             assert!(!Symbol::WindowsHandlesUnixValueNew.is_available());
+        }
+    }
+
+    #[cfg(all(feature = "test-owner", not(feature = "strong")))]
+    #[test]
+    fn optional_owner_is_discovered_without_its_cargo_feature() {
+        init();
+        require(&[
+            Symbol::WindowsHandlesOptionalApiNew,
+            Symbol::WindowsHandlesOptionalApiDestroy,
+            Symbol::WindowsHandlesOptionalApiResource,
+            Symbol::WindowsHandlesHandleApiPlatformValue,
+        ])
+        .unwrap();
+        let api = OptionalApi::default();
+        assert!(!cfg!(feature = "owner-api"));
+        assert_eq!(PlatformDefaults::platform_value(&HandleApi::new()), 77);
+        let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsFd, AsRawFd};
+            assert_eq!(api.resource(file.as_fd()), file.as_raw_fd());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{AsHandle, AsRawHandle};
+            assert_eq!(api.resource(file.as_handle()), file.as_raw_handle());
         }
     }
 
@@ -69,8 +106,9 @@ mod tests {
         assert_eq!(generated_value(), 1);
         #[cfg(feature = "wide")]
         {
-            let value: i64 = feature_width(123);
-            assert_eq!(value, 131);
+            let input = 0x1_0000_007b_i64;
+            let value: i64 = feature_width(input);
+            assert_eq!(value, input + 8);
         }
         #[cfg(not(feature = "wide"))]
         {
@@ -78,6 +116,33 @@ mod tests {
             assert_eq!(value, 127);
         }
         let api = HandleApi::new();
+        struct DefaultFeatureConsumer;
+        impl FeatureConsumer for DefaultFeatureConsumer {}
+        #[cfg(feature = "wide")]
+        {
+            let input = 0x1_0000_007b_i64;
+            let value: i64 = api.feature_width(input);
+            assert_eq!(value, input + 8);
+            assert_eq!(FeatureConsumer::width(&api, input), input + 16);
+            assert_eq!(
+                FeatureConsumer::width(&DefaultFeatureConsumer, input),
+                input + 8
+            );
+            assert_eq!(
+                HandleApi::through_feature_callback(DefaultFeatureConsumer),
+                131
+            );
+        }
+        #[cfg(not(feature = "wide"))]
+        {
+            let value: i32 = api.feature_width(123);
+            assert_eq!(value, 127);
+            assert_eq!(FeatureConsumer::width(&api, 123), 127);
+            assert_eq!(
+                HandleApi::through_feature_callback(DefaultFeatureConsumer),
+                127
+            );
+        }
         let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         #[cfg(unix)]
         {

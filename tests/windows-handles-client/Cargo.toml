@@ -8,6 +8,8 @@ publish = false
 default = ["strong"]
 strong = []
 wide = ["ffier-test-windows-handles/wide"]
+owner-api = ["ffier-test-windows-handles/owner-api"]
+test-owner = []
 dynlookup = ["dep:libloading"]
 
 [dependencies]

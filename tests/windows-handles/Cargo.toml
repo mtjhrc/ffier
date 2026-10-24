@@ -6,6 +6,7 @@ publish = false
 
 [features]
 wide = []
+owner-api = []
 
 [dependencies]
 ffier = { path = "../../ffier" }

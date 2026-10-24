@@ -30,22 +30,85 @@ use std::fmt::Write;
 
 /// Always enforce platform restrictions. Dynamic clients discover optional
 /// Cargo-feature API at runtime independently of the consumer's features.
-fn binding_cfg(cfg: &ffier_schema::Cfg, strict: bool) -> String {
-    if strict {
-        cfg.to_string()
-    } else {
-        cfg::client_cfg(cfg)
-    }
+fn binding_cfg(cfg: &ffier_schema::Cfg, signature_features: &HashSet<String>) -> String {
+    cfg::client_cfg_for_signature(cfg, signature_features)
 }
 
-fn emit_cfg_attr_with_policy(out: &mut String, cfg: Option<&ffier_schema::Cfg>, strict: bool) {
+fn emit_cfg_attr_with_policy(
+    out: &mut String,
+    cfg: Option<&ffier_schema::Cfg>,
+    signature_features: &HashSet<String>,
+) {
+    emit_rendered_cfg(
+        out,
+        cfg.map(|pred| binding_cfg(pred, signature_features))
+            .as_deref(),
+    );
+}
+
+fn emit_rendered_cfg(out: &mut String, cfg: Option<&str>) {
     if let Some(pred) = cfg {
-        writeln!(out, "#[cfg({})]", binding_cfg(pred, strict)).unwrap();
+        writeln!(out, "#[cfg({pred})]").unwrap();
     }
 }
 
 fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
-    emit_cfg_attr_with_policy(out, cfg, false);
+    emit_cfg_attr_with_policy(out, cfg, &HashSet::new());
+}
+
+fn method_signature_features(method: &Method, lib: &Library) -> HashSet<String> {
+    let methods = lib
+        .exported_types
+        .iter()
+        .flat_map(|ty| ty.methods.iter().map(move |m| (ty.cfg.as_ref(), m)))
+        .chain(
+            lib.traits
+                .iter()
+                .flat_map(|tr| tr.methods.iter().map(move |m| (tr.cfg.as_ref(), m))),
+        )
+        .chain(
+            lib.trait_impls
+                .iter()
+                .flat_map(|ti| ti.methods.iter().map(move |m| (ti.cfg.as_ref(), m))),
+        );
+    let alternatives: Vec<_> = methods
+        .filter(|(_, other)| other.ffi_name == method.ffi_name)
+        .map(|(owner, m)| cfg::combine(owner, m.cfg.as_ref()))
+        .collect();
+    let mut features = cfg::signature_features(alternatives.iter().map(Option::as_ref));
+    // Concrete overrides must agree with feature-selected trait signatures.
+    // Features that only enable an override remain runtime discoverable.
+    for ti in &lib.trait_impls {
+        if !ti.methods.iter().any(|m| m.ffi_name == method.ffi_name) {
+            continue;
+        }
+        if let Some(tr) = lib.traits.iter().find(|tr| tr.name == ti.trait_name) {
+            let alternatives: Vec<_> = tr
+                .methods
+                .iter()
+                .filter(|m| m.name == method.name)
+                .map(|m| cfg::combine(tr.cfg.as_ref(), m.cfg.as_ref()))
+                .collect();
+            features.extend(cfg::signature_features(
+                alternatives.iter().map(Option::as_ref),
+            ));
+        }
+    }
+    features
+}
+
+fn emit_method_cfg(
+    out: &mut String,
+    method: &Method,
+    owner: Option<&ffier_schema::Cfg>,
+    lib: &Library,
+) {
+    let effective = cfg::combine(owner, method.cfg.as_ref());
+    emit_cfg_attr_with_policy(
+        out,
+        effective.as_ref(),
+        &method_signature_features(method, lib),
+    );
 }
 
 /// Resolve dependencies before any argument or receiver loses Rust ownership.
@@ -1246,21 +1309,30 @@ fn emit_exported_type(
     emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
+        emit_method_wrapper(
+            out,
+            m,
+            &m.ffi_name,
+            ty.is_builder_type,
+            has_lifetimes,
+            ty.cfg.as_ref(),
+            lib,
+        );
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
     // Default — emit if there's a zero-param `new()` static constructor returning Self
-    let default_new = ty.methods.iter().find(|m| {
-        m.name == "new"
+    let default_new = ty.methods.iter().filter(|m| {
+        !has_lifetimes
+            && m.name == "new"
             && m.receiver == Receiver::None
             && m.params.is_empty()
             && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
     });
-    if !has_lifetimes && let Some(new) = default_new {
+    for new in default_new {
         emit_cfg_attr(out, ty.cfg.as_ref());
-        emit_cfg_attr(out, new.cfg.as_ref());
+        emit_method_cfg(out, new, ty.cfg.as_ref(), lib);
         writeln!(
             out,
             "impl Default for {} {{ fn default() -> Self {{ Self::new() }} }}",
@@ -1290,9 +1362,10 @@ fn emit_method_wrapper(
     ffi_name: &str,
     is_builder_type: bool,
     has_lifetimes: bool,
+    owner: Option<&ffier_schema::Cfg>,
     lib: &Library,
 ) {
-    emit_cfg_attr(out, m.cfg.as_ref());
+    emit_method_cfg(out, m, owner, lib);
 
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
@@ -1614,12 +1687,12 @@ fn emit_method_body(
 fn emit_error_trait_externs(
     out: &mut String,
     tr: &ImplementableTrait,
-    _lib: &Library,
+    lib: &Library,
     symbols: &mut Vec<SymbolInfo>,
 ) {
     let mut fns = Vec::new();
     for m in &tr.methods {
-        fns.push(extern_fn_from_dispatch(&m.ffi_name, m));
+        fns.push(extern_fn_from_dispatch(&m.ffi_name, m, lib));
     }
     // Destroy
     fns.push(extern_fn(
@@ -1672,7 +1745,7 @@ fn emit_implementable_trait(
             continue;
         };
 
-        emit_cfg_attr(out, m.cfg.as_ref());
+        emit_method_cfg(out, m, tr.cfg.as_ref(), lib);
         let method_sig = build_trait_method_sig(m, lib);
 
         if td.has_default {
@@ -1709,7 +1782,7 @@ fn emit_implementable_trait(
         "    fn __ffier_vtable() -> &'static {vtable_name} where Self: Sized {{"
     )
     .unwrap();
-    emit_vtable_constructor(out, tr);
+    emit_vtable_constructor(out, tr, lib);
     writeln!(out, "    }}").unwrap();
 
     // __into_raw_handle
@@ -1780,7 +1853,7 @@ fn emit_implementable_trait(
             if !td.has_default {
                 return None;
             }
-            Some(extern_fn_from_dispatch(&m.ffi_name, m))
+            Some(extern_fn_from_dispatch(&m.ffi_name, m, lib))
         })
         .collect();
     if !default_fns.is_empty() {
@@ -1875,12 +1948,7 @@ fn emit_default_dispatch_body(
     emit_ffi_call_return(out, &dispatch_fn, &args_str, &m.ret, "        ", lib);
 }
 
-fn emit_vtable_struct(
-    out: &mut String,
-    tr: &ImplementableTrait,
-    _lib: &Library,
-    vtable_name: &str,
-) {
+fn emit_vtable_struct(out: &mut String, tr: &ImplementableTrait, lib: &Library, vtable_name: &str) {
     emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "#[repr(C)]").unwrap();
     writeln!(out, "pub struct {vtable_name} {{").unwrap();
@@ -1910,7 +1978,7 @@ fn emit_vtable_struct(
     for slot in 0..tr.num_slots {
         if let Some(methods) = method_by_index.get(&slot) {
             for m in methods {
-                emit_cfg_attr(out, m.cfg.as_ref());
+                emit_method_cfg(out, m, tr.cfg.as_ref(), lib);
                 let mut params = vec!["*mut core::ffi::c_void".to_string()];
                 push_extern_param_types(&m.params, &mut params);
                 let ret = push_return_and_out_param_types(&m.ret, &mut params);
@@ -1926,7 +1994,12 @@ fn emit_vtable_struct(
                 let cfg = ffier_schema::Cfg::Any(
                     methods.iter().map(|m| m.cfg.clone().unwrap()).collect(),
                 );
-                let cfg = cfg::client_cfg(&cfg);
+                let features = methods
+                    .iter()
+                    .flat_map(|m| method_signature_features(m, lib))
+                    .collect();
+                let effective = cfg::combine(tr.cfg.as_ref(), Some(&cfg)).unwrap();
+                let cfg = binding_cfg(&effective, &features);
                 writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(
                     out,
@@ -1947,7 +2020,7 @@ fn emit_vtable_struct(
     writeln!(out).unwrap();
 }
 
-fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
+fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let vtable_name = &tr.vtable_struct_name;
     let num_slots = u16::try_from(tr.num_slots).expect("num_slots exceeds u16::MAX");
 
@@ -1978,7 +2051,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     for slot in 0..tr.num_slots {
         if let Some(methods) = method_by_index.get(&slot) {
             for m in methods {
-                emit_cfg_attr(out, m.cfg.as_ref());
+                emit_method_cfg(out, m, tr.cfg.as_ref(), lib);
                 let is_mut = m.receiver == Receiver::Mut;
                 let borrow = if is_mut { "&mut *" } else { "&*" };
 
@@ -2150,7 +2223,12 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                 let cfg = ffier_schema::Cfg::Any(
                     methods.iter().map(|m| m.cfg.clone().unwrap()).collect(),
                 );
-                let cfg = cfg::client_cfg(&cfg);
+                let features = methods
+                    .iter()
+                    .flat_map(|m| method_signature_features(m, lib))
+                    .collect();
+                let effective = cfg::combine(tr.cfg.as_ref(), Some(&cfg)).unwrap();
+                let cfg = binding_cfg(&effective, &features);
                 writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(out, "            __reserved_{slot}: None,").unwrap();
             }
@@ -2184,7 +2262,7 @@ fn emit_trait_impl(
     let fns: Vec<ExternFn> = ti
         .methods
         .iter()
-        .map(|m| extern_fn_from_dispatch(&m.ffi_name, m))
+        .map(|m| extern_fn_from_dispatch(&m.ffi_name, m, lib))
         .collect();
     emit_extern_fns(out, &fns, ti.cfg.as_ref(), symbols);
 
@@ -2224,7 +2302,19 @@ fn emit_trait_impl(
         String::new()
     };
 
-    emit_cfg_attr(out, ti.cfg.as_ref());
+    let features = ti
+        .methods
+        .iter()
+        .flat_map(|m| method_signature_features(m, lib))
+        .chain(
+            lib.traits
+                .iter()
+                .filter(|tr| tr.name == ti.trait_name)
+                .flat_map(|tr| &tr.methods)
+                .flat_map(|m| method_signature_features(m, lib)),
+        )
+        .collect();
+    emit_cfg_attr_with_policy(out, ti.cfg.as_ref(), &features);
     writeln!(
         out,
         "impl{impl_generics} {}{trait_args} for {}{struct_args} {{",
@@ -2236,7 +2326,7 @@ fn emit_trait_impl(
     let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
 
     for m in &ti.methods {
-        emit_cfg_attr(out, m.cfg.as_ref());
+        emit_method_cfg(out, m, ti.cfg.as_ref(), lib);
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
         emit_call_preflight(out, &m.ffi_name, &m.params, "        ");
@@ -2263,7 +2353,13 @@ fn emit_trait_impl(
             if impl_method_names.contains(dm.name.as_str()) {
                 continue;
             }
-            emit_cfg_attr(out, dm.cfg.as_ref());
+            let trait_cfg = lib
+                .traits
+                .iter()
+                .find(|tr| tr.name == ti.trait_name)
+                .and_then(|tr| tr.cfg.as_ref());
+            let owner = cfg::combine(ti.cfg.as_ref(), trait_cfg);
+            emit_method_cfg(out, dm, owner.as_ref(), lib);
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
             emit_call_preflight(out, &dm.ffi_name, &dm.params, "        ");
@@ -2339,7 +2435,7 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
     emit_cfg_attr(out, cfg);
     writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
     for m in &ti.methods {
-        emit_cfg_attr(out, m.cfg.as_ref());
+        emit_method_cfg(out, m, cfg, lib);
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig};").unwrap();
     }
@@ -2377,7 +2473,7 @@ struct ExternFn {
     public: bool,
     /// `#[cfg(...)]` predicate. `None` = unconditional.
     cfg: Option<ffier_schema::Cfg>,
-    strict_cfg: bool,
+    signature_features: HashSet<String>,
 }
 
 /// Build a `pub` `ExternFn` from a name, param list, and return string.
@@ -2388,7 +2484,7 @@ fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         ret,
         public: true,
         cfg: None,
-        strict_cfg: false,
+        signature_features: HashSet::new(),
     }
 }
 
@@ -2405,7 +2501,7 @@ fn extern_fn_cfg(
         ret,
         public: true,
         cfg,
-        strict_cfg: false,
+        signature_features: HashSet::new(),
     }
 }
 
@@ -2417,7 +2513,7 @@ fn extern_fn_private(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         ret,
         public: false,
         cfg: None,
-        strict_cfg: false,
+        signature_features: HashSet::new(),
     }
 }
 
@@ -2436,18 +2532,22 @@ fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn 
     }
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, is_builder);
-    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
+    let mut declaration = extern_fn_cfg(ffi_name, params, ret, m.cfg.clone());
+    declaration.signature_features = method_signature_features(m, lib);
+    declaration
 }
 
 /// Build an `ExternFn` from a dispatch method signature.
-fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
+fn extern_fn_from_dispatch(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn {
     let mut params = vec![format!(
         "{}: *mut core::ffi::c_void",
         fresh_local("handle", &m.params)
     )];
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, false);
-    extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
+    let mut declaration = extern_fn_cfg(ffi_name, params, ret, m.cfg.clone());
+    declaration.signature_features = method_signature_features(m, lib);
+    declaration
 }
 
 /// Build an `ExternFn` from a free function.
@@ -2483,8 +2583,7 @@ fn emit_extern_fns(
     }
     writeln!(out, "}}\n").unwrap();
     for f in fns {
-        let cfg = cfg::combine(cfg, f.cfg.as_ref());
-        emit_dynlookup_shim(out, f, cfg.as_ref(), symbols);
+        emit_dynlookup_shim(out, f, cfg, symbols);
     }
 }
 
@@ -2592,7 +2691,7 @@ impl Symbol {
         for s in &variants {
             let upper = &s.upper;
             let fn_ptr_type = &s.fn_ptr_type;
-            emit_cfg_attr_with_policy(out, s.cfg.as_ref(), s.strict_cfg);
+            emit_rendered_cfg(out, s.cfg.as_deref());
             writeln!(out, "                {{").unwrap();
             writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
             writeln!(
@@ -2606,7 +2705,7 @@ impl Symbol {
         if variants.iter().all(|s| s.cfg.is_some()) {
             let predicates = variants
                 .iter()
-                .map(|s| binding_cfg(s.cfg.as_ref().unwrap(), s.strict_cfg))
+                .map(|s| s.cfg.as_deref().unwrap())
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(out, "                #[cfg(not(any({predicates})))]").unwrap();
@@ -2784,8 +2883,8 @@ struct SymbolInfo {
     upper: String,
     /// fn pointer type string (e.g. `"unsafe extern \"C\" fn() -> *mut c_void"`)
     fn_ptr_type: String,
-    cfg: Option<ffier_schema::Cfg>,
-    strict_cfg: bool,
+    /// Fully rendered predicate, shared by the cache, shim, and loader arm.
+    cfg: Option<String>,
 }
 
 /// Emit a single dynlookup-binding shim: OnceLock + shim fn.
@@ -2793,7 +2892,7 @@ struct SymbolInfo {
 fn emit_dynlookup_shim(
     out: &mut String,
     f: &ExternFn,
-    cfg: Option<&ffier_schema::Cfg>,
+    owner_cfg: Option<&ffier_schema::Cfg>,
     symbols: &mut Vec<SymbolInfo>,
 ) {
     let name = &f.name;
@@ -2818,8 +2917,20 @@ fn emit_dynlookup_shim(
         .collect();
     let args_str = arg_names.join(", ");
 
+    // Signature alternatives select an ABI. The containing type's feature
+    // still describes optional API discoverable at runtime in dynamic mode.
+    let cfg = match (
+        owner_cfg.map(|cfg| binding_cfg(cfg, &f.signature_features)),
+        f.cfg
+            .as_ref()
+            .map(|cfg| binding_cfg(cfg, &f.signature_features)),
+    ) {
+        (Some(owner), Some(method)) => Some(format!("all({owner}, {method})")),
+        (owner, method) => owner.or(method),
+    };
+
     // OnceLock
-    emit_cfg_attr_with_policy(out, cfg, f.strict_cfg);
+    emit_rendered_cfg(out, cfg.as_deref());
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(
         out,
@@ -2828,7 +2939,7 @@ fn emit_dynlookup_shim(
     .unwrap();
 
     // Shim function
-    emit_cfg_attr_with_policy(out, cfg, f.strict_cfg);
+    emit_rendered_cfg(out, cfg.as_deref());
     let vis = if f.public { "pub " } else { "" };
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
@@ -2852,8 +2963,7 @@ fn emit_dynlookup_shim(
         c_name: name.clone(),
         upper: upper.clone(),
         fn_ptr_type,
-        cfg: cfg.cloned(),
-        strict_cfg: f.strict_cfg,
+        cfg,
     });
 
     writeln!(out).unwrap();
@@ -3360,17 +3470,17 @@ fn emit_free_function(
     symbols: &mut Vec<SymbolInfo>,
 ) {
     // Same-symbol alternatives select an ABI, rather than optional symbols.
-    let strict = lib
-        .free_functions
-        .iter()
-        .filter(|other| other.ffi_name == f.ffi_name)
-        .count()
-        > 1;
+    let features = cfg::signature_features(
+        lib.free_functions
+            .iter()
+            .filter(|other| other.ffi_name == f.ffi_name)
+            .map(|other| other.cfg.as_ref()),
+    );
     let mut declaration = extern_fn_from_free(f);
-    declaration.strict_cfg = strict;
+    declaration.signature_features = features.clone();
     emit_extern_fns(out, &[declaration], None, symbols);
 
-    emit_cfg_attr_with_policy(out, f.cfg.as_ref(), strict);
+    emit_cfg_attr_with_policy(out, f.cfg.as_ref(), &features);
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();
