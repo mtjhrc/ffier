@@ -26,9 +26,11 @@ pub fn expression(cfg: &Cfg) -> String {
             match (key.as_str(), value.as_str()) {
                 ("target_os" | "target_family", "windows") => return "defined(_WIN32)".into(),
                 ("target_family", "unix") => return expression(&Cfg::Flag("unix".into())),
-                ("target_os", "linux") => return "defined(__linux__)".into(),
+                ("target_os", "linux") => {
+                    return "(defined(__linux__) && !defined(__ANDROID__))".into();
+                }
                 ("target_os", "macos") => {
-                    return "(defined(__APPLE__) && defined(__MACH__))".into();
+                    return "(defined(__APPLE__) && TARGET_OS_OSX)".into();
                 }
                 ("target_os", "freebsd") => return "defined(__FreeBSD__)".into(),
                 ("target_os", "openbsd") => return "defined(__OpenBSD__)".into(),
@@ -78,5 +80,64 @@ pub fn start(out: &mut String, cfg: Option<&Cfg>) {
 pub fn end(out: &mut String, cfg: Option<&Cfg>) {
     if cfg.is_some() {
         out.push_str("#endif\n");
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{
+        io::Write,
+        process::{Command, Stdio},
+    };
+
+    #[test]
+    fn exact_os_guards_distinguish_android_and_apple_mobile_targets() {
+        for (os, defines, enabled) in [
+            ("linux", vec!["__linux__"], true),
+            ("linux", vec!["__linux__", "__ANDROID__"], false),
+            (
+                "macos",
+                vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=1"],
+                true,
+            ),
+            (
+                "macos",
+                vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=0"],
+                false,
+            ),
+        ] {
+            let predicate = Cfg::Value {
+                key: "target_os".into(),
+                value: os.into(),
+            };
+            for (predicate, expected) in [
+                (predicate.clone(), enabled),
+                (Cfg::Not(Box::new(predicate)), !enabled),
+            ] {
+                let mut compiler = Command::new("cc");
+                compiler.args(["-E", "-P", "-undef", "-x", "c", "-"]);
+                for define in &defines {
+                    compiler.arg(format!("-D{define}"));
+                }
+                let mut child = compiler
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                writeln!(
+                    child.stdin.take().unwrap(),
+                    "#if {}\nenabled\n#else\ndisabled\n#endif",
+                    expression(&predicate)
+                )
+                .unwrap();
+                let output = child.wait_with_output().unwrap();
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap().trim(),
+                    if expected { "enabled" } else { "disabled" }
+                );
+            }
+        }
     }
 }

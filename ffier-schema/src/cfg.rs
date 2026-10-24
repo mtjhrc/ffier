@@ -43,34 +43,37 @@ impl<'de> Deserialize<'de> for Cfg {
                 let key: String = map
                     .next_key()?
                     .ok_or_else(|| M::Error::custom("empty cfg"))?;
-                let predicate = match key.as_str() {
-                    "all" => Cfg::All(map.next_value()?),
-                    "any" => Cfg::Any(map.next_value()?),
-                    "not" => Cfg::Not(map.next_value()?),
-                    _ => {
-                        if key.is_empty()
-                            || !key.bytes().enumerate().all(|(i, b)| {
-                                b == b'_'
-                                    || b.is_ascii_alphabetic()
-                                    || (i > 0 && b.is_ascii_digit())
-                            })
-                        {
-                            return Err(M::Error::custom("invalid cfg predicate name"));
+                if !key.chars().enumerate().all(|(i, c)| {
+                    c == '_'
+                        || if i == 0 {
+                            unicode_ident::is_xid_start(c)
+                        } else {
+                            unicode_ident::is_xid_continue(c)
                         }
-                        #[derive(Deserialize)]
-                        #[serde(untagged)]
-                        enum Leaf {
-                            Flag(bool),
-                            Value(String),
-                        }
-                        match map.next_value()? {
-                            Leaf::Flag(true) => Cfg::Flag(key),
-                            Leaf::Flag(false) => {
-                                return Err(M::Error::custom("use not for negation"));
-                            }
-                            Leaf::Value(value) => Cfg::Value { key, value },
-                        }
+                }) || key.is_empty()
+                {
+                    return Err(M::Error::custom("invalid cfg predicate name"));
+                }
+                #[derive(Deserialize)]
+                #[serde(untagged)]
+                enum Value {
+                    Flag(bool),
+                    String(String),
+                    Operands(Vec<Cfg>),
+                    Operand(Box<Cfg>),
+                }
+                let predicate = match (key.as_str(), map.next_value::<Value>()?) {
+                    // Operator names are also legal custom cfg names. The
+                    // payload shape distinguishes an operator from a leaf.
+                    ("all", Value::Operands(items)) => Cfg::All(items),
+                    ("any", Value::Operands(items)) => Cfg::Any(items),
+                    ("not", Value::Operand(item)) => Cfg::Not(item),
+                    (_, Value::Flag(true)) => Cfg::Flag(key),
+                    (_, Value::Flag(false)) => {
+                        return Err(M::Error::custom("use not for negation"));
                     }
+                    (_, Value::String(value)) => Cfg::Value { key, value },
+                    _ => return Err(M::Error::custom("invalid cfg predicate payload")),
                 };
                 if map.next_key::<String>()?.is_some() {
                     return Err(M::Error::custom(
@@ -88,8 +91,11 @@ impl<'de> Deserialize<'de> for Cfg {
 impl fmt::Display for Cfg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Flag(key) => f.write_str(key),
-            Self::Value { key, value } => write!(f, "{key} = {value:?}"),
+            Self::Flag(key) => write_key(f, key),
+            Self::Value { key, value } => {
+                write_key(f, key)?;
+                write!(f, " = {value:?}")
+            }
             Self::All(items) | Self::Any(items) => {
                 f.write_str(if matches!(self, Self::All(_)) {
                     "all("
@@ -107,4 +113,60 @@ impl fmt::Display for Cfg {
             Self::Not(item) => write!(f, "not({item})"),
         }
     }
+}
+
+fn write_key(f: &mut fmt::Formatter<'_>, key: &str) -> fmt::Result {
+    if matches!(
+        key,
+        "as" | "break"
+            | "const"
+            | "continue"
+            | "else"
+            | "enum"
+            | "extern"
+            | "false"
+            | "fn"
+            | "for"
+            | "if"
+            | "impl"
+            | "in"
+            | "let"
+            | "loop"
+            | "match"
+            | "mod"
+            | "move"
+            | "mut"
+            | "pub"
+            | "ref"
+            | "return"
+            | "static"
+            | "struct"
+            | "trait"
+            | "true"
+            | "type"
+            | "unsafe"
+            | "use"
+            | "where"
+            | "while"
+            | "async"
+            | "await"
+            | "dyn"
+            | "abstract"
+            | "become"
+            | "box"
+            | "do"
+            | "final"
+            | "macro"
+            | "override"
+            | "priv"
+            | "typeof"
+            | "unsized"
+            | "virtual"
+            | "yield"
+            | "try"
+            | "gen"
+    ) {
+        f.write_str("r#")?;
+    }
+    f.write_str(key)
 }

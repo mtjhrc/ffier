@@ -118,6 +118,7 @@ pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
     out.push_str("#[cfg(not(any(feature = \"dynlookup\", feature = \"strong\")))]\ncompile_error!(\"generated ffier clients require the `dynlookup` or `strong` feature\");\n\n");
     let object_array_returns = has_object_array_returns(lib);
+    let foreign_cfgs = cfg::foreign_types(lib);
 
     // Emit imports for blessed types that need special std imports.
     // Each blessing contributes individual import symbols; collected and
@@ -193,8 +194,10 @@ pub fn generate(lib: &Library) -> String {
         for crate_path in crates {
             let mut types = foreign_imports[crate_path].clone();
             types.sort();
-            let list = types.join(", ");
-            writeln!(out, "use {crate_path}::{{{list}}};").unwrap();
+            for name in types {
+                emit_cfg_attr(&mut out, foreign_cfgs[name].as_ref());
+                writeln!(out, "use {crate_path}::{name};").unwrap();
+            }
         }
         if !foreign_imports.is_empty() {
             writeln!(out).unwrap();
@@ -353,6 +356,7 @@ pub fn generate(lib: &Library) -> String {
             } else {
                 format!("{name}<{lifetime_args}>")
             };
+            emit_cfg_attr(&mut out, foreign_cfgs[name].as_ref());
             writeln!(out, "impl{impl_generics} FfiHandle for {type_name} {{").unwrap();
             writeln!(out, "    const C_HANDLE_NAME: &'static str = <{type_name} as {fc}::FfiHandle>::C_HANDLE_NAME;").unwrap();
             writeln!(
@@ -363,6 +367,7 @@ pub fn generate(lib: &Library) -> String {
             writeln!(out, "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ unsafe {{ {fc}::FfiHandle::as_handle(self) }} }}").unwrap();
             writeln!(out, "    fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ <{type_name} as {fc}::FfiHandle>::__from_raw(handle) }}").unwrap();
             writeln!(out, "}}").unwrap();
+            emit_cfg_attr(&mut out, foreign_cfgs[name].as_ref());
             writeln!(out, "impl{impl_generics} FfiType for {type_name} {{").unwrap();
             writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
             writeln!(

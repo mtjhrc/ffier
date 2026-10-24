@@ -16,6 +16,11 @@ fn predicates_roundtrip_without_parsing_rust_strings() {
         ),
         (json!({"all": []}), "all()"),
         (json!({"any": []}), "any()"),
+        (json!({"all": "custom"}), "all = \"custom\""),
+        (json!({"any": true}), "any"),
+        (json!({"not": "custom"}), "not = \"custom\""),
+        (json!({"type": "custom"}), "r#type = \"custom\""),
+        (json!({"tést": true}), "tést"),
         (
             json!({"custom_key": "a\"b\\c"}),
             "custom_key = \"a\\\"b\\\\c\"",

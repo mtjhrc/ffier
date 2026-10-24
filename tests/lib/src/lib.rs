@@ -413,6 +413,15 @@ impl Widget {
         }
     }
 
+    #[cfg(windows)]
+    pub fn read_windows_foreign(
+        &self,
+        #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignWindows"))]
+        value: &ffier_test_foreign_lib_via_cdylib::ForeignWindows,
+    ) -> i32 {
+        value.value()
+    }
+
     /// Apply a foreign config to this widget (tests foreign param on a method).
     pub fn apply_config(
         &mut self,

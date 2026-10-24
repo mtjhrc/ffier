@@ -94,11 +94,27 @@ impl ForeignConfig {
 // Library definition
 // ---------------------------------------------------------------------------
 
+#[cfg(windows)]
+pub struct ForeignWindows {
+    value: i32,
+}
+
+#[ffier::export(cfg = "windows")]
+impl ForeignWindows {
+    pub fn new(value: i32) -> Self {
+        Self { value }
+    }
+    pub fn value(&self) -> i32 {
+        self.value
+    }
+}
+
 ffier::library_definition!("fl", library_tag = 2,
     ForeignError = 1,
     ForeignItem = 2,
     ForeignConfig = 3,
     ForeignBorrowed = 6,
+    #[cfg(windows)] ForeignWindows = 7,
     trait ffier_builtins::PushStr = 4,
     trait ffier_builtins::Error = 5,
     Error for ForeignError,

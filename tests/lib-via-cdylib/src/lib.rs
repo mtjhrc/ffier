@@ -641,6 +641,15 @@ mod tests {
     // Foreign handle types (cross-library FFI)
     // ================================================================
 
+    #[cfg(windows)]
+    #[test]
+    fn foreign_windows_handle_is_available_only_on_its_target() {
+        init();
+        let widget = Widget::new();
+        let value = ffier_test_foreign_lib_via_cdylib::ForeignWindows::new(41);
+        assert_eq!(widget.read_windows_foreign(&value), 41);
+    }
+
     #[test]
     fn foreign_apply_config() {
         init();
