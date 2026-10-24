@@ -15,6 +15,8 @@
 //! mode selection to the final application through Cargo feature unification.
 //! Windows loading support is outside this interface refactor.
 
+mod cfg;
+
 use ffier_schema::{
     EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
     ImplementableTrait, Library, Method, ParamType, Receiver, Return, TraitImpl, TypeKind,
@@ -22,11 +24,12 @@ use ffier_schema::{
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-/// Emit schema restrictions only for strong linking; dynlookup clients discover
-/// optional API at runtime regardless of the consumer's schema features.
+/// Always enforce platform restrictions. Dynamic clients discover optional
+/// Cargo-feature API at runtime independently of the consumer's features.
 fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
     if let Some(pred) = cfg {
-        writeln!(out, "#[cfg(any(not(feature = \"strong\"), {pred}))]").unwrap();
+        let pred = cfg::client_cfg(pred);
+        writeln!(out, "#[cfg({pred})]").unwrap();
     }
 }
 
@@ -1877,28 +1880,34 @@ fn emit_vtable_struct(
     )
     .unwrap();
 
-    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    let mut method_by_index: HashMap<usize, Vec<&Method>> = HashMap::new();
     for m in &tr.methods {
         if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
+            method_by_index.entry(td.index).or_default().push(m);
         }
     }
 
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
-            emit_cfg_attr(out, m.cfg.as_ref());
-            let mut params = vec!["*mut core::ffi::c_void".to_string()];
-            push_extern_param_types(&m.params, &mut params);
-            let ret = push_return_and_out_param_types(&m.ret, &mut params);
-            let params_str = params.join(", ");
-            writeln!(
-                out,
-                "    pub {}: Option<unsafe extern \"C\" fn({params_str}){ret}>,",
-                m.name
-            )
-            .unwrap();
-            if let Some(cfg) = &m.cfg {
-                writeln!(out, "#[cfg(all(feature = \"strong\", not({cfg})))]").unwrap();
+        if let Some(methods) = method_by_index.get(&slot) {
+            for m in methods {
+                emit_cfg_attr(out, m.cfg.as_ref());
+                let mut params = vec!["*mut core::ffi::c_void".to_string()];
+                push_extern_param_types(&m.params, &mut params);
+                let ret = push_return_and_out_param_types(&m.ret, &mut params);
+                let params_str = params.join(", ");
+                writeln!(
+                    out,
+                    "    pub {}: Option<unsafe extern \"C\" fn({params_str}){ret}>,",
+                    m.name
+                )
+                .unwrap();
+            }
+            if methods.iter().all(|m| m.cfg.is_some()) {
+                let cfg = ffier_schema::Cfg::Any(
+                    methods.iter().map(|m| m.cfg.clone().unwrap()).collect(),
+                );
+                let cfg = cfg::client_cfg(&cfg);
+                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(
                     out,
                     "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
@@ -1939,184 +1948,190 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     writeln!(out, "                __drop_trampoline::<Self>").unwrap();
     writeln!(out, "            }}),").unwrap();
 
-    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    let mut method_by_index: HashMap<usize, Vec<&Method>> = HashMap::new();
     for m in &tr.methods {
         if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
+            method_by_index.entry(td.index).or_default().push(m);
         }
     }
 
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
-            emit_cfg_attr(out, m.cfg.as_ref());
-            let is_mut = m.receiver == Receiver::Mut;
-            let borrow = if is_mut { "&mut *" } else { "&*" };
+        if let Some(methods) = method_by_index.get(&slot) {
+            for m in methods {
+                emit_cfg_attr(out, m.cfg.as_ref());
+                let is_mut = m.receiver == Receiver::Mut;
+                let borrow = if is_mut { "&mut *" } else { "&*" };
 
-            // Build trampoline params — same convention as vtable struct field
-            let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
-            push_extern_params(&m.params, &mut tramp_params);
-            let ret = push_return_and_out_params(&m.ret, &mut tramp_params, false);
-            let tramp_params_str = tramp_params.join(", ");
+                // Build trampoline params — same convention as vtable struct field
+                let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
+                push_extern_params(&m.params, &mut tramp_params);
+                let ret = push_return_and_out_params(&m.ret, &mut tramp_params, false);
+                let tramp_params_str = tramp_params.join(", ");
 
-            writeln!(out, "            {}: Some({{", m.name).unwrap();
-            writeln!(
-                out,
-                "                unsafe extern \"C\" fn __trampoline<__T: {}>(",
-                tr.name
-            )
-            .unwrap();
-            writeln!(out, "                    {tramp_params_str},").unwrap();
-            writeln!(out, "                ){ret} {{").unwrap();
+                writeln!(out, "            {}: Some({{", m.name).unwrap();
+                writeln!(
+                    out,
+                    "                unsafe extern \"C\" fn __trampoline<__T: {}>(",
+                    tr.name
+                )
+                .unwrap();
+                writeln!(out, "                    {tramp_params_str},").unwrap();
+                writeln!(out, "                ){ret} {{").unwrap();
 
-            let cast = if is_mut {
-                "__ud as *mut __T"
-            } else {
-                "__ud as *const __T"
-            };
-            writeln!(
-                out,
-                "                    let __val = unsafe {{ {borrow}({cast}) }};"
-            )
-            .unwrap();
+                let cast = if is_mut {
+                    "__ud as *mut __T"
+                } else {
+                    "__ud as *const __T"
+                };
+                writeln!(
+                    out,
+                    "                    let __val = unsafe {{ {borrow}({cast}) }};"
+                )
+                .unwrap();
 
-            // Build call args
-            let mut call_args = Vec::new();
-            for p in &m.params {
-                match &p.param_type {
-                    ParamType::Regular(tr) => {
-                        let ty = tr.to_rust_type();
-                        call_args.push(format!(
-                            "unsafe {{ <{ty} as FfiType>::from_c({}) }}",
-                            p.name
-                        ));
-                    }
-                    ParamType::ImplTrait { .. } => {
-                        call_args.push(p.name.clone());
-                    }
-                    ParamType::Slice { element, .. } => {
-                        let slice_name = format!("__slice_{}", p.name);
-                        if element.ref_kind != ffier_schema::RefKind::None {
-                            // Ref elements: reconstruct Vec<&T> from C repr array.
-                            let elem_ty = element.to_rust_type();
-                            writeln!(out,
+                // Build call args
+                let mut call_args = Vec::new();
+                for p in &m.params {
+                    match &p.param_type {
+                        ParamType::Regular(tr) => {
+                            let ty = tr.to_rust_type();
+                            call_args.push(format!(
+                                "unsafe {{ <{ty} as FfiType>::from_c({}) }}",
+                                p.name
+                            ));
+                        }
+                        ParamType::ImplTrait { .. } => {
+                            call_args.push(p.name.clone());
+                        }
+                        ParamType::Slice { element, .. } => {
+                            let slice_name = format!("__slice_{}", p.name);
+                            if element.ref_kind != ffier_schema::RefKind::None {
+                                // Ref elements: reconstruct Vec<&T> from C repr array.
+                                let elem_ty = element.to_rust_type();
+                                writeln!(out,
                                 "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({}, {}_len) }}.iter().map(|v| unsafe {{ <{elem_ty} as FfiType>::from_c(*v) }}).collect();",
                                 p.name, p.name
                             ).unwrap();
-                            call_args.push(format!("&{slice_name}"));
-                        } else {
-                            // Non-ref elements (primitives): from_raw_parts gives &[T] directly.
-                            writeln!(out,
+                                call_args.push(format!("&{slice_name}"));
+                            } else {
+                                // Non-ref elements (primitives): from_raw_parts gives &[T] directly.
+                                writeln!(out,
                                 "                    let {slice_name} = if {}_len == 0 {{ &[] as &[{}] }} else {{ unsafe {{ core::slice::from_raw_parts({}, {}_len) }} }};",
                                 p.name, element.to_rust_type(), p.name, p.name
                             ).unwrap();
-                            call_args.push(slice_name);
+                                call_args.push(slice_name);
+                            }
                         }
                     }
                 }
-            }
-            let call_str = call_args.join(", ");
+                let call_str = call_args.join(", ");
 
-            let binding = if matches!(m.ret, Return::Void) {
-                ""
-            } else {
-                "let __result = "
-            };
-            writeln!(
-                out,
-                "                    {binding}__val.{}({call_str});",
-                m.name
-            )
-            .unwrap();
+                let binding = if matches!(m.ret, Return::Void) {
+                    ""
+                } else {
+                    "let __result = "
+                };
+                writeln!(
+                    out,
+                    "                    {binding}__val.{}({call_str});",
+                    m.name
+                )
+                .unwrap();
 
-            match &m.ret {
-                Return::Void => {
-                    // Nothing to convert
-                }
-                Return::ObjectArray { .. } => {
-                    // ObjectArray returns from vtable methods: pass through raw
-                    writeln!(out, "                    __result.raw").unwrap();
-                }
-                Return::Value(tr) => {
-                    let ty = tr.to_rust_type();
-                    writeln!(
-                        out,
-                        "                    <{ty} as FfiType>::into_c(__result)"
-                    )
-                    .unwrap();
-                }
-                Return::Result {
-                    ok, c_convention, ..
-                } => {
-                    use ffier_schema::CResultConvention;
-                    writeln!(out, "                    match __result {{").unwrap();
-                    match c_convention {
-                        CResultConvention::HandleOrNull => {
-                            match ok {
-                                Some(ok_tr) => {
-                                    let ty = ok_tr.to_rust_type();
-                                    writeln!(out, "                        Ok(__ok) => <{ty} as FfiType>::into_c(__ok),").unwrap();
-                                }
-                                None => {
-                                    writeln!(
+                match &m.ret {
+                    Return::Void => {
+                        // Nothing to convert
+                    }
+                    Return::ObjectArray { .. } => {
+                        // ObjectArray returns from vtable methods: pass through raw
+                        writeln!(out, "                    __result.raw").unwrap();
+                    }
+                    Return::Value(tr) => {
+                        let ty = tr.to_rust_type();
+                        writeln!(
+                            out,
+                            "                    <{ty} as FfiType>::into_c(__result)"
+                        )
+                        .unwrap();
+                    }
+                    Return::Result {
+                        ok, c_convention, ..
+                    } => {
+                        use ffier_schema::CResultConvention;
+                        writeln!(out, "                    match __result {{").unwrap();
+                        match c_convention {
+                            CResultConvention::HandleOrNull => {
+                                match ok {
+                                    Some(ok_tr) => {
+                                        let ty = ok_tr.to_rust_type();
+                                        writeln!(out, "                        Ok(__ok) => <{ty} as FfiType>::into_c(__ok),").unwrap();
+                                    }
+                                    None => {
+                                        writeln!(
                                         out,
                                         "                        Ok(()) => core::ptr::null_mut(),"
                                     )
                                     .unwrap();
+                                    }
                                 }
-                            }
-                            writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(
+                                writeln!(out, "                        Err(__e) => {{").unwrap();
+                                writeln!(
                                 out,
                                 "                            let (_, __handle) = __e.into_ffi();"
                             )
                             .unwrap();
-                            writeln!(
-                                out,
-                                "                            unsafe {{ *err_out = __handle }};"
-                            )
-                            .unwrap();
-                            writeln!(out, "                            core::ptr::null_mut()")
+                                writeln!(
+                                    out,
+                                    "                            unsafe {{ *err_out = __handle }};"
+                                )
                                 .unwrap();
-                            writeln!(out, "                        }}").unwrap();
-                        }
-                        CResultConvention::OutParam => {
-                            match ok {
-                                Some(ok_tr) => {
-                                    let ty = ok_tr.to_rust_type();
-                                    writeln!(out, "                        Ok(__ok) => {{")
-                                        .unwrap();
-                                    writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__ok)) }};").unwrap();
-                                    writeln!(
-                                        out,
-                                        "                            0 // FFIER_RESULT_SUCCESS"
-                                    )
+                                writeln!(out, "                            core::ptr::null_mut()")
                                     .unwrap();
-                                    writeln!(out, "                        }}").unwrap();
-                                }
-                                None => {
-                                    writeln!(out, "                        Ok(()) => 0, // FFIER_RESULT_SUCCESS").unwrap();
-                                }
+                                writeln!(out, "                        }}").unwrap();
                             }
-                            writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
-                            writeln!(
-                                out,
-                                "                            unsafe {{ *err_out = __handle }};"
-                            )
-                            .unwrap();
-                            writeln!(out, "                            __code").unwrap();
-                            writeln!(out, "                        }}").unwrap();
+                            CResultConvention::OutParam => {
+                                match ok {
+                                    Some(ok_tr) => {
+                                        let ty = ok_tr.to_rust_type();
+                                        writeln!(out, "                        Ok(__ok) => {{")
+                                            .unwrap();
+                                        writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__ok)) }};").unwrap();
+                                        writeln!(
+                                            out,
+                                            "                            0 // FFIER_RESULT_SUCCESS"
+                                        )
+                                        .unwrap();
+                                        writeln!(out, "                        }}").unwrap();
+                                    }
+                                    None => {
+                                        writeln!(out, "                        Ok(()) => 0, // FFIER_RESULT_SUCCESS").unwrap();
+                                    }
+                                }
+                                writeln!(out, "                        Err(__e) => {{").unwrap();
+                                writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
+                                writeln!(
+                                    out,
+                                    "                            unsafe {{ *err_out = __handle }};"
+                                )
+                                .unwrap();
+                                writeln!(out, "                            __code").unwrap();
+                                writeln!(out, "                        }}").unwrap();
+                            }
                         }
+                        writeln!(out, "                    }}").unwrap();
                     }
-                    writeln!(out, "                    }}").unwrap();
                 }
-            }
 
-            writeln!(out, "                }}").unwrap();
-            writeln!(out, "                __trampoline::<Self>").unwrap();
-            writeln!(out, "            }}),").unwrap();
-            if let Some(cfg) = &m.cfg {
-                writeln!(out, "#[cfg(all(feature = \"strong\", not({cfg})))]").unwrap();
+                writeln!(out, "                }}").unwrap();
+                writeln!(out, "                __trampoline::<Self>").unwrap();
+                writeln!(out, "            }}),").unwrap();
+            }
+            if methods.iter().all(|m| m.cfg.is_some()) {
+                let cfg = ffier_schema::Cfg::Any(
+                    methods.iter().map(|m| m.cfg.clone().unwrap()).collect(),
+                );
+                let cfg = cfg::client_cfg(&cfg);
+                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(out, "            __reserved_{slot}: None,").unwrap();
             }
         } else {
@@ -2438,7 +2453,8 @@ fn emit_extern_fns(
     }
     writeln!(out, "}}\n").unwrap();
     for f in fns {
-        emit_dynlookup_shim(out, f, symbols);
+        let cfg = cfg::combine(cfg, f.cfg.as_ref());
+        emit_dynlookup_shim(out, f, cfg.as_ref(), symbols);
     }
 }
 
@@ -2463,6 +2479,8 @@ fn symbol_to_variant(c_name: &str) -> String {
 
 /// Emit shared metadata and the feature-selected loading API.
 fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo]) {
+    let mut seen = HashSet::new();
+    let unique: Vec<_> = symbols.iter().filter(|s| seen.insert(&s.c_name)).collect();
     out.push_str(
         r#"
 /// An FFI symbol, with the same identity in both linking modes.
@@ -2471,7 +2489,7 @@ fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo]) {
 pub enum Symbol {
 "#,
     );
-    for s in symbols {
+    for s in &unique {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "    /// `{}`\n    {variant},", s.c_name).unwrap();
     }
@@ -2483,7 +2501,7 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
+    for s in &unique {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
     }
@@ -2494,7 +2512,7 @@ impl Symbol {
     fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
         let name: &[u8] = match self {
 "#);
-    for symbol in symbols {
+    for symbol in &unique {
         let variant = symbol_to_variant(&symbol.c_name);
         writeln!(
             out,
@@ -2527,19 +2545,41 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
-        let variant = symbol_to_variant(&s.c_name);
-        let upper = &s.upper;
-        let fn_ptr_type = &s.fn_ptr_type;
+    for symbol in &unique {
+        let variant = symbol_to_variant(&symbol.c_name);
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.c_name == symbol.c_name)
+            .collect();
         writeln!(out, "            Symbol::{variant} => {{").unwrap();
-        writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
-        writeln!(
-            out,
-            "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
-        )
-        .unwrap();
-        writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
-        writeln!(out, "                }}\n            }}").unwrap();
+        for s in &variants {
+            let upper = &s.upper;
+            let fn_ptr_type = &s.fn_ptr_type;
+            emit_cfg_attr(out, s.cfg.as_ref());
+            writeln!(out, "                {{").unwrap();
+            writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
+            writeln!(
+                out,
+                "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
+            )
+            .unwrap();
+            writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
+            writeln!(out, "                }}\n                }}").unwrap();
+        }
+        if variants.iter().all(|s| s.cfg.is_some()) {
+            let predicates = variants
+                .iter()
+                .map(|s| cfg::client_cfg(s.cfg.as_ref().unwrap()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(out, "                #[cfg(not(any({predicates})))]").unwrap();
+            writeln!(
+                out,
+                "                {{ self.__lookup::<*const ()>(lib)?; }}"
+            )
+            .unwrap();
+        }
+        writeln!(out, "            }}").unwrap();
     }
     out.push_str(
         r#"        }
@@ -2690,11 +2730,17 @@ struct SymbolInfo {
     upper: String,
     /// fn pointer type string (e.g. `"unsafe extern \"C\" fn() -> *mut c_void"`)
     fn_ptr_type: String,
+    cfg: Option<ffier_schema::Cfg>,
 }
 
 /// Emit a single dynlookup-binding shim: OnceLock + shim fn.
 /// Pushes symbol info into `symbols` for the enum/require generation.
-fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolInfo>) {
+fn emit_dynlookup_shim(
+    out: &mut String,
+    f: &ExternFn,
+    cfg: Option<&ffier_schema::Cfg>,
+    symbols: &mut Vec<SymbolInfo>,
+) {
     let name = &f.name;
     let upper = name.to_ascii_uppercase();
     let params_str = f.params.join(", ");
@@ -2718,6 +2764,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
     let args_str = arg_names.join(", ");
 
     // OnceLock
+    emit_cfg_attr(out, cfg);
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(
         out,
@@ -2726,6 +2773,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
     .unwrap();
 
     // Shim function
+    emit_cfg_attr(out, cfg);
     let vis = if f.public { "pub " } else { "" };
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
@@ -2749,6 +2797,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
         c_name: name.clone(),
         upper: upper.clone(),
         fn_ptr_type,
+        cfg: cfg.cloned(),
     });
 
     writeln!(out).unwrap();

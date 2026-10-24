@@ -11,6 +11,8 @@
 //! - Error handle functions
 //! - Utility functions (result_name, result_message)
 
+mod cfg;
+
 use ffier_schema::{
     EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method, Param,
     ParamType, Receiver, Return, TraitImpl,
@@ -49,7 +51,9 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     }
     for ty in &lib.exported_types {
         let c_name = lib.c_type_of(&ty.name);
+        cfg::start(&mut out, ty.cfg.as_ref());
         out.push_str(&format!("typedef void* {};\n", c_name));
+        cfg::end(&mut out, ty.cfg.as_ref());
     }
 
     // Trait typedefs with implementor lists
@@ -70,12 +74,16 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Enum constant sections
     for en in &lib.enum_constants {
+        cfg::start(&mut out, en.cfg.as_ref());
         emit_enum_section(&mut out, en);
+        cfg::end(&mut out, en.cfg.as_ref());
     }
 
     // Bitflags constant sections (same format as enum constants)
     for bf in &lib.bitflags_constants {
+        cfg::start(&mut out, bf.cfg.as_ref());
         emit_enum_section(&mut out, bf);
+        cfg::end(&mut out, bf.cfg.as_ref());
     }
 
     // Error sections
@@ -85,20 +93,26 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
+        cfg::start(&mut out, ty.cfg.as_ref());
         emit_type_section(&mut out, ty, lib, opts);
+        cfg::end(&mut out, ty.cfg.as_ref());
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
+        cfg::start(&mut out, tr.cfg.as_ref());
         if !tr.no_vtable {
             emit_vtable_section(&mut out, tr, lib);
         }
         emit_dispatch_section(&mut out, tr, lib, opts);
+        cfg::end(&mut out, tr.cfg.as_ref());
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
+        cfg::start(&mut out, ti.cfg.as_ref());
         emit_trait_impl_section(&mut out, ti, lib, opts);
+        cfg::end(&mut out, ti.cfg.as_ref());
     }
 
     // Free functions
@@ -411,7 +425,14 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
         let c_name = lib.c_type_of(trait_name);
         let implementors = &trait_implementors[trait_name];
         let list = implementors.join(" | ");
+        let cfg = lib
+            .traits
+            .iter()
+            .find(|tr| &tr.name == trait_name)
+            .and_then(|tr| tr.cfg.as_ref());
+        cfg::start(out, cfg);
         out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
+        cfg::end(out, cfg);
     }
 }
 
@@ -442,33 +463,35 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     // Slot 0 is always drop
     out.push_str("    void (*drop)(void* self_data);\n");
 
-    // Build a map of index → method for gap detection
-    let mut method_by_index: std::collections::HashMap<usize, &Method> =
-        std::collections::HashMap::new();
-    for m in &tr.methods {
-        if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
-        }
-    }
-
-    // Emit virtual method slots after drop at struct position 0.
-    // Method index N occupies struct position N+1.
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
-            // Build the function pointer signature
-            let mut params = vec!["void* self_data".to_string()];
+        let methods: Vec<_> = tr
+            .methods
+            .iter()
+            .filter(|m| {
+                m.trait_definition
+                    .as_ref()
+                    .is_some_and(|td| td.index == slot)
+            })
+            .collect();
+        for m in &methods {
+            cfg::start(out, m.cfg.as_ref());
+            let receiver = fresh_param_name("self_data", &m.params);
+            let mut params = vec![format!("void* {receiver}")];
             format_c_params(&m.params, lib, &mut params);
-
             let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
             params.extend(extra_params);
-
             let params_str = params.join(", ");
             out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
-        } else {
-            // Reserved/retired slot
+            cfg::end(out, m.cfg.as_ref());
+        }
+        if methods.iter().all(|m| m.cfg.is_some()) {
+            let enabled =
+                ffier_schema::Cfg::Any(methods.iter().map(|m| m.cfg.clone().unwrap()).collect());
+            cfg::start(out, Some(&ffier_schema::Cfg::Not(Box::new(enabled))));
             out.push_str(&format!(
                 "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"
             ));
+            out.push_str("#endif\n");
         }
     }
 
@@ -485,9 +508,11 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
+        cfg::start(out, m.cfg.as_ref());
         emit_doc_comment(out, &m.doc);
         let (ret_type, params_str) = build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
         write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::end(out, m.cfg.as_ref());
     }
 
     // Destroy function
@@ -508,8 +533,10 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
+        cfg::start(out, m.cfg.as_ref());
         let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
         write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::end(out, m.cfg.as_ref());
     }
 }
 
@@ -524,9 +551,11 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Librar
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
+        cfg::start(out, m.cfg.as_ref());
         emit_doc_comment(out, &m.doc);
         let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
         write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::end(out, m.cfg.as_ref());
     }
 
     // Destroy dispatch
@@ -552,6 +581,7 @@ fn emit_free_functions(
     emit_section_header(out, "Free functions");
 
     for f in functions {
+        cfg::start(out, f.cfg.as_ref());
         emit_doc_comment(out, &f.doc);
 
         let mut params: Vec<String> = Vec::new();
@@ -566,6 +596,7 @@ fn emit_free_functions(
             params.join(", ")
         };
         write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
+        cfg::end(out, f.cfg.as_ref());
     }
 }
 
@@ -652,6 +683,16 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
 
 /// Build the components of a C function declaration for an exported method.
 /// Returns `(return_type, params_str)`.
+fn fresh_param_name(base: &str, params: &[Param]) -> String {
+    let mut candidate = base.to_string();
+    let mut index = 0;
+    while params.iter().any(|p| p.name == candidate || matches!(&p.param_type, ParamType::Slice { c_params, .. } if c_params.iter().any(|cp| cp.name == candidate))) {
+        index += 1;
+        candidate = format!("{base}_{index}");
+    }
+    candidate
+}
+
 fn build_c_declaration_parts(
     handle_c_name: &str,
     m: &Method,
@@ -661,13 +702,14 @@ fn build_c_declaration_parts(
     let mut params: Vec<String> = Vec::new();
 
     // Handle param (self)
+    let receiver = fresh_param_name("handle", &m.params);
     match m.receiver {
         Receiver::None => {}
         Receiver::Value if is_builder_type => {
-            params.push(format!("{handle_c_name}* handle"));
+            params.push(format!("{handle_c_name}* {receiver}"));
         }
         Receiver::Ref | Receiver::Mut | Receiver::Value => {
-            params.push(format!("{handle_c_name} handle"));
+            params.push(format!("{handle_c_name} {receiver}"));
         }
     }
 
@@ -688,7 +730,8 @@ fn build_dispatch_declaration_parts(
     m: &Method,
     lib: &Library,
 ) -> (String, String) {
-    let mut params = vec![format!("{handle_c_name} handle")];
+    let receiver = fresh_param_name("handle", &m.params);
+    let mut params = vec![format!("{handle_c_name} {receiver}")];
     format_c_params(&m.params, lib, &mut params);
 
     let is_builder = m.ret.is_builder_self(&lib.type_registry);

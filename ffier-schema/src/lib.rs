@@ -952,8 +952,9 @@ impl Library {
             .collect();
         self.type_registry.retain(|name, entry| {
             refs.contains(name.as_str())
-                || entry.bless == Some(Blessing::Object)
-                || entry.bless == Some(Blessing::ObjectArray)
+                // Shared bridge utilities and C ABI scaffolding use these
+                // even when no user method mentions them.
+                || matches!(entry.bless, Some(Blessing::Result | Blessing::Str | Blessing::VtableHandle | Blessing::Object | Blessing::ObjectArray))
         });
     }
 

@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header compile-fail conditional-bridge valgrind miri consumer rust-client compat cargo-test
+default: no-codegen check-cfg-library-entry check-header platform-cfg compile-fail conditional-bridge valgrind miri consumer rust-client compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -119,3 +119,10 @@ conditional-bridge-disabled:
 # Writes to stdout; GitHub Actions appends to the job summary.
 codegen-diff base="origin/main":
     python3 render-codegen-diff.py {{base}}
+
+# Compile both target-specific signatures and preserve conditional vtable slots.
+platform-cfg:
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-windows-handles-client
+    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{root}}/target/ffier-windows-handles.json FFIER_PLATFORM_H --fn-typedefs > {{root}}/target/platform.h
+    cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only {{root}}/target/platform.h
+    cc -std=c11 -Wall -Wextra -Werror -I {{root}}/target -fsyntax-only c/platform.c

@@ -432,7 +432,17 @@ fn reexport_helpers(
     names: &[&syn::Ident],
     cfg_attr: &proc_macro2::TokenStream,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let helper_mod = names[0];
+    let names: Vec<_> = names.iter().map(|name| (*name, cfg_attr.clone())).collect();
+    reexport_helpers_cfg(&names)
+}
+
+fn reexport_helpers_cfg(
+    names: &[(&syn::Ident, proc_macro2::TokenStream)],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let helper_mod = names[0].0;
+    let imports = names
+        .iter()
+        .map(|(name, cfg_attr)| quote! { #cfg_attr pub use super::#name; });
     let bundle_name = format_ident!("{helper_mod}_reexports");
     let arm = quote! {
         (@reexport_helpers ($($parent:tt)*)) => {
@@ -448,7 +458,7 @@ fn reexport_helpers(
         pub mod #bundle_name {
             pub use super::#bundle_name;
             // Evaluate the provider's cfg here, never in the importing crate.
-            #(#cfg_attr pub use super::#names;)*
+            #(#imports)*
         }
     };
     (arm, bundle)
@@ -1310,6 +1320,8 @@ struct AliasContext {
     aliases: Vec<syn::Ident>,
     counter: u32,
     helper_mod: syn::Ident,
+    current_cfg: Option<proc_macro2::TokenStream>,
+    alias_cfgs: Vec<Option<proc_macro2::TokenStream>>,
 }
 
 /// Recognize Option, Box, and Result by their bare or standard-library paths.
@@ -1375,6 +1387,8 @@ impl AliasContext {
             aliases: Vec::new(),
             counter: 0,
             helper_mod,
+            current_cfg: None,
+            alias_cfgs: Vec::new(),
         }
     }
 
@@ -1434,6 +1448,11 @@ impl AliasContext {
         }
         for (i, existing) in self.types.iter().enumerate() {
             if existing == ty {
+                self.alias_cfgs[i] = match (&self.alias_cfgs[i], &self.current_cfg) {
+                    (Some(a), Some(b)) if a.to_string() == b.to_string() => Some(a.clone()),
+                    (Some(a), Some(b)) => Some(quote! { any(#a, #b) }),
+                    _ => None,
+                };
                 let alias = &self.aliases[i];
                 let helper = &self.helper_mod;
                 return quote! { $crate::#helper::#alias };
@@ -1443,6 +1462,7 @@ impl AliasContext {
         self.counter += 1;
         self.types.push(ty.clone());
         self.aliases.push(alias.clone());
+        self.alias_cfgs.push(self.current_cfg.clone());
         let helper = &self.helper_mod;
         quote! { $crate::#helper::#alias }
     }
@@ -1456,18 +1476,20 @@ impl AliasContext {
             .types
             .iter()
             .zip(self.aliases.iter())
-            .map(|(ty, alias)| {
+            .zip(self.alias_cfgs.iter())
+            .map(|((ty, alias), cfg)| {
+                let cfg = meta::cfg_predicate_attr(cfg.as_ref());
                 let mut erased = erase_lifetimes(ty);
                 if is_absolute_type_path(&erased) {
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else if let Type::Path(tp) = &mut erased
                     && tp.path.segments[0].ident == "self"
                 {
                     tp.path.segments[0].ident =
                         syn::Ident::new("super", tp.path.segments[0].ident.span());
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else {
-                    quote! { pub type #alias = super::#erased; }
+                    quote! { #cfg pub type #alias = super::#erased; }
                 }
             })
             .collect();
@@ -2208,9 +2230,16 @@ fn extract_vtable_methods(
     }
 
     // Validate: no duplicate indices
-    let mut seen: HashMap<usize, &syn::Ident> = HashMap::new();
+    let mut seen: HashMap<usize, &MethodInfo> = HashMap::new();
     for m in &methods {
-        if let Some(prev) = seen.insert(m.index, &m.name) {
+        if let Some(prev) = seen.insert(m.index, m) {
+            if prev.name == m.name
+                && !prev.cfg_predicates.is_empty()
+                && !m.cfg_predicates.is_empty()
+            {
+                continue;
+            }
+            let prev = &prev.name;
             return Err(syn::Error::new_spanned(
                 &m.name,
                 format!(
@@ -2256,6 +2285,7 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs));
     let name = sig.ident.unraw().to_string();
     if name.starts_with('_') {
         return Err(syn::Error::new_spanned(
@@ -2786,7 +2816,10 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
-            Some(quote! { #sig { (**self).#name(#(#params),*) } })
+            let cfg_attr = meta::cfg_predicate_attr(
+                combine_cfg_predicates(&extract_cfg_predicates(&method.attrs)).as_ref(),
+            );
+            Some(quote! { #cfg_attr #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
@@ -3019,7 +3052,11 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         }
         helper_sig.ident = helper_name.clone();
 
+        let method_cfg = meta::cfg_predicate_attr(
+            combine_cfg_predicates(&extract_cfg_predicates(&method.attrs)).as_ref(),
+        );
         default_helpers.push(quote! {
+            #method_cfg
             #[doc(hidden)]
             pub #helper_sig #body
         });
@@ -3200,7 +3237,38 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let mut reexport_names: Vec<_> = default_helper_names.values().collect();
     reexport_names.sort_by_key(|name| name.to_string());
     reexport_names.insert(0, &helper_mod_name);
-    let (reexport_helpers, reexport_bundle) = reexport_helpers(&reexport_names, &cfg_attr);
+    let reexport_names: Vec<_> = reexport_names
+        .into_iter()
+        .map(|name| {
+            let method_name = default_helper_names
+                .iter()
+                .find(|(_, helper)| *helper == name)
+                .map(|(method, _)| method);
+            let method_cfg = method_name
+                .and_then(|name| {
+                    let methods: Vec<_> = trait_item
+                        .items
+                        .iter()
+                        .filter_map(|item| match item {
+                            TraitItem::Fn(m)
+                                if m.sig.ident == name.as_str() && m.default.is_some() =>
+                            {
+                                Some(extract_cfg_predicates(&m.attrs))
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if methods.iter().any(Vec::is_empty) {
+                        return None;
+                    }
+                    let predicates = methods.iter().filter_map(|p| combine_cfg_predicates(p));
+                    Some(quote! { #[cfg(any(#(#predicates),*))] })
+                })
+                .unwrap_or_default();
+            (name, quote! { #cfg_attr #method_cfg })
+        })
+        .collect();
+    let (reexport_helpers, reexport_bundle) = reexport_helpers_cfg(&reexport_names);
 
     let output = quote! {
         #reexport_bundle
@@ -4750,45 +4818,30 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
     // --- Vtable struct fields ---
     let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
-    let mut next_slot = 0usize;
 
-    // Sort methods by index for vtable layout
-    let mut sorted_methods: Vec<&crate::meta::MetaMethod> = parsed_methods.iter().collect();
-    sorted_methods.sort_by_key(|m| m.index());
-
-    for m in &sorted_methods {
-        if m.raw_handle() {
-            continue;
-        }
-        let idx = m.index();
-
-        // Padding for gaps
-        while next_slot < idx {
-            let pad_name = format_ident!("__reserved_{next_slot}");
+    for slot in 0..inp.num_slots {
+        let methods: Vec<_> = parsed_methods
+            .iter()
+            .filter(|m| m.index() == slot && !m.raw_handle())
+            .collect();
+        for m in &methods {
+            let method_name = &m.name;
+            let cfg_attr = m.cfg_attr();
+            let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names);
             vtable_fields.push(quote! {
+                #cfg_attr
+                pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
+            });
+        }
+        if methods.iter().all(|m| m.cfg.is_some()) {
+            let pad_name = format_ident!("__reserved_{slot}");
+            let predicates = methods.iter().map(|m| m.cfg.as_ref().unwrap());
+            vtable_fields.push(quote! {
+                #[cfg(not(any(#(#predicates),*)))]
                 #[doc(hidden)]
                 pub #pad_name: Option<unsafe extern "C" fn()>
             });
-            next_slot += 1;
         }
-
-        let method_name = &m.name;
-        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names);
-
-        vtable_fields.push(quote! {
-            pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
-        });
-        next_slot = idx + 1;
-    }
-
-    // Pad remaining slots, including retired slots and raw-handle methods.
-    while next_slot < inp.num_slots {
-        let pad_name = format_ident!("__reserved_{next_slot}");
-        vtable_fields.push(quote! {
-            #[doc(hidden)]
-            pub #pad_name: Option<unsafe extern "C" fn()>
-        });
-        next_slot += 1;
     }
 
     // --- Trait impl methods ---
@@ -4980,7 +5033,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             };
 
             // Full method body
+            let cfg_attr = m.cfg_attr();
             quote! {
+                #cfg_attr
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
                         self.value.field_or_none(#slot)
@@ -5002,7 +5057,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 let bt = &tp.bridge_type;
                 let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();
+                let cfg_attr = m.cfg_attr();
                 Some(quote! {
+                    #cfg_attr
                     assert!(
                         <#bt as FfiType>::IS_HANDLE == #ok_is_handle,
                         concat!(

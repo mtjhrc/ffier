@@ -11,6 +11,7 @@ dynlookup = []
 
 [dependencies]
 ffier = { path = "../../ffier" }
+ffier-test-windows-handles = { path = "../windows-handles" }
 
 [build-dependencies]
 ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
