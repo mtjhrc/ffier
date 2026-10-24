@@ -7,6 +7,7 @@ publish = false
 [features]
 default = ["strong"]
 strong = []
+wide = ["ffier-test-windows-handles/wide"]
 dynlookup = ["dep:libloading"]
 
 [dependencies]

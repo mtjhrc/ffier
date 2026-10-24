@@ -7,7 +7,8 @@
 //! same metadata. Macro-generated functions retain the single-item path.
 
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf};
 use syn::{Item, ItemFn, Meta};
 
 use crate::{ExportCfg, combine_cfg_predicates, extract_cfg_predicates};
@@ -71,37 +72,115 @@ fn export_args(
 }
 
 fn source_variant(function: &ItemFn) -> syn::Result<Option<Variant>> {
+    let mut exports = Vec::new();
     for attr in &function.attrs {
-        if let Some((cfg, mut invocation)) = export_args(&attr.meta, &[])? {
-            let mut predicates = extract_cfg_predicates(&function.attrs);
-            invocation.extend(predicates.iter().cloned());
-            if let Some(cfg) = cfg.cfg {
-                predicates.push(cfg);
-            }
-            return Ok(Some(Variant {
-                function: function.clone(),
-                predicate: combine_cfg_predicates(&predicates),
-                invocation: combine_cfg_predicates(&invocation),
-            }));
+        if let Some(export) = export_args(&attr.meta, &[])? {
+            exports.push(export);
         }
     }
-    Ok(None)
+    if exports.is_empty() {
+        return Ok(None);
+    }
+    let direct = extract_cfg_predicates(&function.attrs);
+    let first_cfg = exports[0].0.cfg.as_ref().map(ToString::to_string);
+    let shared = exports
+        .iter()
+        .all(|(cfg, _)| cfg.cfg.as_ref().map(ToString::to_string) == first_cfg);
+    let mut predicates = direct.clone();
+    if shared {
+        predicates.extend(exports[0].0.cfg.iter().cloned());
+    } else {
+        let choices = exports.iter().map(|(cfg, conditions)| {
+            let cfg = cfg.cfg.clone().unwrap_or_else(|| quote!(all()));
+            quote!(all(#(#conditions,)* #cfg))
+        });
+        predicates.push(quote!(any(#(#choices),*)));
+    }
+    let invocations: Vec<_> = exports
+        .iter()
+        .map(|(_, conditions)| quote!(all(#(#conditions,)* #(#direct),*)))
+        .collect();
+    let invocation = if invocations.len() == 1 {
+        invocations[0].clone()
+    } else {
+        quote!(any(#(#invocations),*))
+    };
+    Ok(Some(Variant {
+        function: function.clone(),
+        predicate: combine_cfg_predicates(&predicates),
+        invocation: Some(invocation),
+    }))
 }
 
-fn scopes<'a>(items: &'a [Item], input: &ItemFn, candidates: &mut Vec<&'a [Item]>) {
-    if items
+#[derive(Clone)]
+struct SourceFunction {
+    position: proc_macro2::LineColumn,
+    tokens: String,
+}
+
+struct SourceFile {
+    text: String,
+    scopes: Vec<Vec<SourceFunction>>,
+}
+
+thread_local! {
+    static SOURCES: RefCell<HashMap<PathBuf, SourceFile>> = RefCell::new(HashMap::new());
+}
+
+fn collect_scopes(items: &[Item], output: &mut Vec<Vec<SourceFunction>>) {
+    let functions: Vec<_> = items
         .iter()
-        .any(|item| matches!(item, Item::Fn(function) if function.sig.ident == input.sig.ident))
-    {
-        candidates.push(items);
+        .filter_map(|item| match item {
+            Item::Fn(function) => Some(SourceFunction {
+                position: function.sig.ident.span().start(),
+                tokens: function.to_token_stream().to_string(),
+            }),
+            _ => None,
+        })
+        .collect();
+    if !functions.is_empty() {
+        output.push(functions);
     }
     for item in items {
         if let Item::Mod(module) = item
             && let Some((_, items)) = &module.content
         {
-            scopes(items, input, candidates);
+            collect_scopes(items, output);
         }
     }
+}
+
+fn source_scope(
+    path: PathBuf,
+    text: String,
+    position: proc_macro2::LineColumn,
+) -> Option<Vec<SourceFunction>> {
+    SOURCES.with(|sources| {
+        let mut sources = sources.borrow_mut();
+        if sources.get(&path).is_none_or(|file| file.text != text) {
+            // Compiler parsing assigns the invocation's span to all tokens.
+            // The positioned fallback lexer retains real source coordinates.
+            // All macro entry points hold macro_context() during this switch.
+            struct PositionedLexer;
+            impl Drop for PositionedLexer {
+                fn drop(&mut self) {
+                    proc_macro2::fallback::unforce();
+                }
+            }
+            proc_macro2::fallback::force();
+            let _lexer = PositionedLexer;
+            let file = syn::parse_file(&text).ok()?;
+            let mut scopes = Vec::new();
+            collect_scopes(&file.items, &mut scopes);
+            sources.insert(path.clone(), SourceFile { text, scopes });
+        }
+        sources
+            .get(&path)?
+            .scopes
+            .iter()
+            .find(|scope| scope.iter().any(|function| function.position == position))
+            .cloned()
+    })
 }
 
 pub fn collect(input: &ItemFn, cfg: &ExportCfg) -> syn::Result<Group> {
@@ -124,49 +203,29 @@ pub fn collect(input: &ItemFn, cfg: &ExportCfg) -> syn::Result<Group> {
     let Some(path) = span.unwrap().local_file() else {
         return Ok(fallback());
     };
-    let Ok(source) = std::fs::read_to_string(path) else {
+    let Ok(source) = std::fs::read_to_string(&path) else {
         return Ok(fallback());
     };
-    let Ok(file) = syn::parse_file(&source) else {
-        return Ok(fallback());
-    };
-    let mut candidates = Vec::new();
-    scopes(&file.items, input, &mut candidates);
-    // A definition-site position distinguishes identical signatures in
-    // unrelated inline modules. Parsed-source spans use the same coordinates.
     let position = span.start();
-    let scope = candidates
-        .iter()
-        .copied()
-        .find(|items| {
-            items.iter().any(|item| {
-        matches!(item, Item::Fn(function) if function.sig.ident.span().start() == position)
-    })
-        })
-        .or_else(|| (candidates.len() == 1).then(|| candidates[0]));
-    let Some(scope) = scope else {
+    let Some(scope) = source_scope(path, source, position) else {
         return Ok(fallback());
     };
     let mut variants = Vec::new();
-    for item in scope {
-        if let Item::Fn(function) = item
-            && function.sig.ident == input.sig.ident
-            && let Some(variant) = source_variant(function)?
+    let mut current = None;
+    for source in scope {
+        let function: ItemFn = syn::parse_str(&source.tokens)?;
+        if function.sig.ident == input.sig.ident
+            && let Some(variant) = source_variant(&function)?
         {
+            if source.position == position {
+                current = Some(variants.len());
+            }
             variants.push(variant);
         }
     }
     if variants.is_empty() {
         return Ok(fallback());
     }
-    let current = variants
-        .iter()
-        .position(|v| v.function.sig.ident.span().start() == position)
-        .or_else(|| {
-            variants
-                .iter()
-                .position(|v| v.function.sig == input.sig && v.function.block == input.block)
-        });
     let Some(current) = current else {
         return Ok(fallback());
     };

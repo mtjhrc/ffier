@@ -25,6 +25,9 @@ mod tests {
                 Symbol::WindowsHandlesHandleApiEcho,
                 Symbol::WindowsHandlesResource,
                 Symbol::WindowsHandlesDirectResource,
+                Symbol::WindowsHandlesFeatureWidth,
+                Symbol::WindowsHandlesConditionalExport,
+                Symbol::WindowsHandlesGeneratedValue,
                 Symbol::WindowsHandlesHandleApiNew,
                 Symbol::WindowsHandlesHandleApiDestroy,
                 Symbol::WindowsHandlesHandleApiResource,
@@ -62,6 +65,18 @@ mod tests {
     #[test]
     fn platform_signatures_and_callback_slots_work() {
         init();
+        assert_eq!(conditional_export(), 77);
+        assert_eq!(generated_value(), 1);
+        #[cfg(feature = "wide")]
+        {
+            let value: i64 = feature_width(123);
+            assert_eq!(value, 131);
+        }
+        #[cfg(not(feature = "wide"))]
+        {
+            let value: i32 = feature_width(123);
+            assert_eq!(value, 127);
+        }
         let api = HandleApi::new();
         let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         #[cfg(unix)]

@@ -23,6 +23,16 @@ use meta::{
 /// only through the `pub use ... as __ffier_meta_*` alias placed next to the type.
 static MACRO_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+// The source collector temporarily uses proc-macro2's positioned lexer.
+// Isolate that scoped backend switch from concurrent macro expansion.
+static MACRO_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn macro_context() -> std::sync::MutexGuard<'static, ()> {
+    MACRO_CONTEXT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 // ---------------------------------------------------------------------------
 // cfg_attr unwrapping — #[cfg_attr(COND, ffier(...))] → #[ffier(...)]
 // ---------------------------------------------------------------------------
@@ -337,6 +347,7 @@ fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
 /// All item kinds also accept `cfg = "predicate"` — see [`ExportCfg`].
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let item2: proc_macro2::TokenStream = item.clone().into();
     let attr2: proc_macro2::TokenStream = attr.clone().into();
 
@@ -857,6 +868,7 @@ fn extract_repr(attrs: &[syn::Attribute]) -> Option<syn::Ident> {
 /// ```
 #[proc_macro]
 pub fn export_bitflags(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let parsed = match syn::parse::<ExportBitflagsInput>(input) {
         Ok(p) => p,
         Err(e) => return e.to_compile_error().into(),
@@ -1571,6 +1583,7 @@ fn is_absolute_type_path(ty: &Type) -> bool {
 /// ```
 #[proc_macro_derive(FfiError, attributes(ffier))]
 pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let input = parse_macro_input!(input as DeriveInput);
     let name = &input.ident;
 
@@ -2842,6 +2855,7 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
 /// exporting the trait's vtable to C.
 #[proc_macro_attribute]
 pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let trait_item = parse_macro_input!(item as ItemTrait);
     let original_trait = trait_item.clone();
     let dyn_impl = emit_dyn_dispatch_impl(&trait_item);
@@ -3574,6 +3588,7 @@ fn trait_impl_inner(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
 /// and invokes their `@on_library_export` arm to generate type impls at the crate root.
 #[proc_macro]
 pub fn library_definition(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let parsed = parse_macro_input!(input as LibraryInput);
     let prefix_lit = &parsed.prefix;
     let prefix_str = parsed.prefix.value();
@@ -4797,6 +4812,7 @@ fn vtable_c_fn_sig(
 #[doc(hidden)]
 #[proc_macro]
 pub fn __generate_vtable(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let inp = parse_macro_input!(input as GenerateVtableInput);
     let vtable_struct = &inp.vtable_struct;
     let wrapper = &inp.wrapper;
@@ -5112,6 +5128,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 /// Automatically re-export ffier metadata alongside a `use` import.
 #[proc_macro_attribute]
 pub fn reexport(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let use_item = parse_macro_input!(item as ItemUse);
 
     let mut meta_reexports = Vec::new();
@@ -5180,6 +5197,7 @@ fn collect_reexport_paths(
 #[doc(hidden)]
 #[proc_macro]
 pub fn __generate_bridge(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     bridge::generate_batch_impl(input.into()).into()
 }
 
@@ -5211,6 +5229,7 @@ pub fn __generate_bridge(input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro]
 pub fn generate_bridge(input: TokenStream) -> TokenStream {
+    let _macro_context = macro_context();
     let input2: proc_macro2::TokenStream = input.into();
     let mut iter = input2.into_iter().peekable();
 

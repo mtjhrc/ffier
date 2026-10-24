@@ -38,6 +38,9 @@ Rust clients always enforce platform predicates in both linking modes.
 Strong linking also enforces Cargo feature predicates. Dynamic lookup allows
 the consumer to discover feature-gated functions at runtime without enabling
 the producer's Cargo features locally; this does not relax platform checks.
+When multiple signatures share one C symbol, both linking modes enforce their
+feature predicates to select a single ABI. The client must enable the features
+that match the producer's selected signature.
 
 Within one exported impl or trait, alternate methods can have the same Rust
 name and different target-specific signatures. Alternate trait methods use

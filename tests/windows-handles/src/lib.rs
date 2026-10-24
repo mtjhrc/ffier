@@ -68,6 +68,41 @@ pub fn direct_resource(
     handle.as_raw_handle()
 }
 
+#[cfg(feature = "wide")]
+#[ffier::export]
+pub fn feature_width(value: i64) -> i64 {
+    value + 8
+}
+
+#[cfg(not(feature = "wide"))]
+#[ffier::export]
+pub fn feature_width(value: i32) -> i32 {
+    value + 4
+}
+
+#[cfg_attr(feature = "wide", ffier::export)]
+#[cfg_attr(not(feature = "wide"), ffier::export)]
+pub fn conditional_export() -> i32 {
+    77
+}
+
+pub mod unrelated {
+    #[ffier::export(cfg = "windows")]
+    pub fn generated_value() -> i32 {
+        1
+    }
+}
+
+macro_rules! define_export {
+    () => {
+        #[ffier::export]
+        pub fn generated_value() -> i32 {
+            1
+        }
+    };
+}
+define_export!();
+
 #[ffier::export]
 impl HandleApi {
     pub fn new() -> Self {
@@ -195,6 +230,9 @@ ffier::library_definition!("windows_handles", library_tag = 1,
     #[cfg(unix)] fn unix_value,
     fn resource,
     fn direct_resource,
+    fn feature_width,
+    fn conditional_export,
+    fn generated_value,
 );
 
 ffier::generate_bridge!(

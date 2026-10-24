@@ -149,6 +149,10 @@ def platform_cfg():
     cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
     for args in [[], ['--no-default-features', '--features', 'dynlookup'], ['--features', 'dynlookup,strong']]:
         cargo('test', '-p', 'ffier-test-windows-handles-client', *args)
+    # Feature-selected ABI alternatives must stay exclusive in dynamic clients.
+    cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'wide', '--crate-type', 'cdylib')
+    cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,wide')
+    cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
     header('ffier-windows-handles.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs')
     syntax(TARGET / 'platform.h')
     syntax(TESTS / 'c/platform.c')

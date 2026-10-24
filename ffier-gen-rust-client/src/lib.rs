@@ -30,11 +30,22 @@ use std::fmt::Write;
 
 /// Always enforce platform restrictions. Dynamic clients discover optional
 /// Cargo-feature API at runtime independently of the consumer's features.
-fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
-    if let Some(pred) = cfg {
-        let pred = cfg::client_cfg(pred);
-        writeln!(out, "#[cfg({pred})]").unwrap();
+fn binding_cfg(cfg: &ffier_schema::Cfg, strict: bool) -> String {
+    if strict {
+        cfg.to_string()
+    } else {
+        cfg::client_cfg(cfg)
     }
+}
+
+fn emit_cfg_attr_with_policy(out: &mut String, cfg: Option<&ffier_schema::Cfg>, strict: bool) {
+    if let Some(pred) = cfg {
+        writeln!(out, "#[cfg({})]", binding_cfg(pred, strict)).unwrap();
+    }
+}
+
+fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
+    emit_cfg_attr_with_policy(out, cfg, false);
 }
 
 /// Resolve dependencies before any argument or receiver loses Rust ownership.
@@ -2366,6 +2377,7 @@ struct ExternFn {
     public: bool,
     /// `#[cfg(...)]` predicate. `None` = unconditional.
     cfg: Option<ffier_schema::Cfg>,
+    strict_cfg: bool,
 }
 
 /// Build a `pub` `ExternFn` from a name, param list, and return string.
@@ -2376,6 +2388,7 @@ fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         ret,
         public: true,
         cfg: None,
+        strict_cfg: false,
     }
 }
 
@@ -2392,6 +2405,7 @@ fn extern_fn_cfg(
         ret,
         public: true,
         cfg,
+        strict_cfg: false,
     }
 }
 
@@ -2403,6 +2417,7 @@ fn extern_fn_private(name: &str, params: Vec<String>, ret: String) -> ExternFn {
         ret,
         public: false,
         cfg: None,
+        strict_cfg: false,
     }
 }
 
@@ -2577,7 +2592,7 @@ impl Symbol {
         for s in &variants {
             let upper = &s.upper;
             let fn_ptr_type = &s.fn_ptr_type;
-            emit_cfg_attr(out, s.cfg.as_ref());
+            emit_cfg_attr_with_policy(out, s.cfg.as_ref(), s.strict_cfg);
             writeln!(out, "                {{").unwrap();
             writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
             writeln!(
@@ -2591,7 +2606,7 @@ impl Symbol {
         if variants.iter().all(|s| s.cfg.is_some()) {
             let predicates = variants
                 .iter()
-                .map(|s| cfg::client_cfg(s.cfg.as_ref().unwrap()))
+                .map(|s| binding_cfg(s.cfg.as_ref().unwrap(), s.strict_cfg))
                 .collect::<Vec<_>>()
                 .join(", ");
             writeln!(out, "                #[cfg(not(any({predicates})))]").unwrap();
@@ -2770,6 +2785,7 @@ struct SymbolInfo {
     /// fn pointer type string (e.g. `"unsafe extern \"C\" fn() -> *mut c_void"`)
     fn_ptr_type: String,
     cfg: Option<ffier_schema::Cfg>,
+    strict_cfg: bool,
 }
 
 /// Emit a single dynlookup-binding shim: OnceLock + shim fn.
@@ -2803,7 +2819,7 @@ fn emit_dynlookup_shim(
     let args_str = arg_names.join(", ");
 
     // OnceLock
-    emit_cfg_attr(out, cfg);
+    emit_cfg_attr_with_policy(out, cfg, f.strict_cfg);
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(
         out,
@@ -2812,7 +2828,7 @@ fn emit_dynlookup_shim(
     .unwrap();
 
     // Shim function
-    emit_cfg_attr(out, cfg);
+    emit_cfg_attr_with_policy(out, cfg, f.strict_cfg);
     let vis = if f.public { "pub " } else { "" };
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
@@ -2837,6 +2853,7 @@ fn emit_dynlookup_shim(
         upper: upper.clone(),
         fn_ptr_type,
         cfg: cfg.cloned(),
+        strict_cfg: f.strict_cfg,
     });
 
     writeln!(out).unwrap();
@@ -3342,10 +3359,18 @@ fn emit_free_function(
     lib: &Library,
     symbols: &mut Vec<SymbolInfo>,
 ) {
-    // Extern declaration
-    emit_extern_fns(out, &[extern_fn_from_free(f)], None, symbols);
+    // Same-symbol alternatives select an ABI, rather than optional symbols.
+    let strict = lib
+        .free_functions
+        .iter()
+        .filter(|other| other.ffi_name == f.ffi_name)
+        .count()
+        > 1;
+    let mut declaration = extern_fn_from_free(f);
+    declaration.strict_cfg = strict;
+    emit_extern_fns(out, &[declaration], None, symbols);
 
-    emit_cfg_attr(out, f.cfg.as_ref());
+    emit_cfg_attr_with_policy(out, f.cfg.as_ref(), strict);
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();
