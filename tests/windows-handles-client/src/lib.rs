@@ -5,30 +5,95 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 // Link the provider's Rust archive so strong extern calls resolve in this test.
 use ffier_test_windows_handles as _;
 
-#[cfg(all(test, feature = "strong"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    fn init() {
+        #[cfg(not(feature = "strong"))]
+        {
+            let library = unsafe { libloading::Library::new(env!("HANDLE_LIBRARY")) }.unwrap();
+            #[cfg(unix)]
+            let handle = libloading::os::unix::Library::from(library).into_raw();
+            #[cfg(windows)]
+            let handle = libloading::os::windows::Library::from(library).into_raw()
+                as *mut core::ffi::c_void;
+            unsafe { set_library_handle(core::ptr::NonNull::new(handle), LoadPolicy::Explicit) }
+                .unwrap();
+            let mut symbols = vec![
+                Symbol::WindowsHandlesHandleApiRaw,
+                Symbol::WindowsHandlesHandleApiOptionalRaw,
+                Symbol::WindowsHandlesHandleApiTake,
+                Symbol::WindowsHandlesHandleApiOptionalTake,
+                Symbol::WindowsHandlesHandleApiThroughCallback,
+                Symbol::WindowsHandlesHandleApiValue,
+                Symbol::WindowsHandlesHandleConsumerNumber,
+                Symbol::WindowsHandlesVtableHandleNew,
+            ];
+            #[cfg(unix)]
+            symbols.extend([
+                Symbol::WindowsHandlesUnixValueNew,
+                Symbol::WindowsHandlesUnixValueDestroy,
+                Symbol::WindowsHandlesUnixValue,
+            ]);
+            #[cfg(windows)]
+            symbols.extend([
+                Symbol::WindowsHandlesHandleConsumerWindowsOnly,
+                Symbol::WindowsHandlesWindowsValueNew,
+                Symbol::WindowsHandlesWindowsValueDestroy,
+                Symbol::WindowsHandlesWindowsValue,
+            ]);
+            require(&symbols).unwrap();
+            #[cfg(unix)]
+            assert!(!Symbol::WindowsHandlesWindowsValueNew.is_available());
+            #[cfg(windows)]
+            assert!(!Symbol::WindowsHandlesUnixValueNew.is_available());
+        }
+    }
+
     #[test]
     fn platform_signatures_and_callback_slots_work() {
+        init();
         let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         #[cfg(unix)]
         {
             use std::os::fd::{AsFd, AsRawFd, OwnedFd};
             assert_eq!(HandleApi::raw(file.as_fd()), file.as_raw_fd());
             assert_eq!(HandleApi::optional_raw(None), -1);
+            assert_eq!(
+                HandleApi::optional_raw(Some(file.as_fd())),
+                file.as_raw_fd()
+            );
             let owned: OwnedFd = file.try_clone().unwrap().into();
             let raw = owned.as_raw_fd();
             assert_eq!(HandleApi::take(owned).as_raw_fd(), raw);
+            let owned: OwnedFd = file.try_clone().unwrap().into();
+            let raw = owned.as_raw_fd();
+            assert_eq!(
+                HandleApi::optional_take(Some(owned)).unwrap().as_raw_fd(),
+                raw
+            );
         }
         #[cfg(windows)]
         {
             use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
             assert_eq!(HandleApi::raw(file.as_handle()), file.as_raw_handle());
             assert!(HandleApi::optional_raw(None).is_null());
+            assert_eq!(
+                HandleApi::optional_raw(Some(file.as_handle())),
+                file.as_raw_handle()
+            );
             let owned: OwnedHandle = file.try_clone().unwrap().into();
             let raw = owned.as_raw_handle();
             assert_eq!(HandleApi::take(owned).as_raw_handle(), raw);
+            let owned: OwnedHandle = file.try_clone().unwrap().into();
+            let raw = owned.as_raw_handle();
+            assert_eq!(
+                HandleApi::optional_take(Some(owned))
+                    .unwrap()
+                    .as_raw_handle(),
+                raw
+            );
         }
         assert!(HandleApi::optional_take(None).is_none());
         struct Callback;
@@ -57,5 +122,36 @@ mod tests {
             unsafe { vtable.windows_only.unwrap()(&Callback as *const Callback as *mut _) },
             11
         );
+    }
+}
+
+#[cfg(all(test, not(feature = "strong")))]
+mod lazy_tests {
+    mod api {
+        include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+    }
+
+    #[test]
+    fn lazy_loading_pins_a_borrowed_native_library_handle() {
+        let library = unsafe { libloading::Library::new(env!("HANDLE_LIBRARY")) }.unwrap();
+        #[cfg(unix)]
+        let library = libloading::os::unix::Library::from(library);
+        #[cfg(windows)]
+        let library = libloading::os::windows::Library::from(library);
+        let raw = library.into_raw();
+        let handle = core::ptr::NonNull::new(raw as *mut core::ffi::c_void).unwrap();
+        // Retain ownership separately; the generated client borrows the handle.
+        #[cfg(unix)]
+        let library = unsafe { libloading::os::unix::Library::from_raw(raw) };
+        #[cfg(windows)]
+        let library = unsafe { libloading::os::windows::Library::from_raw(raw) };
+        unsafe { api::set_library_handle(Some(handle), api::LoadPolicy::Lazy) }.unwrap();
+        #[cfg(unix)]
+        assert_eq!(api::HandleApi::optional_raw(None), -1);
+        #[cfg(windows)]
+        assert!(api::HandleApi::optional_raw(None).is_null());
+        assert!(unsafe { api::set_library_handle(None, api::LoadPolicy::Explicit) }.is_err());
+        // Keep the DLL loaded for this client's remaining static caches.
+        std::mem::forget(library);
     }
 }

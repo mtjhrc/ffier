@@ -122,7 +122,10 @@ codegen-diff base="origin/main":
 
 # Compile both target-specific signatures and preserve conditional vtable slots.
 platform-cfg:
+    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-windows-handles --crate-type cdylib
     cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-windows-handles-client
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-windows-handles-client --no-default-features --features dynlookup
+    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-windows-handles-client --features dynlookup,strong
     cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{root}}/target/ffier-windows-handles.json FFIER_PLATFORM_H --fn-typedefs > {{root}}/target/platform.h
     cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only {{root}}/target/platform.h
     cc -std=c11 -Wall -Wextra -Werror -I {{root}}/target -fsyntax-only c/platform.c

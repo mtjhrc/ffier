@@ -80,11 +80,10 @@ ffier-gen-c-header target/ffier-mylib.json > mylib.h
 ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 ```
 
-### Rust client linking (Unix)
+### Rust client linking
 
 One generation pass produces a single source file supporting both runtime
-symbol resolution and ordinary linker-resolved calls on Linux and macOS.
-Windows linking support is outside this iteration.
+symbol resolution and ordinary linker-resolved calls on Unix and Windows.
 
 Declare these features in the **crate containing the generated bindings**;
 they are not features of the generator:
@@ -107,7 +106,8 @@ of that client:
 ```rust
 use my_client::{LoadPolicy, Symbol, require, set_library_handle};
 
-// `handle` is a valid dlopen handle kept loaded for the rest of the program.
+// `handle` is a valid dlopen handle or Windows HMODULE (cast to a pointer),
+// kept loaded for the rest of the program.
 unsafe { set_library_handle(Some(handle), LoadPolicy::Lazy)?; }
 ```
 
@@ -122,15 +122,18 @@ Invocation reuses those pointers without checking the symbol caches again.
 `Some(handle)` borrows the supplied handle, including handles opened without
 `RTLD_GLOBAL`. The caller retains ownership and must keep its library loaded
 for the remaining lifetime of the program. The setter is unsafe because an
-explicit handle must be valid and match these bindings. `None` selects the
-process-global namespace. That namespace can contain symbols from multiple
-libraries; use an explicit handle to restrict the lookup source.
+explicit handle must be valid and match these bindings. On Unix, `None` selects
+the process-global namespace, which can contain symbols from multiple libraries.
+On Windows, `None` selects the current executable; it does not search loaded
+DLLs. Pass the DLL's HMODULE explicitly for Windows dynamic clients. For example,
+`libloading::os::windows::Library::into_raw()` returns an HMODULE that can be cast
+to `*mut core::ffi::c_void` and wrapped in `NonNull`.
 
 The setter succeeds once. Further calls return `SetLibraryError`, including
 attempts to change just the loading policy. Probes, explicit loads, and lazy
 loads all use the same configured source. Concurrent setters cannot mix sources.
 Without a setter call, the first probe, explicit load, or unloaded call fixes
-the source to the process-global namespace with `LoadPolicy::Explicit`:
+the source to this platform default with `LoadPolicy::Explicit`:
 
 ```rust
 require(&[Symbol::MylibCalculatorNew, Symbol::MylibCalculatorDestroy])?;
@@ -149,7 +152,9 @@ my-client = { version = "...", default-features = false, features = ["strong"] }
 ```
 
 Provide the usual linker configuration for your library, for example through
-`build.rs`. Strong linking supports both shared and static libraries. It uses
+`build.rs`. Windows shared libraries need the DLL's import library (for MSVC,
+typically `mylib.dll.lib`) on the linker search path and the DLL available at
+runtime. Strong linking supports both shared and static libraries. It uses
 direct `unsafe extern "C"` calls, with no runtime symbol lookup or function
 pointer cache. The safe wrapper API and symbol identities stay the same.
 `set_library_handle()` and `require()` are successful no-ops, and

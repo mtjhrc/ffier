@@ -7,13 +7,12 @@
 //! - Trait definitions with vtable structs for exported traits
 //! - Trait impl blocks for concrete types
 //!
-//! The generated source supports Unix runtime lookup (`dynlookup`, the consumer's
+//! The generated source supports native runtime lookup (`dynlookup`, the consumer's
 //! default feature) and linker-resolved calls (`strong`, which always wins).
 //! The consuming crate must declare these features and make `libloading = "0.8"`
 //! optional through `dynlookup = ["dep:libloading"]`. Strong-only consumers can disable
 //! default features to avoid that dependency. Intermediate libraries can leave
 //! mode selection to the final application through Cargo feature unification.
-//! Windows loading support is outside this interface refactor.
 
 mod cfg;
 
@@ -2404,7 +2403,10 @@ fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn 
     match m.receiver {
         Receiver::None => {}
         _ => {
-            params.push("handle: *mut core::ffi::c_void".to_string());
+            params.push(format!(
+                "{}: *mut core::ffi::c_void",
+                fresh_local("handle", &m.params)
+            ));
         }
     }
     push_extern_params(&m.params, &mut params);
@@ -2414,7 +2416,10 @@ fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn 
 
 /// Build an `ExternFn` from a dispatch method signature.
 fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
-    let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
+    let mut params = vec![format!(
+        "{}: *mut core::ffi::c_void",
+        fresh_local("handle", &m.params)
+    )];
     push_extern_params(&m.params, &mut params);
     let ret = push_return_and_out_params(&m.ret, &mut params, false);
     extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
@@ -2483,6 +2488,11 @@ fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo]) {
     let unique: Vec<_> = symbols.iter().filter(|s| seen.insert(&s.c_name)).collect();
     out.push_str(
         r#"
+#[cfg(all(not(feature = "strong"), unix))]
+use libloading::os::unix::Library as __FfierLibrary;
+#[cfg(all(not(feature = "strong"), windows))]
+use libloading::os::windows::Library as __FfierLibrary;
+
 /// An FFI symbol, with the same identity in both linking modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[allow(clippy::enum_variant_names)] // Preserve the C library prefix in symbol identities.
@@ -2505,13 +2515,15 @@ impl Symbol {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
     }
-    out.push_str(r#"        }
+    out.push_str(
+        r#"        }
     }
 
     #[cfg(not(feature = "strong"))]
-    fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
+    fn __lookup<F: Copy>(self, lib: &__FfierLibrary) -> Result<F, libloading::Error> {
         let name: &[u8] = match self {
-"#);
+"#,
+    );
     for symbol in &unique {
         let variant = symbol_to_variant(&symbol.c_name);
         writeln!(
@@ -2536,12 +2548,12 @@ impl Symbol {
         }
         #[cfg(not(feature = "strong"))]
         {
-            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib).is_ok())
+            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib)).is_ok()
         }
     }
 
     #[cfg(not(feature = "strong"))]
-    fn __load(self, lib: &libloading::os::unix::Library) -> Result<(), LoadError> {
+    fn __load(self, lib: &__FfierLibrary) -> Result<(), LoadError> {
         match self {
 "#,
     );
@@ -2607,8 +2619,10 @@ impl std::fmt::Display for SetLibraryError {
 impl std::error::Error for SetLibraryError {}
 
 /// Set this generated client's lookup source and unloaded-symbol policy once.
-/// `None` selects the process-global namespace. `Some(handle)` borrows an
-/// existing `dlopen` handle. All probes, explicit loads, and lazy loads use
+/// `None` selects the process-global namespace on Unix, or the current
+/// executable on Windows. `Some(handle)` borrows an existing `dlopen` handle
+/// or Windows HMODULE (cast to a pointer). Windows DLL consumers should pass
+/// the DLL handle explicitly. All probes, explicit loads, and lazy loads use
 /// this same source. Reconfiguration is rejected, even before a symbol is loaded.
 /// Without this call, the first probe, load, or unloaded call fixes the source
 /// to the process-global namespace with lazy loading disabled.
@@ -2633,7 +2647,7 @@ pub unsafe fn set_library_handle(
     #[cfg(not(feature = "strong"))]
     {
         let library = lib_handle.map(|handle| std::mem::ManuallyDrop::new(unsafe {
-            libloading::os::unix::Library::from_raw(handle.as_ptr())
+            __FfierLibrary::from_raw(handle.as_ptr() as _)
         }));
         __FFIER_LOOKUP.set(__FfierLookup { library, load_policy }).map_err(|_| SetLibraryError)
     }
@@ -2641,7 +2655,7 @@ pub unsafe fn set_library_handle(
 
 #[cfg(not(feature = "strong"))]
 struct __FfierLookup {
-    library: Option<std::mem::ManuallyDrop<libloading::os::unix::Library>>,
+    library: Option<std::mem::ManuallyDrop<__FfierLibrary>>,
     load_policy: LoadPolicy,
 }
 #[cfg(not(feature = "strong"))]
@@ -2653,10 +2667,18 @@ fn __ffier_lookup() -> &'static __FfierLookup {
 }
 
 #[cfg(not(feature = "strong"))]
-fn __ffier_with_library<R>(operation: impl FnOnce(&libloading::os::unix::Library) -> R) -> R {
+fn __ffier_with_library<R, E: From<libloading::Error>>(
+    operation: impl FnOnce(&__FfierLibrary) -> Result<R, E>,
+) -> Result<R, E> {
     match &__ffier_lookup().library {
         Some(library) => operation(library),
-        None => operation(&libloading::os::unix::Library::this()),
+        None => {
+            #[cfg(unix)]
+            let library = __FfierLibrary::this();
+            #[cfg(windows)]
+            let library = __FfierLibrary::this()?;
+            operation(&library)
+        }
     }
 }
 
@@ -2700,7 +2722,7 @@ impl From<libloading::Error> for LoadError {
 
 /// Load requested symbols from this client's configured source, skipping
 /// initialized caches and returning the first failure. Without a setter call,
-/// uses the process-global namespace and disables lazy loading.
+/// uses the default lookup source and disables lazy loading.
 /// With `strong`, ignores the symbols and always succeeds.
 pub fn require(symbols: &[Symbol]) -> Result<(), LoadError> {
     #[cfg(feature = "strong")]

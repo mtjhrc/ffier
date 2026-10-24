@@ -7,11 +7,12 @@ publish = false
 [features]
 default = ["strong"]
 strong = []
-dynlookup = []
+dynlookup = ["dep:libloading"]
 
 [dependencies]
 ffier = { path = "../../ffier" }
 ffier-test-windows-handles = { path = "../windows-handles" }
+libloading = { version = "0.8", optional = true }
 
 [build-dependencies]
 ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }

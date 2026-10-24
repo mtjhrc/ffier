@@ -284,6 +284,7 @@ dependencies = [
  "ffier",
  "ffier-gen-rust-client",
  "ffier-test-windows-handles",
+ "libloading",
 ]
 
 [[package]]
