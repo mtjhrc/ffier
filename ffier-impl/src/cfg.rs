@@ -1,54 +1,48 @@
 use ffier_schema::Cfg;
-use syn::{Meta, Token, parse::Parser, punctuated::Punctuated};
+use syn::{Token, ext::IdentExt, parse::Parse, punctuated::Punctuated};
 
-pub fn from_meta(meta: &Meta) -> syn::Result<Cfg> {
-    let key = meta
-        .path()
-        .get_ident()
-        .ok_or_else(|| syn::Error::new_spanned(meta, "expected cfg identifier"))?
-        .to_string();
-    match meta {
-        Meta::Path(_) => Ok(Cfg::Flag(key)),
-        Meta::NameValue(nv) => {
-            if let syn::Expr::Lit(syn::ExprLit {
-                lit: syn::Lit::Str(value),
-                ..
-            }) = &nv.value
-            {
-                Ok(Cfg::Value {
-                    key,
-                    value: value.value(),
-                })
+struct Predicate(Cfg);
+
+impl Parse for Predicate {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        if input.peek(syn::LitBool) {
+            let value: syn::LitBool = input.parse()?;
+            return Ok(Self(if value.value {
+                Cfg::All(vec![])
             } else {
-                Err(syn::Error::new_spanned(
-                    &nv.value,
-                    "expected cfg string value",
-                ))
-            }
+                Cfg::Any(vec![])
+            }));
         }
-        Meta::List(list) => {
-            let items = Punctuated::<Meta, Token![,]>::parse_terminated
-                .parse2(list.tokens.clone())?
-                .iter()
-                .map(from_meta)
-                .collect::<syn::Result<Vec<_>>>()?;
+        let key = input.call(syn::Ident::parse_any)?.unraw().to_string();
+        let cfg = if input.peek(Token![=]) {
+            input.parse::<Token![=]>()?;
+            let value: syn::LitStr = input.parse()?;
+            Cfg::Value {
+                key,
+                value: value.value(),
+            }
+        } else if input.peek(syn::token::Paren) {
+            let content;
+            syn::parenthesized!(content in input);
+            let items = Punctuated::<Predicate, Token![,]>::parse_terminated(&content)?
+                .into_iter()
+                .map(|item| item.0)
+                .collect::<Vec<_>>();
             match key.as_str() {
-                "all" => Ok(Cfg::All(items)),
-                "any" => Ok(Cfg::Any(items)),
-                "not" if items.len() == 1 => {
-                    Ok(Cfg::Not(Box::new(items.into_iter().next().unwrap())))
-                }
-                _ => Err(syn::Error::new_spanned(
-                    meta,
-                    "expected all(...), any(...), or not(predicate)",
-                )),
+                "all" => Cfg::All(items),
+                "any" => Cfg::Any(items),
+                "not" if items.len() == 1 => Cfg::Not(Box::new(items.into_iter().next().unwrap())),
+                _ => return Err(input.error("expected all(...), any(...), or not(predicate)")),
             }
-        }
+        } else {
+            Cfg::Flag(key)
+        };
+        Ok(Self(cfg))
     }
 }
 
 pub fn from_tokens(tokens: &proc_macro2::TokenStream) -> syn::Result<Cfg> {
-    from_meta(&syn::parse2(tokens.clone())?)
+    syn::parse2::<Predicate>(tokens.clone()).map(|predicate| predicate.0)
 }
 
 #[cfg(test)]
@@ -70,6 +64,20 @@ mod tests {
             json!({"all": [
                 {"unix": true}, {"not": {"target_os": "macos"}}, {"any": [{"feature": "files"}]}
             ]})
+        );
+    }
+
+    #[test]
+    fn boolean_predicates_use_empty_combinators() {
+        assert_eq!(from_tokens(&quote!(true)).unwrap(), Cfg::All(vec![]));
+        assert_eq!(from_tokens(&quote!(false)).unwrap(), Cfg::Any(vec![]));
+        assert_eq!(
+            from_tokens(&quote!(all(unix, not(false), true))).unwrap(),
+            Cfg::All(vec![
+                Cfg::Flag("unix".into()),
+                Cfg::Not(Box::new(Cfg::Any(vec![]))),
+                Cfg::All(vec![])
+            ])
         );
     }
 

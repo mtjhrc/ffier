@@ -24,6 +24,10 @@ mod tests {
                 Symbol::WindowsHandlesHandleApiRaw,
                 Symbol::WindowsHandlesHandleApiEcho,
                 Symbol::WindowsHandlesResource,
+                Symbol::WindowsHandlesDirectResource,
+                Symbol::WindowsHandlesHandleApiNew,
+                Symbol::WindowsHandlesHandleApiDestroy,
+                Symbol::WindowsHandlesHandleApiResource,
                 Symbol::WindowsHandlesHandleApiOptionalRaw,
                 Symbol::WindowsHandlesHandleApiTake,
                 Symbol::WindowsHandlesHandleApiOptionalTake,
@@ -34,6 +38,7 @@ mod tests {
             ];
             #[cfg(unix)]
             symbols.extend([
+                Symbol::WindowsHandlesHandleApiSomethingWithConsole,
                 Symbol::WindowsHandlesUnixValueNew,
                 Symbol::WindowsHandlesUnixValueDestroy,
                 Symbol::WindowsHandlesUnixValue,
@@ -41,6 +46,7 @@ mod tests {
             #[cfg(windows)]
             symbols.extend([
                 Symbol::WindowsHandlesHandleConsumerWindowsOnly,
+                Symbol::WindowsHandlesHandleApiSomethingWithWindows,
                 Symbol::WindowsHandlesWindowsValueNew,
                 Symbol::WindowsHandlesWindowsValueDestroy,
                 Symbol::WindowsHandlesWindowsValue,
@@ -56,12 +62,16 @@ mod tests {
     #[test]
     fn platform_signatures_and_callback_slots_work() {
         init();
+        let api = HandleApi::new();
         let file = std::fs::File::open(std::env::current_exe().unwrap()).unwrap();
         #[cfg(unix)]
         {
             use std::os::fd::{AsFd, AsRawFd, OwnedFd};
             assert_eq!(HandleApi::raw(file.as_fd()), file.as_raw_fd());
             assert_eq!(resource(file.as_fd()), file.as_raw_fd());
+            assert_eq!(direct_resource(file.as_fd()), file.as_raw_fd());
+            assert_eq!(api.resource(file.as_fd()), file.as_raw_fd());
+            assert_eq!(api.something_with_console(file.as_fd()), file.as_raw_fd());
             assert_eq!(
                 HandleApi::echo(Some(file.as_fd())).unwrap().as_raw_fd(),
                 file.as_raw_fd()
@@ -87,6 +97,12 @@ mod tests {
             use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
             assert_eq!(HandleApi::raw(file.as_handle()), file.as_raw_handle());
             assert_eq!(resource(file.as_handle()), file.as_raw_handle());
+            assert_eq!(direct_resource(file.as_handle()), file.as_raw_handle());
+            assert_eq!(api.resource(file.as_handle()), file.as_raw_handle());
+            assert_eq!(
+                api.something_with_windows(file.as_handle()),
+                file.as_raw_handle()
+            );
             assert_eq!(
                 HandleApi::echo(Some(file.as_handle()))
                     .unwrap()

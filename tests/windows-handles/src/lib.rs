@@ -5,6 +5,7 @@ use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 #[cfg(windows)]
 use std::os::windows::io::{AsRawHandle, BorrowedHandle, OwnedHandle, RawHandle};
 
+#[derive(Default)]
 pub struct HandleApi;
 
 #[cfg(windows)]
@@ -37,31 +38,62 @@ pub fn unix_value(_value: UnixValue) -> usize {
     1
 }
 
-pub mod unix_api {
-    #[ffier::export(cfg = "unix")]
-    pub fn resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
-        use std::os::fd::AsRawFd;
-        handle.as_raw_fd()
-    }
+#[ffier::export(cfg = "unix")]
+pub fn resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
+    use std::os::fd::AsRawFd;
+    handle.as_raw_fd()
 }
 
-pub mod windows_api {
-    #[ffier::export(cfg = "windows")]
-    pub fn resource(
-        handle: std::os::windows::io::BorrowedHandle<'_>,
-    ) -> std::os::windows::io::RawHandle {
-        use std::os::windows::io::AsRawHandle;
-        handle.as_raw_handle()
-    }
+#[ffier::export(cfg = "windows")]
+pub fn resource(
+    handle: std::os::windows::io::BorrowedHandle<'_>,
+) -> std::os::windows::io::RawHandle {
+    use std::os::windows::io::AsRawHandle;
+    handle.as_raw_handle()
 }
 
 #[cfg(unix)]
-pub use unix_api::resource;
+#[ffier::export]
+pub fn direct_resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
+    use std::os::fd::AsRawFd;
+    handle.as_raw_fd()
+}
+
 #[cfg(windows)]
-pub use windows_api::resource;
+#[ffier::export]
+pub fn direct_resource(
+    handle: std::os::windows::io::BorrowedHandle<'_>,
+) -> std::os::windows::io::RawHandle {
+    use std::os::windows::io::AsRawHandle;
+    handle.as_raw_handle()
+}
 
 #[ffier::export]
 impl HandleApi {
+    pub fn new() -> Self {
+        Self
+    }
+
+    #[cfg(all(unix, true))]
+    pub fn something_with_console(&self, fd: BorrowedFd<'_>) -> RawFd {
+        fd.as_raw_fd()
+    }
+
+    #[cfg(windows)]
+    pub fn something_with_windows(&self, handle: BorrowedHandle<'_>) -> RawHandle {
+        handle.as_raw_handle()
+    }
+
+    #[cfg(unix)]
+    pub fn resource(&self, fd: BorrowedFd<'_>) -> RawFd {
+        fd.as_raw_fd()
+    }
+
+    #[cfg(windows)]
+    pub fn resource(&self, handle: BorrowedHandle<'_>) -> RawHandle {
+        handle.as_raw_handle()
+    }
+
     #[cfg(windows)]
     pub fn value(_value: WindowsValue) -> usize {
         11
@@ -161,8 +193,8 @@ ffier::library_definition!("windows_handles", library_tag = 1,
     #[cfg(unix)] UnixValue = 4,
     #[cfg(windows)] fn windows_value,
     #[cfg(unix)] fn unix_value,
-    #[cfg(unix)] fn unix_api::resource,
-    #[cfg(windows)] fn windows_api::resource,
+    fn resource,
+    fn direct_resource,
 );
 
 ffier::generate_bridge!(

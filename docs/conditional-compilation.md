@@ -44,21 +44,37 @@ name and different target-specific signatures. Alternate trait methods use
 the same `ffier(index = N)` to share an ABI slot. Give each variant an explicit
 cfg predicate; Rust rejects configurations that enable overlapping methods.
 
-For same-named free functions, place the variants in separate modules, annotate
-each with `export(cfg = "...")`, and register both qualified paths. Re-export
-the selected Rust function at the crate root, as with other submodule exports:
+Same-named free-function variants stay in the same module and use the same
+`export(cfg = "...")` mechanism as feature-gated exports. Register the name once:
 
 ```rust
-#[cfg(unix)]
-pub use unix_api::resource;
-#[cfg(windows)]
-pub use windows_api::resource;
+#[ffier::export(cfg = "unix")]
+pub fn resource(fd: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
+    use std::os::fd::AsRawFd;
+    fd.as_raw_fd()
+}
 
-ffier::library_definition!("example", library_tag = 1,
-    #[cfg(unix)] fn unix_api::resource,
-    #[cfg(windows)] fn windows_api::resource,
-);
+#[ffier::export(cfg = "windows")]
+pub fn resource(handle: std::os::windows::io::BorrowedHandle<'_>) -> std::os::windows::io::RawHandle {
+    use std::os::windows::io::AsRawHandle;
+    handle.as_raw_handle()
+}
+
+ffier::library_definition!("example", library_tag = 1, fn resource);
 ```
 
-Both signatures appear in the schema under their shared C symbol name, with
-their respective structured predicates.
+Ordinary `#[cfg(unix)]` / `#[cfg(windows)]` on adjacent exported definitions
+also work. Both signatures appear in the schema under their shared C symbol
+name, with their respective structured predicates. Methods use ordinary cfg
+attributes inside one exported impl:
+
+```rust
+#[ffier::export]
+impl Console {
+    #[cfg(unix)]
+    pub fn something_with_console(&self, fd: std::os::fd::BorrowedFd<'_>) { /* ... */ }
+
+    #[cfg(windows)]
+    pub fn something_with_windows(&self, handle: std::os::windows::io::BorrowedHandle<'_>) { /* ... */ }
+}
+```
