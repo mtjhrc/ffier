@@ -2577,7 +2577,7 @@ impl Symbol {
             writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
             writeln!(
                 out,
-                "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
+                "                    let f = self.__lookup::<{fn_ptr_type}>(lib).map_err(|source| LoadError::MissingSymbol {{ symbol: self.c_name(), source }})?;"
             )
             .unwrap();
             writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
@@ -2592,7 +2592,7 @@ impl Symbol {
             writeln!(out, "                #[cfg(not(any({predicates})))]").unwrap();
             writeln!(
                 out,
-                "                {{ self.__lookup::<*const ()>(lib)?; }}"
+                "                {{ self.__lookup::<*const ()>(lib).map_err(|source| LoadError::MissingSymbol {{ symbol: self.c_name(), source }})?; }}"
             )
             .unwrap();
         }
@@ -2702,6 +2702,9 @@ pub enum LoadError {
     /// The original dynamic loader error, without allocation or conversion.
     #[cfg(not(feature = "strong"))]
     Loading(libloading::Error),
+    /// A symbol lookup failure, including its name on every platform.
+    #[cfg(not(feature = "strong"))]
+    MissingSymbol { symbol: &'static str, source: libloading::Error },
 }
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -2709,6 +2712,8 @@ impl std::fmt::Display for LoadError {
         match *self {
             #[cfg(not(feature = "strong"))]
             Self::Loading(ref error) => std::fmt::Display::fmt(error, f),
+            #[cfg(not(feature = "strong"))]
+            Self::MissingSymbol { symbol, ref source } => write!(f, "failed to load symbol `{symbol}`: {source}"),
         }
     }
 }
@@ -2717,6 +2722,8 @@ impl std::error::Error for LoadError {
         match *self {
             #[cfg(not(feature = "strong"))]
             Self::Loading(ref error) => Some(error),
+            #[cfg(not(feature = "strong"))]
+            Self::MissingSymbol { ref source, .. } => Some(source),
         }
     }
 }

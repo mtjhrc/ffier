@@ -41,8 +41,12 @@ def compile_llvm(stem, *args):
 
 
 def function_bodies(llvm, name):
-    # rustc emits demangled labels before definitions, independent of symbol hashes.
-    return re.findall(r"^; " + re.escape(name) + r"\n(?:;[^\n]*\n)*define [^\n]*\{\n(.*?)^\}",
+    # rustc emits demangled labels before definitions, independent of symbol
+    # hashes. Trait defaults can be labeled either Trait::method or
+    # <Concrete as Trait>::method, depending on the compiler/toolchain.
+    owner, method = name.rsplit("::", 1)
+    label = "(?:" + re.escape(name) + r"|<[^\n]+ as " + re.escape(owner) + ">::" + re.escape(method) + ")"
+    return re.findall(r"^; " + label + r"\n(?:;[^\n]*\n)*define [^\n]*\{\n(.*?)^\}",
                       llvm, re.MULTILINE | re.DOTALL)
 
 
