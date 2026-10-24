@@ -38,13 +38,13 @@ pub fn unix_value(_value: UnixValue) -> usize {
     1
 }
 
-#[ffier::export(cfg = "unix")]
+#[ffier::export(cfg = "unix,")]
 pub fn resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
     use std::os::fd::AsRawFd;
     handle.as_raw_fd()
 }
 
-#[ffier::export(cfg = "windows")]
+#[ffier::export(cfg = "windows,")]
 pub fn resource(
     handle: std::os::windows::io::BorrowedHandle<'_>,
 ) -> std::os::windows::io::RawHandle {
@@ -53,6 +53,7 @@ pub fn resource(
 }
 
 #[cfg(unix)]
+#[cfg(true)]
 #[ffier::export]
 pub fn direct_resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
     use std::os::fd::AsRawFd;
@@ -60,6 +61,7 @@ pub fn direct_resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawF
 }
 
 #[cfg(windows)]
+#[cfg(true)]
 #[ffier::export]
 pub fn direct_resource(
     handle: std::os::windows::io::BorrowedHandle<'_>,

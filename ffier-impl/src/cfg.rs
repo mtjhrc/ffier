@@ -1,5 +1,10 @@
 use ffier_schema::Cfg;
-use syn::{Token, ext::IdentExt, parse::Parse, punctuated::Punctuated};
+use syn::{
+    Token,
+    ext::IdentExt,
+    parse::{Parse, Parser},
+    punctuated::Punctuated,
+};
 
 struct Predicate(Cfg);
 
@@ -42,7 +47,24 @@ impl Parse for Predicate {
 }
 
 pub fn from_tokens(tokens: &proc_macro2::TokenStream) -> syn::Result<Cfg> {
-    syn::parse2::<Predicate>(tokens.clone()).map(|predicate| predicate.0)
+    let parser = |input: syn::parse::ParseStream| {
+        let predicate: Predicate = input.parse()?;
+        if input.peek(Token![,]) {
+            input.parse::<Token![,]>()?;
+        }
+        Ok(predicate.0)
+    };
+    parser.parse2(tokens.clone())
+}
+
+/// Canonical tokens can safely be composed inside other cfg predicates.
+pub fn normalize_tokens(
+    tokens: &proc_macro2::TokenStream,
+) -> syn::Result<proc_macro2::TokenStream> {
+    Ok(from_tokens(tokens)?
+        .to_string()
+        .parse()
+        .expect("valid cfg tokens"))
 }
 
 #[cfg(test)]
@@ -79,6 +101,22 @@ mod tests {
                 Cfg::All(vec![])
             ])
         );
+    }
+
+    #[test]
+    fn accepts_and_normalizes_a_trailing_comma() {
+        for tokens in [quote!(unix,), quote!(all(unix,),)] {
+            assert!(from_tokens(&tokens).is_ok());
+            assert!(
+                !normalize_tokens(&tokens)
+                    .unwrap()
+                    .to_string()
+                    .ends_with(',')
+            );
+        }
+        assert_eq!(from_tokens(&quote!(true,)).unwrap(), Cfg::All(vec![]));
+        assert!(from_tokens(&quote!(unix,,)).is_err());
+        assert!(from_tokens(&quote!(unix, windows)).is_err());
     }
 
     #[test]

@@ -405,8 +405,7 @@ impl Parse for ExportCfg {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
                 let tokens = lit.parse::<proc_macro2::TokenStream>()?;
-                cfg::from_tokens(&tokens)?;
-                cfg = Some(tokens);
+                cfg = Some(cfg::normalize_tokens(&tokens)?);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
@@ -2080,7 +2079,8 @@ fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> Vec<proc_macro2::TokenStr
         .iter()
         .filter_map(|attr| {
             if attr.path().is_ident("cfg") {
-                attr.parse_args::<proc_macro2::TokenStream>().ok()
+                let tokens = attr.parse_args::<proc_macro2::TokenStream>().ok()?;
+                Some(cfg::normalize_tokens(&tokens).unwrap_or(tokens))
             } else {
                 None
             }
