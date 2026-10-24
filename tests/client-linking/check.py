@@ -2,6 +2,7 @@
 """Exercise Unix clients in separate Cargo invocations to avoid feature leakage."""
 
 from pathlib import Path
+import json
 import re
 import subprocess
 
@@ -23,15 +24,54 @@ def cargo(*args, capture=False, success=True):
     return result
 
 
+def compile_llvm(stem, *args):
+    result = cargo("rustc", "-p", "linking-client", "--message-format=json", *args,
+                   "--", "--emit=llvm-ir", "-Copt-level=0", capture=True)
+    # Use Cargo's artifact paths, rather than modification times: cached output
+    # can be older than the IR for a different feature configuration.
+    for line in result.stdout.splitlines():
+        artifact = json.loads(line)
+        if artifact.get("reason") == "compiler-artifact" and artifact["target"]["name"] == stem:
+            for filename in artifact["filenames"]:
+                path = Path(filename)
+                candidate = path.with_name(path.stem.removeprefix("lib") + ".ll")
+                if candidate.is_file():
+                    return candidate.read_text()
+    raise AssertionError(f"LLVM output missing for {stem}")
+
+
+def function_bodies(llvm, name):
+    # rustc emits demangled labels before definitions, independent of symbol hashes.
+    return re.findall(r"^; " + re.escape(name) + r"\n(?:;[^\n]*\n)*define [^\n]*\{\n(.*?)^\}",
+                      llvm, re.MULTILINE | re.DOTALL)
+
+
+def symbol_fetches(body):
+    return len(re.findall(r"^  [^;\n]*\b(?:call|invoke)\b[^\n]*__ffier_symbol", body, re.MULTILINE))
+
+
 # A default dynlookup client must be tested separately from the application, whose
 # dependency enables strong. The fixture provider intentionally lacks optional API.
 cargo("test", "-p", "linking-client")
+[answer] = function_bodies(compile_llvm("linking_client", "--lib"), "linking_client::answer")
+assert symbol_fetches(answer) == 1
+assert not re.search(r"\b(?:call|invoke)\b[^\n]*fixture_answer", answer)
+
+# Callback conversion must use the prepared allocator without fetching it again.
+conversions = function_bodies(compile_llvm("lazy", "--test", "lazy"),
+                              "linking_client::Worker::__into_prepared_handle")
+assert conversions
+for conversion in conversions:
+    assert symbol_fetches(conversion) == 0
+    assert "__ffier_prepare" not in conversion
+    assert "fixture_vtable_handle_new" not in conversion
+    assert re.search(r"\b(?:call|invoke)\b[^\n]*%[^\s(]+\(", conversion)
+
 for features in ("strong", "dynlookup,strong"):
     cargo("test", "-p", "linking-client", "--no-default-features", "--features", features)
-    cargo("rustc", "-p", "linking-client", "--no-default-features", "--features", features,
-          "--lib", "--", "--emit=llvm-ir")
-    llvm = max((TARGET / "debug" / "deps").glob("linking_client-*.ll"),
-               key=lambda path: path.stat().st_mtime_ns).read_text()
+    llvm = compile_llvm("linking_client", "--no-default-features", "--features", features, "--lib")
+    [answer] = function_bodies(llvm, "linking_client::answer")
+    assert re.search(r"\bcall\b[^\n]*@fixture_answer\(", answer)
     assert "OnceLock" not in llvm
     assert "libloading" not in llvm
     assert re.search(r"declare\b[^\n]*@fixture_answer\(", llvm)

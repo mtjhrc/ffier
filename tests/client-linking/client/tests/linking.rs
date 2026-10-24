@@ -22,8 +22,9 @@ fn explicit_loading_and_optional_discovery_use_one_library() {
     assert!(error.to_string().contains("fixture_missing"));
     assert!(error.source().is_some());
     let _: fn() -> i32 = linking_client::missing;
-    require(&[Symbol::FixtureAnswer]).unwrap();
+    require(&[Symbol::FixtureAnswer, Symbol::FixtureEchoArgs]).unwrap();
     assert_eq!(answer(), 42);
+    assert_eq!(linking_client::echo_args(19, 23), 42);
 
     let other_library = common::open_library(env!("FIXTURE_OTHER_LIBRARY"), false);
     assert!(
@@ -48,6 +49,7 @@ fn explicit_loading_and_optional_discovery_use_one_library() {
 #[test]
 fn strong_calls_and_metadata_need_no_loader() {
     assert_eq!(answer(), 42);
+    assert_eq!(linking_client::echo_args(19, 23), 42);
     let ignored_handle = Some(core::ptr::NonNull::dangling());
     unsafe { linking_client::set_library_handle(ignored_handle, linking_client::LoadPolicy::Lazy) }
         .unwrap();

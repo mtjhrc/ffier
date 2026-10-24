@@ -38,13 +38,49 @@ fn emit_symbol_preflight(out: &mut String, name: &str, indent: &str) {
     writeln!(out, "{indent}__ffier_symbol(Symbol::{variant}, &{upper});").unwrap();
 }
 
+fn fresh_local(base: &str, params: &[ffier_schema::Param]) -> String {
+    let mut name = base.to_owned();
+    while params
+        .iter()
+        .any(|param| param.name.strip_prefix("r#").unwrap_or(&param.name) == name)
+    {
+        name.push('_');
+    }
+    name
+}
+
+/// Capture the callee before moving arguments; strong builds use an import,
+/// so their call remains directly linked rather than using a function pointer.
 fn emit_call_preflight(out: &mut String, name: &str, params: &[ffier_schema::Param], indent: &str) {
-    emit_symbol_preflight(out, name, indent);
-    // Callback implementations prepare their allocation symbol; concrete
-    // handles override this hook because transferring them does not allocate.
-    for param in params {
-        if matches!(param.param_type, ParamType::ImplTrait { .. }) {
-            writeln!(out, "{indent}{}.__ffier_prepare();", param.name).unwrap();
+    let call = fresh_local("__ffier_call", params);
+    let factory = fresh_local("__ffier_factory", params);
+    writeln!(out, "{indent}#[cfg(feature = \"strong\")]").unwrap();
+    writeln!(out, "{indent}use self::{name} as {call};").unwrap();
+    let variant = symbol_to_variant(name);
+    let upper = name.to_ascii_uppercase();
+    writeln!(out, "{indent}#[cfg(not(feature = \"strong\"))]").unwrap();
+    writeln!(
+        out,
+        "{indent}let {call} = *__ffier_symbol(Symbol::{variant}, &{upper});"
+    )
+    .unwrap();
+    let callbacks: Vec<_> = params
+        .iter()
+        .filter(|param| matches!(param.param_type, ParamType::ImplTrait { .. }))
+        .collect();
+    if !callbacks.is_empty() {
+        writeln!(
+            out,
+            "{indent}let mut {factory} = __FfierHandleFactory::default();"
+        )
+        .unwrap();
+        for param in callbacks {
+            writeln!(
+                out,
+                "{indent}{}.__ffier_prepare(&mut {factory});",
+                param.name
+            )
+            .unwrap();
         }
     }
 }
@@ -415,6 +451,25 @@ pub fn generate(lib: &Library) -> String {
         writeln!(out, "    }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+    }
+
+    // A call shares one prepared allocator across all callback arguments.
+    // Concrete handle arguments leave this factory empty.
+    if !lib.traits.is_empty() || !lib.trait_impls.is_empty() {
+        writeln!(
+            out,
+            "#[doc(hidden)]\n#[derive(Default)]\npub struct __FfierHandleFactory {{"
+        )
+        .unwrap();
+        if lib.traits.iter().any(|tr| {
+            !tr.no_vtable
+                && lib.type_entry(&tr.name).and_then(|entry| entry.bless)
+                    != Some(ffier_schema::Blessing::ErrorTrait)
+        }) {
+            writeln!(out, "    #[cfg(not(feature = \"strong\"))]").unwrap();
+            writeln!(out, "    allocator: Option<unsafe extern \"C\" fn(u32, *const core::ffi::c_void, *const core::ffi::c_void) -> *mut core::ffi::c_void>,").unwrap();
+        }
+        writeln!(out, "}}\n").unwrap();
     }
 
     let mut symbols = Vec::new();
@@ -1303,6 +1358,7 @@ fn emit_method_body(
     lib: &Library,
 ) {
     emit_call_preflight(out, ffi_name, &m.params, "        ");
+    let ffi_name = fresh_local("__ffier_call", &m.params);
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     // Build FFI call arguments
     let by_value_self = m.receiver == Receiver::Value;
@@ -1606,14 +1662,21 @@ fn emit_implementable_trait(
         }
     }
 
-    // Preparation borrows the value, so failed lookup leaves ownership intact.
+    // Prepare once while arguments are borrowed, retaining the allocator for
+    // conversion. Additional callbacks in the same call reuse the same pointer.
+    let allocate_fn = format!("{}_vtable_handle_new", lib.prefix);
+    let allocate_variant = symbol_to_variant(&allocate_fn);
+    let allocate_upper = allocate_fn.to_ascii_uppercase();
     writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    fn __ffier_prepare(&self) {{").unwrap();
-    emit_symbol_preflight(
+    writeln!(
         out,
-        &format!("{}_vtable_handle_new", lib.prefix),
-        "        ",
-    );
+        "    fn __ffier_prepare(&self, _factory: &mut __FfierHandleFactory) {{"
+    )
+    .unwrap();
+    writeln!(out, "        #[cfg(not(feature = \"strong\"))]").unwrap();
+    writeln!(out, "        if _factory.allocator.is_none() {{").unwrap();
+    writeln!(out, "            _factory.allocator = Some(*__ffier_symbol(Symbol::{allocate_variant}, &{allocate_upper}));").unwrap();
+    writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
 
     // __ffier_vtable
@@ -1633,7 +1696,23 @@ fn emit_implementable_trait(
         "    fn __into_raw_handle(self) -> *mut core::ffi::c_void where Self: Sized {{"
     )
     .unwrap();
-    writeln!(out, "        self.__ffier_prepare();").unwrap();
+    writeln!(
+        out,
+        "        let mut factory = __FfierHandleFactory::default();"
+    )
+    .unwrap();
+    writeln!(out, "        self.__ffier_prepare(&mut factory);").unwrap();
+    writeln!(out, "        self.__into_prepared_handle(&factory)").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    fn __into_prepared_handle(self, _factory: &__FfierHandleFactory) -> *mut core::ffi::c_void where Self: Sized {{").unwrap();
+    writeln!(
+        out,
+        "        #[cfg(feature = \"strong\")] use self::{allocate_fn} as __ffier_allocate;"
+    )
+    .unwrap();
+    writeln!(out, "        #[cfg(not(feature = \"strong\"))]").unwrap();
+    writeln!(out, "        let __ffier_allocate = _factory.allocator.expect(\"callback allocator was not prepared\");").unwrap();
     writeln!(
         out,
         "        let __vtable: &'static {vtable_name} = Self::__ffier_vtable();"
@@ -1647,7 +1726,7 @@ fn emit_implementable_trait(
     )
     .unwrap();
     writeln!(out, "        unsafe {{").unwrap();
-    writeln!(out, "            {}_vtable_handle_new(", lib.prefix).unwrap();
+    writeln!(out, "            __ffier_allocate(").unwrap();
     writeln!(out, "                {type_tag}u32,").unwrap();
     writeln!(
         out,
@@ -1731,6 +1810,7 @@ fn emit_default_dispatch_body(
 ) {
     let dispatch_fn = &m.ffi_name;
     emit_call_preflight(out, dispatch_fn, &m.params, "        ");
+    let dispatch_fn = fresh_local("__ffier_call", &m.params);
 
     writeln!(
         out,
@@ -1769,7 +1849,7 @@ fn emit_default_dispatch_body(
     call_args.extend(build_ffi_param_args(&m.params, lib));
     let args_str = call_args.join(", ");
 
-    emit_ffi_call_return(out, dispatch_fn, &args_str, &m.ret, "        ", lib);
+    emit_ffi_call_return(out, &dispatch_fn, &args_str, &m.ret, "        ", lib);
 }
 
 fn emit_vtable_struct(
@@ -2131,7 +2211,14 @@ fn emit_trait_impl(
         ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
 
-        emit_ffi_call_return(out, &m.ffi_name, &args_str, &m.ret, "        ", lib);
+        emit_ffi_call_return(
+            out,
+            &fresh_local("__ffier_call", &m.params),
+            &args_str,
+            &m.ret,
+            "        ",
+            lib,
+        );
         writeln!(out, "    }}").unwrap();
     }
 
@@ -2151,14 +2238,35 @@ fn emit_trait_impl(
             ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
 
-            emit_ffi_call_return(out, &dm.ffi_name, &args_str, &dm.ret, "        ", lib);
+            emit_ffi_call_return(
+                out,
+                &fresh_local("__ffier_call", &dm.params),
+                &args_str,
+                &dm.ret,
+                "        ",
+                lib,
+            );
             writeln!(out, "    }}").unwrap();
         }
     }
 
     // Concrete handle transfers do not need callback allocation.
     writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    fn __ffier_prepare(&self) {{}}").unwrap();
+    writeln!(
+        out,
+        "    fn __ffier_prepare(&self, _factory: &mut __FfierHandleFactory) {{}}"
+    )
+    .unwrap();
+
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    fn __into_prepared_handle(self, _factory: &__FfierHandleFactory) -> *mut core::ffi::c_void {{").unwrap();
+    writeln!(
+        out,
+        "        <Self as {}{trait_args}>::__into_raw_handle(self)",
+        ti.trait_name
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
 
     // __into_raw_handle for known types (simple: extract raw pointer)
     writeln!(
@@ -2201,7 +2309,13 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
         writeln!(out, "    {sig};").unwrap();
     }
     writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    fn __ffier_prepare(&self) {{}}").unwrap();
+    writeln!(
+        out,
+        "    fn __ffier_prepare(&self, _factory: &mut __FfierHandleFactory) {{}}"
+    )
+    .unwrap();
+    writeln!(out, "    #[doc(hidden)]").unwrap();
+    writeln!(out, "    fn __into_prepared_handle(self, _factory: &__FfierHandleFactory) -> *mut core::ffi::c_void where Self: Sized {{ self.__into_raw_handle() }}").unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     writeln!(
         out,
@@ -2368,8 +2482,25 @@ impl Symbol {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
     }
+    out.push_str(r#"        }
+    }
+
+    #[cfg(not(feature = "strong"))]
+    fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
+        let name: &[u8] = match self {
+"#);
+    for symbol in symbols {
+        let variant = symbol_to_variant(&symbol.c_name);
+        writeln!(
+            out,
+            "            Symbol::{variant} => b\"{}\\0\",",
+            symbol.c_name
+        )
+        .unwrap();
+    }
     out.push_str(
-        r#"        }
+        r#"        };
+        unsafe { lib.get::<F>(name).map(|function| *function) }
     }
 
     /// Probe the configured lookup source without initializing the symbol cache.
@@ -2382,9 +2513,7 @@ impl Symbol {
         }
         #[cfg(not(feature = "strong"))]
         {
-            __ffier_with_library(|lib| unsafe {
-                lib.get::<*const ()>(self.c_name().as_bytes()).is_ok()
-            })
+            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib).is_ok())
         }
     }
 
@@ -2401,8 +2530,7 @@ impl Symbol {
         writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
         writeln!(
             out,
-            "                    let f = unsafe {{ *lib.get::<{fn_ptr_type}>(b\"{}\\0\")? }};",
-            s.c_name
+            "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
         )
         .unwrap();
         writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
@@ -2488,17 +2616,11 @@ fn __ffier_with_library<R>(operation: impl FnOnce(&libloading::os::unix::Library
 }
 
 #[cfg(not(feature = "strong"))]
-fn __ffier_symbol<F>(symbol: Symbol, slot: &std::sync::OnceLock<F>) -> &F {
-    slot.get().unwrap_or_else(|| {
-        match __ffier_lookup().load_policy {
-            LoadPolicy::Explicit => panic!(
-                "symbol `{}` not loaded; call require() first", symbol.c_name()),
-            LoadPolicy::Lazy => {
-                __ffier_with_library(|lib| symbol.__load(lib))
-                    .unwrap_or_else(|error| panic!("failed to load symbol `{}`: {error}", symbol.c_name()));
-                slot.get().expect("loaded symbol cache is empty")
-            }
-        }
+fn __ffier_symbol<F: Copy>(symbol: Symbol, slot: &std::sync::OnceLock<F>) -> &F {
+    slot.get_or_init(|| match __ffier_lookup().load_policy {
+        LoadPolicy::Explicit => panic!(
+            "symbol `{}` not loaded; call require() first", symbol.c_name()),
+        LoadPolicy::Lazy => __ffier_with_library(|lib| symbol.__lookup::<F>(lib)).unwrap_or_else(|error| panic!("failed to load symbol `{}`: {error}", symbol.c_name())),
     })
 }
 
@@ -2602,6 +2724,9 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
     let vis = if f.public { "pub " } else { "" };
     writeln!(out, "#[cfg(not(feature = \"strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
+    if !f.public {
+        writeln!(out, "#[allow(dead_code)]").unwrap();
+    }
     if f.public {
         writeln!(out, "/// # Safety").unwrap();
         writeln!(out, "/// Uphold this function's C ABI contract, including pointer validity and handle ownership.").unwrap();
@@ -2738,6 +2863,7 @@ fn push_extern_param_types(params: &[ffier_schema::Param], out: &mut Vec<String>
 }
 
 fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
+    let factory = fresh_local("__ffier_factory", params);
     let mut args = Vec::new();
     for p in params {
         match &p.param_type {
@@ -2769,7 +2895,7 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                 }
             }
             ParamType::ImplTrait { .. } => {
-                args.push(format!("{}.__into_raw_handle()", p.name));
+                args.push(format!("{}.__into_prepared_handle(&{factory})", p.name));
             }
         }
     }
@@ -3157,16 +3283,17 @@ fn emit_free_function(
     let ffi_args = build_ffi_param_args(&f.params, lib);
     let args_str = ffi_args.join(", ");
     let sep = if args_str.is_empty() { "" } else { ", " };
+    let ffi_name = fresh_local("__ffier_call", &f.params);
 
     match &f.ret {
         Return::Void => {
-            writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
+            writeln!(out, "    unsafe {{ {}({args_str}) }}", ffi_name).unwrap();
         }
         Return::ObjectArray { .. } => {
             writeln!(
                 out,
                 "    ForeignSlice::from_raw(unsafe {{ {}({args_str}) }})",
-                f.ffi_name
+                ffi_name
             )
             .unwrap();
         }
@@ -3174,7 +3301,7 @@ fn emit_free_function(
             writeln!(
                 out,
                 "    let __raw = unsafe {{ {}({args_str}) }};",
-                f.ffi_name
+                ffi_name
             )
             .unwrap();
             let ty = tr.to_rust_type();
@@ -3191,7 +3318,7 @@ fn emit_free_function(
             writeln!(
                 out,
                 "    let __r = unsafe {{ {}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};",
-                f.ffi_name
+                ffi_name
             )
             .unwrap();
             writeln!(
@@ -3214,7 +3341,7 @@ fn emit_free_function(
                 writeln!(
                     out,
                     "    let __raw = unsafe {{ {}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};",
-                    f.ffi_name
+                    ffi_name
                 )
                 .unwrap();
                 let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
@@ -3247,7 +3374,7 @@ fn emit_free_function(
                 writeln!(
                     out,
                     "    let __r = unsafe {{ {}({args_str}{sep}__out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};",
-                    f.ffi_name
+                    ffi_name
                 )
                 .unwrap();
                 writeln!(out, "    if __r == 0 {{").unwrap();

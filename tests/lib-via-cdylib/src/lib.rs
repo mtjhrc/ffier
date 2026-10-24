@@ -126,6 +126,47 @@ mod tests {
         assert_eq!(drops.get(), 2);
     }
 
+    #[test]
+    fn multiple_callbacks_share_prepared_allocation_and_drop_once() {
+        init();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct ClientFruit(i32, Arc<AtomicUsize>);
+        impl Fruit for ClientFruit {
+            fn value(&self) -> i32 {
+                self.0
+            }
+            fn try_count(&self, input: i32) -> Result<i32, TestError> {
+                Ok(self.0 + input)
+            }
+            fn count_tags(&self, tags: &[&str]) -> i32 {
+                tags.len() as i32
+            }
+        }
+        impl Drop for ClientFruit {
+            fn drop(&mut self) {
+                self.1.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut mixer = Mixer::new();
+        assert_eq!(
+            mixer.blend_dynamic(
+                ClientFruit(19, drops.clone()),
+                ClientFruit(23, drops.clone())
+            ),
+            42
+        );
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            mixer.blend_dynamic(Apple::new(5), ClientFruit(4, drops.clone())),
+            9
+        );
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+    }
+
     #[cfg(any(not(feature = "strong"), feature = "optional-entry"))]
     #[test]
     fn optional_api_is_discoverable_without_its_schema_feature() {

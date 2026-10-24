@@ -115,7 +115,9 @@ The `load_policy` argument controls unloaded calls: `LoadPolicy::Explicit`
 panics until the symbol is explicitly loaded with `require(&[Symbol::...])`;
 `LoadPolicy::Lazy` tries to resolve and cache the symbol on first use, panicking
 if lookup fails. Already loaded calls use their cached function pointer in
-either policy.
+either policy. Each wrapper retains its resolved function before converting
+owned arguments, and callback arguments share one prepared allocator per call.
+Invocation reuses those pointers without checking the symbol caches again.
 
 `Some(handle)` borrows the supplied handle, including handles opened without
 `RTLD_GLOBAL`. The caller retains ownership and must keep its library loaded

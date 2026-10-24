@@ -360,12 +360,12 @@
       "doc": [],
       "params": [
         {
-          "name": "fd",
+          "name": "__ffier_call",
           "param_kind": "regular",
           "type": "OwnedFd"
         },
         {
-          "name": "callback",
+          "name": "__ffier_factory",
           "param_kind": "impl_trait",
           "trait_name": "Worker"
         }
@@ -379,6 +379,27 @@
       "ffi_name": "fixture_destroy_count",
       "doc": [],
       "params": [],
+      "ret": {
+        "return_kind": "value",
+        "type": "i32"
+      }
+    },
+    {
+      "name": "echo_args",
+      "ffi_name": "fixture_echo_args",
+      "doc": [],
+      "params": [
+        {
+          "name": "__ffier_call",
+          "param_kind": "regular",
+          "type": "i32"
+        },
+        {
+          "name": "__ffier_call_",
+          "param_kind": "regular",
+          "type": "i32"
+        }
+      ],
       "ret": {
         "return_kind": "value",
         "type": "i32"

@@ -13,7 +13,8 @@
   lookup source and `LoadPolicy::Explicit` or `LoadPolicy::Lazy` behavior for
   unloaded calls. Reject reconfiguration so explicit and lazy loads cannot mix
   library handles. Prepare symbols before transferring owned arguments and
-  callbacks so failed lookup still releases Rust values. `require(symbols)`
+  callbacks so failed lookup still releases Rust values. Reuse prepared callees
+  and callback allocators instead of checking their symbol caches again. `require(symbols)`
   returns the shared `LoadError`; `Symbol::is_available()` probes the configured source.
   Without a setter, the first lookup fixes the process namespace and explicit
   loading policy. Strong builds retain the shared API as no-ops. Schema

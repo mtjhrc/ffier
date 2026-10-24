@@ -18,3 +18,5 @@ void fixture_consume_fd_callback(int fd, void *widget) {
     close(fd);
     fixture_widget_destroy(widget);
 }
+
+int fixture_echo_args(int first, int second) { return first + second; }
