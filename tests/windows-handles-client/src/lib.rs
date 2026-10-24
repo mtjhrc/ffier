@@ -22,6 +22,8 @@ mod tests {
                 .unwrap();
             let mut symbols = vec![
                 Symbol::WindowsHandlesHandleApiRaw,
+                Symbol::WindowsHandlesHandleApiEcho,
+                Symbol::WindowsHandlesResource,
                 Symbol::WindowsHandlesHandleApiOptionalRaw,
                 Symbol::WindowsHandlesHandleApiTake,
                 Symbol::WindowsHandlesHandleApiOptionalTake,
@@ -59,6 +61,12 @@ mod tests {
         {
             use std::os::fd::{AsFd, AsRawFd, OwnedFd};
             assert_eq!(HandleApi::raw(file.as_fd()), file.as_raw_fd());
+            assert_eq!(resource(file.as_fd()), file.as_raw_fd());
+            assert_eq!(
+                HandleApi::echo(Some(file.as_fd())).unwrap().as_raw_fd(),
+                file.as_raw_fd()
+            );
+            assert!(HandleApi::echo(None).is_none());
             assert_eq!(HandleApi::optional_raw(None), -1);
             assert_eq!(
                 HandleApi::optional_raw(Some(file.as_fd())),
@@ -78,6 +86,14 @@ mod tests {
         {
             use std::os::windows::io::{AsHandle, AsRawHandle, OwnedHandle};
             assert_eq!(HandleApi::raw(file.as_handle()), file.as_raw_handle());
+            assert_eq!(resource(file.as_handle()), file.as_raw_handle());
+            assert_eq!(
+                HandleApi::echo(Some(file.as_handle()))
+                    .unwrap()
+                    .as_raw_handle(),
+                file.as_raw_handle()
+            );
+            assert!(HandleApi::echo(None).is_none());
             assert!(HandleApi::optional_raw(None).is_null());
             assert_eq!(
                 HandleApi::optional_raw(Some(file.as_handle())),
@@ -97,7 +113,13 @@ mod tests {
         }
         assert!(HandleApi::optional_take(None).is_none());
         struct Callback;
-        impl HandleConsumer for Callback {}
+        impl HandleConsumer for Callback {
+            #[cfg(windows)]
+            fn number(&self, handle: std::os::windows::io::BorrowedHandle<'_>) -> usize {
+                use std::os::windows::io::AsRawHandle;
+                handle.as_raw_handle() as usize
+            }
+        }
         assert!(HandleApi::through_callback(Callback) > 0);
         #[cfg(unix)]
         {

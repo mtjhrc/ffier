@@ -3807,7 +3807,8 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 let alias_chain = to_chain_path(&alias);
 
                 // Shim macro — no type tag needed for free functions
-                let shim_name = format_ident!("__ffier_fn_{prefix_str}_{last_ident}");
+                let entry_index = shim_names.len();
+                let shim_name = format_ident!("__ffier_fn_{prefix_str}_{last_ident}_{entry_index}");
                 shim_macros.push(emit_library_shim(
                     &shim_name,
                     quote! {
@@ -5016,7 +5017,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
             // None branch: fallback or panic
             let name_str = method_name.to_string();
-            let none_branch = match default_helper_map.get(&name_str) {
+            let none_branch = match default_helper_map.get(&name_str).filter(|_| m.has_default()) {
                 Some(helper_path) => {
                     let param_names: Vec<_> = m.params.iter().map(|p| &p.name).collect();
                     quote! { #helper_path(self #(, #param_names)*) }

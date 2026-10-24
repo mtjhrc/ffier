@@ -43,3 +43,22 @@ Within one exported impl or trait, alternate methods can have the same Rust
 name and different target-specific signatures. Alternate trait methods use
 the same `ffier(index = N)` to share an ABI slot. Give each variant an explicit
 cfg predicate; Rust rejects configurations that enable overlapping methods.
+
+For same-named free functions, place the variants in separate modules, annotate
+each with `export(cfg = "...")`, and register both qualified paths. Re-export
+the selected Rust function at the crate root, as with other submodule exports:
+
+```rust
+#[cfg(unix)]
+pub use unix_api::resource;
+#[cfg(windows)]
+pub use windows_api::resource;
+
+ffier::library_definition!("example", library_tag = 1,
+    #[cfg(unix)] fn unix_api::resource,
+    #[cfg(windows)] fn windows_api::resource,
+);
+```
+
+Both signatures appear in the schema under their shared C symbol name, with
+their respective structured predicates.

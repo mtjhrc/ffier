@@ -37,6 +37,29 @@ pub fn unix_value(_value: UnixValue) -> usize {
     1
 }
 
+pub mod unix_api {
+    #[ffier::export(cfg = "unix")]
+    pub fn resource(handle: std::os::fd::BorrowedFd<'_>) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd;
+        handle.as_raw_fd()
+    }
+}
+
+pub mod windows_api {
+    #[ffier::export(cfg = "windows")]
+    pub fn resource(
+        handle: std::os::windows::io::BorrowedHandle<'_>,
+    ) -> std::os::windows::io::RawHandle {
+        use std::os::windows::io::AsRawHandle;
+        handle.as_raw_handle()
+    }
+}
+
+#[cfg(unix)]
+pub use unix_api::resource;
+#[cfg(windows)]
+pub use windows_api::resource;
+
 #[ffier::export]
 impl HandleApi {
     #[cfg(windows)]
@@ -48,6 +71,16 @@ impl HandleApi {
     pub fn value(_value: UnixValue) -> usize {
         1
     }
+    #[cfg(windows)]
+    pub fn echo<'a>(handle: Option<BorrowedHandle<'a>>) -> Option<BorrowedHandle<'a>> {
+        handle
+    }
+
+    #[cfg(unix)]
+    pub fn echo<'a>(handle: Option<BorrowedFd<'a>>) -> Option<BorrowedFd<'a>> {
+        handle
+    }
+
     #[cfg(target_os = "windows")]
     pub fn raw(handle: BorrowedHandle<'_>) -> RawHandle {
         handle.as_raw_handle()
@@ -107,9 +140,7 @@ impl HandleApi {
 pub trait HandleConsumer {
     #[cfg(target_os = "windows")]
     #[ffier(index = 0)]
-    fn number(&self, handle: BorrowedHandle<'_>) -> usize {
-        handle.as_raw_handle() as usize
-    }
+    fn number(&self, handle: BorrowedHandle<'_>) -> usize;
 
     #[cfg(unix)]
     #[ffier(index = 0)]
@@ -130,6 +161,8 @@ ffier::library_definition!("windows_handles", library_tag = 1,
     #[cfg(unix)] UnixValue = 4,
     #[cfg(windows)] fn windows_value,
     #[cfg(unix)] fn unix_value,
+    #[cfg(unix)] fn unix_api::resource,
+    #[cfg(windows)] fn windows_api::resource,
 );
 
 ffier::generate_bridge!(
