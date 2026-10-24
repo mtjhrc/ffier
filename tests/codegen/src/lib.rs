@@ -53,30 +53,34 @@ pub fn write_rust_client(
     out_dir: &Path,
     transform: Option<fn(&mut Library)>,
 ) -> Result<String, CodegenError> {
-    write_rust_client_named(lib, out_dir, transform, "generated.rs", false)
-}
-
-/// Like [`write_rust_client`], but with control over the output file name
-/// and weak-binding generation (dlsym-based shims instead of
-/// `unsafe extern "C"` declarations).
-pub fn write_rust_client_named(
-    lib: &Library,
-    out_dir: &Path,
-    transform: Option<fn(&mut Library)>,
-    file_name: &str,
-    weak: bool,
-) -> Result<String, CodegenError> {
     let mut lib = lib.clone();
     if let Some(transform) = transform {
         transform(&mut lib);
     }
-    let src = ffier_gen_rust_client::generate_with_options(
-        &lib,
-        &ffier_gen_rust_client::Options { weak },
-    );
-    let out = out_dir.join(file_name);
+    let src = ffier_gen_rust_client::generate(&lib);
+    let out = out_dir.join("generated.rs");
     std::fs::write(&out, &src)
         .map_err(|e| CodegenError::InvalidSchema(format!("write {}: {e}", out.display())))?;
+    // Shared harnesses explicitly initialize the test libraries' API. Their
+    // Optional* entries are tested separately, so omit them from this list.
+    let variants = src
+        .split("pub enum Symbol {\n")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap()
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.ends_with(',') && !line.contains("Optional"))
+        .map(|line| format!("Symbol::{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        out_dir.join("required_symbols.rs"),
+        format!("&[\n{variants}\n]"),
+    )
+    .map_err(|e| CodegenError::InvalidSchema(e.to_string()))?;
     Ok(src)
 }
 

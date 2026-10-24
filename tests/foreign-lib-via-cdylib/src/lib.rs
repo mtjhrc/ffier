@@ -13,3 +13,8 @@ mod tests {
         assert_eq!(ForeignError::Invalid().to_string(), "Invalid");
     }
 }
+
+/// Explicit initialization for the shared client test harnesses.
+pub fn init_for_tests() {
+    require(include!(concat!(env!("OUT_DIR"), "/required_symbols.rs"))).unwrap();
+}

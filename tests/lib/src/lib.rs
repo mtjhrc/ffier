@@ -1447,7 +1447,7 @@ mod error_tests {
 
 #[cfg(test)]
 mod fieldless_error_client_tests {
-    use super as api;
+    use crate as api;
 
     fn init() {}
 

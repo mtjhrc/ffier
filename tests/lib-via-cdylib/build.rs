@@ -12,18 +12,6 @@ fn main() {
 
     ffier_test_codegen::write_rust_client(&lib, &out_dir, None).expect("client bindings");
 
-    // Weak (dlsym-based) bindings for the weak-tests feature.
-    if std::env::var_os("CARGO_FEATURE_WEAK_TESTS").is_some() {
-        ffier_test_codegen::write_rust_client_named(
-            &lib,
-            &out_dir,
-            None,
-            "generated_weak.rs",
-            true,
-        )
-        .expect("weak client bindings");
-    }
-
     #[cfg(unix)]
     link_test_lib(workspace_root);
 }

@@ -1,0 +1,19 @@
+[package]
+name = "linking-client"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["dynlookup"]
+dynlookup = ["dep:libloading"]
+strong = []
+optional-entry = []
+
+[dependencies]
+ffier = { path = "../../../ffier" }
+libloading = { version = "0.8", optional = true }
+
+[build-dependencies]
+ffier-gen-rust-client = { path = "../../../ffier-gen-rust-client" }
+ffier-schema = { path = "../../../ffier-schema" }

@@ -5,11 +5,13 @@ check: fmt-check clippy test
 fmt-check:
     cargo fmt -- --check
     cargo fmt --manifest-path tests/conditional-bridge/Cargo.toml --all -- --check
+    cargo fmt --manifest-path tests/client-linking/Cargo.toml --all -- --check
 
 # Format all code
 fmt:
     cargo fmt
     cargo fmt --manifest-path tests/conditional-bridge/Cargo.toml --all
+    cargo fmt --manifest-path tests/client-linking/Cargo.toml --all
 
 # Run clippy
 # Builds the test cdylibs first: the client crates' build scripts emit
@@ -23,6 +25,10 @@ clippy:
         --features conditional-bridge/a_feature -- -D warnings
     cargo clippy --manifest-path tests/conditional-bridge/Cargo.toml \
         --target-dir target/conditional-bridge --workspace --all-targets -- -D warnings
+    cargo clippy --manifest-path tests/client-linking/Cargo.toml \
+        --target-dir target/client-linking -p linking-client --all-targets -- -D warnings
+    cargo clippy --manifest-path tests/client-linking/Cargo.toml \
+        --target-dir target/client-linking --workspace --all-targets -- -D warnings
 
 # Run all tests
 test:

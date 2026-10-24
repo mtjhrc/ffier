@@ -10,4 +10,4 @@ via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib?/optio
 
 [dependencies]
 ffier-test-lib = { path = "../lib", optional = true }
-ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
+ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true, features = ["strong"] }

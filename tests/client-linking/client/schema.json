@@ -1,0 +1,388 @@
+{
+  "prefix": "fixture",
+  "type_registry": {
+    "i32": {
+      "kind": {
+        "primitive": {
+          "c_type": "int32_t"
+        }
+      }
+    },
+    "Widget": {
+      "kind": {
+        "handle": {
+          "c_name": "FixtureWidget"
+        }
+      },
+      "type_tag": 1
+    },
+    "OptionalWidget": {
+      "kind": {
+        "handle": {
+          "c_name": "FixtureOptionalWidget"
+        }
+      },
+      "type_tag": 2
+    },
+    "Worker": {
+      "kind": {
+        "trait": {
+          "c_name": "FixtureWorker"
+        }
+      },
+      "type_tag": 3
+    },
+    "OptionalWorker": {
+      "kind": {
+        "trait": {
+          "c_name": "FixtureOptionalWorker"
+        }
+      },
+      "type_tag": 4
+    },
+    "OptionalSimple": {
+      "kind": {
+        "trait": {
+          "c_name": "FixtureOptionalSimple"
+        }
+      },
+      "type_tag": 5
+    },
+    "RawFd": {
+      "kind": {
+        "primitive": {
+          "c_type": "int"
+        }
+      },
+      "bless": "raw_fd"
+    },
+    "OwnedFd": {
+      "kind": {
+        "alias": {
+          "alias_of": "RawFd"
+        }
+      },
+      "bless": "owned_fd"
+    },
+    "FdWorker": {
+      "kind": {
+        "trait": {
+          "c_name": "FixtureFdWorker"
+        }
+      },
+      "type_tag": 6
+    }
+  },
+  "exported_types": [
+    {
+      "name": "Widget",
+      "destroy_ffi_name": "fixture_widget_destroy",
+      "is_builder_type": false,
+      "methods": [
+        {
+          "name": "new",
+          "ffi_name": "fixture_widget_new",
+          "ret": {
+            "return_kind": "value",
+            "type": "Widget"
+          },
+          "receiver": "none",
+          "params": [],
+          "cfg": "all(unix, feature = \"optional-entry\")"
+        },
+        {
+          "name": "newer",
+          "ffi_name": "fixture_widget_newer",
+          "ret": {
+            "return_kind": "value",
+            "type": "i32"
+          },
+          "receiver": "ref",
+          "params": [],
+          "cfg": "all(unix, feature = \"optional-entry\")"
+        },
+        {
+          "name": "consume",
+          "ffi_name": "fixture_widget_consume",
+          "receiver": "value",
+          "params": [],
+          "ret": {
+            "return_kind": "void"
+          },
+          "cfg": "all(unix, feature = \"optional-entry\")"
+        },
+        {
+          "name": "consume_fd",
+          "ffi_name": "fixture_widget_consume_fd",
+          "receiver": "none",
+          "params": [
+            {
+              "name": "fd",
+              "param_kind": "regular",
+              "type": "OwnedFd"
+            }
+          ],
+          "ret": {
+            "return_kind": "void"
+          },
+          "cfg": "all(unix, feature = \"optional-entry\")"
+        }
+      ]
+    },
+    {
+      "name": "OptionalWidget",
+      "destroy_ffi_name": "fixture_optional_widget_destroy",
+      "is_builder_type": false,
+      "cfg": "all(unix, feature = \"optional-entry\")",
+      "methods": [
+        {
+          "name": "new",
+          "ffi_name": "fixture_optional_widget_new",
+          "ret": {
+            "return_kind": "value",
+            "type": "OptionalWidget"
+          },
+          "receiver": "none",
+          "params": []
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "traits": [
+    {
+      "name": "Worker",
+      "destroy_ffi_name": "fixture_worker_destroy",
+      "type_tag_constant": "FIXTURE_WORKER_TYPE_TAG",
+      "vtable_struct_c_name": "FixtureWorkerVtable",
+      "wrapper_c_name": "FixtureVtableWorker",
+      "vtable_struct_name": "WorkerVtable",
+      "wrapper_name": "VtableWorker",
+      "methods": [
+        {
+          "name": "newer",
+          "ffi_name": "fixture_worker_newer",
+          "ret": {
+            "return_kind": "value",
+            "type": "i32"
+          },
+          "receiver": "ref",
+          "params": [],
+          "cfg": "all(unix, feature = \"optional-entry\")",
+          "trait_definition": {
+            "index": 0,
+            "has_default": true
+          }
+        }
+      ],
+      "own_method_count": 1,
+      "num_slots": 1
+    },
+    {
+      "name": "OptionalWorker",
+      "destroy_ffi_name": "fixture_optionalworker_destroy",
+      "type_tag_constant": "FIXTURE_OPTIONALWORKER_TYPE_TAG",
+      "vtable_struct_c_name": "FixtureOptionalWorkerVtable",
+      "wrapper_c_name": "FixtureVtableOptionalWorker",
+      "vtable_struct_name": "OptionalWorkerVtable",
+      "wrapper_name": "VtableOptionalWorker",
+      "methods": [
+        {
+          "name": "value",
+          "ffi_name": "fixture_optional_worker_value",
+          "ret": {
+            "return_kind": "value",
+            "type": "i32"
+          },
+          "receiver": "ref",
+          "params": [],
+          "trait_definition": {
+            "index": 0,
+            "has_default": true
+          }
+        }
+      ],
+      "own_method_count": 1,
+      "num_slots": 1,
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    },
+    {
+      "name": "OptionalSimple",
+      "destroy_ffi_name": "fixture_optional_simple_destroy",
+      "type_tag_constant": "FIXTURE_OPTIONAL_SIMPLE_TYPE_TAG",
+      "vtable_struct_c_name": "FixtureOptionalSimpleVtable",
+      "wrapper_c_name": "FixtureVtableOptionalSimple",
+      "vtable_struct_name": "OptionalSimpleVtable",
+      "wrapper_name": "VtableOptionalSimple",
+      "methods": [],
+      "own_method_count": 0,
+      "num_slots": 0,
+      "no_vtable": true,
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    },
+    {
+      "name": "FdWorker",
+      "destroy_ffi_name": "fixture_fd_worker_destroy",
+      "type_tag_constant": "FIXTURE_FD_WORKER_TYPE_TAG",
+      "vtable_struct_c_name": "FixtureFdWorkerVtable",
+      "wrapper_c_name": "FixtureVtableFdWorker",
+      "vtable_struct_name": "FdWorkerVtable",
+      "wrapper_name": "VtableFdWorker",
+      "methods": [
+        {
+          "name": "consume_fd",
+          "ffi_name": "fixture_fd_worker_consume_fd",
+          "receiver": "ref",
+          "params": [
+            {
+              "name": "fd",
+              "param_kind": "regular",
+              "type": "OwnedFd"
+            }
+          ],
+          "ret": {
+            "return_kind": "void"
+          },
+          "trait_definition": {
+            "index": 0,
+            "has_default": true
+          }
+        }
+      ],
+      "own_method_count": 1,
+      "num_slots": 1,
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    }
+  ],
+  "trait_impls": [
+    {
+      "trait_name": "Worker",
+      "struct_name": "Widget",
+      "methods": []
+    },
+    {
+      "trait_name": "OptionalWorker",
+      "struct_name": "OptionalWidget",
+      "methods": [],
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    },
+    {
+      "trait_name": "OptionalSimple",
+      "struct_name": "OptionalWidget",
+      "cfg": "all(unix, feature = \"optional-entry\")",
+      "methods": [
+        {
+          "name": "child",
+          "receiver": "ref",
+          "params": [],
+          "ret": {
+            "return_kind": "value",
+            "type": "OptionalWidget"
+          },
+          "ffi_name": "fixture_optional_simple_child"
+        }
+      ]
+    },
+    {
+      "trait_name": "FdWorker",
+      "struct_name": "Widget",
+      "methods": [],
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    }
+  ],
+  "free_functions": [
+    {
+      "name": "answer",
+      "ffi_name": "fixture_answer",
+      "doc": [],
+      "params": [],
+      "ret": {
+        "return_kind": "value",
+        "type": "i32"
+      }
+    },
+    {
+      "name": "missing",
+      "ffi_name": "fixture_missing",
+      "cfg": "all(unix, feature = \"optional-entry\")",
+      "doc": [],
+      "params": [],
+      "ret": {
+        "return_kind": "value",
+        "type": "i32"
+      }
+    },
+    {
+      "name": "other",
+      "ffi_name": "fixture_other",
+      "doc": [],
+      "params": [],
+      "ret": {
+        "return_kind": "value",
+        "type": "i32"
+      }
+    },
+    {
+      "name": "consume_fd",
+      "ffi_name": "fixture_consume_fd",
+      "doc": [],
+      "params": [
+        {
+          "name": "fd",
+          "param_kind": "regular",
+          "type": "OwnedFd"
+        }
+      ],
+      "ret": {
+        "return_kind": "void"
+      },
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    },
+    {
+      "name": "consume_widget",
+      "ffi_name": "fixture_consume_widget",
+      "doc": [],
+      "params": [
+        {
+          "name": "widget",
+          "param_kind": "regular",
+          "type": "Widget"
+        }
+      ],
+      "ret": {
+        "return_kind": "void"
+      },
+      "cfg": "all(unix, feature = \"optional-entry\")"
+    },
+    {
+      "name": "consume_fd_callback",
+      "ffi_name": "fixture_consume_fd_callback",
+      "doc": [],
+      "params": [
+        {
+          "name": "fd",
+          "param_kind": "regular",
+          "type": "OwnedFd"
+        },
+        {
+          "name": "callback",
+          "param_kind": "impl_trait",
+          "trait_name": "Worker"
+        }
+      ],
+      "ret": {
+        "return_kind": "void"
+      }
+    },
+    {
+      "name": "destroy_count",
+      "ffi_name": "fixture_destroy_count",
+      "doc": [],
+      "params": [],
+      "ret": {
+        "return_kind": "value",
+        "type": "i32"
+      }
+    }
+  ]
+}

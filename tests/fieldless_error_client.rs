@@ -1,4 +1,4 @@
-// Compile unchanged against native Rust and generated strong/weak bindings.
+// Compile unchanged against native Rust and generated strong/dynlookup bindings.
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 

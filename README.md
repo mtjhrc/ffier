@@ -80,6 +80,95 @@ ffier-gen-c-header target/ffier-mylib.json > mylib.h
 ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 ```
 
+### Rust client linking (Unix)
+
+One generation pass produces a single source file supporting both runtime
+symbol resolution and ordinary linker-resolved calls on Linux and macOS.
+Windows linking support is outside this iteration.
+
+Declare these features in the **crate containing the generated bindings**;
+they are not features of the generator:
+
+```toml
+[features]
+default = ["dynlookup"]
+dynlookup = ["dep:libloading"]
+strong = []
+
+[dependencies]
+ffier = { version = "..." }
+libloading = { version = "0.8", optional = true }
+```
+
+With the default `dynlookup` feature, configure one lookup source per generated
+client. This setter fixes both the source and loading policy for the lifetime
+of that client:
+
+```rust
+use my_client::{LoadPolicy, Symbol, require, set_library_handle};
+
+// `handle` is a valid dlopen handle kept loaded for the rest of the program.
+unsafe { set_library_handle(Some(handle), LoadPolicy::Lazy)?; }
+```
+
+The `load_policy` argument controls unloaded calls: `LoadPolicy::Explicit`
+panics until the symbol is explicitly loaded with `require(&[Symbol::...])`;
+`LoadPolicy::Lazy` tries to resolve and cache the symbol on first use, panicking
+if lookup fails. Already loaded calls use their cached function pointer in
+either policy.
+
+`Some(handle)` borrows the supplied handle, including handles opened without
+`RTLD_GLOBAL`. The caller retains ownership and must keep its library loaded
+for the remaining lifetime of the program. The setter is unsafe because an
+explicit handle must be valid and match these bindings. `None` selects the
+process-global namespace. That namespace can contain symbols from multiple
+libraries; use an explicit handle to restrict the lookup source.
+
+The setter succeeds once. Further calls return `SetLibraryError`, including
+attempts to change just the loading policy. Probes, explicit loads, and lazy
+loads all use the same configured source. Concurrent setters cannot mix sources.
+Without a setter call, the first probe, explicit load, or unloaded call fixes
+the source to the process-global namespace with `LoadPolicy::Explicit`:
+
+```rust
+require(&[Symbol::MylibCalculatorNew, Symbol::MylibCalculatorDestroy])?;
+```
+
+Explicit loading should include every symbol the operation needs, including
+destructors and error helpers. `require()` skips initialized symbols and returns
+`LoadError` on the first missing symbol. That error preserves the original
+`libloading::Error` through its `source()`. `Symbol::is_available()` probes the
+configured source without initializing the symbol cache, even in lazy mode.
+
+Applications can select strong linking without regenerating:
+
+```toml
+my-client = { version = "...", default-features = false, features = ["strong"] }
+```
+
+Provide the usual linker configuration for your library, for example through
+`build.rs`. Strong linking supports both shared and static libraries. It uses
+direct `unsafe extern "C"` calls, with no runtime symbol lookup or function
+pointer cache. The safe wrapper API and symbol identities stay the same.
+`set_library_handle()` and `require()` are successful no-ops, and
+`Symbol::is_available()` always returns `true`, even for schema entries excluded by `cfg`: this reflects the compile-time
+linking contract, not a runtime probe. Missing referenced symbols are the
+linker's responsibility. `LoadError` remains available but has no constructible
+failure state in strong builds.
+
+**Strong always takes precedence**, including when both features are enabled.
+Intermediate libraries should generally depend on `my-client` without selecting
+a linking mode. The final application can enable `strong` on that same dependency;
+Cargo feature unification selects direct calls throughout the graph. In a pure
+strong-only graph, `libloading` is absent. If an intermediate dependency enables
+the default `dynlookup` feature, Cargo retains that feature and its optional
+`libloading` dependency; enabling `strong` still selects the strong implementation.
+Enabling neither feature produces a compile error.
+
+Schema `cfg` predicates restrict the strong client's API. Runtime lookup clients expose
+optional API regardless of those predicates so they can discover newer symbols
+at runtime using `Symbol::is_available()` and load them with `require()`.
+
 ### 3. Call from C
 
 ```c

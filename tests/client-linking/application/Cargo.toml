@@ -1,0 +1,9 @@
+[package]
+name = "linking-application"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+linking-intermediate = { path = "../intermediate" }
+linking-client = { path = "../client", default-features = false, features = ["strong"] }

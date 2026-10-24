@@ -4,6 +4,22 @@
 
 ### Breaking changes
 
+- Generate one Unix Rust client supporting default `dynlookup` runtime symbol
+  loading and feature-selected `strong` linker calls. `strong` takes precedence
+  when Cargo unifies both features. Client crates declare an optional
+  `libloading` dependency; pure strong-only builds need no loader. Remove generator `Options`,
+  `generate_with_options`, `generate_from_file_with_options`, and CLI `--weak`.
+  A one-time unsafe `set_library_handle(handle, load_policy)` fixes the client's
+  lookup source and `LoadPolicy::Explicit` or `LoadPolicy::Lazy` behavior for
+  unloaded calls. Reject reconfiguration so explicit and lazy loads cannot mix
+  library handles. Prepare symbols before transferring owned arguments and
+  callbacks so failed lookup still releases Rust values. `require(symbols)`
+  returns the shared `LoadError`; `Symbol::is_available()` probes the configured source.
+  Without a setter, the first lookup fixes the process namespace and explicit
+  loading policy. Strong builds retain the shared API as no-ops. Schema
+  conditions restrict strong API while runtime lookup clients retain optional
+  symbol discovery. Windows support remains a separate follow-up.
+
 - Rename the C `PREFIX_VTABLE_HANDLE` macro to `PREFIX_TEMP_OBJ` and require
   owned vtable handles to come from the generated `PREFIX_vtable_handle_new`
   function. The macro builds a borrowed, call-scoped object that must only be

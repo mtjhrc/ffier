@@ -200,6 +200,7 @@ dependencies = [
  "ffier-test-codegen",
  "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
+ "libloading",
 ]
 
 [[package]]
@@ -226,6 +227,7 @@ dependencies = [
  "ffier",
  "ffier-test-codegen",
  "ffier-test-foreign-lib",
+ "libloading",
 ]
 
 [[package]]

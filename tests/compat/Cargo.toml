@@ -4,13 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+default = ["strong"]
+dynlookup = ["dep:libloading"]
+strong = ["ffier-test-foreign-lib-via-cdylib/strong"]
 fruit-label = []
 optional-entry = []
 
 [dependencies]
+libloading = { version = "0.8", optional = true }
 bitflags = "2"
 ffier = { path = "../../ffier" }
-ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib", default-features = false }
 
 [build-dependencies]
 # Build-dependency on the schema producer: cargo builds ffier-test-lib
