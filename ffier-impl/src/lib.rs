@@ -10,6 +10,7 @@ use syn::{
 };
 
 mod bridge;
+mod cfg;
 mod meta;
 
 use meta::{
@@ -391,7 +392,9 @@ impl Parse for ExportCfg {
             if key == "cfg" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
-                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+                let tokens = lit.parse::<proc_macro2::TokenStream>()?;
+                cfg::from_tokens(&tokens)?;
+                cfg = Some(tokens);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
@@ -2141,7 +2144,9 @@ impl Parse for ImplementableArgs {
             } else if ident == "cfg" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
-                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+                let tokens = lit.parse::<proc_macro2::TokenStream>()?;
+                cfg::from_tokens(&tokens)?;
+                cfg = Some(tokens);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),

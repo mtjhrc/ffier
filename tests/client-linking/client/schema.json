@@ -88,7 +88,7 @@
           },
           "receiver": "none",
           "params": [],
-          "cfg": "all(unix, feature = \"optional-entry\")"
+          "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
         },
         {
           "name": "newer",
@@ -99,7 +99,7 @@
           },
           "receiver": "ref",
           "params": [],
-          "cfg": "all(unix, feature = \"optional-entry\")"
+          "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
         },
         {
           "name": "consume",
@@ -109,7 +109,7 @@
           "ret": {
             "return_kind": "void"
           },
-          "cfg": "all(unix, feature = \"optional-entry\")"
+          "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
         },
         {
           "name": "consume_fd",
@@ -125,7 +125,7 @@
           "ret": {
             "return_kind": "void"
           },
-          "cfg": "all(unix, feature = \"optional-entry\")"
+          "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
         }
       ]
     },
@@ -133,7 +133,7 @@
       "name": "OptionalWidget",
       "destroy_ffi_name": "fixture_optional_widget_destroy",
       "is_builder_type": false,
-      "cfg": "all(unix, feature = \"optional-entry\")",
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]},
       "methods": [
         {
           "name": "new",
@@ -168,7 +168,7 @@
           },
           "receiver": "ref",
           "params": [],
-          "cfg": "all(unix, feature = \"optional-entry\")",
+          "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]},
           "trait_definition": {
             "index": 0,
             "has_default": true
@@ -204,7 +204,7 @@
       ],
       "own_method_count": 1,
       "num_slots": 1,
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     },
     {
       "name": "OptionalSimple",
@@ -218,7 +218,7 @@
       "own_method_count": 0,
       "num_slots": 0,
       "no_vtable": true,
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     },
     {
       "name": "FdWorker",
@@ -251,7 +251,7 @@
       ],
       "own_method_count": 1,
       "num_slots": 1,
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     }
   ],
   "trait_impls": [
@@ -264,12 +264,12 @@
       "trait_name": "OptionalWorker",
       "struct_name": "OptionalWidget",
       "methods": [],
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     },
     {
       "trait_name": "OptionalSimple",
       "struct_name": "OptionalWidget",
-      "cfg": "all(unix, feature = \"optional-entry\")",
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]},
       "methods": [
         {
           "name": "child",
@@ -287,7 +287,7 @@
       "trait_name": "FdWorker",
       "struct_name": "Widget",
       "methods": [],
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     }
   ],
   "free_functions": [
@@ -304,7 +304,7 @@
     {
       "name": "missing",
       "ffi_name": "fixture_missing",
-      "cfg": "all(unix, feature = \"optional-entry\")",
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]},
       "doc": [],
       "params": [],
       "ret": {
@@ -336,7 +336,7 @@
       "ret": {
         "return_kind": "void"
       },
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     },
     {
       "name": "consume_widget",
@@ -352,7 +352,7 @@
       "ret": {
         "return_kind": "void"
       },
-      "cfg": "all(unix, feature = \"optional-entry\")"
+      "cfg": {"all": [{"unix": true}, {"feature": "optional-entry"}]}
     },
     {
       "name": "consume_fd_callback",

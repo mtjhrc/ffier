@@ -3654,11 +3654,9 @@ fn build_schema(
     Ok(library)
 }
 
-/// Render a cfg predicate to a string for the JSON schema — the schema is a
-/// serialized artifact read by separate generator processes, so this is the
-/// one legitimate point where the predicate is turned into text.
-fn cfg_to_schema_string(cfg: Option<&TokenStream2>) -> Option<String> {
-    cfg.map(|ts| ts.to_string())
+/// Convert parsed Rust metadata into a language-independent predicate tree.
+fn cfg_to_schema(cfg: Option<&TokenStream2>) -> Option<ffier_schema::Cfg> {
+    cfg.map(|ts| crate::cfg::from_tokens(ts).expect("valid cfg predicate"))
 }
 
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
@@ -3679,7 +3677,7 @@ fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
                 }
             })
             .collect(),
-        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3703,7 +3701,7 @@ fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::Enu
                 }
             })
             .collect(),
-        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3727,7 +3725,7 @@ fn convert_free_fn(
             .map(|p| convert_param(p, r, type_registry))
             .collect(),
         ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
-        cfg: cfg_to_schema_string(cfg),
+        cfg: cfg_to_schema(cfg),
     }
 }
 
@@ -3752,7 +3750,7 @@ fn convert_exportable(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
-        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3815,7 +3813,7 @@ fn convert_implementable(
         own_method_count: meta.own_method_count,
         num_slots: meta.num_slots,
         no_vtable: meta.no_vtable,
-        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3836,7 +3834,7 @@ fn convert_trait_impl(
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry))
             .collect(),
-        cfg: cfg_to_schema_string(meta.cfg_predicate.as_ref()),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
 }
 
@@ -3891,7 +3889,7 @@ fn convert_method(
         ret,
         ffi_name,
         trait_definition,
-        cfg: cfg_to_schema_string(meta.cfg.as_ref()),
+        cfg: cfg_to_schema(meta.cfg.as_ref()),
     }
 }
 
