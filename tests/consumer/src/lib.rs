@@ -2,14 +2,15 @@
 //   cargo test -p ffier-test-consumer --features native
 //   cargo test -p ffier-test-consumer --no-default-features --features via-cdylib
 
-#[cfg(all(test, unix, feature = "native"))]
+#[cfg(all(test, feature = "native"))]
 use ffier_test_lib as api;
 
-#[cfg(all(test, unix, feature = "via-cdylib"))]
+#[cfg(all(test, feature = "via-cdylib"))]
 use ffier_test_lib_via_cdylib as api;
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::fd::AsRawFd;
 
     use super::api::{
@@ -369,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_fd_some() {
         let mut w = make_widget();
         w.set_count(1);
@@ -379,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_fd_none() {
         let w = make_widget();
         let result = w.maybe_fd(0);
@@ -386,6 +389,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_fd_error() {
         let w = make_widget();
         let result = w.maybe_fd(-1);
@@ -396,6 +400,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_owned_fd_some() {
         let w = make_widget();
         let result = w.maybe_owned_fd(1);
@@ -405,6 +410,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_owned_fd_none() {
         let w = make_widget();
         let result = w.maybe_owned_fd(0);
@@ -412,6 +418,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_owned_fd_error() {
         let w = make_widget();
         let result = w.maybe_owned_fd(-1);
@@ -422,6 +429,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_dup_fd_some() {
         use std::os::fd::BorrowedFd;
         let w = make_widget();
@@ -434,6 +442,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_maybe_dup_fd_none() {
         let w = make_widget();
         let result = w.maybe_dup_fd(None);

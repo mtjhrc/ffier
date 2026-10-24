@@ -16,6 +16,11 @@
 
 mod cfg;
 
+/// Render the availability predicate used by generated Rust clients.
+/// Platform restrictions apply in both modes; producer Cargo features are
+/// discovered at runtime in dynamic lookup mode.
+pub use cfg::client_cfg as cfg_predicate;
+
 use ffier_schema::{
     EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
     ImplementableTrait, Library, Method, ParamType, Receiver, Return, TraitImpl, TypeKind,

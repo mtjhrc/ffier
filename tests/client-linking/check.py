@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise Unix clients in separate Cargo invocations to avoid feature leakage."""
+"""Exercise native clients in separate Cargo invocations to avoid feature leakage."""
 
 from pathlib import Path
 import json
@@ -93,4 +93,4 @@ invalid = cargo("check", "-p", "linking-client", "--no-default-features",
                 capture=True, success=False)
 assert "generated ffier clients require the `dynlookup` or `strong` feature" in invalid.stderr
 
-print("All Unix client linking configurations passed.")
+print("All native client linking configurations passed.")

@@ -5,9 +5,9 @@
 // The bindings below are generated source code, NOT macro invocations.
 // build.rs regenerates them from the library's JSON schema on every build.
 #![allow(clippy::should_implement_trait)]
-#![cfg(unix)]
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+include!("../../load_dll.rs");
 
 // Manual extern for the hand-written debug bridge function.
 unsafe extern "C" {
@@ -16,6 +16,14 @@ unsafe extern "C" {
 
 #[cfg(test)]
 fn init() {
+    #[cfg(all(windows, not(feature = "strong")))]
+    {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| unsafe {
+            set_library_handle(Some(load_test_dll("ffier_test_lib")), LoadPolicy::Explicit)
+                .unwrap();
+        });
+    }
     require(include!(concat!(env!("OUT_DIR"), "/required_symbols.rs"))).unwrap();
     ffier_test_foreign_lib_via_cdylib::init_for_tests();
 }
@@ -38,7 +46,11 @@ mod lazy_callback_errors {
         fn init() {
             static INIT: std::sync::Once = std::sync::Once::new();
             INIT.call_once(|| {
-                unsafe { api::set_library_handle(None, api::LoadPolicy::Lazy) }.unwrap()
+                #[cfg(windows)]
+                let handle = Some(crate::load_test_dll("ffier_test_lib"));
+                #[cfg(not(windows))]
+                let handle = None;
+                unsafe { api::set_library_handle(handle, api::LoadPolicy::Lazy) }.unwrap()
             });
         }
 
@@ -59,6 +71,14 @@ mod unloaded_fieldless_errors {
 
     #[test]
     fn fieldless_values_need_no_symbols_and_display_only_needs_result_message() {
+        #[cfg(all(windows, not(feature = "strong")))]
+        unsafe {
+            api::set_library_handle(
+                Some(crate::load_test_dll("ffier_test_lib")),
+                api::LoadPolicy::Explicit,
+            )
+            .unwrap();
+        }
         let custom = api::TestError::CustomMessage;
         let invalid = api::TestError::InvalidInput();
         assert!(matches!(custom, api::TestError::CustomMessage));
@@ -596,6 +616,7 @@ mod tests {
     // ================================================================
 
     #[test]
+    #[cfg(unix)]
     fn free_fn_clone_fd_via_rust_bindings() {
         init();
         use std::os::unix::io::{AsFd, AsRawFd};

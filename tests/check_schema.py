@@ -73,7 +73,9 @@ def check_schema(schema_path: Path) -> None:
     ]
     cfg_items = [item for item in all_items if item.get("cfg")]
     for item in cfg_items:
-        assert item["cfg"] == {"feature": "optional-entry"}, item["cfg"]
+        assert isinstance(item["cfg"], dict), item["cfg"]
+        if item.get("name") in EXPECTED_NAMES:
+            assert item["cfg"] == {"feature": "optional-entry"}, item["cfg"]
     if len(cfg_items) < 8:
         raise AssertionError(f"expected >=8 cfg-gated items, got {len(cfg_items)}")
 

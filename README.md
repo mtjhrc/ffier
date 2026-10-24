@@ -290,3 +290,20 @@ your library            ffier-impl
 cargo test              # unit + integration tests
 just check              # fmt + clippy + full test suite (incl. no-codegen build)
 ```
+
+### Native test suites
+
+Run `just check` on Linux or Windows to format-check, lint, and exercise the
+native Rust libraries, generated clients, C headers, C integration tests,
+compile-fail diagnostics, and linking configurations. Windows uses MSVC; the
+runner discovers Visual Studio Build Tools through `vswhere` and configures
+its x64 C compiler automatically. Install Rust with rustfmt and Clippy, Python
+3, just, and the MSVC C++ build tools/Windows SDK. No Unix shell is needed.
+
+The Linux job also runs Valgrind and Miri with both borrowing models. Individual
+suites remain available through `just --justfile tests/justfile`, for example
+`platform-cfg`, `c`, `rust-client`, or `conditional-bridge`. The platform fixture
+uses the same method names with `BorrowedFd`/`OwnedFd` on Unix and
+`BorrowedHandle`/`OwnedHandle` on Windows, in all three linking feature modes.
+See [conditional compilation](docs/conditional-compilation.md) for schema and
+C preprocessor conventions.

@@ -63,6 +63,55 @@ pub fn write_rust_client(
         .map_err(|e| CodegenError::InvalidSchema(format!("write {}: {e}", out.display())))?;
     // Shared harnesses explicitly initialize the test libraries' API. Their
     // Optional* entries are tested separately, so omit them from this list.
+    // Preserve platform predicates: a portable schema can mention symbols
+    // that the native library deliberately does not export on this target.
+    let mut predicates = std::collections::BTreeMap::new();
+    let mut record =
+        |name: &str, parent: Option<&ffier_schema::Cfg>, cfg: Option<&ffier_schema::Cfg>| {
+            let variant: String = name
+                .split('_')
+                .map(|part| {
+                    let mut chars = part.chars();
+                    chars
+                        .next()
+                        .map(|c| c.to_uppercase().to_string() + chars.as_str())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let cfg = match (parent, cfg) {
+                (Some(a), Some(b)) => Some(ffier_schema::Cfg::All(vec![a.clone(), b.clone()])),
+                (a, b) => a.or(b).cloned(),
+            };
+            predicates
+                .entry(variant)
+                .and_modify(|previous: &mut Option<ffier_schema::Cfg>| {
+                    *previous = match (previous.take(), cfg.clone()) {
+                        (Some(a), Some(b)) => Some(ffier_schema::Cfg::Any(vec![a, b])),
+                        _ => None,
+                    };
+                })
+                .or_insert(cfg);
+        };
+    for ty in &lib.exported_types {
+        record(&ty.destroy_ffi_name, ty.cfg.as_ref(), None);
+        for m in &ty.methods {
+            record(&m.ffi_name, ty.cfg.as_ref(), m.cfg.as_ref());
+        }
+    }
+    for tr in &lib.traits {
+        record(&tr.destroy_ffi_name, tr.cfg.as_ref(), None);
+        for m in &tr.methods {
+            record(&m.ffi_name, tr.cfg.as_ref(), m.cfg.as_ref());
+        }
+    }
+    for ti in &lib.trait_impls {
+        for m in &ti.methods {
+            record(&m.ffi_name, ti.cfg.as_ref(), m.cfg.as_ref());
+        }
+    }
+    for f in &lib.free_functions {
+        record(&f.ffi_name, None, f.cfg.as_ref());
+    }
     let variants = src
         .split("pub enum Symbol {\n")
         .nth(1)
@@ -73,7 +122,14 @@ pub fn write_rust_client(
         .lines()
         .map(str::trim)
         .filter(|line| line.ends_with(',') && !line.contains("Optional"))
-        .map(|line| format!("Symbol::{line}"))
+        .map(|line| {
+            let attr = predicates
+                .get(line.trim_end_matches(','))
+                .and_then(Option::as_ref)
+                .map(|cfg| format!("#[cfg({})]\n", ffier_gen_rust_client::cfg_predicate(cfg)))
+                .unwrap_or_default();
+            format!("{attr}Symbol::{line}")
+        })
         .collect::<Vec<_>>()
         .join("\n");
     std::fs::write(

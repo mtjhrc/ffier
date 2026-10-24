@@ -1,4 +1,4 @@
-#![cfg(not(feature = "strong"))]
+#![cfg(all(unix, not(feature = "strong")))]
 mod common;
 use linking_client::{answer, set_library_handle};
 
