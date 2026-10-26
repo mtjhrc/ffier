@@ -466,6 +466,31 @@ impl HasPrefix for MetaBitflags {
 }
 
 // ---------------------------------------------------------------------------
+// Value struct metadata
+// ---------------------------------------------------------------------------
+
+/// A fixed-layout `#[repr(C)]` struct exported by value.
+pub struct MetaValueStruct {
+    pub name: Ident,
+    pub prefix: String,
+    pub fields: Vec<MetaValueField>,
+    /// `#[cfg(...)]` predicate for the entire struct. `None` = unconditional.
+    pub cfg_predicate: Option<TokenStream>,
+}
+
+pub struct MetaValueField {
+    pub name: Ident,
+    /// Field type tokens, only read by the schema generator.
+    pub rust_type: TokenStream,
+}
+
+impl HasPrefix for MetaValueStruct {
+    fn prefix(&self) -> &str {
+        &self.prefix
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Free function metadata
 // ---------------------------------------------------------------------------
 
@@ -1203,6 +1228,55 @@ impl syn::parse::Parse for MetaBitflags {
             prefix,
             repr,
             variants,
+            cfg_predicate,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Value struct metadata parsing
+// ---------------------------------------------------------------------------
+
+impl syn::parse::Parse for MetaValueStruct {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        input.parse::<Token![@]>()?;
+        let tag: Ident = input.parse()?;
+        if tag != "exported_value" {
+            return Err(syn::Error::new(tag.span(), "expected `exported_value`"));
+        }
+        parse_comma(input)?;
+
+        expect_key(input, "name")?;
+        let name: Ident = input.parse()?;
+        parse_comma(input)?;
+
+        expect_key(input, "prefix")?;
+        let prefix = parse_string(input)?;
+        parse_comma(input)?;
+
+        expect_key(input, "fields")?;
+        let fields = parse_bracketed_list(input, |content| {
+            let inner;
+            syn::braced!(inner in content);
+            expect_key(&inner, "name")?;
+            let field_name: Ident = inner.parse()?;
+            parse_comma(&inner)?;
+            expect_key(&inner, "rust_type")?;
+            let rust_type = parse_parenthesized_tokens(&inner)?;
+            parse_comma(&inner)?;
+            Ok(MetaValueField {
+                name: field_name,
+                rust_type,
+            })
+        })?;
+        parse_comma(input)?;
+
+        let cfg_predicate = parse_optional_cfg_predicate(input)?;
+
+        Ok(MetaValueStruct {
+            name,
+            prefix,
+            fields,
             cfg_predicate,
         })
     }

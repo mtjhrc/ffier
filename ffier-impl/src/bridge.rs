@@ -13,9 +13,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::meta::{
     HasPrefix, MetaBitflags, MetaEnum, MetaError, MetaErrorField, MetaErrorVariantData,
     MetaExportable, MetaFreeFunction, MetaImplementable, MetaMethod, MetaMethodContext, MetaParam,
-    MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, camel_to_snake,
-    camel_to_upper_snake, cfg_predicate_attr, extract_result_ok_type, is_result_ok_handle,
-    peek_meta_field, peek_meta_tag,
+    MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, MetaValueStruct,
+    camel_to_snake, camel_to_upper_snake, cfg_predicate_attr, extract_result_ok_type,
+    is_result_ok_handle, peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -180,8 +180,9 @@ fn generate_one(
                 generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate);
             wrap_cfg(cfg_attr, code)
         }
-        "exported_enum" | "exported_bitflags" => {
-            // No bridge code needed — enums/bitflags are value types passed by value.
+        "exported_enum" | "exported_bitflags" | "exported_value" => {
+            // No bridge code needed — enums, bitflags, and value structs are
+            // plain values passed inline or by pointer.
             quote! {}
         }
         "exported_fn" => {
@@ -314,6 +315,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     let mut trait_impls = Vec::new();
     let mut enum_constants = Vec::new();
     let mut bitflags_constants = Vec::new();
+    let mut value_structs = Vec::new();
     let mut free_fns = Vec::new();
 
     for item in &items {
@@ -324,6 +326,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             "exported_trait_impl" => trait_impls.push(item.clone()),
             "exported_enum" => enum_constants.push(item.clone()),
             "exported_bitflags" => bitflags_constants.push(item.clone()),
+            "exported_value" => value_structs.push(item.clone()),
             "exported_fn" => free_fns.push(item.clone()),
             tag => {
                 let msg = format!("unknown metadata tag `@{tag}` in batch");
@@ -369,6 +372,68 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         }
         set
     };
+
+    // Pass 1.5: Validate value-struct fields. Field types must already have a
+    // stable C representation: scalars, exported enums, exported bitflags, or
+    // other exported value structs. Anything else is a compile error, since the
+    // Rust definition is used as the C layout directly.
+    {
+        let value_names: HashSet<String> = value_structs
+            .iter()
+            .filter_map(|item| syn::parse2::<MetaValueStruct>(item.clone()).ok())
+            .map(|meta| meta.name.to_string())
+            .collect();
+        let enum_names: HashSet<String> = enum_constants
+            .iter()
+            .filter_map(|item| syn::parse2::<MetaEnum>(item.clone()).ok())
+            .map(|meta| meta.name.to_string())
+            .collect();
+        let bitflags_names: HashSet<String> = bitflags_constants
+            .iter()
+            .filter_map(|item| syn::parse2::<MetaBitflags>(item.clone()).ok())
+            .map(|meta| meta.name.to_string())
+            .collect();
+        const FFI_SCALARS: &[&str] = &[
+            "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "isize", "usize",
+            "bool",
+        ];
+
+        for item in &value_structs {
+            let meta: MetaValueStruct = match syn::parse2(item.clone()) {
+                Ok(meta) => meta,
+                Err(error) => return error.to_compile_error(),
+            };
+            for field in &meta.fields {
+                let ty: syn::Type = match syn::parse2(field.rust_type.clone()) {
+                    Ok(ty) => ty,
+                    Err(error) => return error.to_compile_error(),
+                };
+                let type_name = match &ty {
+                    syn::Type::Path(path) => path
+                        .path
+                        .segments
+                        .last()
+                        .map(|segment| segment.ident.to_string())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let supported = FFI_SCALARS.contains(&type_name.as_str())
+                    || enum_names.contains(&type_name)
+                    || bitflags_names.contains(&type_name)
+                    || value_names.contains(&type_name);
+                if !supported {
+                    let struct_name = meta.name.to_string();
+                    let field_name = field.name.to_string();
+                    let msg = format!(
+                        "ffier value struct `{struct_name}` field `{field_name}` has unsupported \
+                         type `{type_name}`; expected an FFI scalar or a registered enum, \
+                         bitflags, or value struct"
+                    );
+                    return quote! { compile_error!(#msg); };
+                }
+            }
+        }
+    }
 
     // Pass 1.5: Validate type tags — check for missing (tag=0) and duplicates.
     // Also builds a tag→name map used to generate __ffier_type_name() for
@@ -517,6 +582,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
         .chain(bitflags_constants.iter())
+        .chain(value_structs.iter())
         .chain(free_fns.iter())
     {
         all_code.push(generate_one(
@@ -536,6 +602,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .chain(trait_impls.iter())
         .chain(enum_constants.iter())
         .chain(bitflags_constants.iter())
+        .chain(value_structs.iter())
         .chain(free_fns.iter())
         .next()
         .map(|item| peek_meta_field(item, "prefix"))
@@ -644,6 +711,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         &trait_impls,
         &enum_constants,
         &bitflags_constants,
+        &value_structs,
         &free_fns,
     ) {
         return error.to_compile_error();
@@ -2429,6 +2497,7 @@ fn emit_json(
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
+    value_structs: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) -> syn::Result<()> {
     let library = build_schema(
@@ -2440,6 +2509,7 @@ fn emit_json(
         trait_impls,
         enum_constants,
         bitflags_constants,
+        value_structs,
         free_fns,
     )?;
     // Standard Option/Box/Result syntax has already been converted. Any remaining
@@ -3148,6 +3218,7 @@ fn build_schema(
     trait_impls: &[TokenStream2],
     enum_constants: &[TokenStream2],
     bitflags_constants: &[TokenStream2],
+    value_structs: &[TokenStream2],
     free_fns: &[TokenStream2],
 ) -> syn::Result<ffier_schema::Library> {
     let errors_parsed: Vec<_> = errors
@@ -3180,6 +3251,10 @@ fn build_schema(
     let free_fns_parsed: Vec<_> = free_fns
         .iter()
         .map(|item| syn::parse2::<MetaFreeFunction>(item.clone()))
+        .collect::<syn::Result<_>>()?;
+    let value_structs_parsed: Vec<_> = value_structs
+        .iter()
+        .map(|item| syn::parse2::<MetaValueStruct>(item.clone()))
         .collect::<syn::Result<_>>()?;
 
     let resolver = CTypeResolver::new(prefix, primitives_prefix);
@@ -3446,6 +3521,24 @@ fn build_schema(
         )?;
     }
 
+    // Fixed-layout value structs
+    for value in &value_structs_parsed {
+        let name = value.name.to_string();
+        registry.register(
+            &name,
+            ffier_schema::TypeEntry {
+                kind: ffier_schema::TypeKind::ValueStruct {
+                    c_name: resolver.handle_c_name(&name),
+                },
+                type_tag: None,
+                bless: None,
+                lifetime_params: vec![],
+            },
+            RegistrySource::Declaration,
+            value.name.span(),
+        )?;
+    }
+
     // Handles (exported types)
     for e in &exportables_parsed {
         let name = e.struct_name.to_string();
@@ -3608,6 +3701,10 @@ fn build_schema(
         .iter()
         .map(|bf| convert_bitflags(bf, &resolver))
         .collect();
+    let value_structs: Vec<_> = value_structs_parsed
+        .iter()
+        .map(|v| convert_value_struct(v, &resolver))
+        .collect();
     let free_functions: Vec<_> = free_fns_parsed
         .iter()
         .map(|f| convert_free_fn(f, &resolver, &handle_types, &type_registry))
@@ -3626,6 +3723,7 @@ fn build_schema(
         primitives_prefix: primitives_prefix.map(|s| s.to_string()),
         type_registry,
         exported_types,
+        value_structs,
         errors,
         enum_constants,
         bitflags_constants,
@@ -3640,6 +3738,23 @@ fn build_schema(
 /// Convert parsed Rust metadata into a language-independent predicate tree.
 fn cfg_to_schema(cfg: Option<&TokenStream2>) -> Option<ffier_schema::Cfg> {
     cfg.map(|tokens| crate::cfg::from_tokens(tokens).expect("valid cfg predicate"))
+}
+
+fn convert_value_struct(meta: &MetaValueStruct, r: &CTypeResolver) -> ffier_schema::ValueStruct {
+    let name = meta.name.to_string();
+    ffier_schema::ValueStruct {
+        c_name: r.handle_c_name(&name),
+        fields: meta
+            .fields
+            .iter()
+            .map(|field| ffier_schema::ValueField {
+                name: field.name.to_string(),
+                type_ref: r.type_ref_from_tokens(&field.rust_type),
+            })
+            .collect(),
+        cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
+        name,
+    }
 }
 
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
