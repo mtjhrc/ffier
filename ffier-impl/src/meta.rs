@@ -490,6 +490,50 @@ impl HasPrefix for MetaValueStruct {
     }
 }
 
+/// Strip one outer `Option<...>` wrapper from a type token stream.
+///
+/// The metadata `bridge_type` for `Result<Option<T>, E>` keeps the `Option`
+/// so the schema can record it; C signatures need the bare `T`.
+pub fn option_inner_tokens(tokens: &TokenStream) -> Option<TokenStream> {
+    let ty: syn::Type = syn::parse2(tokens.clone()).ok()?;
+    let syn::Type::Path(path) = &ty else {
+        return None;
+    };
+    let segment = path.path.segments.last()?;
+    if segment.ident != "Option" {
+        return None;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let syn::GenericArgument::Type(inner) = args.args.first()? else {
+        return None;
+    };
+    Some(quote! { #inner })
+}
+
+/// Classify a return type that wraps a registered value struct in `Option`.
+///
+/// Returns `Some(inner)` for `Option<ValueStruct>`, where `inner` is the value
+/// struct type without the `Option` wrapper. Everything else — including
+/// `Option<BorrowedFd>` and `Option<&str>`, which already have `FfiType` impls —
+/// returns `None`.
+///
+/// The input is the *Rust* type: callers that emit code must strip the wrapper
+/// from `bridge_type` instead, so the inner type stays definition-site resolved.
+pub fn option_value_struct_inner(
+    tokens: &TokenStream,
+    value_names: &std::collections::HashSet<String>,
+) -> Option<TokenStream> {
+    let inner = option_inner_tokens(tokens)?;
+    let ty: syn::Type = syn::parse2(inner).ok()?;
+    let syn::Type::Path(path) = &ty else {
+        return None;
+    };
+    let name = path.path.segments.last()?.ident.to_string();
+    value_names.contains(&name).then(|| quote! { #ty })
+}
+
 // ---------------------------------------------------------------------------
 // Free function metadata
 // ---------------------------------------------------------------------------

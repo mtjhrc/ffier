@@ -898,6 +898,20 @@ fn format_return_and_out_params(
                     }
                     None => (result_c(), vec![format!("{error_c}* err_out")]),
                 },
+                CResultConvention::OptionalValueOutParam => {
+                    let ok_ref = ok
+                        .as_ref()
+                        .expect("OptionalValueOutParam requires an ok type");
+                    let c_type = lib.c_type_of_ref(ok_ref);
+                    (
+                        result_c(),
+                        vec![
+                            "bool* result_is_some".to_string(),
+                            format!("{c_type}* result"),
+                            format!("{error_c}* err_out"),
+                        ],
+                    )
+                }
             }
         }
         Return::ObjectArray { .. } => {
