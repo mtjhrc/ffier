@@ -74,6 +74,8 @@ def check_schema(schema_path: Path) -> None:
     cfg_items = [item for item in all_items if item.get("cfg")]
     if len(cfg_items) < 8:
         raise AssertionError(f"expected >=8 cfg-gated items, got {len(cfg_items)}")
+    assert all(isinstance(item["cfg"], dict) for item in cfg_items)
+    assert all("kind" in item["cfg"] for item in cfg_items)
 
 
 def main() -> None:
