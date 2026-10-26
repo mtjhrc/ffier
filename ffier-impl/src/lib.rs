@@ -81,7 +81,18 @@ fn extract_ffier_attr(attr: &syn::Attribute) -> Option<syn::Attribute> {
     if let Some(proc_macro2::TokenTree::Ident(id)) = after_iter.next()
         && id == "ffier"
     {
-        return Some(syn::parse_quote! { #[#after_comma] });
+        // `#[cfg_attr(COND, ffier(...))]` wraps the helper attribute that this
+        // function extracts. A qualified path such as
+        // `#[cfg_attr(COND, ffier::export(...))]` is a proc-macro invocation
+        // instead, so handing its contents to `parse_nested_meta` would read
+        // the macro arguments as helper keys.
+        let qualified = matches!(
+            after_iter.next(),
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ':'
+        );
+        if !qualified {
+            return Some(syn::parse_quote! { #[#after_comma] });
+        }
     }
 
     None
