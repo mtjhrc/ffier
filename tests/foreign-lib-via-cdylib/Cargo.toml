@@ -9,7 +9,7 @@ ffier-strong = []
 
 [dependencies]
 libloading = { version = "0.8", optional = true }
-ffier = { path = "../../ffier" }
+ffier = { package = "ffier-rt", path = "../../ffier-rt" }
 
 [build-dependencies]
 # Build-dependency on the schema producer: cargo builds ffier-test-foreign-lib

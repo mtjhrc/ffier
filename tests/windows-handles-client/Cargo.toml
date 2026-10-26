@@ -9,7 +9,7 @@ ffier-strong = []
 ffier-dynlookup = []
 
 [dependencies]
-ffier = { path = "../../ffier" }
+ffier = { package = "ffier-rt", path = "../../ffier-rt" }
 
 [build-dependencies]
 ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }

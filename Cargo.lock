@@ -196,7 +196,7 @@ name = "ffier-test-compat"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "ffier",
+ "ffier-rt",
  "ffier-test-codegen",
  "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
@@ -224,7 +224,7 @@ dependencies = [
 name = "ffier-test-foreign-lib-via-cdylib"
 version = "0.1.0"
 dependencies = [
- "ffier",
+ "ffier-rt",
  "ffier-test-codegen",
  "ffier-test-foreign-lib",
  "libloading",
@@ -248,7 +248,7 @@ name = "ffier-test-lib-via-cdylib"
 version = "0.1.0"
 dependencies = [
  "bitflags",
- "ffier",
+ "ffier-rt",
  "ffier-test-codegen",
  "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
@@ -281,8 +281,8 @@ dependencies = [
 name = "ffier-test-windows-handles-client"
 version = "0.1.0"
 dependencies = [
- "ffier",
  "ffier-gen-rust-client",
+ "ffier-rt",
  "ffier-test-windows-handles",
 ]
 
