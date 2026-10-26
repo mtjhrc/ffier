@@ -52,9 +52,9 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     }
     for ty in &lib.exported_types {
         let c_name = lib.c_type_of(&ty.name);
-        cfg::start(&mut out, ty.cfg.as_ref());
-        out.push_str(&format!("typedef void* {};\n", c_name));
-        cfg::end(&mut out, ty.cfg.as_ref());
+        cfg::block(&mut out, ty.cfg.as_ref(), |out| {
+            out.push_str(&format!("typedef void* {};\n", c_name));
+        });
     }
 
     // Trait typedefs with implementor lists
@@ -75,16 +75,12 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Enum constant sections
     for en in &lib.enum_constants {
-        cfg::start(&mut out, en.cfg.as_ref());
-        emit_enum_section(&mut out, en);
-        cfg::end(&mut out, en.cfg.as_ref());
+        cfg::block(&mut out, en.cfg.as_ref(), |out| emit_enum_section(out, en));
     }
 
     // Bitflags constant sections (same format as enum constants)
     for bf in &lib.bitflags_constants {
-        cfg::start(&mut out, bf.cfg.as_ref());
-        emit_enum_section(&mut out, bf);
-        cfg::end(&mut out, bf.cfg.as_ref());
+        cfg::block(&mut out, bf.cfg.as_ref(), |out| emit_enum_section(out, bf));
     }
 
     // Error sections
@@ -94,26 +90,26 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
-        cfg::start(&mut out, ty.cfg.as_ref());
-        emit_type_section(&mut out, ty, lib, opts);
-        cfg::end(&mut out, ty.cfg.as_ref());
+        cfg::block(&mut out, ty.cfg.as_ref(), |out| {
+            emit_type_section(out, ty, lib, opts)
+        });
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        cfg::start(&mut out, tr.cfg.as_ref());
-        if !tr.no_vtable {
-            emit_vtable_section(&mut out, tr, lib);
-        }
-        emit_dispatch_section(&mut out, tr, lib, opts);
-        cfg::end(&mut out, tr.cfg.as_ref());
+        cfg::block(&mut out, tr.cfg.as_ref(), |out| {
+            if !tr.no_vtable {
+                emit_vtable_section(out, tr, lib);
+            }
+            emit_dispatch_section(out, tr, lib, opts);
+        });
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        cfg::start(&mut out, ti.cfg.as_ref());
-        emit_trait_impl_section(&mut out, ti, lib, opts);
-        cfg::end(&mut out, ti.cfg.as_ref());
+        cfg::block(&mut out, ti.cfg.as_ref(), |out| {
+            emit_trait_impl_section(out, ti, lib, opts)
+        });
     }
 
     // Free functions
@@ -431,9 +427,9 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
             .iter()
             .find(|tr| &tr.name == trait_name)
             .and_then(|tr| tr.cfg.as_ref());
-        cfg::start(out, cfg);
-        out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
-        cfg::end(out, cfg);
+        cfg::block(out, cfg, |out| {
+            out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
+        });
     }
 }
 
@@ -475,24 +471,33 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
             })
             .collect();
         for m in &methods {
-            cfg::start(out, m.cfg.as_ref());
-            let receiver = fresh_param_name("self_data", &m.params);
-            let mut params = vec![format!("void* {receiver}")];
-            format_c_params(&m.params, lib, &mut params);
-            let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
-            params.extend(extra_params);
-            let params_str = params.join(", ");
-            out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
-            cfg::end(out, m.cfg.as_ref());
+            cfg::block(out, m.cfg.as_ref(), |out| {
+                let receiver = fresh_param_name("self_data", &m.params);
+                let mut params = vec![format!("void* {receiver}")];
+                format_c_params(&m.params, lib, &mut params);
+                let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
+                params.extend(extra_params);
+                let params_str = params.join(", ");
+                out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
+            });
         }
         if methods.iter().all(|m| m.cfg.is_some()) {
+            // Emit a reserved pointer for every configuration in which no
+            // method occupies this slot. With no methods at all the slot is
+            // unconditionally reserved, so the guard folds away entirely;
+            // otherwise it is the negation of the union of the method
+            // predicates.
             let enabled =
                 ffier_schema::Cfg::Any(methods.iter().map(|m| m.cfg.clone().unwrap()).collect());
-            cfg::start(out, Some(&ffier_schema::Cfg::Not(Box::new(enabled))));
-            out.push_str(&format!(
-                "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"
-            ));
-            out.push_str("#endif\n");
+            cfg::block(
+                out,
+                Some(&ffier_schema::Cfg::Not(Box::new(enabled))),
+                |out| {
+                    out.push_str(&format!(
+                        "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"
+                    ));
+                },
+            );
         }
     }
 
@@ -509,11 +514,12 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
-        cfg::start(out, m.cfg.as_ref());
-        emit_doc_comment(out, &m.doc);
-        let (ret_type, params_str) = build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
-        cfg::end(out, m.cfg.as_ref());
+        cfg::block(out, m.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &m.doc);
+            let (ret_type, params_str) =
+                build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 
     // Destroy function
@@ -534,10 +540,10 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        cfg::start(out, m.cfg.as_ref());
-        let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
-        cfg::end(out, m.cfg.as_ref());
+        cfg::block(out, m.cfg.as_ref(), |out| {
+            let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 }
 
@@ -552,11 +558,11 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Librar
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        cfg::start(out, m.cfg.as_ref());
-        emit_doc_comment(out, &m.doc);
-        let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
-        cfg::end(out, m.cfg.as_ref());
+        cfg::block(out, m.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &m.doc);
+            let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 
     // Destroy dispatch
@@ -582,22 +588,22 @@ fn emit_free_functions(
     emit_section_header(out, "Free functions");
 
     for f in functions {
-        cfg::start(out, f.cfg.as_ref());
-        emit_doc_comment(out, &f.doc);
+        cfg::block(out, f.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &f.doc);
 
-        let mut params: Vec<String> = Vec::new();
-        format_c_params(&f.params, lib, &mut params);
+            let mut params: Vec<String> = Vec::new();
+            format_c_params(&f.params, lib, &mut params);
 
-        let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
-        params.extend(extra_params);
+            let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
+            params.extend(extra_params);
 
-        let params_str = if params.is_empty() {
-            "void".to_string()
-        } else {
-            params.join(", ")
-        };
-        write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
-        cfg::end(out, f.cfg.as_ref());
+            let params_str = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params.join(", ")
+            };
+            write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
+        });
     }
 }
 

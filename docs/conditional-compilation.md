@@ -34,6 +34,13 @@ Names are uppercased and punctuation becomes underscores. For example,
 define when using that feature. Conditional vtable methods retain a reserved
 pointer-sized slot when disabled.
 
+Predicates that are constant are folded before emission, so they never reach
+the consumer as `#if 1`, `#if 0`, or a tautology such as `#if !(A || !(A))`.
+An always-enabled item is emitted without any preprocessor guard and an
+always-disabled item is omitted entirely. Empty `all`/`any` are constants, as
+are combinators containing a decisive operand or a predicate alongside its
+negation.
+
 Rust clients always enforce platform predicates in both linking modes.
 Strong linking also enforces Cargo feature predicates. Dynamic lookup allows
 the consumer to discover feature-gated functions at runtime without enabling
