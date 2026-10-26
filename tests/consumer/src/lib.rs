@@ -10,9 +10,6 @@ use ffier_test_lib_via_cdylib as api;
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
-    use std::os::fd::AsRawFd;
-
     use super::api::{
         self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,
         View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
@@ -367,86 +364,6 @@ mod tests {
         assert_eq!(optional_mode_name(OptionalMode::Basic), "basic");
         let flags = optional_merge_flags(OptionalFlags::READ, OptionalFlags::WRITE);
         assert_eq!(flags, OptionalFlags::READ | OptionalFlags::WRITE);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_fd_some() {
-        let mut w = make_widget();
-        w.set_count(1);
-        let result = w.maybe_fd(1);
-        let fd = result.unwrap().unwrap();
-        // Should be stdin (fd 0)
-        assert_eq!(fd.as_raw_fd(), 0);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_fd_none() {
-        let w = make_widget();
-        let result = w.maybe_fd(0);
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_fd_error() {
-        let w = make_widget();
-        let result = w.maybe_fd(-1);
-        assert!(matches!(
-            result.unwrap_err(),
-            api::TestError::InvalidInput(..)
-        ));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_owned_fd_some() {
-        let w = make_widget();
-        let result = w.maybe_owned_fd(1);
-        let fd = result.unwrap().unwrap();
-        // Should be a dup of stdin — valid fd, not fd 0 itself
-        assert!(fd.as_raw_fd() >= 0);
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_owned_fd_none() {
-        let w = make_widget();
-        let result = w.maybe_owned_fd(0);
-        assert!(result.unwrap().is_none());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_owned_fd_error() {
-        let w = make_widget();
-        let result = w.maybe_owned_fd(-1);
-        assert!(matches!(
-            result.unwrap_err(),
-            api::TestError::InvalidInput(..)
-        ));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_dup_fd_some() {
-        use std::os::fd::BorrowedFd;
-        let w = make_widget();
-        // Pass stdin as Some
-        let stdin = unsafe { BorrowedFd::borrow_raw(0) };
-        let result = w.maybe_dup_fd(Some(stdin));
-        let fd = result.unwrap().unwrap();
-        assert!(fd.as_raw_fd() >= 0);
-        assert_ne!(fd.as_raw_fd(), 0); // should be a new fd
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_maybe_dup_fd_none() {
-        let w = make_widget();
-        let result = w.maybe_dup_fd(None);
-        assert!(result.unwrap().is_none());
     }
 
     // -----------------------------------------------------------------------

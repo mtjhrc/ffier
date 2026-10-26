@@ -134,28 +134,6 @@ void method_with_bytes_param(void) {
 /* File descriptor params                                                */
 /* ===================================================================== */
 
-#ifndef _WIN32
-void method_with_borrowed_fd_param(void) {
-    FtWidget w = ft_widget_new();
-    /* stdin is fd 0 */
-    int fd_num = ft_widget_fd_number(w, STDIN_FILENO);
-    assert(fd_num == STDIN_FILENO);
-    ft_widget_destroy(w);
-}
-#endif
-
-#ifndef _WIN32
-void method_with_borrowed_fd_returning_owned_fd(void) {
-    FtWidget w = ft_widget_new();
-    /* dup stdout */
-    int new_fd = ft_widget_dup_fd(w, STDOUT_FILENO);
-    assert(new_fd >= 0);
-    assert(new_fd != STDOUT_FILENO);
-    close(new_fd);
-    ft_widget_destroy(w);
-}
-#endif
-
 /* ===================================================================== */
 /* Result return patterns                                                */
 /* ===================================================================== */
@@ -655,42 +633,6 @@ void lifetime_type_str_methods(void) {
 }
 
 /* ===================================================================== */
-/* Optional fd (Result<Option<BorrowedFd>, E>)                          */
-/* ===================================================================== */
-
-#ifndef _WIN32
-void method_returning_result_optional_fd_some(void) {
-    FtWidget w = ft_widget_new();
-    int fd = -1;
-    FtResult r = ft_widget_maybe_fd(w, 1, &fd, NULL);
-    assert(r == FT_RESULT_SUCCESS);
-    assert(fd == 0); /* stdin */
-    ft_widget_destroy(w);
-}
-#endif
-
-#ifndef _WIN32
-void method_returning_result_optional_fd_none(void) {
-    FtWidget w = ft_widget_new();
-    int fd = 99;
-    FtResult r = ft_widget_maybe_fd(w, 0, &fd, NULL);
-    assert(r == FT_RESULT_SUCCESS);
-    assert(fd == -1); /* None sentinel */
-    ft_widget_destroy(w);
-}
-#endif
-
-#ifndef _WIN32
-void method_returning_result_optional_fd_err(void) {
-    FtWidget w = ft_widget_new();
-    int fd = 99;
-    FtResult r = ft_widget_maybe_fd(w, -1, &fd, NULL);
-    assert(r == FT_ERROR_TEST_INVALID_INPUT);
-    ft_widget_destroy(w);
-}
-#endif
-
-/* ===================================================================== */
 /* Destroy                                                               */
 /* ===================================================================== */
 
@@ -761,14 +703,6 @@ int main(int argc, char** argv) {
     RUN_TEST(method_with_str_slice_param);
     RUN_TEST(method_with_bytes_param);
 
-    printf("\n[file descriptors]\n");
-    #ifndef _WIN32
-    RUN_TEST(method_with_borrowed_fd_param);
-    #endif
-    #ifndef _WIN32
-    RUN_TEST(method_with_borrowed_fd_returning_owned_fd);
-    #endif
-
     printf("\n[result returns]\n");
     RUN_TEST(method_returning_result_void_ok);
     RUN_TEST(method_returning_result_void_err);
@@ -813,17 +747,6 @@ int main(int argc, char** argv) {
     RUN_TEST(lifetime_type_borrowing_handle);
     RUN_TEST(lifetime_type_reading_through_borrow);
     RUN_TEST(lifetime_type_str_methods);
-
-    printf("\n[optional fd]\n");
-    #ifndef _WIN32
-    RUN_TEST(method_returning_result_optional_fd_some);
-    #endif
-    #ifndef _WIN32
-    RUN_TEST(method_returning_result_optional_fd_none);
-    #endif
-    #ifndef _WIN32
-    RUN_TEST(method_returning_result_optional_fd_err);
-    #endif
 
     printf("\n[destroy]\n");
     RUN_TEST(destroy_handle);

@@ -148,27 +148,39 @@ def conditional(enabled):
 
 
 def platform_cfg():
-    cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
+    cargo('rustc', '-p', 'ffier-test-platform-matrix', '--crate-type', 'cdylib')
     for args in [[], ['--no-default-features', '--features', 'dynlookup'], ['--features', 'dynlookup,strong']]:
-        cargo('test', '-p', 'ffier-test-windows-handles-client', *args)
+        cargo('test', '-p', 'ffier-test-platform-matrix-client', *args)
     # Feature-selected ABI alternatives must stay exclusive in dynamic clients.
-    cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'wide', '--crate-type', 'cdylib')
-    cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,wide')
-    cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'owner-api', '--crate-type', 'cdylib')
-    cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,test-owner')
+    cargo('rustc', '-p', 'ffier-test-platform-matrix', '--features', 'wide', '--crate-type', 'cdylib')
+    cargo('test', '-p', 'ffier-test-platform-matrix-client', '--no-default-features', '--features', 'dynlookup,wide')
+    cargo('rustc', '-p', 'ffier-test-platform-matrix', '--features', 'owner-api', '--crate-type', 'cdylib')
+    cargo('test', '-p', 'ffier-test-platform-matrix-client', '--no-default-features', '--features', 'dynlookup,test-owner')
     # Both features together reach the `all(feature = "owner-api",
     # feature = "wide")` impl, which neither feature alone can cover.
-    cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'owner-api,wide', '--crate-type', 'cdylib')
-    cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,test-owner,wide')
-    cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
+    cargo('rustc', '-p', 'ffier-test-platform-matrix', '--features', 'owner-api,wide', '--crate-type', 'cdylib')
+    cargo('test', '-p', 'ffier-test-platform-matrix-client', '--no-default-features', '--features', 'dynlookup,test-owner,wide')
+    cargo('rustc', '-p', 'ffier-test-platform-matrix', '--crate-type', 'cdylib')
     # The shared C test needs both feature-selected signatures in one header.
-    header('ffier-windows-handles.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs',
+    header('ffier-platform-matrix.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs',
            '--unspecified-features', 'guard')
     syntax(TARGET / 'platform.h')
     # Compile the typed signature checks under each selection, not just with
     # the feature undefined.
-    for define in ([], ['WINDOWS_HANDLES_CFG_FEATURE_WIDE'], ['WINDOWS_HANDLES_CFG_FEATURE_OWNER_API']):
+    for define in ([], ['PLATFORM_MATRIX_CFG_FEATURE_WIDE'], ['PLATFORM_MATRIX_CFG_FEATURE_OWNER_API']):
         syntax(TESTS / 'c/platform.c', *define)
+    # Link and run the resource conversions. The general C suite no longer
+    # covers descriptor or handle shapes.
+    exe = TARGET / ('platform_main.exe' if WINDOWS else 'platform_main')
+    if WINDOWS:
+        run('cl', '/nologo', '/std:c11', '/W4', '/WX', '/Fe:' + str(exe), '/Fo:' + str(TARGET) + os.sep,
+            '/I' + str(TARGET), TESTS / 'c/platform.c', '/link', '/LIBPATH:' + str(TARGET / 'debug'),
+            'ffier_test_platform_matrix.dll.lib')
+    else:
+        run('cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-o', exe, TESTS / 'c/platform.c',
+            '-I', TARGET, '-L', TARGET / 'debug', '-lffier_test_platform_matrix',
+            '-Wl,-rpath,' + str(TARGET / 'debug'), '-Wl,--disable-new-dtags')
+    run(exe)
     # Resolved headers: one feature answer and one target answer each, which
     # must leave no guard behind for the settled atoms.
     for name, options in [
@@ -180,7 +192,7 @@ def platform_cfg():
         ('linux', ['--cfg', 'target_os=linux']),
     ]:
         output = 'platform-' + name + '.h'
-        header('ffier-windows-handles.json', output, 'FFIER_PLATFORM_H_' + name.upper(), *options)
+        header('ffier-platform-matrix.json', output, 'FFIER_PLATFORM_H_' + name.upper(), *options)
         syntax(TARGET / output)
         leaked = [line for line in (TARGET / output).read_text().splitlines() if '_CFG_' in line]
         if name == 'guarded':

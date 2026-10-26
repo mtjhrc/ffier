@@ -3,7 +3,7 @@
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 // Link the provider's Rust archive so strong extern calls resolve in this test.
-use ffier_test_windows_handles as _;
+use ffier_test_platform_matrix as _;
 
 #[cfg(test)]
 mod tests {
@@ -26,49 +26,57 @@ mod tests {
             unsafe { set_library_handle(core::ptr::NonNull::new(handle), LoadPolicy::Explicit) }
                 .unwrap();
             let mut symbols = vec![
-                Symbol::WindowsHandlesHandleApiRaw,
-                Symbol::WindowsHandlesHandleApiEcho,
-                Symbol::WindowsHandlesResource,
-                Symbol::WindowsHandlesDirectResource,
-                Symbol::WindowsHandlesFeatureWidth,
-                Symbol::WindowsHandlesConditionalExport,
-                Symbol::WindowsHandlesGeneratedValue,
-                Symbol::WindowsHandlesHandleApiNew,
-                Symbol::WindowsHandlesHandleApiFeatureWidth,
-                Symbol::WindowsHandlesHandleApiThroughFeatureCallback,
-                Symbol::WindowsHandlesFeatureConsumerWidth,
-                Symbol::WindowsHandlesHandleApiDestroy,
-                Symbol::WindowsHandlesHandleApiResource,
-                Symbol::WindowsHandlesHandleApiOptionalRaw,
-                Symbol::WindowsHandlesHandleApiTake,
-                Symbol::WindowsHandlesHandleApiOptionalTake,
-                Symbol::WindowsHandlesHandleApiThroughCallback,
-                Symbol::WindowsHandlesHandleApiValue,
-                Symbol::WindowsHandlesHandleConsumerNumber,
-                Symbol::WindowsHandlesVtableHandleNew,
+                Symbol::PlatformMatrixHandleApiRaw,
+                Symbol::PlatformMatrixHandleApiEcho,
+                Symbol::PlatformMatrixResource,
+                Symbol::PlatformMatrixDirectResource,
+                Symbol::PlatformMatrixFeatureWidth,
+                Symbol::PlatformMatrixConditionalExport,
+                Symbol::PlatformMatrixGeneratedValue,
+                Symbol::PlatformMatrixHandleApiNew,
+                Symbol::PlatformMatrixHandleApiFeatureWidth,
+                Symbol::PlatformMatrixHandleApiThroughFeatureCallback,
+                Symbol::PlatformMatrixFeatureConsumerWidth,
+                Symbol::PlatformMatrixHandleApiDestroy,
+                Symbol::PlatformMatrixHandleApiResource,
+                Symbol::PlatformMatrixHandleApiOptionalRaw,
+                Symbol::PlatformMatrixHandleApiTake,
+                Symbol::PlatformMatrixHandleApiOptionalTake,
+                Symbol::PlatformMatrixHandleApiThroughCallback,
+                Symbol::PlatformMatrixHandleApiValue,
+                Symbol::PlatformMatrixHandleConsumerNumber,
+                Symbol::PlatformMatrixVtableHandleNew,
+                Symbol::PlatformMatrixHandleApiFdNumber,
+                Symbol::PlatformMatrixHandleApiFdNumberOptional,
+                Symbol::PlatformMatrixHandleApiMaybeFd,
+                Symbol::PlatformMatrixHandleApiDupFd,
+                Symbol::PlatformMatrixHandleApiMaybeDupFd,
+                Symbol::PlatformMatrixHandleApiMaybeOwnedFd,
+                Symbol::PlatformMatrixCloneFd,
+                Symbol::PlatformMatrixErrorDestroy,
             ];
             #[cfg(unix)]
             symbols.extend([
-                Symbol::WindowsHandlesHandleApiSomethingWithConsole,
-                Symbol::WindowsHandlesUnixValueNew,
-                Symbol::WindowsHandlesUnixValueDestroy,
-                Symbol::WindowsHandlesUnixValue,
+                Symbol::PlatformMatrixHandleApiSomethingWithConsole,
+                Symbol::PlatformMatrixUnixValueNew,
+                Symbol::PlatformMatrixUnixValueDestroy,
+                Symbol::PlatformMatrixUnixValue,
             ]);
             #[cfg(windows)]
             symbols.extend([
-                Symbol::WindowsHandlesHandleConsumerWindowsOnly,
-                Symbol::WindowsHandlesHandleApiSomethingWithWindows,
-                Symbol::WindowsHandlesWindowsValueNew,
-                Symbol::WindowsHandlesWindowsValueDestroy,
-                Symbol::WindowsHandlesWindowsValue,
+                Symbol::PlatformMatrixHandleConsumerWindowsOnly,
+                Symbol::PlatformMatrixHandleApiSomethingWithWindows,
+                Symbol::PlatformMatrixWindowsValueNew,
+                Symbol::PlatformMatrixWindowsValueDestroy,
+                Symbol::PlatformMatrixWindowsValue,
             ]);
             require(&symbols).unwrap();
             #[cfg(feature = "wide")]
-            require(&[Symbol::WindowsHandlesHandleApiWidth]).unwrap();
+            require(&[Symbol::PlatformMatrixHandleApiWidth]).unwrap();
             #[cfg(unix)]
-            assert!(!Symbol::WindowsHandlesWindowsValueNew.is_available());
+            assert!(!Symbol::PlatformMatrixWindowsValueNew.is_available());
             #[cfg(windows)]
-            assert!(!Symbol::WindowsHandlesUnixValueNew.is_available());
+            assert!(!Symbol::PlatformMatrixUnixValueNew.is_available());
         }
     }
 
@@ -77,10 +85,10 @@ mod tests {
     fn optional_owner_is_discovered_without_its_cargo_feature() {
         init();
         require(&[
-            Symbol::WindowsHandlesOptionalApiNew,
-            Symbol::WindowsHandlesOptionalApiDestroy,
-            Symbol::WindowsHandlesOptionalApiResource,
-            Symbol::WindowsHandlesHandleApiPlatformValue,
+            Symbol::PlatformMatrixOptionalApiNew,
+            Symbol::PlatformMatrixOptionalApiDestroy,
+            Symbol::PlatformMatrixOptionalApiResource,
+            Symbol::PlatformMatrixHandleApiPlatformValue,
         ])
         .unwrap();
         let api = OptionalApi::default();
@@ -208,6 +216,74 @@ mod tests {
             );
         }
         assert!(HandleApi::optional_take(None).is_none());
+        // Resource conversions: same shapes the general suites used to cover,
+        // selected per platform here instead of there.
+        #[cfg(unix)]
+        {
+            use std::os::fd::{AsFd, AsRawFd};
+            assert_eq!(api.fd_number(file.as_fd()), file.as_raw_fd());
+            assert_eq!(api.fd_number_optional(Some(file.as_fd())), file.as_raw_fd());
+            assert_eq!(api.fd_number_optional(None), -1);
+
+            let some = api.maybe_fd(1).unwrap().unwrap();
+            assert_eq!(some.as_raw_fd(), 0); // stdin
+            assert!(api.maybe_fd(0).unwrap().is_none());
+            assert!(api.maybe_fd(-1).is_err());
+
+            let dup = api.dup_fd(file.as_fd());
+            assert!(dup.as_raw_fd() >= 0);
+            assert_ne!(dup.as_raw_fd(), file.as_raw_fd());
+
+            let dup = api.maybe_dup_fd(Some(file.as_fd())).unwrap().unwrap();
+            assert_ne!(dup.as_raw_fd(), file.as_raw_fd());
+            assert!(api.maybe_dup_fd(None).unwrap().is_none());
+
+            let owned = api.maybe_owned_fd(1).unwrap().unwrap();
+            assert!(owned.as_raw_fd() >= 0);
+            assert!(api.maybe_owned_fd(0).unwrap().is_none());
+            assert!(api.maybe_owned_fd(-1).is_err());
+
+            let cloned = clone_fd(file.as_fd()).unwrap();
+            assert_ne!(cloned.as_raw_fd(), file.as_raw_fd());
+
+            assert_eq!(HandleApi::raw(file.as_fd()), file.as_raw_fd());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::{AsHandle, AsRawHandle};
+            assert_eq!(
+                api.fd_number(file.as_handle()),
+                file.as_raw_handle() as isize
+            );
+            assert_eq!(
+                api.fd_number_optional(Some(file.as_handle())),
+                file.as_raw_handle() as isize
+            );
+            assert_eq!(api.fd_number_optional(None), 0);
+
+            let some = api.maybe_fd(1).unwrap().unwrap();
+            assert_eq!(some.as_raw_handle(), std::io::stdin().as_raw_handle());
+            assert!(api.maybe_fd(0).unwrap().is_none());
+            assert!(api.maybe_fd(-1).is_err());
+
+            let dup = api.dup_fd(file.as_handle());
+            assert!(!dup.as_raw_handle().is_null());
+            assert_ne!(dup.as_raw_handle(), file.as_raw_handle());
+
+            let dup = api.maybe_dup_fd(Some(file.as_handle())).unwrap().unwrap();
+            assert_ne!(dup.as_raw_handle(), file.as_raw_handle());
+            assert!(api.maybe_dup_fd(None).unwrap().is_none());
+
+            let owned = api.maybe_owned_fd(1).unwrap().unwrap();
+            assert!(!owned.as_raw_handle().is_null());
+            assert!(api.maybe_owned_fd(0).unwrap().is_none());
+            assert!(api.maybe_owned_fd(-1).is_err());
+
+            let cloned = clone_fd(file.as_handle()).unwrap();
+            assert_ne!(cloned.as_raw_handle(), file.as_raw_handle());
+
+            assert_eq!(HandleApi::raw(file.as_handle()), file.as_raw_handle());
+        }
         struct Callback;
         impl HandleConsumer for Callback {
             #[cfg(windows)]

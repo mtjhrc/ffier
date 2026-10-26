@@ -3,13 +3,13 @@ fn main() {
     use std::fs;
     use std::path::PathBuf;
 
-    let _ = std::any::TypeId::of::<ffier_test_windows_handles::HandleApi>();
+    let _ = std::any::TypeId::of::<ffier_test_platform_matrix::HandleApi>();
     let schema = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
-        .join("../../target/ffier-windows-handles.json");
+        .join("../../target/ffier-platform-matrix.json");
     let filename = match env::var("CARGO_CFG_TARGET_OS").unwrap().as_str() {
-        "windows" => "ffier_test_windows_handles.dll",
-        "macos" => "libffier_test_windows_handles.dylib",
-        _ => "libffier_test_windows_handles.so",
+        "windows" => "ffier_test_platform_matrix.dll",
+        "macos" => "libffier_test_platform_matrix.dylib",
+        _ => "libffier_test_platform_matrix.so",
     };
     println!(
         "cargo:rustc-env=HANDLE_LIBRARY={}",

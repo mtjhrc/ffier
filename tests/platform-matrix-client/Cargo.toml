@@ -1,5 +1,5 @@
 [package]
-name = "ffier-test-windows-handles-client"
+name = "ffier-test-platform-matrix-client"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -7,16 +7,16 @@ publish = false
 [features]
 default = ["strong"]
 strong = []
-wide = ["ffier-test-windows-handles/wide"]
-owner-api = ["ffier-test-windows-handles/owner-api"]
+wide = ["ffier-test-platform-matrix/wide"]
+owner-api = ["ffier-test-platform-matrix/owner-api"]
 test-owner = []
 dynlookup = ["dep:libloading"]
 
 [dependencies]
 ffier = { path = "../../ffier" }
-ffier-test-windows-handles = { path = "../windows-handles" }
+ffier-test-platform-matrix = { path = "../platform-matrix" }
 libloading = { version = "0.8", optional = true }
 
 [build-dependencies]
 ffier-gen-rust-client = { path = "../../ffier-gen-rust-client" }
-ffier-test-windows-handles = { path = "../windows-handles" }
+ffier-test-platform-matrix = { path = "../platform-matrix" }

@@ -257,6 +257,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ffier-test-platform-matrix"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+ "ffier-builtins",
+ "thiserror",
+]
+
+[[package]]
+name = "ffier-test-platform-matrix-client"
+version = "0.1.0"
+dependencies = [
+ "ffier",
+ "ffier-gen-rust-client",
+ "ffier-test-platform-matrix",
+ "libloading",
+]
+
+[[package]]
 name = "ffier-test-submodule-cdylib"
 version = "0.1.0"
 dependencies = [
@@ -269,23 +288,6 @@ name = "ffier-test-submodule-lib"
 version = "0.1.0"
 dependencies = [
  "ffier",
-]
-
-[[package]]
-name = "ffier-test-windows-handles"
-version = "0.1.0"
-dependencies = [
- "ffier",
-]
-
-[[package]]
-name = "ffier-test-windows-handles-client"
-version = "0.1.0"
-dependencies = [
- "ffier",
- "ffier-gen-rust-client",
- "ffier-test-windows-handles",
- "libloading",
 ]
 
 [[package]]

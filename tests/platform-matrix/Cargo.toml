@@ -1,5 +1,5 @@
 [package]
-name = "ffier-test-windows-handles"
+name = "ffier-test-platform-matrix"
 version = "0.1.0"
 edition = "2024"
 publish = false
@@ -10,3 +10,5 @@ owner-api = []
 
 [dependencies]
 ffier = { path = "../../ffier" }
+ffier-builtins = { path = "../../ffier-builtins" }
+thiserror = "2"

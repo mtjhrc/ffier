@@ -1,8 +1,5 @@
 #![recursion_limit = "512"]
 
-#[cfg(unix)]
-use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
-
 use ffier_test_foreign_lib_via_cdylib::ForeignItem;
 
 // ---------------------------------------------------------------------------
@@ -349,68 +346,6 @@ impl Widget {
     /// Consume the widget (by-value self, void return).
     pub fn consume(self) {
         drop(self);
-    }
-
-    /// Get the raw fd number from a borrowed fd.
-    #[cfg(unix)]
-    pub fn fd_number(&self, fd: BorrowedFd<'_>) -> i32 {
-        fd.as_raw_fd()
-    }
-
-    /// Get the raw fd number, or -1 if None.
-    #[cfg(unix)]
-    pub fn fd_number_optional(&self, fd: Option<BorrowedFd<'_>>) -> i32 {
-        fd.map_or(-1, |f| f.as_raw_fd())
-    }
-
-    /// Maybe return a borrowed fd depending on `selector`:
-    /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(stdin)).
-    #[cfg(unix)]
-    pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
-        if selector < 0 {
-            Err(TestError::InvalidInput())
-        } else if selector == 0 {
-            Ok(None)
-        } else {
-            // Safety: fd 0 (stdin) exists for the process lifetime
-            Ok(Some(unsafe { BorrowedFd::borrow_raw(0) }))
-        }
-    }
-
-    /// Duplicate a file descriptor (returns owned fd).
-    #[cfg(unix)]
-    pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {
-        fd.try_clone_to_owned().expect("dup failed")
-    }
-
-    /// Maybe duplicate a file descriptor; returns None if input is None.
-    #[cfg(unix)]
-    pub fn maybe_dup_fd(&self, fd: Option<BorrowedFd<'_>>) -> Result<Option<OwnedFd>, TestError> {
-        match fd {
-            Some(f) => f
-                .try_clone_to_owned()
-                .map(Some)
-                .map_err(|_| TestError::InvalidInput()),
-            None => Ok(None),
-        }
-    }
-
-    /// Optionally return an owned fd depending on `selector`:
-    /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(dup(stdin))).
-    #[cfg(unix)]
-    pub fn maybe_owned_fd(&self, selector: i32) -> Result<Option<OwnedFd>, TestError> {
-        if selector < 0 {
-            Err(TestError::InvalidInput())
-        } else if selector == 0 {
-            Ok(None)
-        } else {
-            // Safety: fd 0 (stdin) exists for the process lifetime
-            let stdin = unsafe { BorrowedFd::borrow_raw(0) };
-            stdin
-                .try_clone_to_owned()
-                .map(Some)
-                .map_err(|_| TestError::InvalidInput())
-        }
     }
 
     #[cfg(windows)]
@@ -1240,14 +1175,6 @@ pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
     gadgets.iter().map(|g| g.value).sum()
 }
 
-#[cfg_attr(feature = "ffi", ffier::export(cfg = "unix"))]
-#[cfg_attr(not(feature = "ffi"), cfg(unix))]
-/// Duplicate a file descriptor.
-pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
-    fd.try_clone_to_owned()
-        .map_err(|_| TestError::InvalidInput())
-}
-
 pub mod optional_api {
     // The cfg predicate is passed via ffier::export(cfg = "...") so the proc
     // macro emits metadata unconditionally while gating the generated code.
@@ -1536,8 +1463,6 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(feature = "optional-entry")]
     fn crate::optional_api::optional_merge_flags,
     fn categorizable_value,
-    #[cfg(unix)]
-    fn clone_fd,
     fn sum_gadget_values,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
@@ -1768,103 +1693,6 @@ mod tests {
                 ft_widget_tags_joined(w).as_str_unchecked(),
                 "alpha,beta,gamma"
             );
-            ft_widget_destroy(w);
-        }
-    }
-
-    // ================================================================
-    // File descriptors — skipped under Miri (requires real syscalls)
-    // ================================================================
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_borrowed_fd_param() {
-        unsafe {
-            let w = ft_widget_new();
-            assert_eq!(ft_widget_fd_number(w, 0), 0); // stdin
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_borrowed_fd_returning_owned_fd() {
-        unsafe {
-            use std::os::unix::io::FromRawFd;
-            let w = ft_widget_new();
-            let new_fd = ft_widget_dup_fd(w, 1); // dup stdout
-            assert!(new_fd >= 0);
-            assert_ne!(new_fd, 1);
-            drop(std::os::unix::io::OwnedFd::from_raw_fd(new_fd));
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_optional_owned_fd_return_some() {
-        unsafe {
-            use std::os::unix::io::FromRawFd;
-            let w = ft_widget_new();
-            let mut result: i32 = -1;
-            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
-            let r = ft_widget_maybe_owned_fd(w, 1, &mut result, &mut err_out);
-            assert_eq!(r, 0, "should succeed");
-            assert!(result >= 0, "should return a valid fd");
-            drop(std::os::unix::io::OwnedFd::from_raw_fd(result));
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_optional_owned_fd_return_none() {
-        unsafe {
-            let w = ft_widget_new();
-            let mut result: i32 = -1;
-            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
-            let r = ft_widget_maybe_owned_fd(w, 0, &mut result, &mut err_out);
-            assert_eq!(r, 0, "should succeed");
-            assert_eq!(result, -1, "None should map to -1");
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_optional_borrowed_fd_param_dup_some() {
-        unsafe {
-            use std::os::unix::io::FromRawFd;
-            let w = ft_widget_new();
-            let mut result: i32 = -1;
-            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
-            // Pass stdout (fd 1) as Some
-            let r = ft_widget_maybe_dup_fd(w, 1, &mut result, &mut err_out);
-            assert_eq!(r, 0, "should succeed");
-            assert!(result >= 0, "should return a valid fd");
-            assert_ne!(result, 1, "should be a new fd, not the original");
-            drop(std::os::unix::io::OwnedFd::from_raw_fd(result));
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    #[cfg_attr(miri, ignore)]
-    #[cfg(unix)]
-    fn method_with_optional_borrowed_fd_param_dup_none() {
-        unsafe {
-            let w = ft_widget_new();
-            let mut result: i32 = -1;
-            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
-            // Pass -1 as None
-            let r = ft_widget_maybe_dup_fd(w, -1, &mut result, &mut err_out);
-            assert_eq!(r, 0, "should succeed");
-            assert_eq!(result, -1, "None input should produce None output (-1)");
             ft_widget_destroy(w);
         }
     }
@@ -3273,38 +3101,6 @@ mod tests {
             assert!(ft_log_level_is_enabled(1));
             // LogLevel::Trace = 5 → enabled
             assert!(ft_log_level_is_enabled(5));
-        }
-    }
-
-    // ================================================================
-    // Free function with BorrowedFd / OwnedFd
-    // ================================================================
-
-    #[test]
-    #[cfg(unix)]
-    fn free_fn_clone_fd() {
-        unsafe extern "C" {
-            fn ft_clone_fd(
-                fd: i32,
-                result: *mut i32,
-                error: *mut *mut core::ffi::c_void,
-            ) -> ffier::FfierResult;
-        }
-        use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
-        unsafe {
-            // Use stdout as a known-valid fd to clone
-            let stdout_fd = std::io::stdout().as_raw_fd();
-            let mut result: i32 = -1;
-            let mut err_out: *mut core::ffi::c_void = core::ptr::null_mut();
-            let r = ft_clone_fd(
-                stdout_fd,
-                &mut result as *mut i32,
-                &mut err_out as *mut *mut core::ffi::c_void,
-            );
-            assert_eq!(r, 0, "ft_clone_fd should succeed");
-            assert!(result >= 0, "cloned fd should be valid");
-            // Clean up the cloned fd
-            drop(OwnedFd::from_raw_fd(result));
         }
     }
 
