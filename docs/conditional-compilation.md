@@ -79,3 +79,21 @@ has a `kind`; predicates with operands also have a `value`:
 This replaces the previous string representation. Regenerate schemas and
 bindings together. Rust clients render the predicate tree as Rust `cfg`
 attributes.
+
+## C header guards
+
+The C generator applies predicates to declarations, constants, and vtable
+methods. Opaque handle typedefs remain available to other declarations.
+Disabled methods retain reserved pointers so later vtable
+slots keep their offsets. Constant-true predicates emit declarations without
+guards. Constant-false predicates omit declarations. Boolean identity operands
+and complementary predicates are folded before guards are emitted.
+
+`windows` uses `_WIN32`; `unix` uses `__unix__` or `__APPLE__`. The generator
+maps `target_os` values `windows`, `linux`, `macos`, `freebsd`, `openbsd`,
+`netbsd`, and `android` to compiler macros. Linux guards exclude Android;
+macOS guards exclude Apple mobile targets.
+
+Feature predicates use library-prefixed macros: prefix `ft` and feature
+`files` produce `FT_CFG_FEATURE_FILES`. Define the macro when compiling a
+consumer to select the matching API.
