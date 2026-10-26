@@ -534,6 +534,11 @@ pub enum CResultConvention {
     /// Error handle via out-param (`*mut *mut c_void`).
     /// Used for `Result<HandleType, E>`.
     HandleOrNull,
+    /// Return `FfierResult`; the ok type is `Option<T>` for an inline value
+    /// `T`. Presence is written through `*mut bool`, the value through
+    /// `*mut T` (only when present), and the error handle through
+    /// `*mut *mut c_void`. Used for `Result<Option<ValueStruct>, E>`.
+    OptionalValueOutParam,
 }
 
 /// Well-known type name for builder methods that return `Self`.

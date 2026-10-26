@@ -1478,6 +1478,47 @@ fn emit_method_body(
         Return::Result {
             ok: Some(ok_tr),
             err_type,
+            c_convention: ffier_schema::CResultConvention::OptionalValueOutParam,
+        } => {
+            // Presence flag plus a separate value out-param: `Ok(None)` leaves
+            // the value buffer untouched, and errors write only `err_out`.
+            let ty_static = optional_value_out_type(ok_tr);
+            let mut bare = ok_tr.clone();
+            bare.optional = false;
+            let ty = bare.to_rust_type();
+            writeln!(out, "        let mut __result_is_some = false;").unwrap();
+            writeln!(
+                out,
+                "        let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "        let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __result_is_some as *mut bool, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "        if __r == 0 {{").unwrap();
+            writeln!(out, "            if __result_is_some {{").unwrap();
+            writeln!(
+                out,
+                "                Ok(Some(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }}))"
+            )
+            .unwrap();
+            writeln!(out, "            }} else {{").unwrap();
+            writeln!(out, "                Ok(None)").unwrap();
+            writeln!(out, "            }}").unwrap();
+            writeln!(out, "        }} else {{").unwrap();
+            writeln!(
+                out,
+                "            Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+            )
+            .unwrap();
+            writeln!(out, "        }}").unwrap();
+        }
+        Return::Result {
+            ok: Some(ok_tr),
+            err_type,
             ..
         } => {
             // FfierResult-style with out-param
@@ -1988,6 +2029,40 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                                     writeln!(out, "                        Ok(()) => 0, // FFIER_RESULT_SUCCESS").unwrap();
                                 }
                             }
+                            writeln!(out, "                        Err(__e) => {{").unwrap();
+                            writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
+                            writeln!(
+                                out,
+                                "                            unsafe {{ *err_out = __handle }};"
+                            )
+                            .unwrap();
+                            writeln!(out, "                            __code").unwrap();
+                            writeln!(out, "                        }}").unwrap();
+                        }
+                        CResultConvention::OptionalValueOutParam => {
+                            let ok_tr = ok
+                                .as_ref()
+                                .expect("OptionalValueOutParam requires an ok type");
+                            let mut bare = ok_tr.clone();
+                            bare.optional = false;
+                            let ty = bare.to_rust_type();
+                            writeln!(out, "                        Ok(Some(__ok)) => {{").unwrap();
+                            writeln!(out, "                            unsafe {{").unwrap();
+                            writeln!(
+                                out,
+                                "                                result_is_some.write(true);"
+                            )
+                            .unwrap();
+                            writeln!(out, "                                result.write(<{ty} as FfiType>::into_c(__ok));").unwrap();
+                            writeln!(out, "                            }}").unwrap();
+                            writeln!(out, "                            0 // FFIER_RESULT_SUCCESS")
+                                .unwrap();
+                            writeln!(out, "                        }}").unwrap();
+                            writeln!(out, "                        Ok(None) => {{").unwrap();
+                            writeln!(out, "                            unsafe {{ result_is_some.write(false) }};").unwrap();
+                            writeln!(out, "                            0 // FFIER_RESULT_SUCCESS")
+                                .unwrap();
+                            writeln!(out, "                        }}").unwrap();
                             writeln!(out, "                        Err(__e) => {{").unwrap();
                             writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
@@ -2688,8 +2763,28 @@ fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder
                 params.push("err_out: *mut *mut core::ffi::c_void".to_string());
                 " -> ffier::FfierResult".to_string()
             }
+            CResultConvention::OptionalValueOutParam => {
+                let ok_tr = ok
+                    .as_ref()
+                    .expect("OptionalValueOutParam requires an ok type");
+                let ty = optional_value_out_type(ok_tr);
+                params.push("result_is_some: *mut bool".to_string());
+                params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
+                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
         },
     }
+}
+
+/// Rust type rendering for an optional-value out-param.
+///
+/// The schema marks the ok type `optional` so generated wrapper signatures can
+/// say `Option<T>`, but the C out-param is a bare `T`.
+fn optional_value_out_type(tr: &ffier_schema::TypeRef) -> String {
+    let mut bare = tr.clone();
+    bare.optional = false;
+    bare.to_rust_type_static()
 }
 
 /// Append C extern param strings (`"name: <Type as FfiType>::CRepr"` etc.)
@@ -2736,6 +2831,16 @@ fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> Strin
                     let ty = ok_tr.to_rust_type_static();
                     out.push(format!("*mut <{ty} as FfiType>::CRepr"));
                 }
+                out.push("*mut *mut core::ffi::c_void".to_string());
+                " -> ffier::FfierResult".to_string()
+            }
+            CResultConvention::OptionalValueOutParam => {
+                let ok_tr = ok
+                    .as_ref()
+                    .expect("OptionalValueOutParam requires an ok type");
+                let ty = optional_value_out_type(ok_tr);
+                out.push("*mut bool".to_string());
+                out.push(format!("*mut <{ty} as FfiType>::CRepr"));
                 out.push("*mut *mut core::ffi::c_void".to_string());
                 " -> ffier::FfierResult".to_string()
             }
@@ -2908,6 +3013,28 @@ fn emit_ffi_call_return(
                     writeln!(out, "{indent}if __r == 0 {{").unwrap();
                     let ty = ok_tr.to_rust_type();
                     writeln!(out, "{indent}    Ok(unsafe {{ <{ty} as FfiType>::from_c(__result.assume_init()) }})").unwrap();
+                    writeln!(out, "{indent}}} else {{").unwrap();
+                    writeln!(
+                        out,
+                        "{indent}    Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                    )
+                    .unwrap();
+                    writeln!(out, "{indent}}}").unwrap();
+                }
+                CResultConvention::OptionalValueOutParam => {
+                    let ty_static = optional_value_out_type(ok_tr);
+                    let mut bare = ok_tr.clone();
+                    bare.optional = false;
+                    let ty = bare.to_rust_type();
+                    writeln!(out, "{indent}let mut __result_is_some = false;").unwrap();
+                    writeln!(out, "{indent}let mut __result = core::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();").unwrap();
+                    writeln!(out, "{indent}let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __result_is_some as *mut bool, __result.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+                    writeln!(out, "{indent}if __r == 0 {{").unwrap();
+                    writeln!(out, "{indent}    if __result_is_some {{").unwrap();
+                    writeln!(out, "{indent}        Ok(Some(unsafe {{ <{ty} as FfiType>::from_c(__result.assume_init()) }}))").unwrap();
+                    writeln!(out, "{indent}    }} else {{").unwrap();
+                    writeln!(out, "{indent}        Ok(None)").unwrap();
+                    writeln!(out, "{indent}    }}").unwrap();
                     writeln!(out, "{indent}}} else {{").unwrap();
                     writeln!(
                         out,
@@ -3328,7 +3455,47 @@ fn emit_free_function(
             err_type,
             c_convention,
         } => {
-            if *c_convention == ffier_schema::CResultConvention::HandleOrNull {
+            if *c_convention == ffier_schema::CResultConvention::OptionalValueOutParam {
+                // Presence flag plus a separate value out-param.
+                let ty_static = optional_value_out_type(ok_tr);
+                let mut bare = ok_tr.clone();
+                bare.optional = false;
+                let ty = bare.to_rust_type();
+                writeln!(out, "    let mut __result_is_some = false;").unwrap();
+                writeln!(
+                    out,
+                    "    let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "    let __r = unsafe {{ {}({args_str}{sep}&mut __result_is_some as *mut bool, __out.as_mut_ptr(), &mut __err as *mut *mut core::ffi::c_void) }};",
+                    f.ffi_name
+                )
+                .unwrap();
+                writeln!(out, "    if __r == 0 {{").unwrap();
+                writeln!(out, "        if __result_is_some {{").unwrap();
+                writeln!(
+                    out,
+                    "            Ok(Some(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }}))"
+                )
+                .unwrap();
+                writeln!(out, "        }} else {{").unwrap();
+                writeln!(out, "            Ok(None)").unwrap();
+                writeln!(out, "        }}").unwrap();
+                writeln!(out, "    }} else {{").unwrap();
+                writeln!(
+                    out,
+                    "        Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+                )
+                .unwrap();
+                writeln!(out, "    }}").unwrap();
+            } else if *c_convention == ffier_schema::CResultConvention::HandleOrNull {
                 writeln!(
                     out,
                     "    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"

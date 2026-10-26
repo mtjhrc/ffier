@@ -602,7 +602,7 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
         #[allow(clippy::crate_in_macro_def)]
         macro_rules! #internal_macro_name {
             #reexport_helpers
-            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 // The Rust definition is the C layout: value structs are
                 // `#[repr(C)]` and all field types already have a C
                 // representation, so no conversion is needed.
@@ -813,7 +813,7 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         #[macro_export]
         macro_rules! #internal_macro_name {
             #reexport_helpers
-            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 impl FfiHandle for #struct_with_lifetimes {
                     const C_HANDLE_NAME: &'static str = stringify!(#struct_ident);
                     const TYPE_TAG: u32 = $type_tag;
@@ -959,7 +959,7 @@ fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> TokenStream {
         #[macro_export]
         macro_rules! #internal_macro_name {
             #reexport_helpers
-            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
                     const C_TYPE_NAME: &'static str = stringify!(#name);
@@ -1088,7 +1088,7 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
         #[macro_export]
         macro_rules! #internal_macro_name {
             #reexport_helpers
-            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $__type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 impl FfiType for #name {
                     type CRepr = #repr_ident;
                     const C_TYPE_NAME: &'static str = stringify!(#name);
@@ -1964,7 +1964,7 @@ pub fn derive_ffi_error(input: TokenStream) -> TokenStream {
         #[macro_export]
         macro_rules! #internal_macro_name {
             #reexport_helpers
-            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 impl FfiHandle for #name {
                     const C_HANDLE_NAME: &'static str = stringify!(#name);
                     const TYPE_TAG: u32 = $type_tag;
@@ -3347,6 +3347,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 trait_generics = (#trait_ty_generics);
                 crate_path = ($crate);
                 handles = [$($__handle),*];
+                values = [$($__value),*];
                 num_slots = #num_slots;
                 own_method_count = #own_method_count;
                 methods = [#(#vtable_method_meta),*];
@@ -3429,7 +3430,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             // The vtable struct and wrapper type are emitted at the crate root of the
             // invoking crate, so orphan rules are satisfied even when the trait is
             // defined in an upstream crate.
-            (@on_library_export, $type_tag:expr, [$($__handle:ident),*]) => {
+            (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
                 #on_library_export_body
             };
             // Tagged invocation with path overrides (from library_definition!
@@ -3747,6 +3748,17 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // Value-struct names: let the vtable generator tell `Option<ValueStruct>`
+    // apart from the optional types that already have `FfiType` impls.
+    let value_type_idents: Vec<syn::Ident> = parsed
+        .entries
+        .iter()
+        .filter_map(|e| match &e.entry {
+            LibraryEntry::Value(path) => Some(path_last_ident(path).clone()),
+            _ => None,
+        })
+        .collect();
+
     for entry in &parsed.entries {
         let cfg = entry.cfg.as_ref();
         match &entry.entry {
@@ -3771,7 +3783,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // gated because these reference the concrete type which may not exist.
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
 
                 // Helper module re-export for qualified paths
@@ -3857,7 +3869,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // @on_library_export generates the vtable struct + wrapper type + impls.
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, #full_tag, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
                 shim_names.push(shim_name.clone());
             }
@@ -3878,7 +3890,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // @on_library_export generates the FfiType impl for the enum
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
                 shim_names.push(shim_name.clone());
 
@@ -3913,7 +3925,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // @on_library_export generates the FfiType impl for the bitflags type
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
                 shim_names.push(shim_name.clone());
 
@@ -3948,7 +3960,7 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
                 // @on_library_export generates the FfiType impls.
                 reexport_invocations.push(maybe_cfg_wrap(
                     cfg,
-                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*]); },
+                    quote! { #alias!(@on_library_export, 0u32, [#(#handle_type_idents),*], [#(#value_type_idents),*]); },
                 ));
                 shim_names.push(shim_name.clone());
 
@@ -4756,6 +4768,7 @@ struct GenerateVtableInput {
     trait_generics: proc_macro2::TokenStream,
     crate_path: proc_macro2::TokenStream,
     handles: Vec<syn::Ident>,
+    values: Vec<syn::Ident>,
     num_slots: usize,
     own_method_count: usize,
     methods: Vec<proc_macro2::TokenStream>,
@@ -4771,6 +4784,7 @@ impl Parse for GenerateVtableInput {
         let mut trait_generics = None;
         let mut crate_path = None;
         let mut handles = Vec::new();
+        let mut values = Vec::new();
         let mut own_method_count = 0usize;
         let mut num_slots = None;
         let mut methods: Vec<proc_macro2::TokenStream> = Vec::new();
@@ -4812,6 +4826,18 @@ impl Parse for GenerateVtableInput {
                     syn::bracketed!(content in input);
                     while !content.is_empty() {
                         handles.push(content.parse::<syn::Ident>()?);
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
+                    }
+                    input.parse::<Token![;]>()?;
+                }
+
+                "values" => {
+                    let content;
+                    syn::bracketed!(content in input);
+                    while !content.is_empty() {
+                        values.push(content.parse::<syn::Ident>()?);
                         if !content.is_empty() {
                             content.parse::<Token![,]>()?;
                         }
@@ -4897,6 +4923,7 @@ impl Parse for GenerateVtableInput {
                 syn::Error::new(proc_macro2::Span::call_site(), "missing crate_path")
             })?,
             handles,
+            values,
             num_slots: num_slots.ok_or_else(|| {
                 syn::Error::new(proc_macro2::Span::call_site(), "missing num_slots")
             })?,
@@ -4915,6 +4942,7 @@ impl Parse for GenerateVtableInput {
 fn vtable_c_fn_sig(
     m: &crate::meta::MetaMethod,
     handle_names: &std::collections::HashSet<String>,
+    value_names: &std::collections::HashSet<String>,
 ) -> (
     Vec<proc_macro2::TokenStream>,
     proc_macro2::TokenStream,
@@ -4949,6 +4977,18 @@ fn vtable_c_fn_sig(
     let ok_is_handle = matches!(&m.ret, crate::meta::MetaReturn::Result { ok: Some(_), .. })
         && crate::meta::is_result_ok_handle(&m.rust_ret, handle_names);
 
+    // `Result<Option<ValueStruct>, E>` writes presence and value separately.
+    // Classification reads the Rust type; the emitted type comes from the
+    // definition-site-resolved bridge type.
+    let optional_value = match &m.ret {
+        crate::meta::MetaReturn::Result { ok: Some(tp), .. }
+            if crate::meta::option_value_struct_inner(&tp.rust_type, value_names).is_some() =>
+        {
+            crate::meta::option_inner_tokens(&tp.bridge_type)
+        }
+        _ => None,
+    };
+
     let fn_ret = match &m.ret {
         crate::meta::MetaReturn::Void => quote! {},
         crate::meta::MetaReturn::Value(tp) => {
@@ -4959,7 +4999,12 @@ fn vtable_c_fn_sig(
             quote! { -> ffier::FfierObjectArray }
         }
         crate::meta::MetaReturn::Result { ok, .. } => {
-            if ok_is_handle {
+            if let Some(inner) = &optional_value {
+                param_types.push(quote! { *mut bool });
+                param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                param_types.push(quote! { *mut *mut core::ffi::c_void });
+                quote! { -> ffier::FfierResult }
+            } else if ok_is_handle {
                 param_types.push(quote! { *mut *mut core::ffi::c_void });
                 quote! { -> *mut core::ffi::c_void }
             } else {
@@ -4987,6 +5032,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let crate_path = &inp.crate_path;
     let handle_names: std::collections::HashSet<String> =
         inp.handles.iter().map(|h| h.to_string()).collect();
+    let value_names: std::collections::HashSet<String> =
+        inp.values.iter().map(|v| v.to_string()).collect();
 
     let default_helper_map: HashMap<String, &proc_macro2::TokenStream> = inp
         .default_helpers
@@ -5029,7 +5076,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         }
 
         let method_name = &m.name;
-        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names);
+        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
 
         vtable_fields.push(quote! {
             pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
@@ -5063,7 +5110,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
 
-            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) = vtable_c_fn_sig(m, &handle_names);
+            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) = vtable_c_fn_sig(m, &handle_names, &value_names);
             let fn_ptr_type = quote! {
                 unsafe extern "C" fn(#(#fn_ptr_param_types),*) #fn_ptr_ret
             };
@@ -5159,7 +5206,37 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                     }
                     crate::meta::MetaReturn::Result { ok, err_ident, .. } => {
                         let err_ty = format_ident!("{err_ident}");
-                        if ok_is_handle {
+                        let optional_value = ok.as_ref().and_then(|tp| {
+                            crate::meta::option_value_struct_inner(&tp.rust_type, &value_names)
+                                .and_then(|_| crate::meta::option_inner_tokens(&tp.bridge_type))
+                        });
+                        if let Some(inner) = optional_value {
+                            // Result<Option<ValueStruct>, E>: presence flag plus
+                            // a separate value out-param.
+                            quote! {{
+                                let mut __is_some = false;
+                                let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
+                                let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                                let __r = unsafe { __f(
+                                    self.value.user_data as *mut core::ffi::c_void,
+                                    #(#vtable_args,)*
+                                    &mut __is_some as *mut bool,
+                                    __out.as_mut_ptr(),
+                                    &mut __err as *mut *mut core::ffi::c_void,
+                                ) };
+                                if __r == ffier::FFIER_RESULT_SUCCESS {
+                                    if __is_some {
+                                        Ok(Some(unsafe {
+                                            <#inner as FfiType>::from_c(__out.assume_init())
+                                        }))
+                                    } else {
+                                        Ok(None)
+                                    }
+                                } else {
+                                    Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                }
+                            }}
+                        } else if ok_is_handle {
                             // GLib-style: __f returns handle or null, err through out-param
                             let ok_conversion = match ok {
                                 Some(tp) => {
@@ -5255,6 +5332,10 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         .iter()
         .filter_map(|m| {
             if let crate::meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
+                // Optional value returns carry an out-param pair, not a handle.
+                if crate::meta::option_value_struct_inner(&tp.rust_type, &value_names).is_some() {
+                    return None;
+                }
                 let bt = &tp.bridge_type;
                 let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();

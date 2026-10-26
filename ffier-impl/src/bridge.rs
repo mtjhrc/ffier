@@ -15,7 +15,7 @@ use crate::meta::{
     MetaExportable, MetaFreeFunction, MetaImplementable, MetaMethod, MetaMethodContext, MetaParam,
     MetaParamKind, MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, MetaValueStruct,
     camel_to_snake, camel_to_upper_snake, cfg_predicate_attr, extract_result_ok_type,
-    is_result_ok_handle, peek_meta_field, peek_meta_tag,
+    is_result_ok_handle, option_value_struct_inner, peek_meta_field, peek_meta_tag,
 };
 
 /// Maps trait names to their concrete dispatch variants.
@@ -140,6 +140,7 @@ fn generate_one(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let tag = peek_meta_tag(&item);
@@ -150,8 +151,14 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code =
-                generate_exportable_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            let code = generate_exportable_bridge(
+                meta,
+                trait_map,
+                error_map,
+                handle_types,
+                value_types,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
         "exported_error" => {
@@ -176,8 +183,14 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code =
-                generate_trait_impl_bridge(meta, trait_map, error_map, handle_types, lib_crate);
+            let code = generate_trait_impl_bridge(
+                meta,
+                trait_map,
+                error_map,
+                handle_types,
+                value_types,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
         "exported_enum" | "exported_bitflags" | "exported_value" => {
@@ -191,7 +204,14 @@ fn generate_one(
                 Err(e) => return e.to_compile_error(),
             };
             let cfg_attr = cfg_predicate_attr(meta.cfg_predicate.as_ref());
-            let code = generate_free_fn_bridge(meta, error_map, handle_types, trait_map, lib_crate);
+            let code = generate_free_fn_bridge(
+                meta,
+                error_map,
+                handle_types,
+                value_types,
+                trait_map,
+                lib_crate,
+            );
             wrap_cfg(cfg_attr, code)
         }
         _ => {
@@ -373,16 +393,20 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         set
     };
 
+    // Names of exported value structs. Used to classify `Option<ValueStruct>`
+    // returns and to reject value-struct uses the ABI cannot represent.
+    let value_types: HashSet<String> = value_structs
+        .iter()
+        .filter_map(|item| syn::parse2::<MetaValueStruct>(item.clone()).ok())
+        .map(|meta| meta.name.to_string())
+        .collect();
+
     // Pass 1.5: Validate value-struct fields. Field types must already have a
     // stable C representation: scalars, exported enums, exported bitflags, or
     // other exported value structs. Anything else is a compile error, since the
     // Rust definition is used as the C layout directly.
     {
-        let value_names: HashSet<String> = value_structs
-            .iter()
-            .filter_map(|item| syn::parse2::<MetaValueStruct>(item.clone()).ok())
-            .map(|meta| meta.name.to_string())
-            .collect();
+        let value_names = &value_types;
         let enum_names: HashSet<String> = enum_constants
             .iter()
             .filter_map(|item| syn::parse2::<MetaEnum>(item.clone()).ok())
@@ -590,6 +614,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             &trait_map,
             &error_map,
             &handle_types,
+            &value_types,
             &lib_crate,
         ));
     }
@@ -681,6 +706,7 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 &trait_map,
                 &error_map,
                 &handle_types,
+                &value_types,
                 &lib_crate,
             );
             all_code.push(wrap_cfg(cfg_attr, code));
@@ -971,6 +997,7 @@ fn generate_exportable_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
@@ -1001,7 +1028,7 @@ fn generate_exportable_bridge(
         let is_builder = m.is_builder();
 
         // Single source of truth: the extern "C" fn signature.
-        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
@@ -1091,6 +1118,7 @@ fn generate_exportable_bridge(
             &m.ret,
             &m.rust_ret,
             handle_types,
+            value_types,
             error_map,
             builder_ctx.as_ref(),
             lib_crate,
@@ -1529,6 +1557,7 @@ fn generate_free_fn_bridge(
     meta: MetaFreeFunction,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     trait_map: &TraitMap,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
@@ -1541,7 +1570,7 @@ fn generate_free_fn_bridge(
     let ffi_name = format_ident!("{}", ffi_name_str);
 
     // Use the same signature builder as methods.
-    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
     // Shared param conversion + impl Trait dispatch.
     let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
@@ -1569,6 +1598,7 @@ fn generate_free_fn_bridge(
         &m.ret,
         &m.rust_ret,
         handle_types,
+        value_types,
         error_map,
         None,
         lib_crate,
@@ -1634,11 +1664,13 @@ struct BuilderCtx<'a> {
 /// This is the single source of truth for "given an expression that evaluates
 /// to the Rust return type, produce tokens that convert it to the C return".
 /// Used by exported methods, free functions, and trait dispatch.
+#[allow(clippy::too_many_arguments)]
 fn wrap_return(
     call_expr: TokenStream2,
     ret: &MetaReturn,
     rust_ret: &TokenStream2,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     error_map: &ErrorMap,
     builder: Option<&BuilderCtx>,
     lib_crate: &TokenStream2,
@@ -1747,6 +1779,38 @@ fn wrap_return(
                     unsafe { *err_out = <_ as #lib_crate::FfiType>::into_c(e); }
                 }
             };
+
+            // `Result<Option<ValueStruct>, E>`: presence and value go through
+            // their own out-params. `None` writes only the flag; errors write
+            // only `err_out`, leaving both success outputs untouched.
+            if let Some(tp) = ok
+                && option_value_struct_inner(&tp.rust_type, value_types).is_some()
+                && let Some(inner) = crate::meta::option_inner_tokens(&tp.bridge_type)
+            {
+                return quote! {
+                    match #call_expr {
+                        Ok(Some(__value)) => {
+                            unsafe {
+                                result_is_some.write(true);
+                                result.write(<#inner as #lib_crate::FfiType>::into_c(__value));
+                            }
+                            ffier::FFIER_RESULT_SUCCESS
+                        }
+                        Ok(None) => {
+                            unsafe { result_is_some.write(false) };
+                            ffier::FFIER_RESULT_SUCCESS
+                        }
+                        Err(e) => {
+                            let __r = ffier::ffier_result(
+                                #err_type_tag,
+                                #lib_crate::FfiError::code(&e),
+                            );
+                            #box_expr
+                            __r
+                        }
+                    }
+                };
+            }
 
             // Check if the Ok type is a borrowed handle (&HandleType).
             let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
@@ -1876,6 +1940,7 @@ fn c_signature_for_method(
     method: &MetaMethod,
     prefix: &str,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> CExternSignature {
     let fn_name = format!("{}_{}", prefix, method.ffi_name());
@@ -1932,6 +1997,13 @@ fn c_signature_for_method(
             quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
+            // `Result<Option<ValueStruct>, E>` writes presence and value through
+            // separate out-params, so neither can be part of the value branch.
+            let optional_value = ok.as_ref().and_then(|tp| {
+                option_value_struct_inner(&tp.rust_type, value_types)
+                    .and_then(|_| crate::meta::option_inner_tokens(&tp.bridge_type))
+            });
+
             // Foreign ok types are always handles (handle-or-null).
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle = ok_is_foreign
@@ -1949,7 +2021,21 @@ fn c_signature_for_method(
             let is_builder_self_result =
                 method.is_builder() && method.receiver == MetaReceiver::Value;
 
-            if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
+            if let Some(inner) = optional_value {
+                params.push(CExternParam {
+                    name: format_ident!("result_is_some"),
+                    c_type: quote! { *mut bool },
+                });
+                params.push(CExternParam {
+                    name: format_ident!("result"),
+                    c_type: quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+                });
+                params.push(CExternParam {
+                    name: format_ident!("err_out"),
+                    c_type: quote! { *mut *mut core::ffi::c_void },
+                });
+                quote! { -> ffier::FfierResult }
+            } else if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
                 // Handle-or-null: return handle directly (NULL on error).
                 // err_out is *mut *mut c_void (pointer to caller's FtError variable).
                 params.push(CExternParam {
@@ -2167,6 +2253,7 @@ fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
 /// int32_t ft_fruit_value(void* handle);
 /// void ft_fruit_destroy(void* handle);
 /// ```
+#[allow(clippy::too_many_arguments)]
 fn generate_self_dispatch_bridge(
     trait_name: &str,
     info: &TraitDispatchInfo,
@@ -2174,6 +2261,7 @@ fn generate_self_dispatch_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let imp = info
@@ -2205,7 +2293,7 @@ fn generate_self_dispatch_bridge(
         // methods that have MetaReceiver::None) because the dispatcher reads
         // the type tag from it. c_signature_for_method only adds handle for
         // methods with a receiver, so prepend it when missing.
-        let c_sig = c_signature_for_method(m, prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, prefix, handle_types, value_types, lib_crate);
         let has_receiver = m.receiver != MetaReceiver::None;
         let mut all_params: Vec<(&syn::Ident, &TokenStream2)> = Vec::new();
         let handle_name = format_ident!("handle");
@@ -2270,6 +2358,7 @@ fn generate_self_dispatch_bridge(
                                 &m.ret,
                                 &m.rust_ret,
                                 handle_types,
+                                value_types,
                                 error_map,
                                 None,
                                 lib_crate,
@@ -2319,6 +2408,7 @@ fn generate_self_dispatch_bridge(
                     &m.ret,
                     &m.rust_ret,
                     handle_types,
+                    value_types,
                     error_map,
                     None,
                     lib_crate,
@@ -2397,6 +2487,7 @@ fn generate_trait_impl_bridge(
     trait_map: &TraitMap,
     error_map: &ErrorMap,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let struct_path = &meta.struct_path;
@@ -2422,7 +2513,7 @@ fn generate_trait_impl_bridge(
         let ffi_name = format_ident!("{ffi_name_str}");
 
         // Use shared signature builder + return wrapper
-        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, lib_crate);
+        let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
         let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
         let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
         let sig_ret = &c_sig.ret;
@@ -2455,6 +2546,7 @@ fn generate_trait_impl_bridge(
             &m.ret,
             &m.rust_ret,
             handle_types,
+            value_types,
             error_map,
             None,
             lib_crate,
@@ -3684,10 +3776,16 @@ fn build_schema(
 
     let type_registry = registry.into_entries();
 
+    // Value-struct names, derived from the final registry so both paths agree.
+    let value_types: HashSet<String> = value_structs_parsed
+        .iter()
+        .map(|value| value.name.to_string())
+        .collect();
+
     // Build schema fields while type_registry is still borrowable.
     let exported_types: Vec<_> = exportables_parsed
         .iter()
-        .map(|e| convert_exportable(e, &resolver, &handle_types, &type_registry))
+        .map(|e| convert_exportable(e, &resolver, &handle_types, &type_registry, &value_types))
         .collect();
     let errors: Vec<_> = errors_parsed
         .iter()
@@ -3707,15 +3805,15 @@ fn build_schema(
         .collect();
     let free_functions: Vec<_> = free_fns_parsed
         .iter()
-        .map(|f| convert_free_fn(f, &resolver, &handle_types, &type_registry))
+        .map(|f| convert_free_fn(f, &resolver, &handle_types, &type_registry, &value_types))
         .collect();
     let traits: Vec<_> = implementables_parsed
         .iter()
-        .map(|i| convert_implementable(i, &resolver, &handle_types, &type_registry))
+        .map(|i| convert_implementable(i, &resolver, &handle_types, &type_registry, &value_types))
         .collect();
     let trait_impls: Vec<_> = trait_impls_parsed
         .iter()
-        .map(|t| convert_trait_impl(t, &resolver, &handle_types, &type_registry))
+        .map(|t| convert_trait_impl(t, &resolver, &handle_types, &type_registry, &value_types))
         .collect();
 
     let mut library = ffier_schema::Library {
@@ -3808,6 +3906,7 @@ fn convert_free_fn(
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::FreeFunction {
     // A free function has exactly one "method" in its methods list.
     let m = &meta.methods[0];
@@ -3822,7 +3921,7 @@ fn convert_free_fn(
             .iter()
             .map(|p| convert_param(p, r, type_registry))
             .collect(),
-        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types),
+        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types, value_types),
         cfg: cfg_to_schema(cfg),
     }
 }
@@ -3832,6 +3931,7 @@ fn convert_exportable(
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::ExportedType {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
@@ -3846,7 +3946,7 @@ fn convert_exportable(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, None, handle_types, type_registry))
+            .map(|m| convert_method(m, r, None, handle_types, type_registry, value_types))
             .collect(),
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
@@ -3890,6 +3990,7 @@ fn convert_implementable(
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::ImplementableTrait {
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
@@ -3906,7 +4007,16 @@ fn convert_implementable(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, Some(&ffi_prefix), handle_types, type_registry))
+            .map(|m| {
+                convert_method(
+                    m,
+                    r,
+                    Some(&ffi_prefix),
+                    handle_types,
+                    type_registry,
+                    value_types,
+                )
+            })
             .collect(),
         own_method_count: meta.own_method_count,
         num_slots: meta.num_slots,
@@ -3920,6 +4030,7 @@ fn convert_trait_impl(
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::TraitImpl {
     ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
@@ -3930,7 +4041,7 @@ fn convert_trait_impl(
         methods: meta
             .methods
             .iter()
-            .map(|m| convert_method(m, r, None, handle_types, type_registry))
+            .map(|m| convert_method(m, r, None, handle_types, type_registry, value_types))
             .collect(),
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
     }
@@ -3946,6 +4057,7 @@ fn convert_method(
     parent_ffi_prefix: Option<&str>,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::Method {
     let (ffi_name, trait_definition) = match &meta.context {
         MetaMethodContext::Exportable { ffi_name, .. } => (r.ffi_fn_name(ffi_name), None),
@@ -3968,6 +4080,7 @@ fn convert_method(
         r,
         meta.is_builder(),
         handle_types,
+        value_types,
     );
 
     ffier_schema::Method {
@@ -4131,6 +4244,7 @@ fn convert_return(
     r: &CTypeResolver,
     is_builder: bool,
     handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
 ) -> ffier_schema::Return {
     match ret {
         MetaReturn::Void if is_builder => {
@@ -4164,6 +4278,19 @@ fn convert_return(
             }
         }
         MetaReturn::Result { ok, err_ident } => {
+            // `Result<Option<ValueStruct>, E>` keeps the value type and marks it
+            // optional; the presence out-param is implied by the convention.
+            if let Some(tp) = ok
+                && let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types)
+            {
+                let mut ok_ref = r.type_ref_from_tokens(&inner);
+                ok_ref.optional = true;
+                return ffier_schema::Return::Result {
+                    ok: Some(ok_ref),
+                    err_type: err_ident.clone(),
+                    c_convention: ffier_schema::CResultConvention::OptionalValueOutParam,
+                };
+            }
             let ok_ref = ok.as_ref().map(|tp| r.type_ref_from_tokens(&tp.rust_type));
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle =
