@@ -92,7 +92,7 @@ ffier-dynlookup = ["dep:libloading"]
 ffier-strong = []
 
 [dependencies]
-ffier = { version = "..." }
+ffier = { package = "ffier-rt", version = "..." }
 libloading = { version = "0.8", optional = true }
 ```
 

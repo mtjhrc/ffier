@@ -12,7 +12,7 @@ optional-entry = []
 [dependencies]
 libloading = { version = "0.8", optional = true }
 bitflags = "2"
-ffier = { path = "../../ffier" }
+ffier = { package = "ffier-rt", path = "../../ffier-rt" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }
 
 [build-dependencies]
