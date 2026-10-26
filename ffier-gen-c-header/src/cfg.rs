@@ -229,6 +229,7 @@ pub fn validate_library(lib: &Library) -> Result<(), String> {
         .chain(lib.trait_impls.iter().map(|item| item.cfg.as_ref()))
         .chain(lib.enum_constants.iter().map(|item| item.cfg.as_ref()))
         .chain(lib.bitflags_constants.iter().map(|item| item.cfg.as_ref()))
+        .chain(lib.value_structs.iter().map(|item| item.cfg.as_ref()))
         .chain(lib.free_functions.iter().map(|item| item.cfg.as_ref()))
         .chain(methods.map(|method| method.cfg.as_ref()))
         .flatten();

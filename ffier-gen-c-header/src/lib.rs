@@ -102,6 +102,8 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, St
     let prim_upper_pfx = format!("{}_", prim_pfx.to_ascii_uppercase());
     emit_shared_types(&mut out, &prim_upper_pfx, &fn_pfx, lib, opts);
 
+    emit_value_structs(&mut out, lib, &assumptions);
+
     // Enum constant sections
     for en in &lib.enum_constants {
         cfg::block(&mut out, &assumptions, en.cfg.as_ref(), |out| {
@@ -156,6 +158,59 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, St
     out.push('\n');
     out.push_str(&format!("#endif /* {guard} */\n"));
     Ok(out)
+}
+
+/// Emit fixed-layout value structs, dependencies first so nested structs are
+/// already defined when they're used as inline fields.
+fn emit_value_structs(out: &mut String, lib: &Library, assumptions: &cfg::Assumptions) {
+    fn visit<'a>(
+        value: &'a ffier_schema::ValueStruct,
+        lib: &'a Library,
+        visiting: &mut std::collections::HashSet<&'a str>,
+        emitted: &mut std::collections::HashSet<&'a str>,
+        ordered: &mut Vec<&'a ffier_schema::ValueStruct>,
+    ) {
+        if emitted.contains(value.name.as_str()) || !visiting.insert(value.name.as_str()) {
+            return;
+        }
+        for field in &value.fields {
+            if lib.is_value_struct(&field.type_ref.type_name)
+                && let Some(dependency) = lib
+                    .value_structs
+                    .iter()
+                    .find(|candidate| candidate.name == field.type_ref.type_name)
+            {
+                visit(dependency, lib, visiting, emitted, ordered);
+            }
+        }
+        visiting.remove(value.name.as_str());
+        emitted.insert(value.name.as_str());
+        ordered.push(value);
+    }
+
+    let mut visiting = std::collections::HashSet::new();
+    let mut emitted = std::collections::HashSet::new();
+    let mut ordered = Vec::new();
+    for value in &lib.value_structs {
+        visit(value, lib, &mut visiting, &mut emitted, &mut ordered);
+    }
+    if ordered.is_empty() {
+        return;
+    }
+    out.push_str("/* Fixed-layout value structs */\n");
+    for value in ordered {
+        cfg::block(out, assumptions, value.cfg.as_ref(), |out| {
+            out.push_str("typedef struct {\n");
+            for field in &value.fields {
+                out.push_str(&format!(
+                    "    {} {};\n",
+                    lib.c_type_of_ref(&field.type_ref),
+                    field.name
+                ));
+            }
+            out.push_str(&format!("}} {};\n\n", value.c_name));
+        });
+    }
 }
 
 /// Generate a C header from a JSON file path.
@@ -721,7 +776,7 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
     for p in params {
         match &p.param_type {
             ParamType::Regular(type_ref) => {
-                let c_type = lib.c_type_of(&type_ref.type_name);
+                let c_type = lib.c_type_of_ref(type_ref);
                 out.push(format!("{} {}", c_type, p.name));
             }
             ParamType::Slice { c_params, .. } => {
@@ -815,7 +870,7 @@ fn format_return_and_out_params(
     match ret {
         Return::Void => ("void".to_string(), vec![]),
         Return::Value(_) if is_builder => ("void".to_string(), vec![]),
-        Return::Value(type_ref) => (lib.c_type_of(&type_ref.type_name).to_string(), vec![]),
+        Return::Value(type_ref) => (lib.c_type_of_ref(type_ref), vec![]),
         Return::Result {
             ok, c_convention, ..
         } => {
@@ -826,7 +881,7 @@ fn format_return_and_out_params(
                     // GLib-style: return handle pointer, NULL on error
                     let ok_ref = ok.as_ref().expect("HandleOrNull requires an ok type");
                     (
-                        lib.c_type_of(&ok_ref.type_name).to_string(),
+                        lib.c_type_of_ref(ok_ref),
                         vec![format!("{error_c}* err_out")],
                     )
                 }
@@ -835,7 +890,7 @@ fn format_return_and_out_params(
                         (result_c(), vec![format!("{error_c}* err_out")])
                     }
                     Some(ok_ref) => {
-                        let c_type = lib.c_type_of(&ok_ref.type_name).to_string();
+                        let c_type = lib.c_type_of_ref(ok_ref);
                         (
                             result_c(),
                             vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
