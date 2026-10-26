@@ -12,27 +12,16 @@ fn main() {
 
     ffier_test_codegen::write_rust_client(&lib, &out_dir, None).expect("client bindings");
 
-    // Weak (dlsym-based) bindings for the weak-tests feature.
-    if std::env::var_os("CARGO_FEATURE_WEAK_TESTS").is_some() {
-        ffier_test_codegen::write_rust_client_named(
-            &lib,
-            &out_dir,
-            None,
-            "generated_weak.rs",
-            true,
-        )
-        .expect("weak client bindings");
-    }
-
     #[cfg(unix)]
     link_test_lib(workspace_root);
 }
 
-/// Link against the test lib cdylib. The cdylib itself is built by the
+/// Locate the test lib cdylib, linking it only in strong mode. It is built by the
 /// `build` recipe in tests/justfile before any test crate runs.
 #[cfg(unix)]
 fn link_test_lib(workspace_root: &std::path::Path) {
     let target_dir = workspace_root.join("target").join("debug");
     println!("cargo:rustc-link-search=native={}", target_dir.display());
+    #[cfg(feature = "ffier-strong")]
     println!("cargo:rustc-link-lib=dylib=ffier_test_lib");
 }

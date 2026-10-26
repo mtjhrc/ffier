@@ -17,7 +17,9 @@ fmt:
 # workspace until the .so files exist.
 clippy:
     just --justfile tests/justfile build
-    cargo clippy --workspace -- -D warnings
+    cargo clippy --workspace \
+        --features ffier-test-lib-via-cdylib/ffier-dynlookup,ffier-test-foreign-lib-via-cdylib/ffier-dynlookup,ffier-test-compat/ffier-strong \
+        -- -D warnings
     cargo clippy --manifest-path tests/conditional-bridge/Cargo.toml \
         --target-dir target/conditional-bridge --workspace --all-targets \
         --features conditional-bridge/a_feature -- -D warnings

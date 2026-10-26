@@ -4,6 +4,25 @@
 
 ### Breaking changes
 
+- Generate one Unix Rust client supporting `ffier-dynlookup` runtime symbol
+  loading and feature-selected `ffier-strong` linker calls. `ffier-strong` takes
+  precedence when Cargo unifies both features. Neither mode is a default
+  feature. Client crates declare an optional `libloading` dependency; pure
+  link-only builds need no loader. Remove generator `Options`,
+  `generate_with_options`, `generate_from_file_with_options`, and CLI `--weak`.
+  Two one-time setters configure the client: unsafe `set_library_handle(handle)`
+  fixes the lookup source and `set_load_policy(LoadPolicy)` chooses explicit or
+  lazy loading of unloaded symbols, defaulting to `LoadPolicy::Lazy`. Reject
+  reconfiguration of either so explicit and lazy loads cannot mix library
+  handles. Clients with any exported vtable load one shared handle allocator
+  through explicit or lazy loading.
+  `require(symbols)` returns the shared `LoadError`; `Symbol::is_available()`
+  probes the configured source. Without a setter, the first lookup fixes the
+  process namespace.
+  `ffier-strong` builds retain the shared API as no-ops. Schema conditions
+  restrict the `ffier-strong` API while runtime lookup clients retain optional
+  symbol discovery.
+
 - Rename the C `PREFIX_VTABLE_HANDLE` macro to `PREFIX_TEMP_OBJ` and require
   owned vtable handles to come from the generated `PREFIX_vtable_handle_new`
   function. The macro builds a borrowed, call-scoped object that must only be

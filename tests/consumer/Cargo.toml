@@ -6,8 +6,8 @@ edition = "2024"
 [features]
 default = ["via-cdylib"]
 native = ["dep:ffier-test-lib"]
-via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib?/optional-entry"]
+via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib?/optional-entry", "ffier-test-lib-via-cdylib?/fruit-label"]
 
 [dependencies]
 ffier-test-lib = { path = "../lib", optional = true }
-ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
+ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true, features = ["ffier-strong"] }
