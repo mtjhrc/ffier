@@ -16,7 +16,7 @@ use std::fmt::Write;
 
 /// Emit schema restrictions only for `ffier-strong`; `ffier-dynlookup` clients
 /// discover optional API at runtime regardless of the consumer's schema features.
-fn emit_cfg_attr(out: &mut String, cfg: Option<&str>) {
+fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
     if let Some(pred) = cfg {
         writeln!(out, "#[cfg(any(not(feature = \"ffier-strong\"), {pred}))]").unwrap();
     }
@@ -1018,10 +1018,10 @@ fn emit_exported_type(
     for m in &ty.methods {
         fns.push(extern_fn_from_method(&m.ffi_name, m, lib));
     }
-    emit_extern_fns(out, &fns, ty.cfg.as_deref(), symbols);
+    emit_extern_fns(out, &fns, ty.cfg.as_ref(), symbols);
 
     // Struct definition
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     if has_lifetimes {
         let phantom = if lifetimes.len() == 1 {
             format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
@@ -1047,7 +1047,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // __from_raw, __into_raw
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     if has_lifetimes {
@@ -1065,7 +1065,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiHandle
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(
         out,
         "impl{lt_params} FfiHandle for {}{lt_params} {{",
@@ -1097,7 +1097,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiType
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
     writeln!(
@@ -1120,7 +1120,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Debug
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(
         out,
         "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
@@ -1143,7 +1143,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Methods
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
         emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
@@ -1159,8 +1159,8 @@ fn emit_exported_type(
             && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
     });
     if !has_lifetimes && let Some(new) = default_new {
-        emit_cfg_attr(out, ty.cfg.as_deref());
-        emit_cfg_attr(out, new.cfg.as_deref());
+        emit_cfg_attr(out, ty.cfg.as_ref());
+        emit_cfg_attr(out, new.cfg.as_ref());
         writeln!(
             out,
             "impl Default for {} {{ fn default() -> Self {{ Self::new() }} }}",
@@ -1171,7 +1171,7 @@ fn emit_exported_type(
     }
 
     // Drop
-    emit_cfg_attr(out, ty.cfg.as_deref());
+    emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    fn drop(&mut self) {{").unwrap();
     writeln!(out, "        unsafe {{ {}(self.0) }}", ty.destroy_ffi_name).unwrap();
@@ -1192,7 +1192,7 @@ fn emit_method_wrapper(
     has_lifetimes: bool,
     lib: &Library,
 ) {
-    emit_cfg_attr(out, m.cfg.as_deref());
+    emit_cfg_attr(out, m.cfg.as_ref());
 
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
@@ -1525,7 +1525,7 @@ fn emit_error_trait_externs(
         vec!["handle: *mut core::ffi::c_void".to_string()],
         String::new(),
     ));
-    emit_extern_fns(out, &fns, tr.cfg.as_deref(), symbols);
+    emit_extern_fns(out, &fns, tr.cfg.as_ref(), symbols);
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
@@ -1563,14 +1563,14 @@ fn emit_implementable_trait(
     let vtable_name = &tr.vtable_struct_name;
     let wrapper_name = &tr.wrapper_name;
     // Trait definition
-    emit_cfg_attr(out, tr.cfg.as_deref());
+    emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
         let Some(td) = &m.trait_definition else {
             continue;
         };
 
-        emit_cfg_attr(out, m.cfg.as_deref());
+        emit_cfg_attr(out, m.cfg.as_ref());
         let method_sig = build_trait_method_sig(m, lib);
 
         if td.has_default {
@@ -1648,20 +1648,20 @@ fn emit_implementable_trait(
         })
         .collect();
     if !default_fns.is_empty() {
-        emit_extern_fns(out, &default_fns, tr.cfg.as_deref(), symbols);
+        emit_extern_fns(out, &default_fns, tr.cfg.as_ref(), symbols);
     }
 
     // Wrapper struct
-    emit_cfg_attr(out, tr.cfg.as_deref());
+    emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "pub struct {wrapper_name}(*mut core::ffi::c_void);").unwrap();
     writeln!(out).unwrap();
-    emit_cfg_attr(out, tr.cfg.as_deref());
+    emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "impl {wrapper_name} {{").unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
-    emit_cfg_attr(out, tr.cfg.as_deref());
+    emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "impl Drop for {wrapper_name} {{").unwrap();
     writeln!(out, "    fn drop(&mut self) {{}}").unwrap();
     writeln!(out, "}}").unwrap();
@@ -1743,7 +1743,7 @@ fn emit_vtable_struct(
     _lib: &Library,
     vtable_name: &str,
 ) {
-    emit_cfg_attr(out, tr.cfg.as_deref());
+    emit_cfg_attr(out, tr.cfg.as_ref());
     writeln!(out, "#[repr(C)]").unwrap();
     writeln!(out, "pub struct {vtable_name} {{").unwrap();
     writeln!(
@@ -1771,7 +1771,7 @@ fn emit_vtable_struct(
 
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
-            emit_cfg_attr(out, m.cfg.as_deref());
+            emit_cfg_attr(out, m.cfg.as_ref());
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
             push_extern_param_types(&m.params, &mut params);
             let ret = push_return_and_out_param_types(&m.ret, &mut params);
@@ -1833,7 +1833,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
 
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
-            emit_cfg_attr(out, m.cfg.as_deref());
+            emit_cfg_attr(out, m.cfg.as_ref());
             let is_mut = m.receiver == Receiver::Mut;
             let borrow = if is_mut { "&mut *" } else { "&*" };
 
@@ -2036,7 +2036,7 @@ fn emit_trait_impl(
         .iter()
         .map(|m| extern_fn_from_dispatch(&m.ffi_name, m))
         .collect();
-    emit_extern_fns(out, &fns, ti.cfg.as_deref(), symbols);
+    emit_extern_fns(out, &fns, ti.cfg.as_ref(), symbols);
 
     // Build impl header with lifetimes
     let impl_generics = if !ti.lifetimes.is_empty() {
@@ -2074,7 +2074,7 @@ fn emit_trait_impl(
         String::new()
     };
 
-    emit_cfg_attr(out, ti.cfg.as_deref());
+    emit_cfg_attr(out, ti.cfg.as_ref());
     writeln!(
         out,
         "impl{impl_generics} {}{trait_args} for {}{struct_args} {{",
@@ -2086,7 +2086,7 @@ fn emit_trait_impl(
     let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
 
     for m in &ti.methods {
-        emit_cfg_attr(out, m.cfg.as_deref());
+        emit_cfg_attr(out, m.cfg.as_ref());
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
@@ -2105,7 +2105,7 @@ fn emit_trait_impl(
             if impl_method_names.contains(dm.name.as_str()) {
                 continue;
             }
-            emit_cfg_attr(out, dm.cfg.as_deref());
+            emit_cfg_attr(out, dm.cfg.as_ref());
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
@@ -2151,11 +2151,11 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
         .traits
         .iter()
         .find(|tr| tr.name == ti.trait_name)
-        .and_then(|tr| tr.cfg.as_deref());
+        .and_then(|tr| tr.cfg.as_ref());
     emit_cfg_attr(out, cfg);
     writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
     for m in &ti.methods {
-        emit_cfg_attr(out, m.cfg.as_deref());
+        emit_cfg_attr(out, m.cfg.as_ref());
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig};").unwrap();
     }
@@ -2183,8 +2183,8 @@ struct ExternFn {
     ret: String,
     /// Whether to emit as `pub fn` (true) or `fn` (false) in extern blocks.
     public: bool,
-    /// `#[cfg(...)]` predicate string. `None` = unconditional.
-    cfg: Option<String>,
+    /// `#[cfg(...)]` predicate. `None` = unconditional.
+    cfg: Option<ffier_schema::Cfg>,
 }
 
 /// Build a `pub` `ExternFn` from a name, param list, and return string.
@@ -2199,7 +2199,12 @@ fn extern_fn(name: &str, params: Vec<String>, ret: String) -> ExternFn {
 }
 
 /// Build a `pub` `ExternFn` with an optional cfg predicate.
-fn extern_fn_cfg(name: &str, params: Vec<String>, ret: String, cfg: Option<String>) -> ExternFn {
+fn extern_fn_cfg(
+    name: &str,
+    params: Vec<String>,
+    ret: String,
+    cfg: Option<ffier_schema::Cfg>,
+) -> ExternFn {
     ExternFn {
         name: name.to_string(),
         params,
@@ -2255,7 +2260,7 @@ fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
 fn emit_extern_fns(
     out: &mut String,
     fns: &[ExternFn],
-    cfg: Option<&str>,
+    cfg: Option<&ffier_schema::Cfg>,
     symbols: &mut Vec<SymbolInfo>,
 ) {
     if fns.is_empty() {
@@ -3019,7 +3024,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     };
 
     // Enum definition
-    emit_cfg_attr(out, en.cfg.as_deref());
+    emit_cfg_attr(out, en.cfg.as_ref());
     writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
     writeln!(out, "#[repr({repr})]").unwrap();
     writeln!(out, "pub enum {} {{", en.name).unwrap();
@@ -3030,7 +3035,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     writeln!(out).unwrap();
 
     // FfiType impl
-    emit_cfg_attr(out, en.cfg.as_deref());
+    emit_cfg_attr(out, en.cfg.as_ref());
     writeln!(out, "impl FfiType for {} {{", en.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -3069,7 +3074,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     };
 
     // bitflags! invocation
-    emit_cfg_attr(out, bf.cfg.as_deref());
+    emit_cfg_attr(out, bf.cfg.as_ref());
     writeln!(out, "bitflags::bitflags! {{").unwrap();
     writeln!(out, "    #[repr(transparent)]").unwrap();
     writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
@@ -3082,7 +3087,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     writeln!(out).unwrap();
 
     // FfiType impl
-    emit_cfg_attr(out, bf.cfg.as_deref());
+    emit_cfg_attr(out, bf.cfg.as_ref());
     writeln!(out, "impl FfiType for {} {{", bf.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -3114,7 +3119,7 @@ fn emit_free_function(
     // Extern declaration
     emit_extern_fns(out, &[extern_fn_from_free(f)], None, symbols);
 
-    emit_cfg_attr(out, f.cfg.as_deref());
+    emit_cfg_attr(out, f.cfg.as_ref());
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();

@@ -601,6 +601,7 @@ fn parse_optional_cfg_predicate(input: ParseStream) -> syn::Result<Option<TokenS
             input.parse::<Ident>()?; // cfg_predicate
             input.parse::<Token![=]>()?;
             let tokens = parse_parenthesized_tokens(input)?;
+            crate::cfg::from_tokens(&tokens)?;
             parse_comma(input)?;
             return Ok(Some(tokens));
         }
@@ -803,6 +804,7 @@ impl syn::parse::Parse for MetaMethod {
                 input.parse::<Ident>()?; // cfg
                 input.parse::<Token![=]>()?;
                 let tokens = parse_parenthesized_tokens(input)?;
+                crate::cfg::from_tokens(&tokens)?;
                 parse_comma(input)?;
                 Some(tokens)
             } else {

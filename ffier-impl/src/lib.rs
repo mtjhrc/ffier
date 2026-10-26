@@ -10,6 +10,7 @@ use syn::{
 };
 
 mod bridge;
+mod cfg;
 mod meta;
 
 use meta::{
@@ -391,7 +392,9 @@ impl Parse for ExportCfg {
             if key == "cfg" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
-                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+                cfg = Some(cfg::normalize_tokens(
+                    &lit.parse::<proc_macro2::TokenStream>()?,
+                )?);
             } else {
                 return Err(syn::Error::new(
                     key.span(),
@@ -963,7 +966,9 @@ impl Parse for ExportBitflagsInput {
             let attrs = input.call(syn::Attribute::parse_outer)?;
             for attr in attrs {
                 if attr.path().is_ident("cfg") {
-                    cfg_predicates.push(attr.parse_args::<syn::Meta>()?);
+                    let predicate = attr.parse_args_with(cfg::parse_meta)?;
+                    cfg::from_meta(&predicate)?;
+                    cfg_predicates.push(predicate);
                 } else {
                     return Err(syn::Error::new_spanned(
                         attr,
@@ -2032,15 +2037,14 @@ fn extract_impl_trait_info(ty: &Type) -> Option<(String, Vec<String>)> {
 /// Only matches direct `#[cfg(...)]` attributes — does not unwrap
 /// `#[cfg_attr(PRED, ...)]`.
 /// Returns the predicates (e.g. `feature = "x"`) as `syn::Meta` values.
-fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> Vec<syn::Meta> {
+fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> syn::Result<Vec<syn::Meta>> {
     attrs
         .iter()
-        .filter_map(|attr| {
-            if attr.path().is_ident("cfg") {
-                attr.parse_args::<syn::Meta>().ok()
-            } else {
-                None
-            }
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .map(|attr| {
+            let predicate = attr.parse_args_with(cfg::parse_meta)?;
+            cfg::from_meta(&predicate)?;
+            Ok(predicate)
         })
         .collect()
 }
@@ -2141,7 +2145,9 @@ impl Parse for ImplementableArgs {
             } else if ident == "cfg" {
                 input.parse::<Token![=]>()?;
                 let lit: LitStr = input.parse()?;
-                cfg = Some(lit.parse::<proc_macro2::TokenStream>()?);
+                cfg = Some(cfg::normalize_tokens(
+                    &lit.parse::<proc_macro2::TokenStream>()?,
+                )?);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -2577,7 +2583,7 @@ fn parse_method_sig(
         has_default,
         index: 0,
         raw_handle,
-        cfg_predicates: extract_cfg_predicates(attrs),
+        cfg_predicates: extract_cfg_predicates(attrs)?,
     }))
 }
 
@@ -4304,7 +4310,9 @@ fn parse_library_entry_cfg(input: syn::parse::ParseStream) -> syn::Result<Option
                 "library_definition! entries only support outer #[cfg(...)] attributes",
             ));
         }
-        predicates.push(attr.parse_args::<syn::Meta>()?);
+        let predicate = attr.parse_args_with(cfg::parse_meta)?;
+        cfg::from_meta(&predicate)?;
+        predicates.push(predicate);
     }
 
     if predicates.is_empty() {

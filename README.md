@@ -80,6 +80,9 @@ ffier-gen-c-header target/ffier-mylib.json > mylib.h
 ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 ```
 
+See [conditional compilation](docs/conditional-compilation.md) for supported
+predicates and their schema representation.
+
 ### Rust client linking (Unix)
 
 One generation pass emits a single source file with two linking modes. Declare
