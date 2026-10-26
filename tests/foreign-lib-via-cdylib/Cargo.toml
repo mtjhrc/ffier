@@ -3,7 +3,12 @@ name = "ffier-test-foreign-lib-via-cdylib"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+ffier-dynlookup = ["dep:libloading"]
+ffier-strong = []
+
 [dependencies]
+libloading = { version = "0.8", optional = true }
 ffier = { path = "../../ffier" }
 
 [build-dependencies]

@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
+ffier-dynlookup = ["dep:libloading"]
+ffier-strong = ["ffier-test-foreign-lib-via-cdylib/ffier-strong"]
 fruit-label = []
 optional-entry = []
 
 [dependencies]
+libloading = { version = "0.8", optional = true }
 bitflags = "2"
 ffier = { path = "../../ffier" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib" }

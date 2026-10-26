@@ -14,27 +14,12 @@ use ffier_schema::{
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-/// Options for the Rust client generator.
-#[derive(Debug, Clone, Default)]
-pub struct Options {
-    /// When true, generate weak (dlsym-based) bindings instead of
-    /// `unsafe extern "C"` declarations. Each symbol gets a `OnceLock`-backed
-    /// shim function with the same name. A `Symbol` enum, `require(&[Symbol])`
-    /// loader, and `Symbol::is_available()` probe are generated.
-    pub weak: bool,
-}
-
-/// Emit `#[cfg(pred)]` before a top-level item when `cfg` is set and
-/// we're generating a strong (non-weak) client.
-fn emit_cfg_attr(out: &mut String, cfg: Option<&str>, weak: bool) {
-    if !weak && let Some(pred) = cfg {
-        writeln!(out, "#[cfg({pred})]").unwrap();
+/// Emit schema restrictions only for `ffier-strong`; `ffier-dynlookup` clients
+/// discover optional API at runtime regardless of the consumer's schema features.
+fn emit_cfg_attr(out: &mut String, cfg: Option<&str>) {
+    if let Some(pred) = cfg {
+        writeln!(out, "#[cfg(any(not(feature = \"ffier-strong\"), {pred}))]").unwrap();
     }
-}
-
-/// Generate complete Rust client source from a library schema.
-pub fn generate(lib: &Library) -> String {
-    generate_with_options(lib, &Options::default())
 }
 
 /// Whether the library has a function returning `&[T]` / `&[&T]`, which the
@@ -56,10 +41,19 @@ fn has_object_array_returns(lib: &Library) -> bool {
         .any(|ret| matches!(ret, ffier_schema::Return::ObjectArray { .. }))
 }
 
-/// Generate complete Rust client source from a library schema with options.
-pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
+/// Generate one Rust client source supporting both Unix linking modes.
+/// The consuming crate selects the implementation with its `ffier-dynlookup` or
+/// `ffier-strong` feature, one of which is required. `ffier-strong` takes
+/// precedence when both are enabled.
+pub fn generate(lib: &Library) -> String {
     let mut out = String::new();
+    out.push_str("#[cfg(not(any(feature = \"ffier-dynlookup\", feature = \"ffier-strong\")))]\ncompile_error!(\"generated ffier clients require the `ffier-dynlookup` or `ffier-strong` feature\");\n\n");
     let object_array_returns = has_object_array_returns(lib);
+    let handle_allocator = lib
+        .traits
+        .iter()
+        .any(|tr| !tr.no_vtable)
+        .then(|| format!("{}_vtable_handle_new", lib.prefix));
 
     // Emit imports for blessed types that need special std imports.
     // Each blessing contributes individual import symbols; collected and
@@ -402,17 +396,16 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         writeln!(out).unwrap();
     }
 
-    let weak = opts.weak;
     let mut symbols = Vec::new();
 
     // 0. Enum constants (FfiType impls + constant values)
     for en in &lib.enum_constants {
-        emit_enum_type(&mut out, en, lib, weak);
+        emit_enum_type(&mut out, en, lib);
     }
 
     // 0b. Bitflags constants (bitflags! invocations + FfiType impls)
     for bf in &lib.bitflags_constants {
-        emit_bitflags_type(&mut out, bf, lib, weak);
+        emit_bitflags_type(&mut out, bf, lib);
     }
 
     // 1. Error enums
@@ -448,24 +441,24 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
                 " -> ffier::FfierBytes".to_string(),
             ));
         }
-        emit_extern_fns(&mut out, &error_fns, weak, &mut symbols);
+        emit_extern_fns(&mut out, &error_fns, None, &mut symbols);
     }
     for err in &lib.errors {
-        emit_error(&mut out, err, lib, weak);
+        emit_error(&mut out, err, lib);
     }
 
     // 2. Exported types
     for ty in &lib.exported_types {
-        emit_exported_type(&mut out, ty, lib, weak, &mut symbols);
+        emit_exported_type(&mut out, ty, lib, &mut symbols);
     }
 
     // Library-side allocation helpers. Memory the library allocates must be
     // freed by the library, so both of these are library symbols rather than
     // ffier:: runtime helpers.
     let mut alloc_fns = Vec::new();
-    if lib.traits.iter().any(|tr| !tr.no_vtable) {
+    if let Some(name) = &handle_allocator {
         alloc_fns.push(extern_fn_private(
-            &format!("{}_vtable_handle_new", lib.prefix),
+            name,
             vec![
                 "type_tag: u32".to_string(),
                 "vtable: *const core::ffi::c_void".to_string(),
@@ -482,7 +475,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         ));
     }
     if !alloc_fns.is_empty() {
-        emit_extern_fns(&mut out, &alloc_fns, weak, &mut symbols);
+        emit_extern_fns(&mut out, &alloc_fns, None, &mut symbols);
     }
 
     // 3. Implementable traits
@@ -504,7 +497,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         if lib.type_entry(&tr.name).and_then(|e| e.bless)
             == Some(ffier_schema::Blessing::ErrorTrait)
         {
-            emit_error_trait_externs(&mut out, tr, lib, weak, &mut symbols);
+            emit_error_trait_externs(&mut out, tr, lib, &mut symbols);
             defined_traits.insert(tr.name.clone());
             continue;
         }
@@ -514,7 +507,7 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
         if tr.no_vtable {
             continue;
         }
-        emit_implementable_trait(&mut out, tr, lib, weak, &mut symbols);
+        emit_implementable_trait(&mut out, tr, lib, &mut symbols);
         defined_traits.insert(tr.name.clone());
     }
 
@@ -532,7 +525,6 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
             lib,
             &mut defined_traits,
             &trait_defaults,
-            weak,
             &mut symbols,
         );
     }
@@ -541,12 +533,12 @@ pub fn generate_with_options(lib: &Library, opts: &Options) -> String {
     for f in &lib.free_functions {
         // Free functions already handle their own cfg in emit_free_function;
         // type-level cfg is propagated to the schema's FreeFunction.cfg field.
-        emit_free_function(&mut out, f, lib, weak, &mut symbols);
+        emit_free_function(&mut out, f, lib, &mut symbols);
     }
 
-    // 6. Weak symbol API (Symbol enum + require + is_available)
-    if weak && !symbols.is_empty() {
-        emit_weak_symbol_api(&mut out, &symbols);
+    // 6. Shared symbol API (Symbol enum + require + is_available)
+    if !symbols.is_empty() {
+        emit_symbol_api(&mut out, &symbols, handle_allocator.as_deref());
     }
 
     rustfmt(&out)
@@ -585,17 +577,9 @@ fn rustfmt(src: &str) -> String {
 
 /// Generate from a JSON file path.
 pub fn generate_from_file(json_path: &str) -> Result<String, Box<dyn std::error::Error>> {
-    generate_from_file_with_options(json_path, &Options::default())
-}
-
-/// Generate from a JSON file path with options.
-pub fn generate_from_file_with_options(
-    json_path: &str,
-    opts: &Options,
-) -> Result<String, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(json_path)?;
     let lib = Library::from_json(&json)?;
-    Ok(generate_with_options(&lib, opts))
+    Ok(generate(&lib))
 }
 
 // ===========================================================================
@@ -610,7 +594,7 @@ fn fieldless_variant_syntax(variant: &ErrorVariant) -> Option<String> {
     }
 }
 
-fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
+fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     let prefix = &lib.prefix;
     let error_type_tag = lib
         .type_entry(&err.name)
@@ -715,9 +699,6 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library, weak: bool) {
             "    fn fieldless_handle(code: u32) -> {handle_name} {{"
         )
         .unwrap();
-        if weak {
-            writeln!(out, "        {}.get().expect(\"symbol `{error_destroy_fn}` not loaded; call require() first\");", error_destroy_fn.to_ascii_uppercase()).unwrap();
-        }
         writeln!(out, "        let raw = unsafe {{ {prefix}_error_new(ffier::ffier_result({error_type_tag}u32, code)) }};").unwrap();
         writeln!(
             out,
@@ -1008,8 +989,7 @@ fn emit_exported_type(
     out: &mut String,
     ty: &ExportedType,
     lib: &Library,
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     let entry = lib.type_entry(&ty.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
@@ -1038,11 +1018,10 @@ fn emit_exported_type(
     for m in &ty.methods {
         fns.push(extern_fn_from_method(&m.ffi_name, m, lib));
     }
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
-    emit_extern_fns(out, &fns, weak, symbols);
+    emit_extern_fns(out, &fns, ty.cfg.as_deref(), symbols);
 
     // Struct definition
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     if has_lifetimes {
         let phantom = if lifetimes.len() == 1 {
             format!("std::marker::PhantomData<&'{} ()>", lifetimes[0])
@@ -1068,7 +1047,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // __from_raw, __into_raw
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     if has_lifetimes {
@@ -1086,7 +1065,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiHandle
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(
         out,
         "impl{lt_params} FfiHandle for {}{lt_params} {{",
@@ -1118,7 +1097,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // FfiType
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
     writeln!(
@@ -1141,7 +1120,7 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Debug
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(
         out,
         "impl{lt_params} std::fmt::Debug for {}{lt_params} {{",
@@ -1164,32 +1143,24 @@ fn emit_exported_type(
     writeln!(out).unwrap();
 
     // Methods
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(
-            out,
-            m,
-            &m.ffi_name,
-            ty.is_builder_type,
-            has_lifetimes,
-            lib,
-            weak,
-        );
+        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
     // Default — emit if there's a zero-param `new()` static constructor returning Self
-    let has_default_new = !has_lifetimes
-        && ty.methods.iter().any(|m| {
-            m.name == "new"
-                && m.receiver == Receiver::None
-                && m.params.is_empty()
-                && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
-        });
-    if has_default_new {
-        emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    let default_new = ty.methods.iter().find(|m| {
+        m.name == "new"
+            && m.receiver == Receiver::None
+            && m.params.is_empty()
+            && matches!(&m.ret, Return::Value(tr) if tr.type_name == ty.name)
+    });
+    if !has_lifetimes && let Some(new) = default_new {
+        emit_cfg_attr(out, ty.cfg.as_deref());
+        emit_cfg_attr(out, new.cfg.as_deref());
         writeln!(
             out,
             "impl Default for {} {{ fn default() -> Self {{ Self::new() }} }}",
@@ -1200,7 +1171,7 @@ fn emit_exported_type(
     }
 
     // Drop
-    emit_cfg_attr(out, ty.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ty.cfg.as_deref());
     writeln!(out, "impl{lt_params} Drop for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    fn drop(&mut self) {{").unwrap();
     writeln!(out, "        unsafe {{ {}(self.0) }}", ty.destroy_ffi_name).unwrap();
@@ -1220,12 +1191,8 @@ fn emit_method_wrapper(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
-    weak: bool,
 ) {
-    // Cfg gate (strong client only — weak bindings are unconditional)
-    if !weak && let Some(cfg) = &m.cfg {
-        writeln!(out, "    #[cfg({cfg})]").unwrap();
-    }
+    emit_cfg_attr(out, m.cfg.as_deref());
 
     // Doc comments — escape inner quotes to prevent broken string literals
     for doc in &m.doc {
@@ -1546,8 +1513,7 @@ fn emit_error_trait_externs(
     out: &mut String,
     tr: &ImplementableTrait,
     _lib: &Library,
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     let mut fns = Vec::new();
     for m in &tr.methods {
@@ -1559,7 +1525,7 @@ fn emit_error_trait_externs(
         vec!["handle: *mut core::ffi::c_void".to_string()],
         String::new(),
     ));
-    emit_extern_fns(out, &fns, weak, symbols);
+    emit_extern_fns(out, &fns, tr.cfg.as_deref(), symbols);
 }
 
 /// Look up the error trait's `result` dispatch ffi_name and `destroy` ffi_name
@@ -1590,20 +1556,21 @@ fn emit_implementable_trait(
     out: &mut String,
     tr: &ImplementableTrait,
     lib: &Library,
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     let entry = lib.type_entry(&tr.name).unwrap();
     let type_tag = entry.type_tag.unwrap();
     let vtable_name = &tr.vtable_struct_name;
     let wrapper_name = &tr.wrapper_name;
     // Trait definition
+    emit_cfg_attr(out, tr.cfg.as_deref());
     writeln!(out, "pub trait {} {{", tr.name).unwrap();
     for m in &tr.methods {
         let Some(td) = &m.trait_definition else {
             continue;
         };
 
+        emit_cfg_attr(out, m.cfg.as_deref());
         let method_sig = build_trait_method_sig(m, lib);
 
         if td.has_default {
@@ -1681,17 +1648,20 @@ fn emit_implementable_trait(
         })
         .collect();
     if !default_fns.is_empty() {
-        emit_extern_fns(out, &default_fns, weak, symbols);
+        emit_extern_fns(out, &default_fns, tr.cfg.as_deref(), symbols);
     }
 
     // Wrapper struct
+    emit_cfg_attr(out, tr.cfg.as_deref());
     writeln!(out, "pub struct {wrapper_name}(*mut core::ffi::c_void);").unwrap();
     writeln!(out).unwrap();
+    emit_cfg_attr(out, tr.cfg.as_deref());
     writeln!(out, "impl {wrapper_name} {{").unwrap();
     writeln!(out, "    #[doc(hidden)]").unwrap();
     writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+    emit_cfg_attr(out, tr.cfg.as_deref());
     writeln!(out, "impl Drop for {wrapper_name} {{").unwrap();
     writeln!(out, "    fn drop(&mut self) {{}}").unwrap();
     writeln!(out, "}}").unwrap();
@@ -1773,6 +1743,7 @@ fn emit_vtable_struct(
     _lib: &Library,
     vtable_name: &str,
 ) {
+    emit_cfg_attr(out, tr.cfg.as_deref());
     writeln!(out, "#[repr(C)]").unwrap();
     writeln!(out, "pub struct {vtable_name} {{").unwrap();
     writeln!(
@@ -1800,6 +1771,7 @@ fn emit_vtable_struct(
 
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
+            emit_cfg_attr(out, m.cfg.as_deref());
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
             push_extern_param_types(&m.params, &mut params);
             let ret = push_return_and_out_param_types(&m.ret, &mut params);
@@ -1810,6 +1782,14 @@ fn emit_vtable_struct(
                 m.name
             )
             .unwrap();
+            if let Some(cfg) = &m.cfg {
+                writeln!(out, "#[cfg(all(feature = \"ffier-strong\", not({cfg})))]").unwrap();
+                writeln!(
+                    out,
+                    "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
+                )
+                .unwrap();
+            }
         } else {
             writeln!(
                 out,
@@ -1853,6 +1833,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
 
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
+            emit_cfg_attr(out, m.cfg.as_deref());
             let is_mut = m.receiver == Receiver::Mut;
             let borrow = if is_mut { "&mut *" } else { "&*" };
 
@@ -1920,9 +1901,14 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             }
             let call_str = call_args.join(", ");
 
+            let binding = if matches!(m.ret, Return::Void) {
+                ""
+            } else {
+                "let __result = "
+            };
             writeln!(
                 out,
-                "                    let __result = __val.{}({call_str});",
+                "                    {binding}__val.{}({call_str});",
                 m.name
             )
             .unwrap();
@@ -2014,6 +2000,10 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             writeln!(out, "                }}").unwrap();
             writeln!(out, "                __trampoline::<Self>").unwrap();
             writeln!(out, "            }}),").unwrap();
+            if let Some(cfg) = &m.cfg {
+                writeln!(out, "#[cfg(all(feature = \"ffier-strong\", not({cfg})))]").unwrap();
+                writeln!(out, "            __reserved_{slot}: None,").unwrap();
+            }
         } else {
             writeln!(out, "            __reserved_{slot}: None,").unwrap();
         }
@@ -2032,8 +2022,7 @@ fn emit_trait_impl(
     lib: &Library,
     defined_traits: &mut HashSet<String>,
     trait_defaults: &HashMap<String, Vec<&Method>>,
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     // Emit trait definition if not yet defined (trait-impl-only traits)
     if !defined_traits.contains(&ti.trait_name) {
@@ -2042,13 +2031,12 @@ fn emit_trait_impl(
     }
 
     // Extern block
-    emit_cfg_attr(out, ti.cfg.as_deref(), weak);
     let fns: Vec<ExternFn> = ti
         .methods
         .iter()
         .map(|m| extern_fn_from_dispatch(&m.ffi_name, m))
         .collect();
-    emit_extern_fns(out, &fns, weak, symbols);
+    emit_extern_fns(out, &fns, ti.cfg.as_deref(), symbols);
 
     // Build impl header with lifetimes
     let impl_generics = if !ti.lifetimes.is_empty() {
@@ -2086,7 +2074,7 @@ fn emit_trait_impl(
         String::new()
     };
 
-    emit_cfg_attr(out, ti.cfg.as_deref(), weak);
+    emit_cfg_attr(out, ti.cfg.as_deref());
     writeln!(
         out,
         "impl{impl_generics} {}{trait_args} for {}{struct_args} {{",
@@ -2098,6 +2086,7 @@ fn emit_trait_impl(
     let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
 
     for m in &ti.methods {
+        emit_cfg_attr(out, m.cfg.as_deref());
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
@@ -2116,6 +2105,7 @@ fn emit_trait_impl(
             if impl_method_names.contains(dm.name.as_str()) {
                 continue;
             }
+            emit_cfg_attr(out, dm.cfg.as_deref());
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
@@ -2157,8 +2147,15 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
         format!("<{}>", trait_lt_params.join(", "))
     };
 
+    let cfg = lib
+        .traits
+        .iter()
+        .find(|tr| tr.name == ti.trait_name)
+        .and_then(|tr| tr.cfg.as_deref());
+    emit_cfg_attr(out, cfg);
     writeln!(out, "pub trait {}{trait_generics} {{", ti.trait_name).unwrap();
     for m in &ti.methods {
+        emit_cfg_attr(out, m.cfg.as_deref());
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig};").unwrap();
     }
@@ -2173,7 +2170,7 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
 }
 
 // ===========================================================================
-// Extern / weak-shim emission
+// Extern / dynlookup-shim emission
 // ===========================================================================
 
 /// A single extern "C" function declaration to emit.
@@ -2254,34 +2251,32 @@ fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
     extern_fn_cfg(&f.ffi_name, params, ret, f.cfg.clone())
 }
 
-/// Emit one or more extern "C" functions — either as a traditional
-/// `unsafe extern "C" { ... }` block (strong) or as `OnceLock`-backed
-/// shim functions (weak).
+/// Emit complementary `ffier-strong` declarations and dynlookup shims with shared names.
 fn emit_extern_fns(
     out: &mut String,
     fns: &[ExternFn],
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    cfg: Option<&str>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     if fns.is_empty() {
         return;
     }
-    if weak {
-        for f in fns {
-            emit_weak_shim(out, f, symbols);
+    writeln!(out, "#[cfg(feature = \"ffier-strong\")]").unwrap();
+    if let Some(pred) = cfg {
+        writeln!(out, "#[cfg({pred})]").unwrap();
+    }
+    writeln!(out, "unsafe extern \"C\" {{").unwrap();
+    for f in fns {
+        let vis = if f.public { "pub " } else { "" };
+        let params_str = f.params.join(", ");
+        if let Some(cfg) = &f.cfg {
+            writeln!(out, "    #[cfg({cfg})]").unwrap();
         }
-    } else {
-        writeln!(out, "unsafe extern \"C\" {{").unwrap();
-        for f in fns {
-            let vis = if f.public { "pub " } else { "" };
-            let params_str = f.params.join(", ");
-            if let Some(cfg) = &f.cfg {
-                writeln!(out, "    #[cfg({cfg})]").unwrap();
-            }
-            writeln!(out, "    {vis}fn {}({params_str}){};", f.name, f.ret).unwrap();
-        }
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
+        writeln!(out, "    {vis}fn {}({params_str}){};", f.name, f.ret).unwrap();
+    }
+    writeln!(out, "}}\n").unwrap();
+    for f in fns {
+        emit_dynlookup_shim(out, f, symbols);
     }
 }
 
@@ -2304,118 +2299,72 @@ fn symbol_to_variant(c_name: &str) -> String {
         .collect()
 }
 
-/// Emit the `Symbol` enum, `require(&[Symbol])`, and `Symbol::is_available()`.
-fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
-    // Symbol enum
-    writeln!(out, "/// FFI symbols that can be loaded at runtime.").unwrap();
-    writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]").unwrap();
-    writeln!(out, "pub enum Symbol {{").unwrap();
+/// Emit shared metadata and the feature-selected loading API.
+fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: Option<&str>) {
+    out.push_str(
+        r#"
+/// An FFI symbol, with the same identity in both linking modes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[allow(clippy::enum_variant_names)] // Preserve the C library prefix in symbol identities.
+pub enum Symbol {
+"#,
+    );
     for s in symbols {
         let variant = symbol_to_variant(&s.c_name);
-        writeln!(out, "    /// `{}`", s.c_name).unwrap();
-        writeln!(out, "    {variant},").unwrap();
+        writeln!(out, "    /// `{}`\n    {variant},", s.c_name).unwrap();
     }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Symbol::c_name()
-    writeln!(out, "impl Symbol {{").unwrap();
-    writeln!(out, "    /// The C symbol name for dlsym lookup.").unwrap();
-    writeln!(out, "    pub fn c_name(self) -> &'static str {{").unwrap();
-    writeln!(out, "        match self {{").unwrap();
+    out.push_str(
+        r#"}
+impl Symbol {
+    /// The C symbol name.
+    pub fn c_name(self) -> &'static str {
+        match self {
+"#,
+    );
     for s in symbols {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
     }
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
+    out.push_str(r#"        }
+    }
 
-    // Symbol::is_available() — probe via dlsym without loading
-    writeln!(
-        out,
-        "    /// Check whether this symbol is available in the current process"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    /// (i.e. the library version is new enough). Does NOT load the symbol."
-    )
-    .unwrap();
-    writeln!(out, "    pub fn is_available(self, lib_handle: Option<core::ptr::NonNull<core::ffi::c_void>>) -> bool {{").unwrap();
-    writeln!(out, "        match lib_handle {{").unwrap();
-    writeln!(out, "            Some(h) => {{").unwrap();
-    writeln!(
-        out,
-        "                let lib = std::mem::ManuallyDrop::new(unsafe {{ libloading::os::unix::Library::from_raw(h.as_ptr()) }});"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                unsafe {{ lib.get::<*const ()>(self.c_name().as_bytes()).is_ok() }}"
-    )
-    .unwrap();
-    writeln!(out, "            }}").unwrap();
-    writeln!(out, "            None => {{").unwrap();
-    writeln!(
-        out,
-        "                let lib = unsafe {{ libloading::os::unix::Library::this() }};"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                unsafe {{ lib.get::<*const ()>(self.c_name().as_bytes()).is_ok() }}"
-    )
-    .unwrap();
-    writeln!(out, "            }}").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    #[cfg(not(feature = "ffier-strong"))]
+    fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
+        let name: &[u8] = match self {
+"#);
+    for symbol in symbols {
+        let variant = symbol_to_variant(&symbol.c_name);
+        writeln!(
+            out,
+            "            Symbol::{variant} => b\"{}\\0\",",
+            symbol.c_name
+        )
+        .unwrap();
+    }
+    out.push_str(
+        r#"        };
+        unsafe { lib.get::<F>(name).map(|function| *function) }
+    }
 
-    // require(Option<handle>, &[Symbol]) — load symbols into OnceLocks
-    writeln!(
-        out,
-        "/// Load the given symbols via dlsym. Returns `Ok(())` if all symbols"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "/// are loaded successfully. Already-loaded symbols are skipped."
-    )
-    .unwrap();
-    writeln!(out, "/// Fails on the first symbol that cannot be found.").unwrap();
-    writeln!(out, "///").unwrap();
-    writeln!(
-        out,
-        "/// If `lib_handle` is `Some(h)`, symbols are looked up in that specific"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "/// library handle (e.g. from `dlopen` without `RTLD_GLOBAL`). If `None`,"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "/// symbols are looked up in the global namespace (`RTLD_DEFAULT`)."
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "pub fn require(lib_handle: Option<core::ptr::NonNull<core::ffi::c_void>>, symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
-    )
-    .unwrap();
-    // For Some(h): ManuallyDrop prevents dlclose — the caller owns the handle.
-    // For None: Library::this() is allowed to drop normally (decrements dlopen(NULL) refcount).
-    writeln!(out, "    // Helper: dlsym from a Library reference.").unwrap();
-    writeln!(
-        out,
-        "    fn load_all(lib: &libloading::os::unix::Library, symbols: &[Symbol]) -> Result<(), libloading::Error> {{"
-    )
-    .unwrap();
-    writeln!(out, "        for &sym in symbols {{").unwrap();
-    writeln!(out, "            match sym {{").unwrap();
+    /// Probe the configured lookup source without initializing the symbol cache.
+    /// With `ffier-strong`, always returns true: availability reflects the linking
+    /// contract, not a runtime probe. Missing symbols are the linker's responsibility.
+    pub fn is_available(self) -> bool {
+        #[cfg(feature = "ffier-strong")]
+        {
+            true
+        }
+        #[cfg(not(feature = "ffier-strong"))]
+        {
+            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib).is_ok())
+        }
+    }
+
+    #[cfg(not(feature = "ffier-strong"))]
+    fn __load(self, lib: &libloading::os::unix::Library) -> Result<(), LoadError> {
+        match self {
+"#,
+    );
     for s in symbols {
         let variant = symbol_to_variant(&s.c_name);
         let upper = &s.upper;
@@ -2424,42 +2373,175 @@ fn emit_weak_symbol_api(out: &mut String, symbols: &[WeakSymbolInfo]) {
         writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
         writeln!(
             out,
-            "                    let f = unsafe {{ *lib.get::<{fn_ptr_type}>(b\"{}\\0\")? }};",
-            s.c_name
+            "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
         )
         .unwrap();
         writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
-        writeln!(out, "                }}").unwrap();
-        writeln!(out, "            }}").unwrap();
+        writeln!(out, "                }}\n            }}").unwrap();
     }
-    writeln!(out, "            }}").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        Ok(())").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "    match lib_handle {{").unwrap();
-    writeln!(out, "        Some(h) => {{").unwrap();
-    writeln!(
-        out,
-        "            let lib = std::mem::ManuallyDrop::new(unsafe {{ libloading::os::unix::Library::from_raw(h.as_ptr()) }});"
-    )
-    .unwrap();
-    writeln!(out, "            load_all(&lib, symbols)").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        None => {{").unwrap();
-    writeln!(
-        out,
-        "            let lib = unsafe {{ libloading::os::unix::Library::this() }};"
-    )
-    .unwrap();
-    writeln!(out, "            load_all(&lib, symbols)").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    out.push_str(
+        r#"        }
+        Ok(())
+    }
 }
 
-/// Info collected for each weak symbol, used to generate the Symbol enum.
-struct WeakSymbolInfo {
+/// Controls how calls to unloaded symbols are handled. Defaults to `Lazy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadPolicy {
+    /// Require explicit loading with `require()`; unloaded calls panic.
+    Explicit,
+    /// Resolve and cache symbols on first use; missing symbols panic.
+    Lazy,
+}
+
+/// The client's lookup source or loading policy has already been fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetLibraryError;
+impl std::fmt::Display for SetLibraryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("library lookup configuration is already initialized")
+    }
+}
+impl std::error::Error for SetLibraryError {}
+
+/// Set this generated client's lookup source once.
+/// `None` selects the process-global namespace. `Some(handle)` borrows an
+/// existing `dlopen` handle. Probes, explicit loads, and lazy loads all use this
+/// source. Reconfiguration is rejected, even before a symbol is loaded.
+/// Without this call, the first probe, load, or unloaded call fixes the source
+/// to the process-global namespace.
+/// With `ffier-strong`, this is a successful no-op and ignores the argument.
+///
+/// # Safety
+/// An explicit handle must be valid and refer to the library matching these
+/// bindings. The caller retains ownership and must keep it loaded for the
+/// remaining lifetime of the program. In `ffier-strong` mode the handle is ignored.
+pub unsafe fn set_library_handle(
+    lib_handle: Option<core::ptr::NonNull<core::ffi::c_void>>,
+) -> Result<(), SetLibraryError> {
+    #[cfg(feature = "ffier-strong")]
+    {
+        let _ = lib_handle;
+        Ok(())
+    }
+    #[cfg(not(feature = "ffier-strong"))]
+    {
+        let library = lib_handle.map(|handle| std::mem::ManuallyDrop::new(unsafe {
+            libloading::os::unix::Library::from_raw(handle.as_ptr())
+        }));
+        __FFIER_LIBRARY.set(library).map_err(|_| SetLibraryError)
+    }
+}
+
+/// Select how calls to unloaded symbols are handled, once per client.
+/// Defaults to `LoadPolicy::Lazy`. `LoadPolicy::Explicit` requires loading with
+/// `require()` before calling symbols. Reconfiguration is rejected, including
+/// after the policy has already been applied to a call.
+/// With `ffier-strong`, this is a successful no-op and ignores the argument.
+pub fn set_load_policy(load_policy: LoadPolicy) -> Result<(), SetLibraryError> {
+    #[cfg(feature = "ffier-strong")]
+    {
+        let _ = load_policy;
+        Ok(())
+    }
+    #[cfg(not(feature = "ffier-strong"))]
+    {
+        __FFIER_POLICY.set(load_policy).map_err(|_| SetLibraryError)
+    }
+}
+
+#[cfg(not(feature = "ffier-strong"))]
+type __FfierLibrary = Option<std::mem::ManuallyDrop<libloading::os::unix::Library>>;
+#[cfg(not(feature = "ffier-strong"))]
+static __FFIER_LIBRARY: std::sync::OnceLock<__FfierLibrary> = std::sync::OnceLock::new();
+#[cfg(not(feature = "ffier-strong"))]
+static __FFIER_POLICY: std::sync::OnceLock<LoadPolicy> = std::sync::OnceLock::new();
+
+#[cfg(not(feature = "ffier-strong"))]
+fn __ffier_with_library<R>(operation: impl FnOnce(&libloading::os::unix::Library) -> R) -> R {
+    match __FFIER_LIBRARY.get_or_init(|| None) {
+        Some(library) => operation(library),
+        None => operation(&libloading::os::unix::Library::this()),
+    }
+}
+
+#[cfg(not(feature = "ffier-strong"))]
+fn __ffier_symbol<F>(symbol: Symbol, slot: &std::sync::OnceLock<F>) -> &F {
+    slot.get().unwrap_or_else(|| {
+        match __FFIER_POLICY.get_or_init(|| LoadPolicy::Lazy) {
+            LoadPolicy::Explicit => panic!(
+                "symbol `{}` not loaded; call require() first", symbol.c_name()),
+            LoadPolicy::Lazy => require(&[symbol]).unwrap_or_else(|error|
+                panic!("failed to load symbol `{}`: {error}", symbol.c_name())),
+        }
+        slot.get().expect("loaded symbol cache is empty")
+    })
+}
+
+/// A symbol loading failure. Strong linking has no loading-failure states.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The original dynamic loader error, without allocation or conversion.
+    #[cfg(not(feature = "ffier-strong"))]
+    Loading(libloading::Error),
+}
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let _ = f;
+        match *self {
+            #[cfg(not(feature = "ffier-strong"))]
+            Self::Loading(ref error) => std::fmt::Display::fmt(error, f),
+        }
+    }
+}
+impl std::error::Error for LoadError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match *self {
+            #[cfg(not(feature = "ffier-strong"))]
+            Self::Loading(ref error) => Some(error),
+        }
+    }
+}
+#[cfg(not(feature = "ffier-strong"))]
+impl From<libloading::Error> for LoadError {
+    fn from(error: libloading::Error) -> Self { Self::Loading(error) }
+}
+
+/// Load requested symbols from this client's configured source, skipping
+/// initialized caches and returning the first failure. Without a setter call,
+/// uses the process-global namespace.
+/// A client with any exported vtable also loads the library's shared handle allocator.
+/// With `ffier-strong`, ignores the symbols and always succeeds.
+pub fn require(symbols: &[Symbol]) -> Result<(), LoadError> {
+    #[cfg(feature = "ffier-strong")]
+    {
+        let _ = symbols;
+        Ok(())
+    }
+    #[cfg(not(feature = "ffier-strong"))]
+    {
+        __ffier_with_library(|lib| {
+"#,
+    );
+    if let Some(name) = handle_allocator {
+        let variant = symbol_to_variant(name);
+        writeln!(out, "            Symbol::{variant}.__load(lib)?;").unwrap();
+    }
+    out.push_str(
+        r#"
+            for &symbol in symbols {
+                symbol.__load(lib)?;
+            }
+            Ok(())
+        })
+    }
+}
+"#,
+    );
+}
+
+/// Metadata collected once per FFI symbol for both linking modes.
+struct SymbolInfo {
     /// C symbol name (e.g. `"ft_widget_new"`)
     c_name: String,
     /// Rust OnceLock static name (e.g. `"FT_WIDGET_NEW"`)
@@ -2468,9 +2550,9 @@ struct WeakSymbolInfo {
     fn_ptr_type: String,
 }
 
-/// Emit a single weak-binding shim: OnceLock + shim fn.
+/// Emit a single dynlookup-binding shim: OnceLock + shim fn.
 /// Pushes symbol info into `symbols` for the enum/require generation.
-fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolInfo>) {
+fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolInfo>) {
     let name = &f.name;
     let upper = name.to_ascii_uppercase();
     let params_str = f.params.join(", ");
@@ -2494,6 +2576,7 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolIn
     let args_str = arg_names.join(", ");
 
     // OnceLock
+    writeln!(out, "#[cfg(not(feature = \"ffier-strong\"))]").unwrap();
     writeln!(
         out,
         "static {upper}: std::sync::OnceLock<{fn_ptr_type}> = std::sync::OnceLock::new();"
@@ -2502,12 +2585,25 @@ fn emit_weak_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<WeakSymbolIn
 
     // Shim function
     let vis = if f.public { "pub " } else { "" };
+    writeln!(out, "#[cfg(not(feature = \"ffier-strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
+    if !f.public {
+        writeln!(out, "#[allow(dead_code)]").unwrap();
+    }
+    if f.public {
+        writeln!(out, "/// # Safety").unwrap();
+        writeln!(out, "/// Uphold this function's C ABI contract, including pointer validity and handle ownership.").unwrap();
+    }
     writeln!(out, "{vis}unsafe fn {name}({params_str}){ret} {{").unwrap();
-    writeln!(out, "    unsafe {{ ({upper}.get().expect(\"symbol `{name}` not loaded; call require() first\"))({args_str}) }}").unwrap();
+    let variant = symbol_to_variant(name);
+    writeln!(
+        out,
+        "    unsafe {{ (__ffier_symbol(Symbol::{variant}, &{upper}))({args_str}) }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
 
-    symbols.push(WeakSymbolInfo {
+    symbols.push(SymbolInfo {
         c_name: name.clone(),
         upper: upper.clone(),
         fn_ptr_type,
@@ -2915,7 +3011,7 @@ fn emit_blessed_fd_impls(out: &mut String, lib: &Library) {
 // Enum type generation
 // ===========================================================================
 
-fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library, weak: bool) {
+fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     let entry = lib.type_entry(&en.name).unwrap();
     let repr = match &entry.kind {
         TypeKind::Enum { alias_of } => alias_of.as_str(),
@@ -2923,7 +3019,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library, weak: bool) {
     };
 
     // Enum definition
-    emit_cfg_attr(out, en.cfg.as_deref(), weak);
+    emit_cfg_attr(out, en.cfg.as_deref());
     writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
     writeln!(out, "#[repr({repr})]").unwrap();
     writeln!(out, "pub enum {} {{", en.name).unwrap();
@@ -2934,7 +3030,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library, weak: bool) {
     writeln!(out).unwrap();
 
     // FfiType impl
-    emit_cfg_attr(out, en.cfg.as_deref(), weak);
+    emit_cfg_attr(out, en.cfg.as_deref());
     writeln!(out, "impl FfiType for {} {{", en.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -2965,7 +3061,7 @@ fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library, weak: bool) {
 // Bitflags type generation
 // ===========================================================================
 
-fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library, weak: bool) {
+fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library) {
     let entry = lib.type_entry(&bf.name).unwrap();
     let repr = match &entry.kind {
         TypeKind::Bitflags { alias_of } => alias_of.as_str(),
@@ -2973,7 +3069,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library, weak: bool
     };
 
     // bitflags! invocation
-    emit_cfg_attr(out, bf.cfg.as_deref(), weak);
+    emit_cfg_attr(out, bf.cfg.as_deref());
     writeln!(out, "bitflags::bitflags! {{").unwrap();
     writeln!(out, "    #[repr(transparent)]").unwrap();
     writeln!(out, "    #[derive(Debug, Clone, Copy, PartialEq, Eq)]").unwrap();
@@ -2986,7 +3082,7 @@ fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library, weak: bool
     writeln!(out).unwrap();
 
     // FfiType impl
-    emit_cfg_attr(out, bf.cfg.as_deref(), weak);
+    emit_cfg_attr(out, bf.cfg.as_deref());
     writeln!(out, "impl FfiType for {} {{", bf.name).unwrap();
     writeln!(out, "    type CRepr = {repr};").unwrap();
     writeln!(
@@ -3013,16 +3109,12 @@ fn emit_free_function(
     out: &mut String,
     f: &FreeFunction,
     lib: &Library,
-    weak: bool,
-    symbols: &mut Vec<WeakSymbolInfo>,
+    symbols: &mut Vec<SymbolInfo>,
 ) {
     // Extern declaration
-    emit_extern_fns(out, &[extern_fn_from_free(f)], weak, symbols);
+    emit_extern_fns(out, &[extern_fn_from_free(f)], None, symbols);
 
-    // Safe wrapper (strong client only — weak bindings are unconditional)
-    if !weak && let Some(cfg) = &f.cfg {
-        writeln!(out, "#[cfg({cfg})]").unwrap();
-    }
+    emit_cfg_attr(out, f.cfg.as_deref());
     for doc in &f.doc {
         let escaped = doc.replace('\\', "\\\\").replace('"', "\\\"");
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();
@@ -3052,7 +3144,6 @@ fn emit_free_function(
     let ffi_args = build_ffi_param_args(&f.params, lib);
     let args_str = ffi_args.join(", ");
     let sep = if args_str.is_empty() { "" } else { ", " };
-
     match &f.ret {
         Return::Void => {
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();

@@ -23,52 +23,15 @@ mod callback_errors {
     include!("callback_errors.rs");
 }
 
-#[cfg(all(test, feature = "weak-tests"))]
-mod weak_callback_errors {
-    #[allow(dead_code)]
-    mod api {
-        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
-
-        mod tests {
-            use super as api;
-
-            fn init() {
-                use api::Symbol;
-                api::require(
-                    None,
-                    &[
-                        Symbol::FtErrorNew,
-                        Symbol::FtErrorDestroy,
-                        Symbol::FtErrorMessage,
-                        Symbol::FtErrorResult,
-                        Symbol::FtErrorPayload,
-                        Symbol::FtResultMessage,
-                        Symbol::FtWidgetNew,
-                        Symbol::FtWidgetDestroy,
-                        Symbol::FtWidgetFailAlways,
-                        Symbol::FtWidgetFailWithValue,
-                        Symbol::FtWidgetFailWithNumber,
-                        Symbol::FtWidgetFailWithMixed,
-                        Symbol::FtWidgetFailWithOpaque,
-                        Symbol::FtWidgetParseCount,
-                        Symbol::FtTestErrorDropCount,
-                        Symbol::FtRoundtripCallbackError,
-                        Symbol::FtVtableHandleNew,
-                    ],
-                )
-                .unwrap();
-            }
-
-            include!("callback_errors.rs");
-        }
-    }
-}
-
-#[cfg(all(test, feature = "weak-tests"))]
+#[cfg(test)]
 mod unloaded_fieldless_errors {
+    #[cfg(feature = "ffier-strong")]
+    use crate as api;
+
+    #[cfg(not(feature = "ffier-strong"))]
     #[allow(dead_code)]
     mod api {
-        include!(concat!(env!("OUT_DIR"), "/generated_weak.rs"));
+        include!(concat!(env!("OUT_DIR"), "/generated.rs"));
     }
 
     #[test]
@@ -81,11 +44,7 @@ mod unloaded_fieldless_errors {
         drop(invalid);
 
         use api::Symbol;
-        api::require(
-            None,
-            &[Symbol::FtResultMessage, Symbol::FtTestErrorDropCount],
-        )
-        .unwrap();
+        api::require(&[Symbol::FtResultMessage, Symbol::FtTestErrorDropCount]).unwrap();
         let before = api::test_error_drop_count();
         assert_eq!(
             api::TestError::CustomMessage.to_string(),
@@ -101,6 +60,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "ffier-strong")]
     fn generated_empty_trait_vtable_has_no_method_slots() {
         use std::cell::Cell;
         use std::mem::size_of;
@@ -141,6 +101,31 @@ mod tests {
             ft_retired_trait_destroy(RetiredTrait::__into_raw_handle(Marker(drops.clone())));
         }
         assert_eq!(drops.get(), 2);
+    }
+
+    #[cfg(any(not(feature = "ffier-strong"), feature = "optional-entry"))]
+    #[test]
+    fn optional_api_is_discoverable_without_its_schema_feature() {
+        require(&[
+            Symbol::FtOptionalWidgetNew,
+            Symbol::FtOptionalWidgetDestroy,
+            Symbol::FtOptionalWidgetBase,
+            Symbol::FtOptionalWidgetAmplify,
+            Symbol::FtOptionalApply,
+            Symbol::FtOptionalModeName,
+            Symbol::FtOptionalMergeFlags,
+        ])
+        .unwrap();
+        assert!(Symbol::FtOptionalWidgetNew.is_available());
+        let widget = OptionalWidget::new(7);
+        assert_eq!(widget.base(), 7);
+        assert_eq!(widget.amplify(6), 42);
+        assert_eq!(optional_apply(widget, 6), 42);
+        assert_eq!(optional_mode_name(OptionalMode::Advanced), "advanced");
+        assert_eq!(
+            optional_merge_flags(OptionalFlags::READ, OptionalFlags::WRITE).bits(),
+            3
+        );
     }
 
     // ================================================================
