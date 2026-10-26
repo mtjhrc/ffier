@@ -94,6 +94,44 @@ maps `target_os` values `windows`, `linux`, `macos`, `freebsd`, `openbsd`,
 `netbsd`, and `android` to compiler macros. Linux guards exclude Android;
 macOS guards exclude Apple mobile targets.
 
-Feature predicates use library-prefixed macros: prefix `ft` and feature
+Unresolved feature predicates use library-prefixed macros: prefix `ft` and feature
 `files` produce `FT_CFG_FEATURE_FILES`. Define the macro when compiling a
 consumer to select the matching API.
+
+## Resolve predicates while generating headers
+
+Pass assumptions matching the library build to remove resolved guards:
+
+```sh
+ffier-gen-c-header target/ffier-example.json \
+    --features files --cfg target_os=linux > example.h
+```
+
+- `--features files,logging` enables named features.
+- `--disable-features files` disables named features.
+- `--guard-features files` leaves named features for the consumer to select.
+- `--unspecified-features enabled|disabled|guard` controls unlisted features.
+  The default is `enabled`.
+- `--cfg windows`, `--cfg unix`, or `--cfg target_os=linux` asserts a platform
+  predicate. Repeat `--cfg` for multiple assumptions.
+- `--guard unix` or `--guard target_os=linux` keeps a platform predicate
+  guarded, even when `--cfg` would resolve it.
+
+Feature lists accept repeated options or comma-separated names. Features must
+not appear in more than one list. Platform assumptions must not contradict
+one another. Use feature options for features; `--cfg` and `--guard` accept
+only platform predicates.
+
+Unlisted features default to enabled because Cargo features normally add API.
+For features that change an existing ABI, select the state matching the library
+build or keep the feature guarded. Use `--unspecified-features guard` to leave
+all unlisted features for the consumer to select.
+
+Platform predicates stay guarded unless asserted. Selecting one `target_os`
+rules out other OS values. Known OS values resolve the matching `windows`
+and `unix` flags. The `unix` flag does not identify one OS.
+
+Resolved true predicates emit declarations directly. Resolved false predicates
+omit declarations. Only unresolved predicates produce C guards. The Rust
+`ffier_gen_c_header::generate` API returns `Result<String, String>` and reports
+invalid assumptions as errors.
