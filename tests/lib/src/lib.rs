@@ -145,6 +145,12 @@ impl Widget {
         }
     }
 
+    #[cfg(windows)]
+    pub fn windows_noop(&self) {}
+
+    #[cfg(feature = "optional-entry")]
+    pub fn optional_noop(&self) {}
+
     /// Get the current count.
     pub fn get_count(&self) -> i32 {
         self.count
