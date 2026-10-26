@@ -7,18 +7,20 @@
 //! - Trait definitions with vtable structs for exported traits
 //! - Trait impl blocks for concrete types
 
+mod cfg;
+
 use ffier_schema::{
-    EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
+    Cfg, EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
     ImplementableTrait, Library, Method, ParamType, Receiver, Return, TraitImpl, TypeKind,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-/// Emit schema restrictions only for `ffier-strong`; `ffier-dynlookup` clients
-/// discover optional API at runtime regardless of the consumer's schema features.
+/// Enforce platform restrictions in both modes. Dynamic clients discover
+/// optional Cargo-feature API independently of the consumer's features.
 fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
     if let Some(pred) = cfg {
-        writeln!(out, "#[cfg(any(not(feature = \"ffier-strong\"), {pred}))]").unwrap();
+        writeln!(out, "#[cfg({})]", cfg::client_cfg(pred)).unwrap();
     }
 }
 
@@ -1783,7 +1785,8 @@ fn emit_vtable_struct(
             )
             .unwrap();
             if let Some(cfg) = &m.cfg {
-                writeln!(out, "#[cfg(all(feature = \"ffier-strong\", not({cfg})))]").unwrap();
+                let cfg = cfg::client_cfg(cfg);
+                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(
                     out,
                     "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
@@ -2001,7 +2004,8 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             writeln!(out, "                __trampoline::<Self>").unwrap();
             writeln!(out, "            }}),").unwrap();
             if let Some(cfg) = &m.cfg {
-                writeln!(out, "#[cfg(all(feature = \"ffier-strong\", not({cfg})))]").unwrap();
+                let cfg = cfg::client_cfg(cfg);
+                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
                 writeln!(out, "            __reserved_{slot}: None,").unwrap();
             }
         } else {
@@ -2281,7 +2285,8 @@ fn emit_extern_fns(
     }
     writeln!(out, "}}\n").unwrap();
     for f in fns {
-        emit_dynlookup_shim(out, f, symbols);
+        let effective_cfg = cfg::combine(cfg, f.cfg.as_ref());
+        emit_dynlookup_shim(out, f, effective_cfg.as_ref(), symbols);
     }
 }
 
@@ -2375,6 +2380,10 @@ impl Symbol {
         let upper = &s.upper;
         let fn_ptr_type = &s.fn_ptr_type;
         writeln!(out, "            Symbol::{variant} => {{").unwrap();
+        if s.cfg.is_some() {
+            emit_cfg_attr(out, s.cfg.as_ref());
+            writeln!(out, "                {{").unwrap();
+        }
         writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
         writeln!(
             out,
@@ -2382,7 +2391,18 @@ impl Symbol {
         )
         .unwrap();
         writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
-        writeln!(out, "                }}\n            }}").unwrap();
+        writeln!(out, "                }}").unwrap();
+        if let Some(cfg) = &s.cfg {
+            writeln!(out, "                }}").unwrap();
+            let cfg = cfg::client_cfg(cfg);
+            writeln!(out, "                #[cfg(not({cfg}))]").unwrap();
+            writeln!(
+                out,
+                "                {{ self.__lookup::<*const ()>(lib)?; }}"
+            )
+            .unwrap();
+        }
+        writeln!(out, "            }}").unwrap();
     }
     out.push_str(
         r#"        }
@@ -2553,11 +2573,18 @@ struct SymbolInfo {
     upper: String,
     /// fn pointer type string (e.g. `"unsafe extern \"C\" fn() -> *mut c_void"`)
     fn_ptr_type: String,
+    /// Combined availability of the owning item and function.
+    cfg: Option<Cfg>,
 }
 
 /// Emit a single dynlookup-binding shim: OnceLock + shim fn.
 /// Pushes symbol info into `symbols` for the enum/require generation.
-fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolInfo>) {
+fn emit_dynlookup_shim(
+    out: &mut String,
+    f: &ExternFn,
+    cfg: Option<&Cfg>,
+    symbols: &mut Vec<SymbolInfo>,
+) {
     let name = &f.name;
     let upper = name.to_ascii_uppercase();
     let params_str = f.params.join(", ");
@@ -2581,6 +2608,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
     let args_str = arg_names.join(", ");
 
     // OnceLock
+    emit_cfg_attr(out, cfg);
     writeln!(out, "#[cfg(not(feature = \"ffier-strong\"))]").unwrap();
     writeln!(
         out,
@@ -2590,6 +2618,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
 
     // Shim function
     let vis = if f.public { "pub " } else { "" };
+    emit_cfg_attr(out, cfg);
     writeln!(out, "#[cfg(not(feature = \"ffier-strong\"))]").unwrap();
     writeln!(out, "#[allow(non_snake_case)]").unwrap();
     if !f.public {
@@ -2612,6 +2641,7 @@ fn emit_dynlookup_shim(out: &mut String, f: &ExternFn, symbols: &mut Vec<SymbolI
         c_name: name.clone(),
         upper: upper.clone(),
         fn_ptr_type,
+        cfg: cfg.cloned(),
     });
 
     writeln!(out).unwrap();

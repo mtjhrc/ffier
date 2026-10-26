@@ -78,7 +78,9 @@ has a `kind`; predicates with operands also have a `value`:
 
 This replaces the previous string representation. Regenerate schemas and
 bindings together. Rust clients render the predicate tree as Rust `cfg`
-attributes.
+attributes. Platform predicates apply in both linking modes. Positive feature
+predicates also allow dynamic lookup, including inside `all` and `any`.
+Predicates inside `not` remain unchanged.
 
 ## C header guards
 
