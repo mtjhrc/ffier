@@ -68,12 +68,14 @@ def header(schema='ffier-ft.json', output='ffier_test.h', guard='FFIER_FT_H', *o
         cargo('run', '-p', 'ffier-gen-c-header', '--', TARGET / schema, guard, *options, stdout=destination)
 
 
-def syntax(source):
+def syntax(source, *defines):
     msvc_environment()
     if WINDOWS:
-        run('cl', '/nologo', '/std:c11', '/W4', '/WX', '/TC', '/Zs', '/I' + str(TARGET), source)
+        run('cl', '/nologo', '/std:c11', '/W4', '/WX', '/TC', '/Zs', '/I' + str(TARGET),
+            *('/D' + define for define in defines), source)
     else:
-        run('cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', TARGET, '-x', 'c', '-fsyntax-only', source)
+        run('cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-I', TARGET, '-x', 'c', '-fsyntax-only',
+            *('-D' + define for define in defines), source)
 
 
 def check_header():
@@ -154,12 +156,19 @@ def platform_cfg():
     cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,wide')
     cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'owner-api', '--crate-type', 'cdylib')
     cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,test-owner')
+    # Both features together reach the `all(feature = "owner-api",
+    # feature = "wide")` impl, which neither feature alone can cover.
+    cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'owner-api,wide', '--crate-type', 'cdylib')
+    cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,test-owner,wide')
     cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
     # The shared C test needs both feature-selected signatures in one header.
     header('ffier-windows-handles.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs',
            '--unspecified-features', 'guard')
     syntax(TARGET / 'platform.h')
-    syntax(TESTS / 'c/platform.c')
+    # Compile the typed signature checks under each selection, not just with
+    # the feature undefined.
+    for define in ([], ['WINDOWS_HANDLES_CFG_FEATURE_WIDE'], ['WINDOWS_HANDLES_CFG_FEATURE_OWNER_API']):
+        syntax(TESTS / 'c/platform.c', *define)
     # Resolved headers: one feature answer and one target answer each, which
     # must leave no guard behind for the settled atoms.
     for name, options in [
