@@ -35,6 +35,9 @@ pub struct Library {
     /// errors (`"TestError"`), and traits (`"Fruit"`).
     pub type_registry: BTreeMap<String, TypeEntry>,
     pub exported_types: Vec<ExportedType>,
+    /// Fixed-layout `#[repr(C)]` structs passed inline or by pointer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub value_structs: Vec<ValueStruct>,
     pub errors: Vec<ErrorType>,
     /// Plain enums exported as C `#define` constants.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -166,6 +169,11 @@ pub enum TypeKind {
     Enum {
         /// The underlying integer type name (e.g. `"u32"`, `"u64"`).
         alias_of: std::string::String,
+    },
+    /// Fixed-layout `#[repr(C)]` struct passed inline or by pointer.
+    ValueStruct {
+        /// Library-prefixed C struct name (e.g. `FtInputEvent`).
+        c_name: std::string::String,
     },
     /// Bitflags type — a newtype struct over an integer with named flag
     /// constants. Like `Enum`, the C ABI passes the underlying integer
@@ -341,6 +349,28 @@ impl TypeRef {
 // ---------------------------------------------------------------------------
 // Exported types (structs with #[ffier::export] methods)
 // ---------------------------------------------------------------------------
+
+/// A fixed-layout struct exported by value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ValueStruct {
+    /// Rust struct name — key into the type registry.
+    pub name: String,
+    /// Library-prefixed C typedef name.
+    pub c_name: String,
+    /// Fields in source declaration order.
+    pub fields: Vec<ValueField>,
+    /// Conditional compilation predicate gating this type. `None` = unconditional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cfg: Option<Cfg>,
+}
+
+/// One field of an exported value struct.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValueField {
+    pub name: String,
+    #[serde(flatten)]
+    pub type_ref: TypeRef,
+}
 
 /// A struct exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -785,11 +815,34 @@ impl Library {
                 | TypeKind::Bytes { c_name }
                 | TypeKind::Handle { c_name }
                 | TypeKind::Error { c_name }
-                | TypeKind::Trait { c_name } => return c_name,
+                | TypeKind::Trait { c_name }
+                | TypeKind::ValueStruct { c_name } => return c_name,
                 TypeKind::ForeignHandle { c_name, .. } => return c_name,
             }
         }
         panic!("alias chain for `{name}` exceeds {MAX_DEPTH} hops — probable cycle");
+    }
+
+    /// True when `name` is a fixed-layout value struct.
+    pub fn is_value_struct(&self, name: &str) -> bool {
+        self.type_entry(name)
+            .is_some_and(|entry| matches!(entry.kind, TypeKind::ValueStruct { .. }))
+    }
+
+    /// Resolve the C type at a usage site. References to value structs become
+    /// typed pointers to the `#[repr(C)]` layout; other types keep their
+    /// registry spelling, because handles are already pointers.
+    pub fn c_type_of_ref(&self, type_ref: &TypeRef) -> String {
+        let base = self.c_type_of(&type_ref.type_name);
+        if self.is_value_struct(&type_ref.type_name) {
+            match type_ref.ref_kind {
+                RefKind::None => base.to_string(),
+                RefKind::Shared => format!("const {base}*"),
+                RefKind::Mut => format!("{base}*"),
+            }
+        } else {
+            base.to_string()
+        }
     }
 
     /// Collect all type names referenced by methods, params, returns, errors,
@@ -847,6 +900,12 @@ impl Library {
         for ty in &self.exported_types {
             refs.insert(ty.name.as_str());
             collect_from_methods(&ty.methods, &mut refs);
+        }
+        for value in &self.value_structs {
+            refs.insert(value.name.as_str());
+            for field in &value.fields {
+                refs.insert(field.type_ref.type_name.as_str());
+            }
         }
         for err in &self.errors {
             refs.insert(err.name.as_str());
