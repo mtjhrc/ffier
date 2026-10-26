@@ -28,11 +28,13 @@ also supports custom cfg names without changing the schema's Rust types.
 The C generator translates Windows predicates to `defined(_WIN32)` (the
 compiler macro used on both 32-bit and 64-bit Windows), and Unix, common OS,
 architecture, and pointer-width predicates to corresponding compiler macros.
-Other predicates use `FFIER_CFG_<KEY>_<VALUE>`; flags use `FFIER_CFG_<NAME>`.
-Names are uppercased and punctuation becomes underscores. For example,
-`feature = "files"` uses `FFIER_CFG_FEATURE_FILES`, which the C consumer can
-define when using that feature. Conditional vtable methods retain a reserved
-pointer-sized slot when disabled.
+Other predicates use `<PREFIX>_CFG_<KEY>_<VALUE>`; flags use
+`<PREFIX>_CFG_<NAME>`, where `<PREFIX>` is the library's FFI prefix. Names are
+uppercased and punctuation becomes underscores. For example, prefix `ft` with
+`feature = "files"` produces `FT_CFG_FEATURE_FILES`, which the C consumer can
+define when using that feature. The prefix keeps two headers with different
+prefixes from colliding in the consumer's macro namespace. Conditional vtable
+methods retain a reserved pointer-sized slot when disabled.
 
 Predicates that are constant are folded before emission, so they never reach
 the consumer as `#if 1`, `#if 0`, or a tautology such as `#if !(A || !(A))`.
@@ -40,6 +42,71 @@ An always-enabled item is emitted without any preprocessor guard and an
 always-disabled item is omitted entirely. Empty `all`/`any` are constants, as
 are combinators containing a decisive operand or a predicate alongside its
 negation.
+
+## Resolving predicates at generation time
+
+`ffier-gen-c-header` can resolve cfg predicates when generating a header.
+Declarations whose predicates resolve to true lose their guards; declarations
+whose predicates resolve to false are omitted. Remaining predicates become
+preprocessor guards.
+
+```
+--features files,logging        assume these features are on
+--disable-features legacy-api   assume these features are off
+--guard-features abi-v2         leave this feature guarded for the consumer
+--unspecified-features MODE     enabled (default), disabled, or guard
+--cfg target_os=windows         assume this cfg atom holds, repeatable
+```
+
+`--unspecified-features` applies only to features named in none of
+`--features`, `--disable-features`, or `--guard-features`.
+
+The default is `enabled`. Cargo features are intended to be additive: enabling
+a feature adds API without changing existing API. Under that assumption,
+enabling every feature describes the largest API surface. Extra declarations
+are harmless while unused; consumers still need a library build that provides
+the API they use.
+
+Specify features that change an existing ABI explicitly. Choose either:
+
+- Pass them to `--features` or `--disable-features` to match the library build.
+  The header becomes specific to that library build.
+- Pass them to `--guard-features` to keep the decision with the consumer.
+  The consumer must select the feature state that matches the library build.
+
+For example, this feature changes the signature of an existing symbol:
+
+```rust
+#[cfg(feature = "wide")]      fn width(&self, i: i64) -> i64;
+#[cfg(not(feature = "wide"))] fn width(&self, i: i32) -> i32;
+```
+
+Resolving `wide` either way emits one signature and omits the other. Using
+that header with a library built the other way gives an ABI mismatch.
+
+```sh
+ffier-gen-c-header schema.json --features wide           # built with wide
+ffier-gen-c-header schema.json --disable-features wide   # built without wide
+ffier-gen-c-header schema.json --guard-features wide     # keep the guard
+```
+
+`--unspecified-features guard` leaves unspecified features guarded for the
+consumer. Explicitly enabled or disabled features still resolve.
+`--unspecified-features disabled` assumes unspecified features are off, for
+example when describing a library build without optional features.
+
+Platform predicates are guarded by default, so one header still serves every
+target. Asserting them opts into a resolved header:
+
+```
+ffier-gen-c-header schema.json --cfg target_os=windows
+```
+
+Asserting one value of a single-valued key (`target_os`, `target_family`,
+`target_arch`, `target_pointer_width`) rules out its siblings, and a target
+description implies the `unix` or `windows` flag, so a single assertion can
+collapse the platform guards too. An assertion applies to atoms the caller
+names; it never forces a feature decision.
 
 Rust clients always enforce platform predicates in both linking modes.
 Strong linking also enforces Cargo feature predicates. Dynamic lookup allows

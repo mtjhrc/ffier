@@ -25,10 +25,79 @@ pub struct Options {
     /// Useful for consumers that `dlopen`/`dlsym` at runtime.
     #[arg(long)]
     pub fn_typedefs: bool,
+
+    /// Cargo feature to assume enabled, e.g. `--features files,logging`.
+    /// Repeatable, and accepts a comma-separated list.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub features: Vec<String>,
+
+    /// Cargo feature to assume disabled, e.g. `--disable-features legacy-api`.
+    /// Repeatable, and accepts a comma-separated list.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub disable_features: Vec<String>,
+
+    /// Keep Cargo feature guards so consumers can match the library build.
+    /// Repeatable; accepts a comma-separated list.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub guard_features: Vec<String>,
+
+    /// Treatment of unlisted features; defaults to enabled for additive
+    /// features. List ABI-changing features in `--features`,
+    /// `--disable-features`, or `--guard-features`.
+    #[arg(long, value_enum, default_value_t = cfg::UnspecifiedFeatures::Enabled)]
+    pub unspecified_features: cfg::UnspecifiedFeatures,
+
+    /// Cfg atom to assume true, e.g. `--cfg target_os=windows` or `--cfg unix`.
+    /// Repeatable. Asserting an atom resolves the matching guard; asserting one
+    /// value of a single-valued key such as `target_os` also rules out its
+    /// siblings.
+    #[arg(long = "cfg", value_name = "KEY[=VALUE]")]
+    pub cfg: Vec<String>,
+}
+
+impl Options {
+    /// Build the folding assumptions these options describe. `prefix` names the
+    /// emitted guard macros, so it must be the library prefix.
+    fn assumptions(prefix: &str, opts: &Options) -> Result<cfg::Assumptions, String> {
+        let atoms = |values: &[String]| -> Result<Vec<_>, String> {
+            values
+                .iter()
+                .map(|value| cfg::Assumptions::parse_atom(value))
+                .collect()
+        };
+        Ok(cfg::Assumptions::new(
+            prefix,
+            opts.features.iter().cloned(),
+            opts.disable_features.iter().cloned(),
+            opts.unspecified_features,
+            atoms(&opts.cfg)?,
+            opts.guard_features
+                .iter()
+                .map(|name| ("feature".to_string(), Some(name.clone()))),
+        ))
+    }
 }
 
 /// Generate a C header string from a library schema.
+///
+/// Fails when a `--cfg` value is not a `KEY` or `KEY=VALUE` atom.
+pub fn try_generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, String> {
+    let assumptions = Options::assumptions(&lib.prefix, opts)?;
+    Ok(generate_with(lib, guard, opts, &assumptions))
+}
+
+/// Generate a C header string from a library schema, panicking on invalid
+/// options. Prefer [`try_generate`] for user-supplied input.
 pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
+    try_generate(lib, guard, opts).unwrap_or_else(|error| panic!("invalid options: {error}"))
+}
+
+fn generate_with(
+    lib: &Library,
+    guard: &str,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) -> String {
     let mut out = String::new();
     let fn_pfx = format!("{}_", lib.prefix);
 
@@ -52,13 +121,13 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     }
     for ty in &lib.exported_types {
         let c_name = lib.c_type_of(&ty.name);
-        cfg::block(&mut out, ty.cfg.as_ref(), |out| {
+        cfg::block(&mut out, assumptions, ty.cfg.as_ref(), |out| {
             out.push_str(&format!("typedef void* {};\n", c_name));
         });
     }
 
     // Trait typedefs with implementor lists
-    emit_trait_typedefs(&mut out, lib);
+    emit_trait_typedefs(&mut out, lib, assumptions);
 
     // Foreign handle typedefs
     for entry in lib.type_registry.values() {
@@ -75,12 +144,16 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Enum constant sections
     for en in &lib.enum_constants {
-        cfg::block(&mut out, en.cfg.as_ref(), |out| emit_enum_section(out, en));
+        cfg::block(&mut out, assumptions, en.cfg.as_ref(), |out| {
+            emit_enum_section(out, en)
+        });
     }
 
     // Bitflags constant sections (same format as enum constants)
     for bf in &lib.bitflags_constants {
-        cfg::block(&mut out, bf.cfg.as_ref(), |out| emit_enum_section(out, bf));
+        cfg::block(&mut out, assumptions, bf.cfg.as_ref(), |out| {
+            emit_enum_section(out, bf)
+        });
     }
 
     // Error sections
@@ -90,31 +163,31 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
-        cfg::block(&mut out, ty.cfg.as_ref(), |out| {
-            emit_type_section(out, ty, lib, opts)
+        cfg::block(&mut out, assumptions, ty.cfg.as_ref(), |out| {
+            emit_type_section(out, ty, lib, opts, assumptions)
         });
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        cfg::block(&mut out, tr.cfg.as_ref(), |out| {
+        cfg::block(&mut out, assumptions, tr.cfg.as_ref(), |out| {
             if !tr.no_vtable {
-                emit_vtable_section(out, tr, lib);
+                emit_vtable_section(out, tr, lib, assumptions);
             }
-            emit_dispatch_section(out, tr, lib, opts);
+            emit_dispatch_section(out, tr, lib, opts, assumptions);
         });
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        cfg::block(&mut out, ti.cfg.as_ref(), |out| {
-            emit_trait_impl_section(out, ti, lib, opts)
+        cfg::block(&mut out, assumptions, ti.cfg.as_ref(), |out| {
+            emit_trait_impl_section(out, ti, lib, opts, assumptions)
         });
     }
 
     // Free functions
     if !lib.free_functions.is_empty() {
-        emit_free_functions(&mut out, &lib.free_functions, lib, opts);
+        emit_free_functions(&mut out, &lib.free_functions, lib, opts, assumptions);
     }
 
     // Utility functions
@@ -133,7 +206,7 @@ pub fn generate_from_file(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(json_path)?;
     let lib = Library::from_json(&json)?;
-    Ok(generate(&lib, guard, opts))
+    Ok(try_generate(&lib, guard, opts)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -391,7 +464,7 @@ fn emit_error_section(out: &mut String, err: &ErrorType, lib: &Library) {
 // Trait typedefs with implementor lists
 // ---------------------------------------------------------------------------
 
-fn emit_trait_typedefs(out: &mut String, lib: &Library) {
+fn emit_trait_typedefs(out: &mut String, lib: &Library, assumptions: &cfg::Assumptions) {
     // Build a map: trait_name → vec of implementor C names
     let mut trait_implementors: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
@@ -427,7 +500,7 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
             .iter()
             .find(|tr| &tr.name == trait_name)
             .and_then(|tr| tr.cfg.as_ref());
-        cfg::block(out, cfg, |out| {
+        cfg::block(out, assumptions, cfg, |out| {
             out.push_str(&format!("typedef void* {c_name}; /* {list} */\n"));
         });
     }
@@ -437,7 +510,12 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
 // Vtable struct definitions
 // ---------------------------------------------------------------------------
 
-fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_vtable_section(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    assumptions: &cfg::Assumptions,
+) {
     let vtable_name = &tr.vtable_struct_c_name;
 
     emit_section_header(out, vtable_name);
@@ -471,7 +549,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
             })
             .collect();
         for m in &methods {
-            cfg::block(out, m.cfg.as_ref(), |out| {
+            cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
                 let receiver = fresh_param_name("self_data", &m.params);
                 let mut params = vec![format!("void* {receiver}")];
                 format_c_params(&m.params, lib, &mut params);
@@ -491,6 +569,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
                 ffier_schema::Cfg::Any(methods.iter().map(|m| m.cfg.clone().unwrap()).collect());
             cfg::block(
                 out,
+                assumptions,
                 Some(&ffier_schema::Cfg::Not(Box::new(enabled))),
                 |out| {
                     out.push_str(&format!(
@@ -508,13 +587,19 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &Options) {
+fn emit_type_section(
+    out: &mut String,
+    ty: &ExportedType,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     emit_section_header(out, &ty.name);
 
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
-        cfg::block(out, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
             let (ret_type, params_str) =
                 build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
@@ -536,11 +621,17 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
 // Trait impl bridge functions
 // ---------------------------------------------------------------------------
 
-fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts: &Options) {
+fn emit_trait_impl_section(
+    out: &mut String,
+    ti: &TraitImpl,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        cfg::block(out, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -551,14 +642,20 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts
 // Self-dispatch functions for exported traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library, opts: &Options) {
+fn emit_dispatch_section(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     let handle_c_name = lib.c_type_of(&tr.name);
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        cfg::block(out, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
             let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
@@ -584,11 +681,12 @@ fn emit_free_functions(
     functions: &[FreeFunction],
     lib: &Library,
     opts: &Options,
+    assumptions: &cfg::Assumptions,
 ) {
     emit_section_header(out, "Free functions");
 
     for f in functions {
-        cfg::block(out, f.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, f.cfg.as_ref(), |out| {
             emit_doc_comment(out, &f.doc);
 
             let mut params: Vec<String> = Vec::new();

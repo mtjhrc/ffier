@@ -155,9 +155,35 @@ def platform_cfg():
     cargo('rustc', '-p', 'ffier-test-windows-handles', '--features', 'owner-api', '--crate-type', 'cdylib')
     cargo('test', '-p', 'ffier-test-windows-handles-client', '--no-default-features', '--features', 'dynlookup,test-owner')
     cargo('rustc', '-p', 'ffier-test-windows-handles', '--crate-type', 'cdylib')
-    header('ffier-windows-handles.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs')
+    # The shared C test needs both feature-selected signatures in one header.
+    header('ffier-windows-handles.json', 'platform.h', 'FFIER_PLATFORM_H', '--fn-typedefs',
+           '--unspecified-features', 'guard')
     syntax(TARGET / 'platform.h')
     syntax(TESTS / 'c/platform.c')
+    # Resolved headers: one feature answer and one target answer each, which
+    # must leave no guard behind for the settled atoms.
+    for name, options in [
+        ('enabled', ['--unspecified-features', 'enabled']),
+        ('disabled', ['--unspecified-features', 'disabled']),
+        ('wide', ['--features', 'wide']),
+        ('guarded', ['--guard-features', 'wide,owner-api']),
+        ('windows', ['--cfg', 'target_os=windows']),
+        ('linux', ['--cfg', 'target_os=linux']),
+    ]:
+        output = 'platform-' + name + '.h'
+        header('ffier-windows-handles.json', output, 'FFIER_PLATFORM_H_' + name.upper(), *options)
+        syntax(TARGET / output)
+        leaked = [line for line in (TARGET / output).read_text().splitlines() if '_CFG_' in line]
+        if name == 'guarded':
+            assert leaked, '--guard-features must keep the feature guards'
+        else:
+            assert not leaked, f'{name} header still guards {leaked[0]!r}'
+        if name in ('windows', 'linux'):
+            markers = ('defined(_WIN32)', 'defined(__unix__)', 'defined(__linux__)',
+                       'defined(__ANDROID__)', 'TARGET_OS_OSX', 'defined(__APPLE__) &&')
+            target_guards = [line for line in (TARGET / output).read_text().splitlines()
+                             if line.startswith('#if') and any(marker in line for marker in markers)]
+            assert not target_guards, f'{name} header still guards {target_guards[0]!r}'
 
 
 def consumer(mode=None):

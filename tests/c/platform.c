@@ -2,7 +2,7 @@
 
 /* One schema contains both signatures. The target C compiler selects one. */
 void check_platform_signatures(void) {
-#ifdef FFIER_CFG_FEATURE_WIDE
+#ifdef WINDOWS_HANDLES_CFG_FEATURE_WIDE
     int64_t (*width)(int64_t) = windows_handles_feature_width;
     int64_t (*method_width)(WindowsHandlesHandleApi, int64_t) = windows_handles_handle_api_feature_width;
 #else
