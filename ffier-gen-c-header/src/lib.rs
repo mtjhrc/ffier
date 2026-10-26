@@ -11,9 +11,11 @@
 //! - Error handle functions
 //! - Utility functions (result_name, result_message)
 
+mod cfg;
+
 use ffier_schema::{
-    EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method, Param,
-    ParamType, Receiver, Return, TraitImpl,
+    Cfg, EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
+    Param, ParamType, Receiver, Return, TraitImpl,
 };
 
 /// Options controlling C header generation.
@@ -26,7 +28,10 @@ pub struct Options {
 }
 
 /// Generate a C header string from a library schema.
-pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
+///
+/// Returns an error for unsupported cfg names or colliding guard macros.
+pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, String> {
+    cfg::validate_library(lib)?;
     let mut out = String::new();
     let fn_pfx = format!("{}_", lib.prefix);
 
@@ -37,6 +42,7 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
     out.push_str("#include <stdint.h>\n");
     out.push_str("#include <stdbool.h>\n");
     out.push_str("#include <string.h>\n");
+    out.push_str("#if defined(__APPLE__)\n#include <TargetConditionals.h>\n#endif\n");
     out.push_str("#ifndef _WIN32\n#include <sys/types.h>\n#else\n");
     // TODO: avoid defining names without a library prefix.
     out.push_str("#define ssize_t intptr_t\n#endif\n");
@@ -70,12 +76,16 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Enum constant sections
     for en in &lib.enum_constants {
-        emit_enum_section(&mut out, en);
+        cfg::block(&mut out, &lib.prefix, en.cfg.as_ref(), |out| {
+            emit_enum_section(out, en)
+        });
     }
 
     // Bitflags constant sections (same format as enum constants)
     for bf in &lib.bitflags_constants {
-        emit_enum_section(&mut out, bf);
+        cfg::block(&mut out, &lib.prefix, bf.cfg.as_ref(), |out| {
+            emit_enum_section(out, bf)
+        });
     }
 
     // Error sections
@@ -85,20 +95,26 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
-        emit_type_section(&mut out, ty, lib, opts);
+        cfg::block(&mut out, &lib.prefix, ty.cfg.as_ref(), |out| {
+            emit_type_section(out, ty, lib, opts)
+        });
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        if !tr.no_vtable {
-            emit_vtable_section(&mut out, tr, lib);
-        }
-        emit_dispatch_section(&mut out, tr, lib, opts);
+        cfg::block(&mut out, &lib.prefix, tr.cfg.as_ref(), |out| {
+            if !tr.no_vtable {
+                emit_vtable_section(out, tr, lib);
+            }
+            emit_dispatch_section(out, tr, lib, opts);
+        });
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        emit_trait_impl_section(&mut out, ti, lib, opts);
+        cfg::block(&mut out, &lib.prefix, ti.cfg.as_ref(), |out| {
+            emit_trait_impl_section(out, ti, lib, opts)
+        });
     }
 
     // Free functions
@@ -111,7 +127,7 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> String {
 
     out.push('\n');
     out.push_str(&format!("#endif /* {guard} */\n"));
-    out
+    Ok(out)
 }
 
 /// Generate a C header from a JSON file path.
@@ -122,7 +138,7 @@ pub fn generate_from_file(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let json = std::fs::read_to_string(json_path)?;
     let lib = Library::from_json(&json)?;
-    Ok(generate(&lib, guard, opts))
+    Ok(generate(&lib, guard, opts)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -455,15 +471,29 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     // Method index N occupies struct position N+1.
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
-            // Build the function pointer signature
-            let mut params = vec!["void* self_data".to_string()];
-            format_c_params(&m.params, lib, &mut params);
+            cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+                // Build the function pointer signature
+                let mut params = vec!["void* self_data".to_string()];
+                format_c_params(&m.params, lib, &mut params);
 
-            let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
-            params.extend(extra_params);
+                let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
+                params.extend(extra_params);
 
-            let params_str = params.join(", ");
-            out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
+                let params_str = params.join(", ");
+                out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
+            });
+            if let Some(cfg) = &m.cfg {
+                cfg::block(
+                    out,
+                    &lib.prefix,
+                    Some(&Cfg::Not(Box::new(cfg.clone()))),
+                    |out| {
+                        out.push_str(&format!(
+                            "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"
+                        ));
+                    },
+                );
+            }
         } else {
             // Reserved/retired slot
             out.push_str(&format!(
@@ -485,9 +515,12 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
-        emit_doc_comment(out, &m.doc);
-        let (ret_type, params_str) = build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &m.doc);
+            let (ret_type, params_str) =
+                build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 
     // Destroy function
@@ -508,8 +541,10 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+            let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 }
 
@@ -524,9 +559,11 @@ fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Librar
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        emit_doc_comment(out, &m.doc);
-        let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
-        write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &m.doc);
+            let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
+            write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
+        });
     }
 
     // Destroy dispatch
@@ -552,20 +589,22 @@ fn emit_free_functions(
     emit_section_header(out, "Free functions");
 
     for f in functions {
-        emit_doc_comment(out, &f.doc);
+        cfg::block(out, &lib.prefix, f.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &f.doc);
 
-        let mut params: Vec<String> = Vec::new();
-        format_c_params(&f.params, lib, &mut params);
+            let mut params: Vec<String> = Vec::new();
+            format_c_params(&f.params, lib, &mut params);
 
-        let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
-        params.extend(extra_params);
+            let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
+            params.extend(extra_params);
 
-        let params_str = if params.is_empty() {
-            "void".to_string()
-        } else {
-            params.join(", ")
-        };
-        write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
+            let params_str = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params.join(", ")
+            };
+            write_decl(out, &ret_type, &f.ffi_name, &params_str, opts);
+        });
     }
 }
 
