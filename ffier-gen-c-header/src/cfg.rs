@@ -331,13 +331,9 @@ pub fn block(
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        io::Write,
-        process::{Command, Stdio},
-    };
 
     fn assume(asserted: &[(&str, Option<&str>)]) -> Assumptions {
         Assumptions::new(
@@ -530,51 +526,61 @@ mod tests {
 
     #[test]
     fn exact_os_guards_distinguish_android_and_apple_mobile_targets() {
-        let assumptions = assume(&[]);
-        for (os, defines, enabled) in [
-            ("linux", vec!["__linux__"], true),
-            ("linux", vec!["__linux__", "__ANDROID__"], false),
-            (
-                "macos",
-                vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=1"],
-                true,
-            ),
-            (
-                "macos",
-                vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=0"],
-                false,
-            ),
-        ] {
-            let predicate = Cfg::Value {
-                key: "target_os".into(),
-                value: os.into(),
+        // Needs a C preprocessor to prove the emitted guard selects the same
+        // target the predicate describes.
+        #[cfg(unix)]
+        {
+            use std::{
+                io::Write,
+                process::{Command, Stdio},
             };
-            for (predicate, expected) in [
-                (predicate.clone(), enabled),
-                (Cfg::Not(Box::new(predicate)), !enabled),
+
+            let assumptions = assume(&[]);
+            for (os, defines, enabled) in [
+                ("linux", vec!["__linux__"], true),
+                ("linux", vec!["__linux__", "__ANDROID__"], false),
+                (
+                    "macos",
+                    vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=1"],
+                    true,
+                ),
+                (
+                    "macos",
+                    vec!["__APPLE__", "__MACH__", "TARGET_OS_OSX=0"],
+                    false,
+                ),
             ] {
-                let mut compiler = Command::new("cc");
-                compiler.args(["-E", "-P", "-undef", "-x", "c", "-"]);
-                for define in &defines {
-                    compiler.arg(format!("-D{define}"));
-                }
-                let mut child = compiler
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    .spawn()
+                let predicate = Cfg::Value {
+                    key: "target_os".into(),
+                    value: os.into(),
+                };
+                for (predicate, expected) in [
+                    (predicate.clone(), enabled),
+                    (Cfg::Not(Box::new(predicate)), !enabled),
+                ] {
+                    let mut compiler = Command::new("cc");
+                    compiler.args(["-E", "-P", "-undef", "-x", "c", "-"]);
+                    for define in &defines {
+                        compiler.arg(format!("-D{define}"));
+                    }
+                    let mut child = compiler
+                        .stdin(Stdio::piped())
+                        .stdout(Stdio::piped())
+                        .spawn()
+                        .unwrap();
+                    writeln!(
+                        child.stdin.take().unwrap(),
+                        "#if {}\nenabled\n#else\ndisabled\n#endif",
+                        expression(&assumptions, &predicate)
+                    )
                     .unwrap();
-                writeln!(
-                    child.stdin.take().unwrap(),
-                    "#if {}\nenabled\n#else\ndisabled\n#endif",
-                    expression(&assumptions, &predicate)
-                )
-                .unwrap();
-                let output = child.wait_with_output().unwrap();
-                assert!(output.status.success());
-                assert_eq!(
-                    String::from_utf8(output.stdout).unwrap().trim(),
-                    if expected { "enabled" } else { "disabled" }
-                );
+                    let output = child.wait_with_output().unwrap();
+                    assert!(output.status.success());
+                    assert_eq!(
+                        String::from_utf8(output.stdout).unwrap().trim(),
+                        if expected { "enabled" } else { "disabled" }
+                    );
+                }
             }
         }
     }
