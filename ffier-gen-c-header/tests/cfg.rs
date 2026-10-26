@@ -1,4 +1,4 @@
-use ffier_gen_c_header::{Options, generate};
+use ffier_gen_c_header::{Options, UnspecifiedFeatures, generate};
 use ffier_schema::{Cfg, Library};
 use serde_json::{Value, json};
 
@@ -21,7 +21,16 @@ fn schema() -> Value {
 
 fn header(schema: Value) -> String {
     let library: Library = serde_json::from_value(schema).unwrap();
-    generate(&library, "TEST_H", &Options { fn_typedefs: true }).unwrap()
+    generate(
+        &library,
+        "TEST_H",
+        &Options {
+            fn_typedefs: true,
+            unspecified_features: UnspecifiedFeatures::Guard,
+            ..Options::default()
+        },
+    )
+    .unwrap()
 }
 
 fn method(name: &str, cfg: Option<Cfg>, index: Option<usize>) -> Value {
@@ -137,15 +146,37 @@ fn conditional_owners_keep_handles_used_by_unconditional_signatures() {
         ],
         "ret": {"return_kind": "value", "type": "Widget"}
     }]);
-    let header = header(schema);
-    assert!(header.contains("FtWidget ft_inspect(FtWidget widget, FtProcessor processor);"));
-    #[cfg(unix)]
-    {
-        let source = format!(
-            "{header}\nvoid check(FtWidget widget, FtProcessor processor) {{\n    ft_inspect_fn inspect = ft_inspect;\n    (void)inspect(widget, processor);\n}}\n"
-        );
-        c_compiler(&source, &["-fsyntax-only"]);
-        c_compiler(&source, &["-fsyntax-only", "-DFT_CFG_FEATURE_OWNER"]);
+    let library: Library = serde_json::from_value(schema).unwrap();
+    for policy in [
+        UnspecifiedFeatures::Enabled,
+        UnspecifiedFeatures::Disabled,
+        UnspecifiedFeatures::Guard,
+    ] {
+        let header = generate(
+            &library,
+            "TEST_H",
+            &Options {
+                fn_typedefs: true,
+                unspecified_features: policy,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert!(header.contains("FtWidget ft_inspect(FtWidget widget, FtProcessor processor);"));
+        if policy == UnspecifiedFeatures::Disabled {
+            assert!(!header.contains("ft_widget_destroy("));
+            assert!(!header.contains("ft_processor_destroy("));
+        }
+        #[cfg(unix)]
+        {
+            let source = format!(
+                "{header}\nvoid check(FtWidget widget, FtProcessor processor) {{\n    ft_inspect_fn inspect = ft_inspect;\n    (void)inspect(widget, processor);\n}}\n"
+            );
+            c_compiler(&source, &["-fsyntax-only"]);
+            if policy == UnspecifiedFeatures::Guard {
+                c_compiler(&source, &["-fsyntax-only", "-DFT_CFG_FEATURE_OWNER"]);
+            }
+        }
     }
 }
 
@@ -281,6 +312,239 @@ fn conditional_vtable_slots_keep_reserved_gaps() {
         let mut arguments = vec!["-fsyntax-only"];
         arguments.extend(defines);
         c_compiler(&source, &arguments);
+    }
+}
+
+#[test]
+fn feature_assumptions_resolve_api_and_preserve_selected_guards() {
+    let mut schema = schema();
+    schema["free_functions"] = json!([
+        {"name": "files", "ffi_name": "ft_files", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Feature("files".into())},
+        {"name": "legacy", "ffi_name": "ft_legacy", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Feature("legacy".into())},
+        {"name": "wide", "ffi_name": "ft_wide", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Feature("wide".into())},
+        {"name": "windows_files", "ffi_name": "ft_windows_files", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::All(vec![Cfg::Feature("files".into()), Cfg::Windows])}
+    ]);
+    let library: Library = serde_json::from_value(schema).unwrap();
+    let output = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            features: vec!["files".into()],
+            disable_features: vec!["legacy".into()],
+            guard_features: vec!["wide".into()],
+            unspecified_features: UnspecifiedFeatures::Disabled,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(output.contains("void ft_files(void);"));
+    assert!(!output.contains("ft_legacy"));
+    assert!(!output.contains("FT_CFG_FEATURE_FILES"));
+    assert!(!output.contains("FT_CFG_FEATURE_LEGACY"));
+    assert!(output.contains("#if defined(FT_CFG_FEATURE_WIDE)\nvoid ft_wide(void);\n#endif"));
+    assert!(output.contains("#if defined(_WIN32)\nvoid ft_windows_files(void);\n#endif"));
+}
+
+#[test]
+fn unspecified_feature_policy_selects_unlisted_api() {
+    let mut schema = schema();
+    schema["free_functions"] = json!([
+        {"name": "files", "ffi_name": "ft_files", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Feature("files".into())},
+        {"name": "without_files", "ffi_name": "ft_without_files", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Not(Box::new(Cfg::Feature("files".into())))}
+    ]);
+    let library: Library = serde_json::from_value(schema).unwrap();
+    let enabled = generate(&library, "TEST_H", &Options::default()).unwrap();
+    assert!(enabled.contains("void ft_files(void);"));
+    assert!(!enabled.contains("ft_without_files"));
+    assert!(!enabled.contains("FT_CFG_FEATURE_FILES"));
+
+    let disabled = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            unspecified_features: UnspecifiedFeatures::Disabled,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(!disabled.contains("ft_files("));
+    assert!(disabled.contains("void ft_without_files(void);"));
+    assert!(!disabled.contains("FT_CFG_FEATURE_FILES"));
+
+    let guarded = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            unspecified_features: UnspecifiedFeatures::Guard,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(guarded.contains("void ft_files(void);"));
+    assert!(guarded.contains("void ft_without_files(void);"));
+    assert_eq!(guarded.matches("FT_CFG_FEATURE_FILES").count(), 2);
+}
+
+#[test]
+fn platform_assumptions_resolve_exact_os_and_keep_unknown_unix_status() {
+    let mut schema = schema();
+    schema["free_functions"] = json!([
+        {"name": "windows", "ffi_name": "ft_windows", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Windows},
+        {"name": "unix", "ffi_name": "ft_unix", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Unix},
+        {"name": "windows_os", "ffi_name": "ft_windows_os", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetOs("windows".into())},
+        {"name": "linux", "ffi_name": "ft_linux", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetOs("linux".into())},
+        {"name": "unknown", "ffi_name": "ft_unknown", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetOs("custom".into())}
+    ]);
+    let library: Library = serde_json::from_value(schema).unwrap();
+    for (os, included, omitted) in [
+        (
+            "windows",
+            vec!["windows", "windows_os"],
+            vec!["unix", "linux", "unknown"],
+        ),
+        (
+            "linux",
+            vec!["unix", "linux"],
+            vec!["windows", "windows_os", "unknown"],
+        ),
+    ] {
+        let output = generate(
+            &library,
+            "TEST_H",
+            &Options {
+                cfg: vec![format!("target_os={os}")],
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        for name in included {
+            assert!(
+                output.contains(&format!("void ft_{name}(void);")),
+                "missing {name} for {os}"
+            );
+        }
+        for name in omitted {
+            assert!(
+                !output.contains(&format!("ft_{name}(")),
+                "included {name} for {os}"
+            );
+        }
+        assert!(!output.contains("#if defined(_WIN32)"));
+        assert!(!output.contains("#if (defined(__unix__)"));
+        assert!(!output.contains("#if (defined(__linux__)"));
+        assert!(!output.contains("FT_CFG_TARGET_OS_"));
+    }
+    let output = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            cfg: vec!["target_os=custom".into()],
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(output.contains("void ft_unknown(void);"));
+    assert!(!output.contains("ft_windows("));
+    assert!(!output.contains("FT_CFG_TARGET_OS_CUSTOM"));
+    assert!(
+        output
+            .contains("#if (defined(__unix__) || defined(__APPLE__))\nvoid ft_unix(void);\n#endif")
+    );
+
+    let output = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            cfg: vec!["target_os=\"windows\"".into()],
+            guard: vec!["windows".into(), "target_os=windows".into()],
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(output.contains("#if defined(_WIN32)\nvoid ft_windows(void);\n#endif"));
+    assert!(output.contains("#if defined(_WIN32)\nvoid ft_windows_os(void);\n#endif"));
+    assert!(!output.contains("ft_unix("));
+}
+
+#[test]
+fn conflicting_or_unsupported_assumptions_return_errors() {
+    let library: Library = serde_json::from_value(schema()).unwrap();
+    for atoms in [
+        vec!["windows", "unix"],
+        vec!["target_os=windows", "target_os=linux"],
+        vec!["windows", "target_os=linux"],
+        vec!["unix", "target_os=windows"],
+    ] {
+        let output = generate(
+            &library,
+            "TEST_H",
+            &Options {
+                cfg: atoms.into_iter().map(String::from).collect(),
+                ..Options::default()
+            },
+        );
+        assert!(
+            output
+                .unwrap_err()
+                .contains("contradictory --cfg assumptions")
+        );
+    }
+    for atom in [
+        "target_arch=x86_64",
+        "target_family=unix",
+        "target_pointer_width=64",
+        "feature=files",
+        "custom",
+        "all(unix)",
+        "target_os=",
+        "target_os=\"windows",
+    ] {
+        for guarded in [false, true] {
+            let mut options = Options::default();
+            if guarded {
+                options.guard.push(atom.into());
+            } else {
+                options.cfg.push(atom.into());
+            }
+            assert!(
+                generate(&library, "TEST_H", &options).is_err(),
+                "accepted {atom}"
+            );
+        }
+    }
+    for options in [
+        Options {
+            features: vec!["files".into()],
+            disable_features: vec!["files".into()],
+            ..Options::default()
+        },
+        Options {
+            features: vec!["files".into()],
+            guard_features: vec!["files".into()],
+            ..Options::default()
+        },
+        Options {
+            disable_features: vec!["files".into()],
+            guard_features: vec!["files".into()],
+            ..Options::default()
+        },
+    ] {
+        assert!(
+            generate(&library, "TEST_H", &options)
+                .unwrap_err()
+                .contains("feature `files` appears in")
+        );
     }
 }
 

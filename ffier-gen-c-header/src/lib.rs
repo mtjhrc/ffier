@@ -13,6 +13,8 @@
 
 mod cfg;
 
+pub use cfg::UnspecifiedFeatures;
+
 use ffier_schema::{
     Cfg, EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
     Param, ParamType, Receiver, Return, TraitImpl,
@@ -25,13 +27,39 @@ pub struct Options {
     /// Useful for consumers that `dlopen`/`dlsym` at runtime.
     #[arg(long)]
     pub fn_typedefs: bool,
+
+    /// Assume Cargo features enabled; repeatable or comma-separated.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub features: Vec<String>,
+
+    /// Assume Cargo features disabled; repeatable or comma-separated.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub disable_features: Vec<String>,
+
+    /// Keep feature guards for consumers; repeatable or comma-separated.
+    #[arg(long, value_delimiter = ',', value_name = "FEATURE")]
+    pub guard_features: Vec<String>,
+
+    /// Treatment of unlisted features. Explicitly select features that change ABI.
+    #[arg(long, value_enum, default_value_t = UnspecifiedFeatures::Enabled)]
+    pub unspecified_features: UnspecifiedFeatures,
+
+    /// Assume windows, unix, or target_os=VALUE; repeatable.
+    #[arg(long = "cfg", value_name = "PREDICATE")]
+    pub cfg: Vec<String>,
+
+    /// Keep platform predicates guarded, including predicates implied by --cfg.
+    /// Accepts windows, unix, or target_os=VALUE; repeatable.
+    #[arg(long, value_name = "PREDICATE")]
+    pub guard: Vec<String>,
 }
 
 /// Generate a C header string from a library schema.
 ///
-/// Returns an error for unsupported cfg names or colliding guard macros.
+/// Returns an error for unsupported predicates or conflicting assumptions.
 pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, String> {
     cfg::validate_library(lib)?;
+    let assumptions = cfg::Assumptions::new(&lib.prefix, opts)?;
     let mut out = String::new();
     let fn_pfx = format!("{}_", lib.prefix);
 
@@ -76,14 +104,14 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, St
 
     // Enum constant sections
     for en in &lib.enum_constants {
-        cfg::block(&mut out, &lib.prefix, en.cfg.as_ref(), |out| {
+        cfg::block(&mut out, &assumptions, en.cfg.as_ref(), |out| {
             emit_enum_section(out, en)
         });
     }
 
     // Bitflags constant sections (same format as enum constants)
     for bf in &lib.bitflags_constants {
-        cfg::block(&mut out, &lib.prefix, bf.cfg.as_ref(), |out| {
+        cfg::block(&mut out, &assumptions, bf.cfg.as_ref(), |out| {
             emit_enum_section(out, bf)
         });
     }
@@ -95,31 +123,31 @@ pub fn generate(lib: &Library, guard: &str, opts: &Options) -> Result<String, St
 
     // Type sections (exported methods + destroy)
     for ty in &lib.exported_types {
-        cfg::block(&mut out, &lib.prefix, ty.cfg.as_ref(), |out| {
-            emit_type_section(out, ty, lib, opts)
+        cfg::block(&mut out, &assumptions, ty.cfg.as_ref(), |out| {
+            emit_type_section(out, ty, lib, opts, &assumptions)
         });
     }
 
     // Implementable traits: vtable struct + dispatch functions
     for tr in &lib.traits {
-        cfg::block(&mut out, &lib.prefix, tr.cfg.as_ref(), |out| {
+        cfg::block(&mut out, &assumptions, tr.cfg.as_ref(), |out| {
             if !tr.no_vtable {
-                emit_vtable_section(out, tr, lib);
+                emit_vtable_section(out, tr, lib, &assumptions);
             }
-            emit_dispatch_section(out, tr, lib, opts);
+            emit_dispatch_section(out, tr, lib, opts, &assumptions);
         });
     }
 
     // Trait impl bridge functions
     for ti in &lib.trait_impls {
-        cfg::block(&mut out, &lib.prefix, ti.cfg.as_ref(), |out| {
-            emit_trait_impl_section(out, ti, lib, opts)
+        cfg::block(&mut out, &assumptions, ti.cfg.as_ref(), |out| {
+            emit_trait_impl_section(out, ti, lib, opts, &assumptions)
         });
     }
 
     // Free functions
     if !lib.free_functions.is_empty() {
-        emit_free_functions(&mut out, &lib.free_functions, lib, opts);
+        emit_free_functions(&mut out, &lib.free_functions, lib, opts, &assumptions);
     }
 
     // Utility functions
@@ -435,7 +463,12 @@ fn emit_trait_typedefs(out: &mut String, lib: &Library) {
 // Vtable struct definitions
 // ---------------------------------------------------------------------------
 
-fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
+fn emit_vtable_section(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    assumptions: &cfg::Assumptions,
+) {
     let vtable_name = &tr.vtable_struct_c_name;
 
     emit_section_header(out, vtable_name);
@@ -471,7 +504,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
     // Method index N occupies struct position N+1.
     for slot in 0..tr.num_slots {
         if let Some(m) = method_by_index.get(&slot) {
-            cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+            cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
                 // Build the function pointer signature
                 let mut params = vec!["void* self_data".to_string()];
                 format_c_params(&m.params, lib, &mut params);
@@ -485,7 +518,7 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
             if let Some(cfg) = &m.cfg {
                 cfg::block(
                     out,
-                    &lib.prefix,
+                    assumptions,
                     Some(&Cfg::Not(Box::new(cfg.clone()))),
                     |out| {
                         out.push_str(&format!(
@@ -509,13 +542,19 @@ fn emit_vtable_section(out: &mut String, tr: &ImplementableTrait, lib: &Library)
 // Exported type methods + destroy
 // ---------------------------------------------------------------------------
 
-fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &Options) {
+fn emit_type_section(
+    out: &mut String,
+    ty: &ExportedType,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     emit_section_header(out, &ty.name);
 
     let c_name = lib.c_type_of(&ty.name);
 
     for m in &ty.methods {
-        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
             let (ret_type, params_str) =
                 build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
@@ -537,11 +576,17 @@ fn emit_type_section(out: &mut String, ty: &ExportedType, lib: &Library, opts: &
 // Trait impl bridge functions
 // ---------------------------------------------------------------------------
 
-fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts: &Options) {
+fn emit_trait_impl_section(
+    out: &mut String,
+    ti: &TraitImpl,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     let struct_c_name = find_type_c_name(lib, &ti.struct_name);
 
     for m in &ti.methods {
-        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -552,14 +597,20 @@ fn emit_trait_impl_section(out: &mut String, ti: &TraitImpl, lib: &Library, opts
 // Self-dispatch functions for exported traits
 // ---------------------------------------------------------------------------
 
-fn emit_dispatch_section(out: &mut String, tr: &ImplementableTrait, lib: &Library, opts: &Options) {
+fn emit_dispatch_section(
+    out: &mut String,
+    tr: &ImplementableTrait,
+    lib: &Library,
+    opts: &Options,
+    assumptions: &cfg::Assumptions,
+) {
     emit_section_header(out, &format!("{} (dispatch)", tr.name));
 
     let handle_c_name = lib.c_type_of(&tr.name);
 
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
-        cfg::block(out, &lib.prefix, m.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
             let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
@@ -585,11 +636,12 @@ fn emit_free_functions(
     functions: &[FreeFunction],
     lib: &Library,
     opts: &Options,
+    assumptions: &cfg::Assumptions,
 ) {
     emit_section_header(out, "Free functions");
 
     for f in functions {
-        cfg::block(out, &lib.prefix, f.cfg.as_ref(), |out| {
+        cfg::block(out, assumptions, f.cfg.as_ref(), |out| {
             emit_doc_comment(out, &f.doc);
 
             let mut params: Vec<String> = Vec::new();
