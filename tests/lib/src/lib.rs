@@ -5,6 +5,29 @@ use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
 use ffier_test_foreign_lib_via_cdylib::ForeignItem;
 
+mod thread_api;
+#[cfg(feature = "ffi")]
+#[doc(hidden)]
+pub use thread_api::{
+    __ffier_meta_SendBackend_for_SendCounter, __ffier_meta_SyncBackend_for_SyncCounter,
+    __ffier_meta_ThreadBackend_for_Widget, _ffier_impl_send_backend_for_send_counter,
+    _ffier_impl_sync_backend_for_sync_counter, _ffier_impl_thread_backend_for_widget,
+};
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use thread_api::{
+    SendBackend, SendCounter, SyncBackend, SyncCounter, ThreadBackend, borrow_send_backend,
+    share_sync_backend,
+};
+
+#[cfg(test)]
+mod thread_tests {
+    use crate as api;
+
+    fn init() {}
+
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
+}
+
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
@@ -119,7 +142,7 @@ pub struct Widget {
     gadgets: Vec<Gadget>,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(send, sync))]
 impl Widget {
     /// Create a new widget with default values.
     pub fn new() -> Self {
@@ -1717,6 +1740,16 @@ ffier::library_definition!("ft", library_tag = 1,
     Sprocket = 22,
     Attachment for Sprocket,
     trait Snapshot = 40,
+    SendCounter = 47,
+    SyncCounter = 48,
+    trait SendBackend = 37,
+    SendBackend for SendCounter,
+    trait SyncBackend = 38,
+    SyncBackend for SyncCounter,
+    trait ThreadBackend = 39,
+    ThreadBackend for Widget,
+    fn borrow_send_backend,
+    fn share_sync_backend,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
