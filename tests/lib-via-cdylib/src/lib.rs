@@ -681,6 +681,19 @@ mod tests {
     }
 
     #[test]
+    fn value_struct_optional_pointer_params() {
+        let mut sample = event_make(LogLevel::Info, 5);
+        sample.payload.code = 17;
+        assert_eq!(sample_optional_code(Some(&sample)), 17);
+        assert_eq!(sample_optional_code(None), u32::MAX);
+
+        sample_bump_optional(Some(&mut sample));
+        assert_eq!(sample.payload.code, 18);
+        sample_bump_optional(None);
+        assert_eq!(sample.payload.code, 18);
+    }
+
+    #[test]
     fn value_struct_plain_option_return() {
         let sample = sample_optional(1).unwrap();
         assert_eq!(sample.sequence, 9);

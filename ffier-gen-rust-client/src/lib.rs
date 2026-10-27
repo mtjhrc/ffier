@@ -3340,6 +3340,43 @@ fn emit_value_structs(out: &mut String, lib: &Library) {
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
+
+        // Optional borrowed values are nullable pointers. Check for null
+        // explicitly instead of relying on the null pointer optimization.
+        for (ptr, name, null) in [
+            ("*const", format!("Option<&{}>", value.name), "null"),
+            ("*mut", format!("Option<&mut {}>", value.name), "null_mut"),
+        ] {
+            emit_cfg_attr(out, value.cfg.as_ref());
+            writeln!(out, "impl FfiType for {name} {{").unwrap();
+            writeln!(out, "    type CRepr = {ptr} {};", value.name).unwrap();
+            writeln!(
+                out,
+                "    const C_TYPE_NAME: &'static str = \"{}\";",
+                value.name
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    fn into_c(self) -> Self::CRepr {{ self.map_or(core::ptr::{null}(), |value| value) }}"
+            )
+            .unwrap();
+            if ptr == "*const" {
+                writeln!(
+                    out,
+                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ if repr.is_null() {{ None }} else {{ Some(unsafe {{ &*repr }}) }} }}"
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ if repr.is_null() {{ None }} else {{ Some(unsafe {{ &mut *repr }}) }} }}"
+                )
+                .unwrap();
+            }
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
     }
 }
 

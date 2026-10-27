@@ -86,6 +86,21 @@ void value_struct_optional_return(void) {
     ft_fixed_source_destroy(source);
 }
 
+/* Nullable borrowed value structs: NULL means None. */
+void value_struct_optional_pointer_params(void) {
+    FtInputEvent sample = {0};
+    sample.payload.code = 17;
+
+    assert(ft_sample_optional_code(&sample) == 17);
+    assert(ft_sample_optional_code(NULL) == UINT32_MAX);
+
+    /* &mut variant: writes when present, tolerant of NULL. */
+    ft_sample_bump_optional(&sample);
+    assert(sample.payload.code == 18);
+    ft_sample_bump_optional(NULL);
+    assert(sample.payload.code == 18);
+}
+
 /* Plain Option<ValueStruct>: presence is the return value, the value is
  * written only when present. */
 void value_struct_plain_option_return(void) {
@@ -919,6 +934,7 @@ int main(int argc, char** argv) {
     RUN_TEST(value_struct_optional_return);
     RUN_TEST(value_struct_optional_return_free_function);
     RUN_TEST(value_struct_plain_option_return);
+    RUN_TEST(value_struct_optional_pointer_params);
     RUN_TEST(value_struct_result_return_only);
 
     printf("\n[destroy]\n");

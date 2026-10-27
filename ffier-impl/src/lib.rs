@@ -633,6 +633,47 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
                         unsafe { &mut *repr }
                     }
                 }
+
+                // Optional borrowed values are nullable pointers. The null
+                // check is explicit rather than relying on the null pointer
+                // optimization; both compile to the same code.
+                impl FfiType for Option<&#value_type> {
+                    type CRepr = *const #value_type;
+                    const C_TYPE_NAME: &'static str = stringify!(#name);
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> *const #value_type {
+                        match self {
+                            Some(value) => value,
+                            None => core::ptr::null(),
+                        }
+                    }
+                    unsafe fn from_c(repr: *const #value_type) -> Self {
+                        if repr.is_null() {
+                            None
+                        } else {
+                            Some(unsafe { &*repr })
+                        }
+                    }
+                }
+
+                impl FfiType for Option<&mut #value_type> {
+                    type CRepr = *mut #value_type;
+                    const C_TYPE_NAME: &'static str = stringify!(#name);
+                    const IS_HANDLE: bool = false;
+                    fn into_c(self) -> *mut #value_type {
+                        match self {
+                            Some(value) => value,
+                            None => core::ptr::null_mut(),
+                        }
+                    }
+                    unsafe fn from_c(repr: *mut #value_type) -> Self {
+                        if repr.is_null() {
+                            None
+                        } else {
+                            Some(unsafe { &mut *repr })
+                        }
+                    }
+                }
             };
             ($prefix:literal, $__type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {

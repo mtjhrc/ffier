@@ -845,6 +845,8 @@ impl Library {
     pub fn c_type_of_ref(&self, type_ref: &TypeRef) -> String {
         let base = self.c_type_of(&type_ref.type_name);
         if self.is_value_struct(&type_ref.type_name) {
+            // An optional borrowed value is a nullable pointer: `Option<&T>`
+            // and `&T` share the same C spelling.
             match type_ref.ref_kind {
                 RefKind::None => base.to_string(),
                 RefKind::Shared => format!("const {base}*"),
