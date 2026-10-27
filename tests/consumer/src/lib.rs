@@ -306,7 +306,8 @@ mod tests {
 
         /// Peek at a handle's dispatch kind. Consumes and destroys the handle.
         fn dispatch_kind_of(fruit: impl api::Fruit) -> String {
-            let handle = fruit.__into_raw_handle();
+            // Callee consumes the handle before callback data expires.
+            let handle = unsafe { fruit.__into_callback_handle().into_raw() };
             let kind = unsafe { api::ft_debug_fruit_dispatch_kind(handle) };
             unsafe { kind.as_str_unchecked() }.to_owned()
         }

@@ -359,6 +359,49 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // This allows resolving `impl Trait` params automatically.
     let trait_map = build_trait_map(&implementables, &trait_impls);
 
+    let validate_callback_traits = |methods: &[MetaMethod]| -> Option<TokenStream2> {
+        for param in methods.iter().flat_map(|method| &method.params) {
+            let MetaParamKind::ImplTrait { trait_name, .. } = &param.kind else {
+                continue;
+            };
+            if !trait_map
+                .get(trait_name)
+                .is_some_and(|info| info.implementable.is_some())
+            {
+                let message = format!(
+                    "ffier: callback trait `{trait_name}` requires a registered exported trait definition to preserve its supertrait and lifetime contracts; annotate the trait and register `trait {trait_name}` in library_definition! (use no_vtable for concrete dispatch only)",
+                );
+                return Some(quote! { compile_error!(#message); });
+            }
+        }
+        None
+    };
+    for item in &exportables {
+        let meta: MetaExportable = syn::parse2(item.clone()).expect("validated export metadata");
+        if let Some(error) = validate_callback_traits(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &implementables {
+        let meta: MetaImplementable = syn::parse2(item.clone()).expect("validated trait metadata");
+        if let Some(error) = validate_callback_traits(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &trait_impls {
+        let meta: MetaTraitImpl = syn::parse2(item.clone()).expect("validated trait impl metadata");
+        if let Some(error) = validate_callback_traits(&meta.methods) {
+            return error;
+        }
+    }
+    for item in &free_fns {
+        let meta: MetaFreeFunction =
+            syn::parse2(item.clone()).expect("validated function metadata");
+        if let Some(error) = validate_callback_traits(&meta.methods) {
+            return error;
+        }
+    }
+
     // Build error map: error name → (type_tag, path)
     let error_map: ErrorMap = {
         let mut map = ErrorMap::new();
@@ -1186,6 +1229,8 @@ struct ImplTraitParam {
     dispatch: crate::meta::DispatchMode,
     ref_kind: crate::meta::ImplTraitRefKind,
     trait_name: String,
+    trait_lifetime_args: Vec<syn::Ident>,
+    lifetime_bounds: Vec<syn::Ident>,
     /// (name, bridge_type, cfg_predicate) for each concrete dispatch variant.
     variants: Vec<(String, TokenStream2, Option<TokenStream2>)>,
 }
@@ -1216,6 +1261,22 @@ fn convert_params(
     trait_map: &TraitMap,
     lib_crate: &TokenStream2,
 ) -> Result<ConvertedParams, TokenStream2> {
+    for p in params {
+        if let MetaParamKind::ImplTrait {
+            ref_kind,
+            ref_lifetime: Some(lifetime),
+            ..
+        } = &p.kind
+            && *ref_kind != crate::meta::ImplTraitRefKind::Value
+            && lifetime != "_"
+        {
+            let msg = format!(
+                "ffier: borrowed callback `{}` with explicit reference lifetime '{lifetime} is unsupported; callback handles are call-scoped",
+                p.name
+            );
+            return Err(quote! { compile_error!(#msg); });
+        }
+    }
     // Collect all impl Trait params with their dispatch info.
     // If a trait has no entry in trait_map (no concrete implementors),
     // the param still needs vtable dispatch (empty variants list forces
@@ -1227,6 +1288,8 @@ fn convert_params(
                 trait_name,
                 dispatch,
                 ref_kind,
+                trait_lifetime_args,
+                lifetime_bounds,
                 ..
             } = &p.kind
             {
@@ -1236,6 +1299,8 @@ fn convert_params(
                     dispatch: *dispatch,
                     ref_kind: *ref_kind,
                     trait_name: trait_name.clone(),
+                    trait_lifetime_args: trait_lifetime_args.clone(),
+                    lifetime_bounds: lifetime_bounds.clone(),
                     variants: info
                         .map(|i| {
                             i.variants
@@ -1395,12 +1460,28 @@ fn convert_params(
         }
         let dyn_id = &p.name;
         let info = trait_map.get(&p.trait_name).unwrap();
-
         let trait_ident = if let Some(imp) = &info.implementable {
             imp.trait_path.clone()
         } else {
             let ident = format_ident!("{}", p.trait_name);
             quote! { #ident }
+        };
+        // C erases lifetimes. Safe clients enforce original lifetimes before
+        // crossing this unsafe boundary; trait arguments are not value bounds.
+        let trait_args: Vec<_> = p
+            .trait_lifetime_args
+            .iter()
+            .map(|_| quote! { 'static })
+            .collect();
+        let trait_ident = if trait_args.is_empty() {
+            trait_ident
+        } else {
+            quote! { #trait_ident <#(#trait_args),*> }
+        };
+        let object_lifetime = if p.lifetime_bounds.iter().any(|lt| lt == "static") {
+            quote! { 'static }
+        } else {
+            quote! { '_ }
         };
 
         let expected_msg = format!("impl {}", p.trait_name);
@@ -1418,12 +1499,12 @@ fn convert_params(
                         #vcfg
                         if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
                             let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
-                            break 'dispatch (Box::new(__val) as Box<dyn #trait_ident>);
+                            break 'dispatch (Box::new(__val) as Box<dyn #trait_ident + #object_lifetime>);
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
-                    let mut #dyn_box_id: Box<dyn #trait_ident> = 'dispatch: {
+                    let mut #dyn_box_id: Box<dyn #trait_ident + #object_lifetime> = 'dispatch: {
                         let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
@@ -1450,7 +1531,8 @@ fn convert_params(
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
-                    let #dyn_id: &mut dyn #trait_ident = #borrow_id;
+                    let mut #borrow_id = #borrow_id;
+                    let #dyn_id = &mut #borrow_id;
                 });
             }
             ImplTraitRefKind::Ref => {
@@ -1472,7 +1554,7 @@ fn convert_params(
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
-                    let #dyn_id: &dyn #trait_ident = #borrow_id;
+                    let #dyn_id = &#borrow_id;
                 });
             }
         }
@@ -3943,6 +4025,7 @@ fn convert_free_fn(
         name: meta.name.to_string(),
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
         doc: meta.doc.clone(),
+        lifetimes: m.method_lifetimes.iter().map(ToString::to_string).collect(),
         params: m
             .params
             .iter()
@@ -3970,6 +4053,7 @@ fn convert_exportable(
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         is_builder_type,
+        thread_safety: meta.thread_safety,
         methods: meta
             .methods
             .iter()
@@ -4031,6 +4115,7 @@ fn convert_implementable(
         wrapper_c_name: format!("{}Vtable{}", r.type_pfx, name),
         vtable_struct_name: format!("{name}Vtable"),
         wrapper_name: format!("Vtable{name}"),
+        thread_safety: meta.thread_safety,
         methods: meta
             .methods
             .iter()
@@ -4239,6 +4324,9 @@ fn convert_param(
         MetaParamKind::ImplTrait {
             trait_name,
             trait_lifetime_args,
+            lifetime_bounds,
+            ref_kind,
+            ref_lifetime,
             ..
         } => ffier_schema::ParamType::ImplTrait {
             trait_name: trait_name.clone(),
@@ -4246,6 +4334,13 @@ fn convert_param(
                 .iter()
                 .map(|lt| lt.to_string())
                 .collect(),
+            lifetime_bounds: lifetime_bounds.iter().map(ToString::to_string).collect(),
+            ref_kind: match ref_kind {
+                crate::meta::ImplTraitRefKind::Value => ffier_schema::RefKind::None,
+                crate::meta::ImplTraitRefKind::Ref => ffier_schema::RefKind::Shared,
+                crate::meta::ImplTraitRefKind::Mut => ffier_schema::RefKind::Mut,
+            },
+            ref_lifetime: ref_lifetime.as_ref().map(ToString::to_string),
         },
     };
     ffier_schema::Param {

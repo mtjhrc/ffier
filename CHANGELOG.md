@@ -23,6 +23,12 @@
   restrict the `ffier-strong` API while runtime lookup clients retain optional
   symbol discovery.
 
+- Add independent `send`/`sync` annotations for opaque handles and preserve
+  ordinary Send/Sync supertraits on exported callback traits. Rust checks native
+  guarantees and generated trait implementations. Traits used in callback
+  signatures require registered exported definitions to retain their contracts.
+  Declare callback Send/Sync requirements on traits; extra use-site marker
+  bounds are unsupported.
 - Rename the C `PREFIX_VTABLE_HANDLE` macro to `PREFIX_TEMP_OBJ` and require
   owned vtable handles to come from the generated `PREFIX_vtable_handle_new`
   function. The macro builds a borrowed, call-scoped object that must only be

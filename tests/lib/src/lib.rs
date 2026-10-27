@@ -1107,8 +1107,11 @@ impl Attachment for Sprocket {
 // preserves lifetimes in generated client code.
 // ---------------------------------------------------------------------------
 
+#[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
 pub trait Snapshot<'a> {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn snap_description(&self) -> &str;
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
     fn snap_source_count(&self) -> i32;
 }
 
@@ -1713,6 +1716,7 @@ ffier::library_definition!("ft", library_tag = 1,
     Mixer = 21,
     Sprocket = 22,
     Attachment for Sprocket,
+    trait Snapshot = 40,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
@@ -2846,11 +2850,11 @@ mod tests {
             size_of_val(&vtable),
             size_of::<ffier::VtableHeader>() + slot_size
         );
-        let wrapper = VtableEmptyTrait {
-            value: ffier::VtableHandle {
+        let wrapper = unsafe {
+            VtableEmptyTrait::from_value(ffier::VtableHandle {
                 vtable_ptr: &vtable as *const _ as *const core::ffi::c_void,
                 user_data: ptr::null(),
-            },
+            })
         };
         drop(wrapper);
 

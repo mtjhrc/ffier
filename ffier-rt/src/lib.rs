@@ -1,6 +1,59 @@
 use std::ffi::CStr;
 
 use core::ffi::c_void;
+use core::marker::PhantomData;
+
+/// Callback handle retaining its owned value (`Box<T>`) or borrow type.
+pub struct CallbackHandle<T> {
+    raw: *mut c_void,
+    destroy: unsafe fn(*mut c_void),
+    value: PhantomData<T>,
+}
+
+impl<T> CallbackHandle<T> {
+    /// # Safety
+    /// `raw` must represent the callback value or borrow described by `T`.
+    /// The callback must remain valid for every lifetime in `T` and uphold
+    /// its Send/Sync guarantees, including its vtable and callback functions.
+    /// `destroy` must release the handle exactly once. Borrowed handles must
+    /// release only their shell and preserve the borrowed value.
+    /// Borrowed access must respect `T`'s aliasing rules until the handle drops.
+    /// Destruction must be valid wherever `T` can move.
+    pub unsafe fn from_raw(raw: *mut c_void, destroy: unsafe fn(*mut c_void)) -> Self {
+        Self {
+            raw,
+            destroy,
+            value: PhantomData,
+        }
+    }
+
+    pub fn as_raw(&self) -> *mut c_void {
+        self.raw
+    }
+}
+
+impl<T> CallbackHandle<Box<T>> {
+    /// Transfer ownership to the callee.
+    ///
+    /// # Safety
+    /// The callee must release the handle exactly once before any lifetime in
+    /// `T` ends and never access callback data after its permitted lifetime.
+    pub unsafe fn into_raw(self) -> *mut c_void {
+        let this = core::mem::ManuallyDrop::new(self);
+        this.raw
+    }
+}
+
+// SAFETY: from_raw requires the callback, its vtable and destruction to uphold
+// T's guarantees. Reference types preserve Rust's shared/mutable borrow rules.
+unsafe impl<T: Send> Send for CallbackHandle<T> {}
+unsafe impl<T: Sync> Sync for CallbackHandle<T> {}
+
+impl<T> Drop for CallbackHandle<T> {
+    fn drop(&mut self) {
+        unsafe { (self.destroy)(self.raw) };
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Handle layout — heap-allocated box with RTTI header

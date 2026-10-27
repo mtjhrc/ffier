@@ -259,6 +259,11 @@ allocation, no copy, no ownership transfer.
 A convenience macro (`PREFIX_STR(s)`, e.g. `MYLIB_STR(s)`) is generated in
 the C header to construct these from string literals.
 
+## Thread safety
+
+See [Thread safety](docs/thread-safety.md) for handle declarations and callback
+trait requirements.
+
 ## How it works
 
 The pipeline has two phases:

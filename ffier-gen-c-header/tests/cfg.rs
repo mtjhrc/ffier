@@ -162,7 +162,9 @@ fn conditional_owners_keep_handles_used_by_unconditional_signatures() {
             },
         )
         .unwrap();
-        assert!(header.contains("FtWidget ft_inspect(FtWidget widget, FtProcessor processor);"));
+        assert!(header.contains(
+            "FtWidget ft_inspect(FtWidget widget, FtProcessor processor /* owned callback; valid until release */);"
+        ));
         if policy == UnspecifiedFeatures::Disabled {
             assert!(!header.contains("ft_widget_destroy("));
             assert!(!header.contains("ft_processor_destroy("));
