@@ -817,6 +817,26 @@ fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
 
+    // Status-only conversion, for callers that pass a null `err_out`. Deriving
+    // the code from the variant avoids materializing a handle nobody would own.
+    writeln!(out, "    #[allow(dead_code)]").unwrap();
+    writeln!(out, "    fn ffi_result_of(&self) -> ffier::FfierResult {{").unwrap();
+    writeln!(out, "        let code = match self {{").unwrap();
+    for v in &err.variants {
+        if let Some(syntax) = fieldless_variant_syntax(v) {
+            writeln!(out, "            Self::{} => {}u32,", syntax, v.code).unwrap();
+        } else {
+            writeln!(out, "            Self::{}(_) => {}u32,", v.name, v.code).unwrap();
+        }
+    }
+    writeln!(out, "        }};").unwrap();
+    writeln!(
+        out,
+        "        ffier::ffier_result({error_type_tag}u32, code)"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
@@ -2034,16 +2054,19 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
+                            writeln!(out, "                            if !err_out.is_null() {{")
+                                .unwrap();
                             writeln!(
                                 out,
-                                "                            let (_, __handle) = __e.into_ffi();"
+                                "                                let (_, __handle) = __e.into_ffi();"
                             )
                             .unwrap();
                             writeln!(
                                 out,
-                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
+                                "                                unsafe {{ *err_out = __handle }};"
                             )
                             .unwrap();
+                            writeln!(out, "                            }}").unwrap();
                             writeln!(out, "                            core::ptr::null_mut()")
                                 .unwrap();
                             writeln!(out, "                        }}").unwrap();
@@ -2067,13 +2090,19 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                                 }
                             }
                             writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
+                            writeln!(out, "                            if err_out.is_null() {{")
+                                .unwrap();
+                            writeln!(out, "                                __e.ffi_result_of()")
+                                .unwrap();
+                            writeln!(out, "                            }} else {{").unwrap();
+                            writeln!(out, "                                let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
                                 out,
-                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
+                                "                                unsafe {{ *err_out = __handle }};"
                             )
                             .unwrap();
-                            writeln!(out, "                            __code").unwrap();
+                            writeln!(out, "                                __code").unwrap();
+                            writeln!(out, "                            }}").unwrap();
                             writeln!(out, "                        }}").unwrap();
                         }
                         CResultConvention::OptionalValueOutParam => {
@@ -2101,13 +2130,19 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                                 .unwrap();
                             writeln!(out, "                        }}").unwrap();
                             writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
+                            writeln!(out, "                            if err_out.is_null() {{")
+                                .unwrap();
+                            writeln!(out, "                                __e.ffi_result_of()")
+                                .unwrap();
+                            writeln!(out, "                            }} else {{").unwrap();
+                            writeln!(out, "                                let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
                                 out,
-                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
+                                "                                unsafe {{ *err_out = __handle }};"
                             )
                             .unwrap();
-                            writeln!(out, "                            __code").unwrap();
+                            writeln!(out, "                                __code").unwrap();
+                            writeln!(out, "                            }}").unwrap();
                             writeln!(out, "                        }}").unwrap();
                         }
                     }

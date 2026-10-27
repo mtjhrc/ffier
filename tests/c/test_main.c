@@ -86,6 +86,30 @@ void value_struct_optional_return(void) {
     ft_fixed_source_destroy(source);
 }
 
+/* A null err_out is a valid caller choice: the caller only wants the status
+ * code. FixedSource is a Rust implementor, so its failure path goes through the
+ * library's dispatch. Valgrind proves the library does not allocate an error
+ * handle it could never hand over. */
+void null_err_out_is_a_valid_caller_choice(void) {
+    FtFixedSource source = ft_fixed_source_new();
+    FtInputEvent event = {0};
+    bool is_some = false;
+
+    /* Drain the two successful steps. */
+    assert(ft_fixed_source_peek_sample(source, &is_some, &event, NULL) == FT_RESULT_SUCCESS);
+    assert(is_some);
+    assert(ft_fixed_source_peek_sample(source, &is_some, &event, NULL) == FT_RESULT_SUCCESS);
+    assert(!is_some);
+
+    /* Third step fails. Passing NULL must still report the code, without
+     * materializing an error handle. Valgrind proves nothing leaks. */
+    is_some = true;
+    assert(ft_fixed_source_peek_sample(source, &is_some, &event, NULL) != FT_RESULT_SUCCESS);
+    assert(is_some);
+
+    ft_fixed_source_destroy(source);
+}
+
 /* Nullable borrowed value structs: NULL means None. */
 void value_struct_optional_pointer_params(void) {
     FtInputEvent sample = {0};
@@ -939,6 +963,7 @@ int main(int argc, char** argv) {
     RUN_TEST(value_struct_optional_return_free_function);
     RUN_TEST(value_struct_plain_option_return);
     RUN_TEST(value_struct_optional_pointer_params);
+    RUN_TEST(null_err_out_is_a_valid_caller_choice);
     RUN_TEST(value_struct_result_return_only);
 
     printf("\n[destroy]\n");
