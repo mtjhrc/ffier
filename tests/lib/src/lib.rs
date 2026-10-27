@@ -1357,6 +1357,49 @@ pub fn source_next_sequence(mut source: impl SampleSource) -> Result<u32, TestEr
     Ok(source.next_sample()?.map_or(0, |sample| sample.sequence))
 }
 
+/// Plain `Option<ValueStruct>` return: the presence flag is the return value.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn sample_optional(selector: u32) -> Option<InputEvent> {
+    if selector == 0 {
+        None
+    } else {
+        Some(InputEvent {
+            level: LogLevel::Debug,
+            permissions: Permissions::empty(),
+            sequence: 9,
+            active: true,
+            payload: EventPayload {
+                code: 6,
+                weight: 0.5,
+            },
+        })
+    }
+}
+
+/// Trait slot with a plain `Option<ValueStruct>` return, so the vtable and
+/// dispatch paths cover it alongside `Result<Option<T>, E>`.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait OptionalSource {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn optional_sample(&mut self) -> Option<InputEvent>;
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl OptionalSource for FixedSource {
+    fn optional_sample(&mut self) -> Option<InputEvent> {
+        Some(InputEvent {
+            level: LogLevel::Trace,
+            permissions: Permissions::empty(),
+            sequence: 13,
+            active: false,
+            payload: EventPayload {
+                code: 8,
+                weight: 2.0,
+            },
+        })
+    }
+}
+
 /// Free function with the same optional-value return shape, so the generated
 /// client's free-function path is exercised too.
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1684,6 +1727,8 @@ ffier::library_definition!("ft", library_tag = 1,
     value EventPayload,
     value InputEvent,
     trait SampleSource = 33,
+    trait OptionalSource = 35,
+    OptionalSource for FixedSource,
     FixedSource = 34,
     SampleSource for FixedSource,
     fn log_level_name,
@@ -1706,6 +1751,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn event_checked,
     fn source_next_sequence,
     fn sample_at,
+    fn sample_optional,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
     fn apply_foreign_config,

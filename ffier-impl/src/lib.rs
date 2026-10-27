@@ -4992,8 +4992,15 @@ fn vtable_c_fn_sig(
     let fn_ret = match &m.ret {
         crate::meta::MetaReturn::Void => quote! {},
         crate::meta::MetaReturn::Value(tp) => {
-            let bt = &tp.bridge_type;
-            quote! { -> <#bt as FfiType>::CRepr }
+            if crate::meta::option_value_struct_inner(&tp.rust_type, value_names).is_some()
+                && let Some(inner) = crate::meta::option_inner_tokens(&tp.bridge_type)
+            {
+                param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                quote! { -> bool }
+            } else {
+                let bt = &tp.bridge_type;
+                quote! { -> <#bt as FfiType>::CRepr }
+            }
         }
         crate::meta::MetaReturn::HandleSlice { .. } => {
             quote! { -> ffier::FfierObjectArray }
@@ -5181,8 +5188,37 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 match &m.ret {
                     crate::meta::MetaReturn::Void => raw_call.clone(),
                     crate::meta::MetaReturn::Value(tp) => {
-                        let bt = &tp.bridge_type;
-                        quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
+                        if crate::meta::option_value_struct_inner(&tp.rust_type, &value_names)
+                            .is_some()
+                            && let Some(inner) =
+                                crate::meta::option_inner_tokens(&tp.bridge_type)
+                        {
+                            // Optional value return: the C side returns the
+                            // presence flag and writes the value only when set.
+                            let args = quote! { #(#vtable_args),* };
+                            let sep = if vtable_args.is_empty() {
+                                quote! {}
+                            } else {
+                                quote! {, }
+                            };
+                            quote! {{
+                                let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
+                                let __is_some = unsafe { __f(
+                                    self.value.user_data as *mut core::ffi::c_void,
+                                    #args #sep __out.as_mut_ptr(),
+                                ) };
+                                if __is_some {
+                                    Some(unsafe {
+                                        <#inner as FfiType>::from_c(__out.assume_init())
+                                    })
+                                } else {
+                                    None
+                                }
+                            }}
+                        } else {
+                            let bt = &tp.bridge_type;
+                            quote! { unsafe { <#bt as FfiType>::from_c(#raw_call) } }
+                        }
                     }
                     crate::meta::MetaReturn::HandleSlice { types: tp, .. } => {
                         // HandleSlice vtable dispatch: call __f which returns

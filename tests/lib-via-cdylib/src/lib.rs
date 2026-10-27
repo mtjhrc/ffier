@@ -681,6 +681,50 @@ mod tests {
     }
 
     #[test]
+    fn value_struct_plain_option_return() {
+        let sample = sample_optional(1).unwrap();
+        assert_eq!(sample.sequence, 9);
+        assert_eq!(sample.payload.code, 6);
+        assert_eq!(sample.level, LogLevel::Debug);
+        assert!(sample_optional(0).is_none());
+    }
+
+    #[test]
+    fn value_struct_plain_option_through_vtable() {
+        let mut source = FixedSource::new();
+        let sample = source.optional_sample().unwrap();
+        assert_eq!(sample.sequence, 13);
+        assert_eq!(sample.payload.code, 8);
+    }
+
+    /// The library's trampoline drives a Rust implementor through the generated
+    /// vtable: `None` and a value must both round-trip.
+    #[test]
+    fn value_struct_plain_option_trampoline_semantics() {
+        struct Alternating(bool);
+        impl OptionalSource for Alternating {
+            fn optional_sample(&mut self) -> Option<InputEvent> {
+                self.0 = !self.0;
+                self.0.then(|| InputEvent {
+                    level: LogLevel::Info,
+                    permissions: Permissions::empty(),
+                    sequence: 31,
+                    active: true,
+                    payload: EventPayload {
+                        code: 12,
+                        weight: 3.0,
+                    },
+                })
+            }
+        }
+
+        let mut alternating = Alternating(false);
+        assert_eq!(alternating.optional_sample().unwrap().sequence, 31);
+        assert!(alternating.optional_sample().is_none());
+        assert_eq!(alternating.optional_sample().unwrap().sequence, 31);
+    }
+
+    #[test]
     fn value_struct_matches_c_layout() {
         // Mirrors FtEventPayload / FtInputEvent in the generated C header.
         assert_eq!(std::mem::size_of::<EventPayload>(), 8);

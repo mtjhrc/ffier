@@ -871,6 +871,10 @@ fn format_return_and_out_params(
         Return::Void => ("void".to_string(), vec![]),
         Return::Value(_) if is_builder => ("void".to_string(), vec![]),
         Return::Value(type_ref) => (lib.c_type_of_ref(type_ref), vec![]),
+        Return::OptionalValue(type_ref) => (
+            "bool".to_string(),
+            vec![format!("{}* result", lib.c_type_of_ref(type_ref))],
+        ),
         Return::Result {
             ok, c_convention, ..
         } => {

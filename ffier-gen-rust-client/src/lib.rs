@@ -1271,7 +1271,7 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
         Return::ObjectArray { element } => {
             format!(" -> ForeignSlice<{}>", element.type_name)
         }
-        Return::Value(_) | Return::Result { .. } => {
+        Return::Value(_) | Return::OptionalValue(_) | Return::Result { .. } => {
             format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
         }
     }
@@ -1365,6 +1365,29 @@ fn emit_method_body(
                 "        ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
             )
             .unwrap();
+        }
+        Return::OptionalValue(tr) => {
+            let ty_static = optional_value_out_type(tr);
+            let ty = tr.to_rust_type();
+            writeln!(
+                out,
+                "        let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "        let __is_some = unsafe {{ {ffi_name}({args_str}{sep}__out.as_mut_ptr()) }};"
+            )
+            .unwrap();
+            writeln!(out, "        if __is_some {{").unwrap();
+            writeln!(
+                out,
+                "            Some(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
+            )
+            .unwrap();
+            writeln!(out, "        }} else {{").unwrap();
+            writeln!(out, "            None").unwrap();
+            writeln!(out, "        }}").unwrap();
         }
         Return::Value(tr) => {
             writeln!(
@@ -1967,6 +1990,20 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                 Return::ObjectArray { .. } => {
                     // ObjectArray returns from vtable methods: pass through raw
                     writeln!(out, "                    __result.raw").unwrap();
+                }
+                Return::OptionalValue(tr) => {
+                    let ty_static = optional_value_out_type(tr);
+                    let mut bare = tr.clone();
+                    bare.optional = false;
+                    let ty = bare.to_rust_type();
+                    writeln!(out, "                    match __result {{").unwrap();
+                    writeln!(out, "                        Some(__value) => {{").unwrap();
+                    writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__value)) }};").unwrap();
+                    writeln!(out, "                            true").unwrap();
+                    writeln!(out, "                        }}").unwrap();
+                    writeln!(out, "                        None => false,").unwrap();
+                    writeln!(out, "                    }}").unwrap();
+                    let _ = ty_static;
                 }
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type();
@@ -2748,6 +2785,11 @@ fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
         }
+        Return::OptionalValue(tr) => {
+            let ty = optional_value_out_type(tr);
+            params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
+            " -> bool".to_string()
+        }
         Return::Result {
             ok, c_convention, ..
         } => match c_convention {
@@ -2818,6 +2860,11 @@ fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> Strin
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
+        }
+        Return::OptionalValue(tr) => {
+            let ty = optional_value_out_type(tr);
+            out.push(format!("*mut <{ty} as FfiType>::CRepr"));
+            " -> bool".to_string()
         }
         Return::Result {
             ok, c_convention, ..
@@ -2946,6 +2993,31 @@ fn emit_ffi_call_return(
                 "{indent}ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
             )
             .unwrap();
+        }
+        Return::OptionalValue(tr) => {
+            let ty_static = optional_value_out_type(tr);
+            let mut bare = tr.clone();
+            bare.optional = false;
+            let ty = bare.to_rust_type();
+            writeln!(
+                out,
+                "{indent}let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "{indent}let __is_some = unsafe {{ {ffi_name}({args_str}{sep}__out.as_mut_ptr()) }};"
+            )
+            .unwrap();
+            writeln!(out, "{indent}if __is_some {{").unwrap();
+            writeln!(
+                out,
+                "{indent}    Some(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
+            )
+            .unwrap();
+            writeln!(out, "{indent}}} else {{").unwrap();
+            writeln!(out, "{indent}    None").unwrap();
+            writeln!(out, "{indent}}}").unwrap();
         }
         Return::Value(tr) => {
             writeln!(
@@ -3393,6 +3465,7 @@ fn emit_free_function(
             format!(" -> ForeignSlice<{}>", element.type_name)
         }
         Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
+        Return::OptionalValue(tr) => format!(" -> Option<{}>", tr.to_rust_type()),
         Return::Result { ok, err_type, .. } => {
             let ok_str = match ok {
                 Some(tr) => tr.to_rust_type(),
@@ -3419,6 +3492,32 @@ fn emit_free_function(
                 f.ffi_name
             )
             .unwrap();
+        }
+        Return::OptionalValue(tr) => {
+            let ty_static = optional_value_out_type(tr);
+            let mut bare = tr.clone();
+            bare.optional = false;
+            let ty = bare.to_rust_type();
+            writeln!(
+                out,
+                "    let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    let __is_some = unsafe {{ {}({args_str}{sep}__out.as_mut_ptr()) }};",
+                f.ffi_name
+            )
+            .unwrap();
+            writeln!(out, "    if __is_some {{").unwrap();
+            writeln!(
+                out,
+                "        Some(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
+            )
+            .unwrap();
+            writeln!(out, "    }} else {{").unwrap();
+            writeln!(out, "        None").unwrap();
+            writeln!(out, "    }}").unwrap();
         }
         Return::Value(tr) => {
             writeln!(
