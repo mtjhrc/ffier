@@ -49,6 +49,71 @@ void value_struct_result_return(void) {
     ft_error_destroy(err);
 }
 
+/* Result<Option<ValueStruct>, E>: presence flag, value, then error out-param.
+ * None must leave the value untouched; errors must leave both success
+ * outputs untouched. */
+void value_struct_optional_return(void) {
+    FtFixedSource source = ft_fixed_source_new();
+
+    FtInputEvent event = {0};
+    bool is_some = false;
+    FtError err = NULL;
+    assert(ft_fixed_source_peek_sample(source, &is_some, &event, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(is_some);
+    assert(event.sequence == 7);
+    assert(event.payload.code == 11);
+    assert(event.level == FT_LOG_LEVEL_WARN);
+
+    /* None: the flag clears and the value buffer is left alone. */
+    FtInputEvent untouched = {0};
+    untouched.sequence = 999;
+    is_some = true;
+    assert(ft_fixed_source_peek_sample(source, &is_some, &untouched, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(!is_some);
+    assert(untouched.sequence == 999);
+
+    /* Error: neither success output is written. */
+    is_some = true;
+    untouched.sequence = 999;
+    assert(ft_fixed_source_peek_sample(source, &is_some, &untouched, &err) != FT_RESULT_SUCCESS);
+    assert(err != NULL);
+    assert(is_some);
+    assert(untouched.sequence == 999);
+    ft_error_destroy(err);
+
+    ft_fixed_source_destroy(source);
+}
+
+/* Free function with the same shape: proves the signature is identical. */
+void value_struct_optional_return_free_function(void) {
+    FtInputEvent sample = {0};
+    bool is_some = false;
+    FtError err = NULL;
+
+    assert(ft_sample_at(0, &is_some, &sample, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(is_some);
+    assert(sample.sequence == 3);
+    assert(sample.payload.code == 5);
+
+    sample.sequence = 999;
+    is_some = true;
+    assert(ft_sample_at(1, &is_some, &sample, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(!is_some);
+    assert(sample.sequence == 999);
+
+    is_some = true;
+    sample.sequence = 999;
+    assert(ft_sample_at(2, &is_some, &sample, &err) != FT_RESULT_SUCCESS);
+    assert(err != NULL);
+    assert(is_some);
+    assert(sample.sequence == 999);
+    ft_error_destroy(err);
+}
+
 void value_struct_inline_field_of_struct(void) {
     /* Nested value struct used as an inline field. */
     FtInputEvent event = {0};
@@ -817,6 +882,8 @@ int main(int argc, char** argv) {
     RUN_TEST(value_struct_inline_and_by_pointer);
     RUN_TEST(value_struct_inline_field_of_struct);
     RUN_TEST(value_struct_result_return);
+    RUN_TEST(value_struct_optional_return);
+    RUN_TEST(value_struct_optional_return_free_function);
 
     printf("\n[destroy]\n");
     RUN_TEST(destroy_handle);

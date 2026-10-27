@@ -1297,6 +1297,86 @@ pub fn event_checked(sequence: u32) -> Result<EventPayload, TestError> {
     })
 }
 
+/// Callback that yields optional value structs — exercises
+/// `Result<Option<ValueStruct>, E>` through a vtable slot.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait SampleSource {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn next_sample(&mut self) -> Result<Option<InputEvent>, TestError>;
+}
+
+/// Concrete SampleSource: yields one sample, then None, then errors.
+pub struct FixedSource {
+    step: u8,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl FixedSource {
+    pub fn new() -> Self {
+        Self { step: 0 }
+    }
+
+    /// Same optional value shape as the vtable slot, but as a plain
+    /// exported method on a handle.
+    pub fn peek_sample(&mut self) -> Result<Option<InputEvent>, TestError> {
+        <Self as SampleSource>::next_sample(self)
+    }
+}
+
+impl Default for FixedSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl SampleSource for FixedSource {
+    fn next_sample(&mut self) -> Result<Option<InputEvent>, TestError> {
+        let step = self.step;
+        self.step += 1;
+        match step {
+            0 => Ok(Some(InputEvent {
+                level: LogLevel::Warn,
+                permissions: Permissions::empty(),
+                sequence: 7,
+                active: true,
+                payload: EventPayload {
+                    code: 11,
+                    weight: 2.5,
+                },
+            })),
+            1 => Ok(None),
+            _ => Err(TestError::InvalidInput()),
+        }
+    }
+}
+
+/// Read one sample's sequence from a callback, defaulting to 0 when absent.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn source_next_sequence(mut source: impl SampleSource) -> Result<u32, TestError> {
+    Ok(source.next_sample()?.map_or(0, |sample| sample.sequence))
+}
+
+/// Free function with the same optional-value return shape, so the generated
+/// client's free-function path is exercised too.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn sample_at(selector: u32) -> Result<Option<InputEvent>, TestError> {
+    match selector {
+        0 => Ok(Some(InputEvent {
+            level: LogLevel::Info,
+            permissions: Permissions::empty(),
+            sequence: 3,
+            active: false,
+            payload: EventPayload {
+                code: 5,
+                weight: 1.0,
+            },
+        })),
+        1 => Ok(None),
+        _ => Err(TestError::InvalidInput()),
+    }
+}
+
 #[cfg_attr(feature = "ffi", ffier::export)]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
@@ -1603,6 +1683,9 @@ ffier::library_definition!("ft", library_tag = 1,
     bitflags Permissions,
     value EventPayload,
     value InputEvent,
+    trait SampleSource = 33,
+    FixedSource = 34,
+    SampleSource for FixedSource,
     fn log_level_name,
     fn log_level_is_enabled,
     #[cfg(feature = "optional-entry")]
@@ -1621,6 +1704,8 @@ ffier::library_definition!("ft", library_tag = 1,
     fn event_bump_payload_code,
     fn event_make,
     fn event_checked,
+    fn source_next_sequence,
+    fn sample_at,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
     fn apply_foreign_config,

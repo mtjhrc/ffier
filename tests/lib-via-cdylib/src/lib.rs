@@ -616,6 +616,71 @@ mod tests {
     }
 
     #[test]
+    fn value_struct_optional_return_round_trip() {
+        let mut source = FixedSource::new();
+
+        // Some: presence flag set, value written.
+        let event = source.peek_sample().unwrap().unwrap();
+        assert_eq!(event.sequence, 7);
+        assert_eq!(event.payload.code, 11);
+        assert_eq!(event.level, LogLevel::Warn);
+
+        // None: no value.
+        assert!(source.peek_sample().unwrap().is_none());
+
+        // Error after exhaustion.
+        assert!(source.peek_sample().is_err());
+    }
+
+    #[test]
+    fn value_struct_optional_return_through_vtable() {
+        let source = FixedSource::new();
+        assert_eq!(source_next_sequence(source).unwrap(), 7);
+    }
+
+    #[test]
+    fn value_struct_optional_return_free_function() {
+        let sample = sample_at(0).unwrap().unwrap();
+        assert_eq!(sample.sequence, 3);
+        assert_eq!(sample.payload.code, 5);
+        assert!(sample_at(1).unwrap().is_none());
+        assert!(sample_at(2).is_err());
+    }
+
+    /// A Rust implementor of the generated trait: the library's trampoline must
+    /// write the flag and value exactly as the ABI specifies, leaving `*result`
+    /// untouched on `None` and both success outputs untouched on `Err`.
+    #[test]
+    fn value_struct_optional_return_trampoline_semantics() {
+        struct Stepper(u8);
+        impl SampleSource for Stepper {
+            fn next_sample(&mut self) -> Result<Option<InputEvent>, TestError> {
+                let step = self.0;
+                self.0 += 1;
+                match step {
+                    0 => Ok(Some(InputEvent {
+                        level: LogLevel::Info,
+                        permissions: Permissions::empty(),
+                        sequence: 21,
+                        active: false,
+                        payload: EventPayload {
+                            code: 4,
+                            weight: 1.0,
+                        },
+                    })),
+                    1 => Ok(None),
+                    _ => Err(TestError::InvalidInput()),
+                }
+            }
+        }
+
+        let mut stepper = Stepper(0);
+        assert_eq!(stepper.next_sample().unwrap().unwrap().sequence, 21);
+        assert!(stepper.next_sample().unwrap().is_none());
+        assert!(stepper.next_sample().is_err());
+    }
+
+    #[test]
     fn value_struct_matches_c_layout() {
         // Mirrors FtEventPayload / FtInputEvent in the generated C header.
         assert_eq!(std::mem::size_of::<EventPayload>(), 8);
