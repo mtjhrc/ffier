@@ -2041,7 +2041,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                             .unwrap();
                             writeln!(
                                 out,
-                                "                            unsafe {{ *err_out = __handle }};"
+                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
                             )
                             .unwrap();
                             writeln!(out, "                            core::ptr::null_mut()")
@@ -2070,7 +2070,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                             writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
                                 out,
-                                "                            unsafe {{ *err_out = __handle }};"
+                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
                             )
                             .unwrap();
                             writeln!(out, "                            __code").unwrap();
@@ -2104,7 +2104,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
                             writeln!(out, "                            let (__code, __handle) = __e.into_ffi();").unwrap();
                             writeln!(
                                 out,
-                                "                            unsafe {{ *err_out = __handle }};"
+                                "                            if !err_out.is_null() {{ unsafe {{ *err_out = __handle }}; }}"
                             )
                             .unwrap();
                             writeln!(out, "                            __code").unwrap();

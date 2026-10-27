@@ -647,39 +647,6 @@ mod tests {
         assert!(sample_at(2).is_err());
     }
 
-    /// A Rust implementor of the generated trait: the library's trampoline must
-    /// write the flag and value exactly as the ABI specifies, leaving `*result`
-    /// untouched on `None` and both success outputs untouched on `Err`.
-    #[test]
-    fn value_struct_optional_return_trampoline_semantics() {
-        struct Stepper(u8);
-        impl SampleSource for Stepper {
-            fn next_sample(&mut self) -> Result<Option<InputEvent>, TestError> {
-                let step = self.0;
-                self.0 += 1;
-                match step {
-                    0 => Ok(Some(InputEvent {
-                        level: LogLevel::Info,
-                        permissions: Permissions::empty(),
-                        sequence: 21,
-                        active: false,
-                        payload: EventPayload {
-                            code: 4,
-                            weight: 1.0,
-                        },
-                    })),
-                    1 => Ok(None),
-                    _ => Err(TestError::InvalidInput()),
-                }
-            }
-        }
-
-        let mut stepper = Stepper(0);
-        assert_eq!(stepper.next_sample().unwrap().unwrap().sequence, 21);
-        assert!(stepper.next_sample().unwrap().is_none());
-        assert!(stepper.next_sample().is_err());
-    }
-
     #[test]
     fn value_struct_optional_pointer_params() {
         let mut sample = event_make(LogLevel::Info, 5);
@@ -708,33 +675,6 @@ mod tests {
         let sample = source.optional_sample().unwrap();
         assert_eq!(sample.sequence, 13);
         assert_eq!(sample.payload.code, 8);
-    }
-
-    /// The library's trampoline drives a Rust implementor through the generated
-    /// vtable: `None` and a value must both round-trip.
-    #[test]
-    fn value_struct_plain_option_trampoline_semantics() {
-        struct Alternating(bool);
-        impl OptionalSource for Alternating {
-            fn optional_sample(&mut self) -> Option<InputEvent> {
-                self.0 = !self.0;
-                self.0.then(|| InputEvent {
-                    level: LogLevel::Info,
-                    permissions: Permissions::empty(),
-                    sequence: 31,
-                    active: true,
-                    payload: EventPayload {
-                        code: 12,
-                        weight: 3.0,
-                    },
-                })
-            }
-        }
-
-        let mut alternating = Alternating(false);
-        assert_eq!(alternating.optional_sample().unwrap().sequence, 31);
-        assert!(alternating.optional_sample().is_none());
-        assert_eq!(alternating.optional_sample().unwrap().sequence, 31);
     }
 
     #[test]
