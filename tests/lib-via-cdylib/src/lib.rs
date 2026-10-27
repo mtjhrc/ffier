@@ -9,6 +9,15 @@
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
+#[cfg(test)]
+mod thread_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
+}
+
 // Manual extern for the hand-written debug bridge function.
 unsafe extern "C" {
     pub fn ft_debug_fruit_dispatch_kind(handle: *mut core::ffi::c_void) -> ffier::FfierBytes;

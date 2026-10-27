@@ -4007,3 +4007,44 @@ fn format_param_sig(p: &ffier_schema::Param) -> String {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_dispatch_preserves_trait_names_ending_in_vtable() {
+        let mut library = Library::from_json(
+            r#"{
+                "prefix":"test", "type_registry":{}, "exported_types":[],
+                "errors":[], "trait_impls":[],
+                "traits":[{
+                    "name":"ScreenVtable", "destroy_ffi_name":"test_screen_vtable_destroy",
+                    "type_tag_constant":"TEST_SCREEN_VTABLE_TYPE_TAG",
+                    "vtable_struct_c_name":"TestScreenVtableVtable",
+                    "wrapper_c_name":"TestVtableScreenVtable",
+                    "vtable_struct_name":"ScreenVtableVtable", "wrapper_name":"VtableScreenVtable",
+                    "methods":[{
+                        "name":"value", "receiver":"ref", "params":[],
+                        "ret":{"return_kind":"void"}, "ffi_name":"test_screen_vtable_value",
+                        "trait_definition":{"index":0,"has_default":true}
+                    }], "own_method_count":1, "num_slots":1
+                }]
+            }"#,
+        )
+        .unwrap();
+        for (name, vtable) in [
+            ("ScreenVtable", "ScreenVtableVtable"),
+            ("ScreenVtableVtable", "CustomCallbackLayout"),
+        ] {
+            library.traits[0].name = name.into();
+            library.traits[0].vtable_struct_name = vtable.into();
+            let method = &library.traits[0].methods[0];
+            let mut output = String::new();
+            emit_default_dispatch_body(&mut output, method, &library, &library.traits[0], 1, 0);
+            assert!(output.contains(&format!("__ffier_vtable_{name}::<Self>()")));
+            assert!(output.contains(&format!("&'static {vtable}")));
+            assert!(!output.contains("__ffier_vtable_Screen::<Self>()"));
+        }
+    }
+}

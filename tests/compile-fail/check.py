@@ -17,6 +17,19 @@ def extract_expected_error(fixture: Path) -> str:
     return diagnostics[0]
 
 
+def extract_feature_modes(fixture: Path) -> list[str]:
+    """Feature list declared with `//! features: a b`; empty means no features."""
+    prefix = "//! features:"
+    modes = [
+        line.removeprefix(prefix).strip().split()
+        for line in fixture.read_text().splitlines()
+        if line.startswith(prefix)
+    ]
+    if len(modes) > 1:
+        raise ValueError(f"{fixture.name}: at most one {prefix} comment is allowed")
+    return modes[0] if modes else []
+
+
 def main() -> int:
     fixture_dir = Path(__file__).resolve().parent
     fixtures = sorted((fixture_dir / "src" / "bin").glob("*.rs"))
@@ -27,11 +40,12 @@ def main() -> int:
         case_name = fixture.stem
         try:
             expected = extract_expected_error(fixture)
+            modes = extract_feature_modes(fixture)
         except ValueError as error:
             print(error, file=sys.stderr)
             return 1
-        result = subprocess.run(
-            [
+        for mode in modes or [None]:
+            command = [
                 "cargo",
                 "check",
                 "--manifest-path",
@@ -40,22 +54,32 @@ def main() -> int:
                 str(fixture_dir.parent.parent / "target"),
                 "--bin",
                 case_name,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-        )
-        if result.returncode == 0:
-            print(f"compile-fail/{case_name} unexpectedly compiled", file=sys.stderr)
-            return 1
-        if expected not in result.stdout:
-            print(
-                f"compile-fail/{case_name} did not produce expected diagnostic: {expected}",
-                file=sys.stderr,
+            ]
+            if mode is not None:
+                command += ["--features", mode]
+            result = subprocess.run(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
             )
-            print(result.stdout, file=sys.stderr, end="")
-            return 1
-        print(f"compile-fail/{case_name} ... ok")
+            if result.returncode == 0:
+                label = f"{case_name} ({mode})" if mode else case_name
+                print(f"compile-fail/{label} unexpectedly compiled", file=sys.stderr)
+                return 1
+            if expected not in result.stdout:
+                label = f"{case_name} ({mode})" if mode else case_name
+                print(
+                    f"compile-fail/{label} did not produce expected diagnostic: {expected}",
+                    file=sys.stderr,
+                )
+                print(result.stdout, file=sys.stderr, end="")
+                return 1
+            if mode:
+                print(f"compile-fail/{case_name} ({mode}) ... ok")
+            else:
+                print(f"compile-fail/{case_name} ... ok")
+
     return 0
 
 
