@@ -501,6 +501,10 @@ pub enum Return {
     Void,
     /// Returns a single value.
     Value(TypeRef),
+    /// Returns `Option<T>` for an inline value `T`. Presence is the C return
+    /// value; the value is written through a `*mut T` out-param only when
+    /// present.
+    OptionalValue(TypeRef),
     /// Returns `Result<T, E>`.
     Result {
         /// The Ok type. `None` when `Result<(), E>`.
@@ -576,6 +580,7 @@ impl Return {
             Return::Void => "()".to_string(),
             Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
             Return::Value(tr) => tr.to_rust_type(),
+            Return::OptionalValue(tr) => format!("Option<{}>", tr.to_rust_type()),
             Return::Result { ok, err_type, .. } => {
                 let ok_str = match ok {
                     Some(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
@@ -878,6 +883,9 @@ impl Library {
             match ret {
                 Return::Void => {}
                 Return::Value(tr) => {
+                    refs.insert(&tr.type_name);
+                }
+                Return::OptionalValue(tr) => {
                     refs.insert(&tr.type_name);
                 }
                 Return::Result { ok, err_type, .. } => {

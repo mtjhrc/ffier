@@ -86,6 +86,40 @@ void value_struct_optional_return(void) {
     ft_fixed_source_destroy(source);
 }
 
+/* Plain Option<ValueStruct>: presence is the return value, the value is
+ * written only when present. */
+void value_struct_plain_option_return(void) {
+    FtInputEvent sample = {0};
+    sample.sequence = 999;
+
+    assert(ft_sample_optional(1, &sample));
+    assert(sample.sequence == 9);
+    assert(sample.payload.code == 6);
+    assert(sample.level == FT_LOG_LEVEL_DEBUG);
+
+    /* Absent: the flag is false and the buffer is left alone. */
+    FtInputEvent untouched = {0};
+    untouched.sequence = 999;
+    assert(!ft_sample_optional(0, &untouched));
+    assert(untouched.sequence == 999);
+}
+
+/* Result<ValueStruct, E>: no presence flag, out-param written on success only. */
+void value_struct_result_return_only(void) {
+    FtEventPayload payload = {0};
+    FtError err = NULL;
+
+    assert(ft_event_checked(7, &payload, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(payload.code == 7);
+
+    payload.code = 999;
+    assert(ft_event_checked(0, &payload, &err) != FT_RESULT_SUCCESS);
+    assert(err != NULL);
+    assert(payload.code == 999);
+    ft_error_destroy(err);
+}
+
 /* Free function with the same shape: proves the signature is identical. */
 void value_struct_optional_return_free_function(void) {
     FtInputEvent sample = {0};
@@ -884,6 +918,8 @@ int main(int argc, char** argv) {
     RUN_TEST(value_struct_result_return);
     RUN_TEST(value_struct_optional_return);
     RUN_TEST(value_struct_optional_return_free_function);
+    RUN_TEST(value_struct_plain_option_return);
+    RUN_TEST(value_struct_result_return_only);
 
     printf("\n[destroy]\n");
     RUN_TEST(destroy_handle);

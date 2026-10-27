@@ -1690,6 +1690,23 @@ fn wrap_return(
             }
         }
         MetaReturn::Value(tp) => {
+            // `Option<ValueStruct>`: presence is the C return value, the value
+            // goes through an out-param and is written only when present.
+            if option_value_struct_inner(&tp.rust_type, value_types).is_some()
+                && let Some(inner) = crate::meta::option_inner_tokens(&tp.bridge_type)
+            {
+                return quote! {
+                    match #call_expr {
+                        Some(__value) => {
+                            unsafe {
+                                result.write(<#inner as #lib_crate::FfiType>::into_c(__value));
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                };
+            }
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
             let rust_ty = syn::parse2::<syn::Type>(rust_ret.clone()).ok();
@@ -1986,11 +2003,21 @@ fn c_signature_for_method(
     // Return type + out-param for handle returns or Result
     let ret = match &method.ret {
         MetaReturn::Void => quote! {},
-        MetaReturn::Value(_vk) => {
-            // All values (handles and primitives) returned directly.
-            // Handles return *mut c_void, primitives return their CRepr.
-            let ty = c_return_type(_vk, lib_crate);
-            quote! { -> #ty }
+        MetaReturn::Value(vk) => {
+            if option_value_struct_inner(&vk.rust_type, value_types).is_some()
+                && let Some(inner) = crate::meta::option_inner_tokens(&vk.bridge_type)
+            {
+                params.push(CExternParam {
+                    name: format_ident!("result"),
+                    c_type: quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+                });
+                // All values (handles and primitives) returned directly.
+                // Handles return *mut c_void, primitives return their CRepr.
+                quote! { -> bool }
+            } else {
+                let ty = c_return_type(vk, lib_crate);
+                quote! { -> #ty }
+            }
         }
         MetaReturn::HandleSlice { .. } => {
             // &[&T] or &[T] where T is a handle — return FfierObjectArray by value.
@@ -4252,7 +4279,12 @@ fn convert_return(
             ffier_schema::Return::Value(builder_self_type_ref())
         }
         MetaReturn::Void => ffier_schema::Return::Void,
-        MetaReturn::Value(tp) => ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)),
+        MetaReturn::Value(tp) => {
+            if let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types) {
+                return ffier_schema::Return::OptionalValue(r.type_ref_from_tokens(&inner));
+            }
+            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type))
+        }
         MetaReturn::HandleSlice { types, .. } => {
             // &[&T] or &[T] → returns FfierObjectArray with element type info.
             ffier_schema::Return::ObjectArray {
