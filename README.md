@@ -157,8 +157,8 @@ lifetimes, `impl Trait` dispatch, file descriptors, and more.
 
 ### Fixed-layout structs
 
-Annotate a public, non-generic `#[repr(C)]` struct with public named fields,
-then register it with `value` instead of a type tag:
+Annotate a public, non-generic `#[repr(C)]` struct that derives `Copy`, with
+public named fields, then register it with `value` instead of a type tag:
 
 ```rust
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -178,8 +178,9 @@ Fields may be FFI scalars (`i8`..`i64`, `u8`..`u64`, `isize`, `usize`, `bool`,
 inline. Nested structs are supported; pointers to structs *inside* a struct are
 not. References, lifetimes, generics, `Option` fields, packed or aligned
 layouts, empty structs, private fields, raw identifiers, and field-level `cfg`
-are rejected at compile time. Exported enums must use
-`#[repr(uN)]`/`#[repr(iN)]`.
+are rejected at compile time. A missing `Copy` derive is also rejected: the
+by-value ABI treats the struct as plain data, so it must not have drop glue.
+Exported enums must use `#[repr(uN)]`/`#[repr(iN)]`.
 
 The Rust struct is the C layout, so the generated header declares the matching
 `typedef struct` and no conversion or layout check is emitted. Rust `bool` is C

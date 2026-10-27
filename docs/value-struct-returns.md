@@ -6,7 +6,8 @@ needs an out-parameter plus a presence signal: `None` has to stay
 distinguishable from an output the callee never wrote.
 
 All four shapes are generated from the Rust signature alone, so no annotation
-chooses the convention.
+chooses the convention. The struct must derive `Copy`: the ABI treats it as
+plain data, so drop glue would be unsound.
 
 ## Return shapes
 
@@ -147,8 +148,10 @@ signals in this order:
    left untouched and still holds whatever the caller put there.
 3. Only then read the value.
 
-In the `Result` forms `err_out` may be null when the caller does not want the
-error handle. The bridge never writes through a null `err_out`.
+In the `Result` forms `err_out` may be null when the caller does not care why
+the call failed. The status code still reports the failure. The error is then
+dropped inside the library without allocating a handle, so passing null leaks
+nothing. The generated code never writes through a null `err_out`.
 
 Leaving success outputs untouched means a caller can pass a sentinel-filled
 buffer and distinguish "not written" from a real zero value. It does not mean
