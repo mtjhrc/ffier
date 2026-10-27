@@ -155,10 +155,61 @@ mylib_calculator_destroy(calc);
 See [`tests/`](tests/) for the full test suite covering error types, builders,
 lifetimes, `impl Trait` dispatch, file descriptors, and more.
 
+### Fixed-layout structs
+
+Annotate a public, non-generic `#[repr(C)]` struct with public named fields,
+then register it with `value` instead of a type tag:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Packet {
+    pub kind: u16,
+    pub sequence: u32,
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("mylib", library_tag = 1, value Packet);
+```
+
+Fields may be FFI scalars (`i8`..`i64`, `u8`..`u64`, `isize`, `usize`, `bool`,
+`f32`, `f64`), exported enums, exported bitflags, or other value structs used
+inline. Nested structs are supported; pointers to structs *inside* a struct are
+not. References, lifetimes, generics, `Option` fields, packed or aligned
+layouts, empty structs, private fields, raw identifiers, and field-level `cfg`
+are rejected at compile time. Exported enums must use
+`#[repr(uN)]`/`#[repr(iN)]`.
+
+The Rust struct is the C layout, so the generated header declares the matching
+`typedef struct` and no conversion or layout check is emitted. Rust `bool` is C
+`bool`, `isize`/`usize` are `ssize_t`/`size_t`, and an enum field is the plain
+repr integer on the wire. Values cross the ABI inline, or as `const T*`/`T*`
+for `&T`/`&mut T`.
+
+A value struct is only registered with `value`, never with a type tag, so it
+cannot also be exported as an opaque handle.
+
+### Optional value returns
+
+A value struct can be returned by value, inside a `Result`, as an `Option`, or
+both. Optional forms use an out-parameter plus a presence flag, because `None`
+has to stay distinguishable from an output the callee never wrote.
+
+See [value struct returns](docs/value-struct-returns.md) for all four
+signatures, the write order, and the caller contract.
+
+**Caller contract.** The bridge does not validate incoming values. An enum
+field is the plain integer on the wire; Rust assumes it holds a declared
+variant. A C caller writing any other value constructs an invalid Rust enum,
+which is undefined behaviour. Pointers passed for `&T`/`&mut T` must be
+non-null, aligned, initialized, valid for the whole call, and not aliased by
+anything else. Validation may be added in a later version.
+
 ## Features
 
 - **`#[ffier::export]`** -- export struct methods, trait definitions, trait
-  impls, enums, and free functions as C functions
+  impls, enums, free functions, and fixed-layout value structs as C functions
 - **`#[derive(FfiError)]`** -- export error enums with codes, messages, and
   optional data payloads (including `#[ffier(opaque)]` for non-marshallable
   fields like `anyhow::Error`)
