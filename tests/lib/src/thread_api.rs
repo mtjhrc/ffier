@@ -108,6 +108,43 @@ impl ThreadBackend for Widget {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Owning worker
+// ---------------------------------------------------------------------------
+
+/// Retains a Send callback, then transfers ownership to a worker thread.
+pub struct BackendWorker<'a> {
+    backend: Box<dyn SendBackend + 'a>,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export(send, invariant('a)))]
+impl<'a> BackendWorker<'a> {
+    pub fn new(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl SendBackend + 'a,
+    ) -> Self {
+        Self {
+            backend: Box::new(backend),
+        }
+    }
+
+    pub fn step(&mut self) -> i32 {
+        self.backend.step()
+    }
+
+    pub fn run(mut self) -> i32 {
+        std::thread::scope(|scope| {
+            scope
+                .spawn(move || self.backend.step())
+                .join()
+                .expect("backend worker panicked")
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Exported free functions — one per ownership shape
+// ---------------------------------------------------------------------------
+
 /// Mutable Send lend: one scoped worker step, callback stays with the caller.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn borrow_send_backend(
@@ -132,4 +169,29 @@ pub fn share_sync_backend(
         first.join().expect("backend worker panicked")
             + second.join().expect("backend worker panicked")
     })
+}
+
+/// Sync-only owned transfer: the callback moves into the library, shared read.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn own_sync_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl SyncBackend,
+) -> i32 {
+    share_sync_backend(&backend)
+}
+
+/// Combined Send + Sync: a spawned thread that runs scoped workers on a copy.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn run_thread_backend(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] backend: impl ThreadBackend + 'static,
+) -> i32 {
+    std::thread::spawn(move || {
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| backend.value());
+            let second = scope.spawn(|| backend.twice());
+            first.join().expect("backend worker panicked")
+                + second.join().expect("backend worker panicked")
+        })
+    })
+    .join()
+    .expect("backend worker panicked")
 }

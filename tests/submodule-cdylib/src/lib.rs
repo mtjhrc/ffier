@@ -132,6 +132,27 @@ mod tests {
     }
 
     #[test]
+    fn native_identity_round_trips_through_the_external_bridge() {
+        use ffier_test_submodule_lib::{Counter, FfiHandle, FfiType};
+
+        // into_c/from_c use the definition-site native alias; the value
+        // must survive a round trip through the external bridge crate.
+        let counter = Counter::new();
+        let raw = counter.into_c();
+        unsafe { assert_eq!(ffier::handle_type_tag(raw), Counter::TYPE_TAG) };
+        let _restored: Counter = unsafe { FfiType::from_c(raw) };
+
+        let handle = unsafe { subtest_counter_new() };
+        unsafe {
+            subtest_counter_increment(handle);
+            subtest_counter_increment(handle);
+            subtest_counter_increment(handle);
+            assert_eq!(subtest_counter_get(handle), 3);
+            subtest_counter_destroy(handle);
+        }
+    }
+
+    #[test]
     fn destroy_null() {
         unsafe {
             subtest_counter_destroy(std::ptr::null_mut());

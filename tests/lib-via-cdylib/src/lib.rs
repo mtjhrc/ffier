@@ -33,6 +33,30 @@ mod callback_errors {
 }
 
 #[cfg(test)]
+mod receiver_default_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../receiver_defaults.rs"
+    ));
+}
+
+#[cfg(test)]
+mod variance_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../variance_client.rs"
+    ));
+}
+
+#[cfg(test)]
 mod unloaded_fieldless_errors {
     #[cfg(feature = "ffier-strong")]
     use crate as api;

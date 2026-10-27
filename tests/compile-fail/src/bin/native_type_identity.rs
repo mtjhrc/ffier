@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-// Root type has no exported thread-safety contract.
+// This root type is invariant and has no exported variance contract.
 pub struct Foo<'a>(std::cell::RefCell<&'a str>);
 
 pub mod other {
