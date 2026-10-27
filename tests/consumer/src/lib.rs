@@ -13,8 +13,9 @@ mod tests {
     use std::os::fd::AsRawFd;
 
     use super::api::{
-        self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker,
-        View, Widget, optional_apply, optional_merge_flags, optional_mode_name, sum_gadget_values,
+        self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalSample, OptionalWidget,
+        OptionalWorker, View, Widget, optional_apply, optional_merge_flags, optional_mode_name,
+        optional_sample, sum_gadget_values,
     };
 
     fn make_widget() -> Widget {
@@ -366,6 +367,11 @@ mod tests {
         assert_eq!(optional_mode_name(OptionalMode::Basic), "basic");
         let flags = optional_merge_flags(OptionalFlags::READ, OptionalFlags::WRITE);
         assert_eq!(flags, OptionalFlags::READ | OptionalFlags::WRITE);
+        let sample = OptionalSample {
+            mode: OptionalMode::Basic,
+            flags,
+        };
+        assert_eq!(optional_sample(sample), 4);
     }
 
     #[test]

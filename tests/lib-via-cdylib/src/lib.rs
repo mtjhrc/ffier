@@ -114,6 +114,7 @@ mod tests {
             Symbol::FtOptionalApply,
             Symbol::FtOptionalModeName,
             Symbol::FtOptionalMergeFlags,
+            Symbol::FtOptionalSample,
         ])
         .unwrap();
         assert!(Symbol::FtOptionalWidgetNew.is_available());
@@ -126,6 +127,11 @@ mod tests {
             optional_merge_flags(OptionalFlags::READ, OptionalFlags::WRITE).bits(),
             3
         );
+        let sample = OptionalSample {
+            mode: OptionalMode::Advanced,
+            flags: OptionalFlags::READ,
+        };
+        assert_eq!(optional_sample(sample), 3);
     }
 
     // ================================================================
@@ -584,5 +590,36 @@ mod tests {
         let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
         let w = Widget::new();
         assert_eq!(w.read_foreign_borrowed(&value), text.len() as i32);
+    }
+
+    #[test]
+    fn value_struct_inline_and_by_pointer() {
+        let mut event = event_make(LogLevel::Warn, 42);
+        assert_eq!(event.sequence, 42);
+        assert_eq!(event.level, LogLevel::Warn);
+        assert_eq!(event.payload.code, 0);
+
+        assert_eq!(event_sequence(event), 42);
+        assert_eq!(event_payload_code(&event), 0);
+
+        event_bump_payload_code(&mut event);
+        assert_eq!(event_payload_code(&event), 1);
+    }
+
+    #[test]
+    fn value_struct_nested_and_result() {
+        let payload = event_checked(7).unwrap();
+        assert_eq!(payload.code, 7);
+
+        let err = event_checked(0).unwrap_err();
+        assert!(matches!(err, TestError::InvalidInput()));
+    }
+
+    #[test]
+    fn value_struct_matches_c_layout() {
+        // Mirrors FtEventPayload / FtInputEvent in the generated C header.
+        assert_eq!(std::mem::size_of::<EventPayload>(), 8);
+        assert_eq!(std::mem::size_of::<InputEvent>(), 24);
+        assert_eq!(std::mem::align_of::<InputEvent>(), 4);
     }
 }
