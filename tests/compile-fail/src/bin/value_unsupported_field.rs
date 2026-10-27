@@ -2,6 +2,7 @@
 
 #[ffier::export]
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct Packet {
     pub kind: Box<u32>,
 }

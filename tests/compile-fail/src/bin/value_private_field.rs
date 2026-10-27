@@ -3,6 +3,7 @@
 pub mod inner {
     #[ffier::export]
     #[repr(C)]
+    #[derive(Clone, Copy)]
     pub struct Packet {
         kind: u32,
     }

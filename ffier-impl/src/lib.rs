@@ -463,8 +463,8 @@ fn reexport_helpers(
 ///
 /// Value structs cross the ABI inline or by typed pointer. The Rust
 /// definition *is* the C layout, so no wire struct or layout check is
-/// generated: the only requirement is `#[repr(C)]` and field types that
-/// already have a stable C representation (scalars, exported enums,
+/// generated: the only requirements are `#[repr(C)]`, `Copy`, and field types
+/// that already have a stable C representation (scalars, exported enums,
 /// exported bitflags, other value structs).
 fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenStream {
     let name = &input.ident;
@@ -506,6 +506,17 @@ fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg) -> TokenSt
         return syn::Error::new_spanned(name, "ffier value structs require #[repr(C)]")
             .to_compile_error()
             .into();
+    }
+
+    // `Copy` keeps the by-value ABI free of drop glue and lets generated code
+    // treat the struct as plain bytes on both sides of the boundary.
+    if !has_copy_derive(&input.attrs) {
+        return syn::Error::new_spanned(
+            name,
+            "ffier value structs must derive `Copy` (add `#[derive(Clone, Copy)]`)",
+        )
+        .to_compile_error()
+        .into();
     }
 
     let syn::Fields::Named(fields) = &input.fields else {
@@ -1037,6 +1048,26 @@ fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> TokenStream {
     };
 
     output.into()
+}
+
+/// True when the item derives `Copy` (directly or through a helper macro).
+///
+/// Value structs must be `Copy`: the by-value ABI treats them as plain data, so
+/// drop glue would be unsound and unnecessary.
+fn has_copy_derive(attrs: &[syn::Attribute]) -> bool {
+    attrs
+        .iter()
+        .filter(|a| a.path().is_ident("derive"))
+        .any(|a| {
+            let mut found = false;
+            let _ = a.parse_nested_meta(|meta| {
+                if meta.path.is_ident("Copy") {
+                    found = true;
+                }
+                Ok(())
+            });
+            found
+        })
 }
 
 /// Extract the `#[repr(X)]` attribute from an item, returning the ident X

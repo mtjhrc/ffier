@@ -133,6 +133,10 @@ void value_struct_result_return_only(void) {
     assert(err != NULL);
     assert(payload.code == 999);
     ft_error_destroy(err);
+
+    /* NULL err_out is valid: the caller gets the code and drops the error
+     * handle inside the library, without leaking. */
+    assert(ft_event_checked(0, &payload, NULL) != FT_RESULT_SUCCESS);
 }
 
 /* Free function with the same shape: proves the signature is identical. */
