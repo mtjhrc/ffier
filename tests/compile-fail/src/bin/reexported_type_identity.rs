@@ -7,7 +7,7 @@ pub struct Foo<'a>(std::cell::RefCell<&'a str>);
 pub mod other {
     pub struct Foo<'a>(pub &'a str);
 
-    #[ffier::export(send, sync)]
+    #[ffier::export(send, sync, covariant('a))]
     impl<'a> Foo<'a> {}
 }
 

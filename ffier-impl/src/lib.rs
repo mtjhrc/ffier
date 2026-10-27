@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use ffier_schema::ThreadSafety;
+use ffier_schema::{LifetimeVariance, ThreadSafety};
 use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{
@@ -165,6 +165,8 @@ struct ParamInfo {
 struct MethodInfo {
     name: syn::Ident,
     receiver: Receiver,
+    /// Explicit reference lifetime on the receiver; elided and `'_` use `None`.
+    receiver_lifetime: Option<syn::Ident>,
     params: Vec<ParamInfo>,
     ret: ReturnKind,
     // --- exported-impl-specific (defaults for trait methods) ---
@@ -339,6 +341,8 @@ fn primitive_slice_elem(ty: &Type) -> Option<&Type> {
 /// All item kinds also accept `cfg = "predicate"` — see [`ExportCfg`].
 /// Inherent impls accept `send` and `sync`, checked against the exported type.
 /// Traits use native `Send`/`Sync` supertraits.
+/// Every opaque lifetime requires `covariant('a)`, `contravariant('a)`, or
+/// `invariant('a)`. Covariance and contravariance are compiler checked.
 #[proc_macro_attribute]
 pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     let item2: proc_macro2::TokenStream = item.clone().into();
@@ -361,7 +365,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // 2. Fixed-layout value struct.
     if let Ok(struct_item) = syn::parse2::<ItemStruct>(item2.clone()) {
-        if let Err(error) = export_cfg.reject_thread_safety(&struct_item) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&struct_item) {
             return error.to_compile_error().into();
         }
         return exportable_value_struct(struct_item, &export_cfg);
@@ -371,7 +375,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     if let Ok(enum_item) = syn::parse2::<DeriveInput>(item2.clone())
         && matches!(enum_item.data, Data::Enum(_))
     {
-        if let Err(error) = export_cfg.reject_thread_safety(&enum_item) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&enum_item) {
             return error.to_compile_error().into();
         }
         return exportable_enum(enum_item, &export_cfg);
@@ -379,7 +383,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // 4. Free function
     if let Ok(fn_item) = syn::parse2::<syn::ItemFn>(item2) {
-        if let Err(error) = export_cfg.reject_thread_safety(&fn_item) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&fn_item) {
             return error.to_compile_error().into();
         }
         return exportable_free_fn(fn_item, &export_cfg);
@@ -388,7 +392,7 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
     // 5. Impl block — trait impl or inherent impl
     let input = parse_macro_input!(item as ItemImpl);
     if input.trait_.is_some() {
-        if let Err(error) = export_cfg.reject_thread_safety(&input) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&input) {
             return error.to_compile_error().into();
         }
         return trait_impl_inner(input, &export_cfg);
@@ -406,12 +410,14 @@ struct ExportCfg {
     cfg: Option<proc_macro2::TokenStream>,
     /// Compiler-verified Send/Sync guarantees for the exported opaque handle.
     thread_safety: ThreadSafety,
+    lifetime_variance: Vec<(syn::Lifetime, LifetimeVariance)>,
 }
 
 impl Parse for ExportCfg {
     fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
         let mut cfg = None;
         let mut thread_safety = ThreadSafety::default();
+        let mut lifetime_variance = Vec::new();
         while !input.is_empty() {
             let key: syn::Ident = input.parse()?;
             if key == "cfg" {
@@ -424,26 +430,68 @@ impl Parse for ExportCfg {
                 thread_safety.send = true;
             } else if key == "sync" {
                 thread_safety.sync = true;
+            } else if matches!(
+                key.to_string().as_str(),
+                "covariant" | "contravariant" | "invariant"
+            ) {
+                let variance = match key.to_string().as_str() {
+                    "covariant" => LifetimeVariance::Covariant,
+                    "contravariant" => LifetimeVariance::Contravariant,
+                    _ => LifetimeVariance::Invariant,
+                };
+                let content;
+                syn::parenthesized!(content in input);
+                let lifetimes = content.parse_terminated(syn::Lifetime::parse, Token![,])?;
+                if lifetimes.is_empty() {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "ffier variance groups require at least one lifetime",
+                    ));
+                }
+                for lifetime in lifetimes {
+                    if lifetime_variance
+                        .iter()
+                        .any(|(previous, _)| previous == &lifetime)
+                    {
+                        return Err(syn::Error::new_spanned(
+                            lifetime,
+                            "ffier lifetime variance must be declared exactly once",
+                        ));
+                    }
+                    lifetime_variance.push((lifetime, variance));
+                }
             } else {
                 return Err(syn::Error::new(
                     key.span(),
                     format!(
-                        "unknown #[ffier::export] argument `{key}`; expected `cfg`, `send`, or `sync`"
+                        "unknown #[ffier::export] argument `{key}`; expected `cfg`, `send`, `sync`, `covariant`, `contravariant`, or `invariant`"
                     ),
                 ));
             }
             let _ = input.parse::<Token![,]>();
         }
-        Ok(ExportCfg { cfg, thread_safety })
+        Ok(ExportCfg {
+            cfg,
+            thread_safety,
+            lifetime_variance,
+        })
     }
 }
 
 impl ExportCfg {
-    fn reject_thread_safety(&self, item: &impl ToTokens) -> syn::Result<()> {
+    /// Send/sync and variance groups apply only to inherent impls.
+    /// Everything else — enums, free functions, trait impls — must reject them.
+    fn reject_inherent_contracts(&self, item: &impl ToTokens) -> syn::Result<()> {
         if !self.thread_safety.is_empty() {
             return Err(syn::Error::new_spanned(
                 item,
                 "ffier send/sync annotations are supported only on inherent impls; traits use native supertraits",
+            ));
+        }
+        if !self.lifetime_variance.is_empty() {
+            return Err(syn::Error::new_spanned(
+                item,
+                "ffier lifetime variance annotations are supported only on inherent impls",
             ));
         }
         Ok(())
@@ -763,6 +811,133 @@ fn thread_safety_assertion(
     }
 }
 
+/// The client cannot express lifetime constraints or specialized opaque types.
+/// Require a complete declaration for the same independent parameters we emit.
+fn validate_handle_variance(
+    input: &ItemImpl,
+    cfg: &ExportCfg,
+) -> syn::Result<Vec<LifetimeVariance>> {
+    if input.generics.type_params().next().is_some()
+        || input.generics.const_params().next().is_some()
+        || input.generics.where_clause.is_some()
+        || input.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
+    {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "ffier opaque exports require only unconstrained lifetime parameters",
+        ));
+    }
+    let Type::Path(path) = &*input.self_ty else {
+        return Err(syn::Error::new_spanned(
+            &input.self_ty,
+            "expected a named struct type",
+        ));
+    };
+    let parameters: Vec<_> = input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
+    let arguments: Vec<_> = match &path.path.segments.last().unwrap().arguments {
+        PathArguments::None => Vec::new(),
+        PathArguments::AngleBracketed(args) => args.args.iter().collect(),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.self_ty,
+                "unsupported opaque type arguments",
+            ));
+        }
+    };
+    if arguments.len() != parameters.len()
+        || !arguments
+            .iter()
+            .zip(&parameters)
+            .all(|(arg, param)| matches!(arg, GenericArgument::Lifetime(lt) if lt == *param))
+    {
+        return Err(syn::Error::new_spanned(
+            &input.self_ty,
+            "ffier opaque exports require all lifetime parameters in declaration order, without specialized type arguments",
+        ));
+    }
+    for (lifetime, _) in &cfg.lifetime_variance {
+        if !parameters.contains(&lifetime) {
+            return Err(syn::Error::new_spanned(
+                lifetime,
+                "ffier variance annotation names an unknown lifetime parameter",
+            ));
+        }
+    }
+    let mut variances = Vec::with_capacity(parameters.len());
+    for lifetime in parameters {
+        let Some((_, variance)) = cfg.lifetime_variance.iter().find(|(lt, _)| lt == lifetime)
+        else {
+            return Err(syn::Error::new_spanned(
+                lifetime,
+                format!(
+                    "ffier opaque lifetime {lifetime} requires an explicit variance annotation: covariant({lifetime}), contravariant({lifetime}), or invariant({lifetime})"
+                ),
+            ));
+        };
+        variances.push(*variance);
+    }
+    Ok(variances)
+}
+
+/// Check one parameter at a time, preserving every other lifetime verbatim.
+/// No native type appears in the well-formedness function's signature: otherwise
+/// Rust's implied bounds could hide constraints and make coercions vacuous.
+fn lifetime_variance_assertions(
+    input: &ItemImpl,
+    variances: &[LifetimeVariance],
+) -> proc_macro2::TokenStream {
+    if variances.is_empty() {
+        return quote! {};
+    }
+    let parameters: Vec<&syn::Lifetime> =
+        input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
+    let ty = &input.self_ty;
+    let checks =
+        parameters
+            .iter()
+            .zip(variances)
+            .enumerate()
+            .filter_map(|(index, (short, variance))| {
+                if *variance == LifetimeVariance::Invariant {
+                    return None;
+                }
+                let long = fresh_helper_lifetime(&parameters, index);
+                struct ReplaceLifetime<'a>(&'a syn::Lifetime, &'a syn::Lifetime);
+                impl VisitMut for ReplaceLifetime<'_> {
+                    fn visit_lifetime_mut(&mut self, lt: &mut syn::Lifetime) {
+                        if lt == self.0 {
+                            *lt = self.1.clone();
+                        }
+                    }
+                }
+                let mut long_ty = (**ty).clone();
+                ReplaceLifetime(short, &long).visit_type_mut(&mut long_ty);
+                let (source, target) = match variance {
+                    LifetimeVariance::Covariant => (long_ty, (**ty).clone()),
+                    LifetimeVariance::Contravariant => ((**ty).clone(), long_ty),
+                    LifetimeVariance::Invariant => unreachable!(),
+                };
+                // Parameter index, not lifetime text: the user may declare '_a,
+                // which would collide with the reserved '__ffier_variance_long'
+                // prefix and produce an unused-lifetime warning under
+                // deny(warnings).
+                let name = format_ident!("__ffier_check_{}_param_{}", variance.as_str(), index);
+                Some(quote! {
+                    #[allow(clippy::needless_lifetimes)]
+                    fn #name<#(#parameters,)* #long: #short>(value: #source) -> #target { value }
+                })
+            });
+    quote! {
+        const _: () = {
+            #[allow(clippy::extra_unused_lifetimes)]
+            fn __ffier_check_variance_parameters<#(#parameters),*>() {
+                let _: ::core::option::Option<#ty> = ::core::option::Option::None;
+            }
+            #(#checks)*
+        };
+    }
+}
+
 /// Only explicit standard marker paths are supported. A compiler assertion
 /// also verifies unqualified names, which could otherwise shadow marker traits.
 fn thread_safety_bound(bound: &syn::TypeParamBound) -> Option<ThreadSafety> {
@@ -815,17 +990,24 @@ fn trait_thread_safety(trait_item: &ItemTrait) -> ThreadSafety {
         })
 }
 
-fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
-    if !export_cfg.thread_safety.is_empty()
-        && (input.generics.type_params().next().is_some()
-            || input.generics.const_params().next().is_some()
-            || input.generics.where_clause.is_some()
-            || input.generics.lifetimes().any(|lt| !lt.bounds.is_empty()))
-    {
-        return syn::Error::new_spanned(&input.generics,
-            "ffier send/sync annotations require an inherent impl with only unconstrained lifetime parameters")
-            .to_compile_error().into();
+/// Pick a synthetic helper lifetime that never collides with a declared
+/// parameter and never shares its text.
+fn fresh_helper_lifetime(parameters: &[&syn::Lifetime], index: usize) -> syn::Lifetime {
+    let mut long_name = format!("__ffier_variance_long_{index}");
+    while parameters.iter().any(|lt| lt.ident == long_name) {
+        long_name.push('_');
     }
+    syn::Lifetime::new(&format!("'{long_name}"), proc_macro2::Span::call_site())
+}
+
+fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStream {
+    // Reject type/const generics, bounded lifetimes, and specialization now:
+    // every later helper assumes unconstrained lifetime parameters only.
+    let variances = match validate_handle_variance(&input, export_cfg) {
+        Ok(variances) => variances,
+        Err(error) => return error.to_compile_error().into(),
+    };
+
     // Strip #[ffier(...)] attributes from methods before emitting the impl block
     let impl_block = {
         let mut block = input.clone();
@@ -852,31 +1034,6 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         .segments
         .last()
         .expect("expected struct name");
-    if !export_cfg.thread_safety.is_empty() {
-        let parameters: Vec<_> = input.generics.lifetimes().map(|lt| &lt.lifetime).collect();
-        let arguments = match &last_seg.arguments {
-            PathArguments::None => Vec::new(),
-            PathArguments::AngleBracketed(args) => args
-                .args
-                .iter()
-                .filter_map(|arg| {
-                    if let GenericArgument::Lifetime(lt) = arg {
-                        Some(lt)
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
-        if arguments != parameters
-            || matches!(&last_seg.arguments, PathArguments::AngleBracketed(args) if args.args.len() != arguments.len())
-        {
-            return syn::Error::new_spanned(&input.self_ty,
-                "ffier send/sync annotations require exporting the type for all its lifetime parameters, without specialized type arguments")
-                .to_compile_error().into();
-        }
-    }
     let struct_ident = &last_seg.ident;
     let self_ty = &input.self_ty;
     let struct_name = struct_ident.to_string();
@@ -963,15 +1120,6 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
     // Metadata emission — structured tokens for generator proc macros
     // -----------------------------------------------------------------------
 
-    if let Err(error) = validate_callback_generics(
-        &input.generics,
-        methods
-            .iter()
-            .any(|method| method.params.iter().any(ParamInfo::is_impl_trait)),
-    ) {
-        return error.to_compile_error().into();
-    }
-
     let counter = MACRO_COUNTER.fetch_add(1, Ordering::SeqCst);
     let internal_macro_name = format_ident!("__ffier_internal_{struct_lower}_{counter}");
     let meta_alias_name = format_ident!("__ffier_meta_{struct_ident}");
@@ -1007,6 +1155,16 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         .map(|lt| format_ident!("{}", lt.lifetime.ident))
         .collect();
 
+    let lifetime_meta: Vec<_> = lifetime_idents
+        .iter()
+        .zip(&variances)
+        .map(|(name, variance)| {
+            let variance = format_ident!("{}", variance.as_str());
+            quote! { (#name, #variance) }
+        })
+        .collect();
+    let variance_checks = lifetime_variance_assertions(&input, &variances);
+
     let cfg_pred_tokens = export_cfg.meta_tokens();
     let cfg_attr = export_cfg.cfg_attr();
     let ThreadSafety { send, sync } = export_cfg.thread_safety;
@@ -1023,6 +1181,9 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
 
         #cfg_attr
         #thread_safety_check
+
+        #cfg_attr
+        #variance_checks
 
         #(#warnings)*
 
@@ -1066,7 +1227,7 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
                     struct_path = (#struct_path_tokens),
                     prefix = $prefix,
                     type_tag = $type_tag,
-                    lifetimes = (#(#lifetime_idents),*),
+                    lifetimes = (#(#lifetime_meta),*),
                     send = #send,
                     sync = #sync,
                     methods = [#(#method_meta_tokens),*],
@@ -1306,6 +1467,7 @@ pub fn export_bitflags(input: TokenStream) -> TokenStream {
     let export_cfg = ExportCfg {
         cfg: combine_cfg_predicates(&parsed.cfg_predicates),
         thread_safety: ThreadSafety::default(),
+        lifetime_variance: Vec::new(),
     };
 
     let mut variants_meta = Vec::new();
@@ -2692,6 +2854,7 @@ impl Parse for ImplementableArgs {
             export_cfg: ExportCfg {
                 cfg,
                 thread_safety: ThreadSafety::default(),
+                lifetime_variance: Vec::new(),
             },
         })
     }
@@ -2796,6 +2959,24 @@ fn parse_method_sig(
             ),
         ));
     }
+
+    if let Some(FnArg::Receiver(receiver)) = sig.inputs.first()
+        && receiver.colon_token.is_some()
+    {
+        return Err(syn::Error::new_spanned(
+            receiver,
+            "ffier typed self parameters are unsupported; use self, &self, or &mut self",
+        ));
+    }
+    let receiver_lifetime = match sig.inputs.first() {
+        Some(FnArg::Receiver(receiver)) => receiver
+            .reference
+            .as_ref()
+            .and_then(|(_, lifetime)| lifetime.as_ref())
+            .filter(|lifetime| lifetime.ident != "_")
+            .map(|lifetime| lifetime.ident.clone()),
+        _ => None,
+    };
 
     // --- Determine receiver ---
     let receiver = if raw_handle {
@@ -2902,6 +3083,28 @@ fn parse_method_sig(
                 Some(sty) => replace_self_type(&pt.ty, sty),
                 None => (*pt.ty).clone(),
             };
+
+            if (is_str_slice(&param_ty_bridge)
+                || is_handle_slice(&param_ty_bridge)
+                || primitive_slice_elem(&param_ty_bridge).is_some())
+                && let Type::Reference(reference) = &param_ty_rust
+                && let Some(lifetime) = reference
+                    .lifetime
+                    .iter()
+                    .chain(match &*reference.elem {
+                        Type::Slice(slice) => match &*slice.elem {
+                            Type::Reference(inner) => inner.lifetime.as_ref(),
+                            _ => None,
+                        },
+                        _ => None,
+                    })
+                    .find(|lifetime| lifetime.ident != "_")
+            {
+                return Err(syn::Error::new_spanned(
+                    lifetime,
+                    "ffier explicit lifetimes on non-byte slice parameters are unsupported",
+                ));
+            }
 
             if is_str_slice(&param_ty_bridge) {
                 return Ok(ParamInfo {
@@ -3096,7 +3299,29 @@ fn parse_method_sig(
         }
     };
 
-    validate_callback_generics(&sig.generics, params.iter().any(ParamInfo::is_impl_trait))?;
+    // The schema records lifetime names, not constraints. Reject constraints
+    // rather than expose a safe client signature with weaker requirements.
+    let supported_raw_where = raw_handle
+        && sig.generics.where_clause.as_ref().is_some_and(|clause| {
+            clause.predicates.iter().all(|predicate| {
+                matches!(predicate, syn::WherePredicate::Type(predicate)
+                    if predicate.lifetimes.is_none()
+                        && matches!(&predicate.bounded_ty, Type::Path(ty) if ty.path.is_ident("Self"))
+                        && predicate.bounds.len() == 1
+                        && matches!(&predicate.bounds[0], syn::TypeParamBound::Trait(bound)
+                            if bound.lifetimes.is_none()
+                                && matches!(bound.modifier, syn::TraitBoundModifier::None)
+                                && bound.path.is_ident("Sized")))
+            })
+        });
+    if sig.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
+        || (sig.generics.where_clause.is_some() && !supported_raw_where)
+    {
+        return Err(syn::Error::new_spanned(
+            &sig.generics,
+            "ffier exported method lifetime bounds and where clauses are unsupported",
+        ));
+    }
 
     // --- Original rust_ret for client codegen ---
     let rust_ret = match &sig.output {
@@ -3141,6 +3366,7 @@ fn parse_method_sig(
     Ok(Some(MethodInfo {
         name: sig.ident.clone(),
         receiver,
+        receiver_lifetime,
         params,
         ret,
         ffi_name: String::new(),
@@ -3186,6 +3412,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         Receiver::Mut => format_ident!("r#mut"),
         Receiver::Value => format_ident!("value"),
     };
+    let receiver_lifetime: Vec<_> = m.receiver_lifetime.iter().collect();
 
     let method_lt_idents: Vec<_> = m
         .method_lifetimes
@@ -3321,6 +3548,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             name = #mname,
             doc = [#(#doc_tokens),*],
             receiver = #receiver_ident,
+            receiver_lifetime = [#(#receiver_lifetime),*],
             #context_tokens
             method_lifetimes = [#(#method_lt_idents),*],
             params = [#(#param_tokens),*],
@@ -3331,7 +3559,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
     }
 }
 
-/// Forward scoped borrowed dynamic dispatch while preserving thread contracts.
+/// Share forwarding bodies between owned and borrowed dynamic dispatch.
 fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
     let trait_name = &trait_item.ident;
     let mut generics = trait_item.generics.clone();
@@ -3364,7 +3592,12 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
-            Some(quote! { #sig { (**self).#name(#(#params),*) } })
+            let lifetime_lint = sig
+                .receiver()
+                .and_then(|receiver| receiver.reference.as_ref())
+                .and_then(|(_, lifetime)| lifetime.as_ref())
+                .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
+            Some(quote! { #lifetime_lint #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
@@ -3383,6 +3616,9 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
 
     quote! {
         const _: () = {
+            impl #impl_generics #trait_name #trait_generics for Box<dyn #trait_name #trait_generics + '__ffier_object> #where_clause {
+                #(#method_impls)*
+            }
             impl #impl_generics #trait_name #trait_generics for &mut (dyn #trait_name #trait_generics + '__ffier_object) #where_clause {
                 #(#method_impls)*
             }
@@ -3391,7 +3627,7 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
     }
 }
 
-/// Generate scoped borrowed dynamic dispatch forwarding.
+/// Generate owned and mutable borrowed dynamic dispatch forwarding.
 ///
 /// `#[ffier::export]` on traits implies `#[ffier::dispatch]` — use this
 /// annotation alone when you want dynamic dispatch fallback without
@@ -3485,6 +3721,22 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         Ok(v) => v,
         Err(e) => return e.to_compile_error().into(),
     };
+    if !args.no_vtable
+        && let Some(method) = vtable_methods.iter().find(|method| {
+            method
+                .receiver_lifetime
+                .as_ref()
+                .is_some_and(|lifetime| lifetime == "static")
+        })
+    {
+        return syn::Error::new_spanned(
+            &method.name,
+            "ffier callback methods with 'static receivers are unsupported; \
+             use a named method lifetime or no_vtable",
+        )
+        .to_compile_error()
+        .into();
+    }
     let own_method_count = vtable_methods.len();
     let bless_tokens = match &args.bless {
         Some(s) => quote::quote! { #s },
@@ -3641,9 +3893,56 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         let mut body = default_block.clone();
         SelfReplacer.visit_block_mut(&mut body);
 
-        // Build the helper function signature: same as the trait method but
-        // with &self replaced by __self: &(impl Trait + ?Sized)
+        // Preserve the receiver's borrow contract in the extracted helper.
         let mut helper_sig = method.sig.clone();
+        let receiver = helper_sig
+            .receiver()
+            .cloned()
+            .expect("default method receiver");
+        let mutability = &receiver.mutability;
+        let helper_receiver = if let Some((_, lifetime)) = &receiver.reference {
+            let lifetime = match lifetime {
+                Some(lifetime) if lifetime.ident != "_" => lifetime.clone(),
+                _ => {
+                    let mut name = String::from("__ffier_receiver");
+                    while helper_sig
+                        .generics
+                        .lifetimes()
+                        .any(|lt| lt.lifetime.ident == name)
+                    {
+                        name.push('_');
+                    }
+                    let lifetime = syn::Lifetime::new(&format!("'{name}"), method_name.span());
+                    helper_sig
+                        .generics
+                        .params
+                        .insert(0, syn::parse_quote!(#lifetime));
+                    lifetime
+                }
+            };
+            // A method's elided output lifetimes refer to its receiver even
+            // when other parameters borrow. Free helpers need that tie named.
+            struct ReceiverElision<'a>(&'a syn::Lifetime);
+            impl VisitMut for ReceiverElision<'_> {
+                fn visit_type_reference_mut(&mut self, reference: &mut syn::TypeReference) {
+                    if reference.lifetime.is_none() {
+                        reference.lifetime = Some(self.0.clone());
+                    }
+                    syn::visit_mut::visit_type_reference_mut(self, reference);
+                }
+                fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+                    if lifetime.ident == "_" {
+                        *lifetime = self.0.clone();
+                    }
+                }
+            }
+            ReceiverElision(&lifetime).visit_return_type_mut(&mut helper_sig.output);
+            syn::parse_quote! {
+                __self: &#lifetime #mutability (impl #trait_name + ?Sized)
+            }
+        } else {
+            syn::parse_quote! { #mutability __self: impl #trait_name }
+        };
         // Remove the receiver and add __self parameter
         let helper_params: Vec<_> = helper_sig
             .inputs
@@ -3652,9 +3951,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             .cloned()
             .collect();
         helper_sig.inputs = syn::punctuated::Punctuated::new();
-        helper_sig.inputs.push(syn::parse_quote! {
-            __self: &(impl #trait_name + ?Sized)
-        });
+        helper_sig.inputs.push(helper_receiver);
         for p in helper_params {
             helper_sig.inputs.push(p);
         }
@@ -3662,6 +3959,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 
         default_helpers.push(quote! {
             #[doc(hidden)]
+            #[allow(clippy::needless_lifetimes)]
             pub #helper_sig #body
         });
 
@@ -5827,7 +6125,12 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             };
 
             // Full method body
+            let lifetime_lint = m
+                .receiver_lifetime
+                .as_ref()
+                .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
             quote! {
+                #lifetime_lint
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
                         self.value.field_or_none(#slot)

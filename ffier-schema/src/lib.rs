@@ -107,19 +107,36 @@ pub struct TypeEntry {
     /// Generators use this to locate special types without hardcoding names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bless: Option<Blessing>,
-    /// Lifetime parameters on the type definition (e.g. `["a"]` for `View<'a>`).
+    /// Lifetime parameters on the type definition, in declaration order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub lifetime_params: Vec<String>,
+    pub lifetime_params: Vec<LifetimeParam>,
+}
+
+/// A type lifetime parameter. Locally exported opaque handles require an
+/// explicit variance. Foreign handles inherit their variance from the imported
+/// Rust binding, so their parameter names alone are recorded here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LifetimeParam {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variance: Option<LifetimeVariance>,
 }
 
 impl TypeEntry {
     /// Compare registration metadata without comparing lifetime parameter names.
     /// Lifetime names may differ between references to the same type.
+    /// Variance is part of the registration contract: a mismatch is a
+    /// conflicting registration, not the same one.
     pub fn same_registration(&self, other: &Self) -> bool {
         self.kind == other.kind
             && self.type_tag == other.type_tag
             && self.bless == other.bless
             && self.lifetime_params.len() == other.lifetime_params.len()
+            && self
+                .lifetime_params
+                .iter()
+                .zip(&other.lifetime_params)
+                .all(|(a, b)| a.variance == b.variance)
     }
 }
 
@@ -398,6 +415,27 @@ impl ThreadSafety {
     }
 }
 
+/// Declared lifetime variance of an opaque handle. Covariance and contravariance
+/// are checked by the Rust compiler against the native type before export.
+/// Invariance conservatively restricts either native variance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LifetimeVariance {
+    Covariant,
+    Contravariant,
+    Invariant,
+}
+
+impl LifetimeVariance {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Covariant => "covariant",
+            Self::Contravariant => "contravariant",
+            Self::Invariant => "invariant",
+        }
+    }
+}
+
 /// A struct exported via `#[ffier::export]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportedType {
@@ -431,6 +469,9 @@ pub struct Method {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub doc: Vec<String>,
     pub receiver: Receiver,
+    /// Explicit lifetime of a shared or mutable receiver (e.g. `"a"` for `&'a self`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_lifetime: Option<String>,
     /// Method-level lifetime params with original names (e.g. `["a"]` for `fn foo<'a>(...)`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub method_lifetimes: Vec<String>,
@@ -839,7 +880,27 @@ impl Library {
     }
 
     pub fn from_json(json: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(json)
+        let lib: Self = serde_json::from_str(json)?;
+        for (name, entry) in &lib.type_registry {
+            for (index, lifetime) in entry.lifetime_params.iter().enumerate() {
+                if entry.lifetime_params[..index]
+                    .iter()
+                    .any(|lt| lt.name == lifetime.name)
+                {
+                    return Err(serde::de::Error::custom(format!(
+                        "type `{name}` repeats lifetime '{}'",
+                        lifetime.name
+                    )));
+                }
+                if matches!(entry.kind, TypeKind::Handle { .. }) && lifetime.variance.is_none() {
+                    return Err(serde::de::Error::custom(format!(
+                        "opaque type `{name}` is missing variance for lifetime '{}'",
+                        lifetime.name
+                    )));
+                }
+            }
+        }
+        Ok(lib)
     }
 
     /// Look up a type entry by name.

@@ -618,7 +618,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(invariant('a)))]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {

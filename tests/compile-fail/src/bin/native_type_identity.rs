@@ -12,7 +12,7 @@ pub mod other {
 // A qualified inherent export can verify other::Foo while registration and
 // bridge metadata resolve Foo at the crate root. The generated plumbing must
 // be bound to the verified native type, not the same-named root type.
-#[ffier::export(send, sync)]
+#[ffier::export(send, sync, covariant('a))]
 impl<'a> other::Foo<'a> {}
 
 #[ffier::export]
