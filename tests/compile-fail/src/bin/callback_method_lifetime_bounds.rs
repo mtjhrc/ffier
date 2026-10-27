@@ -1,4 +1,4 @@
-//! expected-error: ffier callback lifetime bounds on generic parameters and where clauses are unsupported
+//! expected-error: ffier exported method lifetime bounds and where clauses are unsupported
 
 trait Backend {}
 #[ffier::export]

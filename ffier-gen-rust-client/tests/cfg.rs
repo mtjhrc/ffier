@@ -62,7 +62,7 @@ fn schema() -> Library {
             "*mut core::ffi::c_void": {"kind": {"primitive": {"c_type": "void*"}}},
             "BorrowedHandle": {
                 "kind": {"alias": {"alias_of": "*mut core::ffi::c_void"}},
-                "bless": "borrowed_handle", "lifetime_params": ["handle"]
+                "bless": "borrowed_handle", "lifetime_params": [{"name": "handle"}]
             },
             "Widget": {"kind": {"handle": {"c_name": "ProbeWidget"}}, "type_tag": 1},
             "WindowsOwner": {"kind": {"handle": {"c_name": "ProbeWindowsOwner"}}, "type_tag": 2},

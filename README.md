@@ -221,6 +221,12 @@ anything else. Validation may be added in a later version.
 - Strings as `ptr + len` (no null-terminator copies)
 - Builder pattern support (by-value self methods)
 - Lifetime-preserving borrowed handles
+- Explicit receiver lifetimes preserved in generated clients:
+  `fn apply<'a>(&'a self, overlay: &mut Overlay<'a>)` keeps the receiver
+  alive while the overlay retains its data. Opaque client handles preserve
+  explicitly declared, compiler-verified lifetime variance. Trait default
+  helpers preserve receiver mutability and the receiver tie of elided output
+  lifetimes.
 - `&[&str]` and `&[&T]` slice parameters
 - File descriptor passing (`OwnedFd`, `BorrowedFd`)
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
@@ -245,6 +251,37 @@ Clients can inspect and forward received payload errors, but cannot yet
 construct new ones. Mark a tuple field `#[ffier(opaque)]` to hide it, or mark
 the variant opaque to hide all its fields. Other fields remain inspectable.
 Payload errors use native `Display`, including details from opaque fields.
+
+## Opaque lifetime variance
+
+Every lifetime on an exported opaque type requires an explicit annotation:
+
+```rust
+pub struct Text<'a>(&'a str);
+
+#[ffier::export(covariant('a))]
+impl<'a> Text<'a> {
+    pub fn new(value: &'a str) -> Self { Self(value) }
+    pub fn value(&self) -> &str { self.0 }
+}
+```
+
+Use grouped `covariant('a, 'd)`, `contravariant('b)`, and `invariant('c)`
+arguments. Each lifetime must occur exactly once. There is no default.
+Covariance and contravariance require compiler-checked native coercions.
+Invariance conservatively restricts any native variance. The compiler checks
+each parameter independently while holding all other lifetime parameters fixed.
+Opaque exports support unconstrained lifetime parameters, not specialized,
+type-generic, const-generic, or lifetime-constrained exports.
+
+Strong and weak Rust clients preserve verified variance without changing C ABI.
+Lifetime shortening does not remove receiver borrows or allow owners to drop
+while borrowed handles still use their data. Foreign handles inherit variance
+from their imported Rust bindings.
+
+Schema `lifetime_params` entries contain ordered `name` and `variance` fields.
+Old name-only lists are rejected. Local opaque entries require variance;
+foreign entries record names without a local variance declaration.
 
 ## String representation
 

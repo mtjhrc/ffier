@@ -60,6 +60,12 @@
   `ffier::` call sites keep working, but `ffier_rt::` paths no longer resolve.
   `FfierObjectArray` gains `items`, `len`, and `is_empty` accessors for readers
   that must not free.
+- Require explicit `covariant`, `contravariant`, or `invariant` annotations
+  for every exported opaque lifetime. Rust verifies claimed covariance and
+  contravariance against the native type. Schema `lifetime_params` now contains
+  ordered objects with `name` and `variance`; old name-only lists are rejected.
+  Regenerate schemas and Rust clients together. C ABI does not change for
+  variance representation.
 - Reject conflicting FFI type names during bridge generation instead of
   silently overwriting schema entries. Exported types and traits must have
   unique names within a library, including names from other modules or crates
@@ -117,6 +123,10 @@
 - Look up static error messages through `{prefix}_result_message`, returning
   `FtStr` without an error handle or allocation. Generated fieldless `Display`
   writes this string directly; payload errors keep native formatting.
+- Preserve explicit shared and mutable receiver lifetimes in metadata,
+  schema, and native and generated method signatures. Retained local and
+  foreign handles and returned values tie to the receiver borrow, and callback
+  trampoline receivers must outlive their named borrows (`__T: Trait + 'lt`).
 
 ### Fixed
 
@@ -128,5 +138,21 @@
 - Forward native error handles from generated Rust callbacks instead of boxing
   client wrappers as native handles. Preserve error type tags, variant codes,
   and ownership when returning library errors through callbacks.
+- Preserve declared, compiler-verified variance for opaque client lifetimes.
+  Invariant native lifetimes cannot shorten through shared client references
+  and install shorter-lived borrows through interior-mutable native types.
+- Preserve receiver mutability and the receiver tie of elided output
+  lifetimes in extracted trait default helpers. `&mut self` defaults now
+  extract to `__self: &'lt mut (impl Trait + ?Sized)` and elided returns
+  borrow from the receiver, not from other parameters.
+
+### Changed
+
+- Reject typed `self` parameters (`self: &Self`), `'static` receivers on
+  vtable traits (use a named method lifetime or `no_vtable`), lifetime bounds
+  and where clauses other than `Self: Sized` on raw-handle methods, and named
+  reference lifetimes on non-byte slice parameters. These contracts cannot be
+  represented in the schema; they now fail at the macro instead of silently
+  weakening generated client signatures.
 
 ## 0.2.0
