@@ -1357,6 +1357,20 @@ pub fn source_next_sequence(mut source: impl SampleSource) -> Result<u32, TestEr
     Ok(source.next_sample()?.map_or(0, |sample| sample.sequence))
 }
 
+/// Nullable borrowed value struct: `None` is a null pointer on the wire.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn sample_optional_code(sample: Option<&InputEvent>) -> u32 {
+    sample.map_or(u32::MAX, |sample| u32::from(sample.payload.code))
+}
+
+/// Mutable nullable borrowed value struct: writes only when present.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn sample_bump_optional(sample: Option<&mut InputEvent>) {
+    if let Some(sample) = sample {
+        sample.payload.code += 1;
+    }
+}
+
 /// Plain `Option<ValueStruct>` return: the presence flag is the return value.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn sample_optional(selector: u32) -> Option<InputEvent> {
@@ -1752,6 +1766,8 @@ ffier::library_definition!("ft", library_tag = 1,
     fn source_next_sequence,
     fn sample_at,
     fn sample_optional,
+    fn sample_optional_code,
+    fn sample_bump_optional,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
     fn apply_foreign_config,
