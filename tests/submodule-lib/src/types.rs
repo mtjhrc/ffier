@@ -33,6 +33,16 @@ impl Default for Doubler {
     }
 }
 
+/// A fixed-layout value struct defined in a submodule (tests qualified
+/// registration paths for value structs).
+#[ffier::export]
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct Reading {
+    pub id: u32,
+    pub value: i32,
+}
+
 #[ffier::export]
 impl Doubler {
     pub fn new() -> Self {
@@ -41,5 +51,13 @@ impl Doubler {
 
     pub fn double(&self, counter: &Counter) -> i32 {
         counter.value * 2
+    }
+
+    pub fn double_reading(&self, reading: &Reading) -> i32 {
+        reading.value * 2
+    }
+
+    pub fn make_reading(&self, id: u32, value: i32) -> Reading {
+        Reading { id, value }
     }
 }

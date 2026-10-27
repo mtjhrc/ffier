@@ -115,6 +115,23 @@ mod tests {
     }
 
     #[test]
+    fn value_struct_in_submodule() {
+        use ffier_test_submodule_lib::Reading;
+
+        unsafe {
+            let d = subtest_doubler_new();
+            let reading = subtest_doubler_make_reading(d, 9, 21);
+            assert_eq!(reading.id, 9);
+            assert_eq!(reading.value, 21);
+            assert_eq!(subtest_doubler_double_reading(d, &reading), 42);
+            subtest_doubler_destroy(d);
+        }
+
+        // The type is the same one the library defines.
+        let _: Reading = Reading { id: 1, value: 2 };
+    }
+
+    #[test]
     fn destroy_null() {
         unsafe {
             subtest_counter_destroy(std::ptr::null_mut());

@@ -23,6 +23,43 @@ static void assert_ft_str_eq(FtStr s, const char* expected) {
 }
 
 /* ===================================================================== */
+/* Fixed-layout value structs                                            */
+/* ===================================================================== */
+
+void value_struct_inline_and_by_pointer(void) {
+    FtInputEvent event = ft_event_make(FT_LOG_LEVEL_WARN, 42);
+    assert(event.sequence == 42);
+    assert(event.level == FT_LOG_LEVEL_WARN);
+    assert(event.payload.code == 0);
+    assert(ft_event_sequence(event) == 42);
+    assert(ft_event_payload_code(&event) == 0);
+    ft_event_bump_payload_code(&event);
+    assert(ft_event_payload_code(&event) == 1);
+}
+
+void value_struct_result_return(void) {
+    FtEventPayload payload;
+    FtError err = NULL;
+    assert(ft_event_checked(7, &payload, &err) == FT_RESULT_SUCCESS);
+    assert(err == NULL);
+    assert(payload.code == 7);
+
+    assert(ft_event_checked(0, &payload, &err) != FT_RESULT_SUCCESS);
+    assert(err != NULL);
+    ft_error_destroy(err);
+}
+
+void value_struct_inline_field_of_struct(void) {
+    /* Nested value struct used as an inline field. */
+    FtInputEvent event = {0};
+    event.payload.code = 11;
+    event.payload.weight = 2.5f;
+    assert(ft_event_payload_code(&event) == 11);
+    ft_event_bump_payload_code(&event);
+    assert(event.payload.code == 12);
+}
+
+/* ===================================================================== */
 /* Constructor patterns                                                  */
 /* ===================================================================== */
 
@@ -775,6 +812,11 @@ int main(int argc, char** argv) {
     RUN_TEST(method_returning_result_optional_fd_some);
     RUN_TEST(method_returning_result_optional_fd_none);
     RUN_TEST(method_returning_result_optional_fd_err);
+
+    printf("\n[value structs]\n");
+    RUN_TEST(value_struct_inline_and_by_pointer);
+    RUN_TEST(value_struct_inline_field_of_struct);
+    RUN_TEST(value_struct_result_return);
 
     printf("\n[destroy]\n");
     RUN_TEST(destroy_handle);

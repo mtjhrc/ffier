@@ -1171,8 +1171,29 @@ impl Weighable for Apple {
 }
 
 // ---------------------------------------------------------------------------
-// Enum constants — plain enums exported as C #define constants
+// Fixed-layout value structs — passed inline or by pointer, no handles
 // ---------------------------------------------------------------------------
+
+/// Nested value struct: inner payload used as an inline field.
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EventPayload {
+    pub code: u16,
+    pub weight: f32,
+}
+
+/// Value struct containing scalars, an enum, bitflags, and a nested struct.
+#[cfg_attr(feature = "ffi", ffier::export)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InputEvent {
+    pub level: LogLevel,
+    pub permissions: Permissions,
+    pub sequence: u32,
+    pub active: bool,
+    pub payload: EventPayload,
+}
 
 #[cfg_attr(feature = "ffi", ffier::export)]
 #[repr(u32)]
@@ -1229,6 +1250,51 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 /// Count the number of gadgets in a slice and return the sum of their values.
 pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
     gadgets.iter().map(|g| g.value).sum()
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Read a value struct passed inline.
+pub fn event_sequence(event: InputEvent) -> u32 {
+    event.sequence
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Read a value struct through a shared pointer.
+pub fn event_payload_code(event: &InputEvent) -> u16 {
+    event.payload.code
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Mutate a value struct through a mutable pointer.
+pub fn event_bump_payload_code(event: &mut InputEvent) {
+    event.payload.code += 1;
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Return a value struct by value.
+pub fn event_make(level: LogLevel, sequence: u32) -> InputEvent {
+    InputEvent {
+        level,
+        permissions: Permissions::empty(),
+        sequence,
+        active: true,
+        payload: EventPayload {
+            code: 0,
+            weight: 0.0,
+        },
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Return a value struct inside a Result.
+pub fn event_checked(sequence: u32) -> Result<EventPayload, TestError> {
+    if sequence == 0 {
+        return Err(TestError::InvalidInput());
+    }
+    Ok(EventPayload {
+        code: sequence as u16,
+        weight: 1.5,
+    })
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1323,12 +1389,28 @@ pub mod optional_api {
     pub fn optional_merge_flags(a: OptionalFlags, b: OptionalFlags) -> OptionalFlags {
         a | b
     }
+
+    /// Value struct gated behind a Cargo feature — covers cfg on value structs.
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
+    #[repr(C)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct OptionalSample {
+        pub mode: OptionalMode,
+        pub flags: OptionalFlags,
+    }
+
+    #[cfg_attr(feature = "ffi", ffier::export(cfg = "feature = \"optional-entry\""))]
+    #[cfg_attr(not(feature = "ffi"), cfg(feature = "optional-entry"))]
+    pub fn optional_sample(sample: OptionalSample) -> u32 {
+        sample.mode as u32 + sample.flags.bits()
+    }
 }
 
 #[cfg(feature = "optional-entry")]
 pub use optional_api::{
-    OptionalFlags, OptionalMode, OptionalWidget, OptionalWorker, optional_apply,
-    optional_merge_flags, optional_mode_name,
+    OptionalFlags, OptionalMode, OptionalSample, OptionalWidget, OptionalWorker, optional_apply,
+    optional_merge_flags, optional_mode_name, optional_sample,
 };
 
 // ---------------------------------------------------------------------------
@@ -1516,7 +1598,11 @@ ffier::library_definition!("ft", library_tag = 1,
     enum crate::optional_api::OptionalMode,
     #[cfg(feature = "optional-entry")]
     bitflags crate::optional_api::OptionalFlags,
+    #[cfg(feature = "optional-entry")]
+    value crate::optional_api::OptionalSample,
     bitflags Permissions,
+    value EventPayload,
+    value InputEvent,
     fn log_level_name,
     fn log_level_is_enabled,
     #[cfg(feature = "optional-entry")]
@@ -1525,9 +1611,16 @@ ffier::library_definition!("ft", library_tag = 1,
     fn crate::optional_api::optional_mode_name,
     #[cfg(feature = "optional-entry")]
     fn crate::optional_api::optional_merge_flags,
+    #[cfg(feature = "optional-entry")]
+    fn crate::optional_api::optional_sample,
     fn categorizable_value,
     fn clone_fd,
     fn sum_gadget_values,
+    fn event_sequence,
+    fn event_payload_code,
+    fn event_bump_payload_code,
+    fn event_make,
+    fn event_checked,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
     fn apply_foreign_config,
