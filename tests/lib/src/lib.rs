@@ -15,8 +15,8 @@ pub use thread_api::{
 };
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use thread_api::{
-    SendBackend, SendCounter, SyncBackend, SyncCounter, ThreadBackend, borrow_send_backend,
-    share_sync_backend,
+    BackendWorker, SendBackend, SendCounter, SyncBackend, SyncCounter, ThreadBackend,
+    borrow_send_backend, own_sync_backend, run_thread_backend, share_sync_backend,
 };
 
 #[cfg(test)]
@@ -27,6 +27,10 @@ mod thread_tests {
 
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
 }
+
+mod variance;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use variance::{CovariantText, MixedVariance};
 
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
@@ -173,6 +177,27 @@ impl Widget {
 
     #[cfg(feature = "optional-entry")]
     pub fn optional_noop(&self) {}
+
+    /// Return a view that retains the receiver borrow.
+    pub fn view<'a>(&'a self) -> View<'a> {
+        View::create(self)
+    }
+
+    /// Return a view while retaining exclusive access to the receiver.
+    pub fn view_mut<'a>(&'a mut self) -> View<'a> {
+        View::create(self)
+    }
+
+    /// Retain this receiver in an existing view.
+    pub fn replace_view<'a>(&'a self, view: &mut View<'a>) {
+        view.source = self;
+    }
+
+    /// Return bytes with an explicit receiver lifetime.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn name_bytes<'a>(&'a self) -> &'a [u8] {
+        self.name.as_bytes()
+    }
 
     /// Get the current count.
     pub fn get_count(&self) -> i32 {
@@ -454,6 +479,15 @@ impl Widget {
     ) -> i32 {
         value.value().len() as i32
     }
+
+    /// Retain this receiver's name in a lifetime-bearing foreign handle.
+    pub fn replace_foreign_borrowed<'a>(
+        &'a self,
+        #[cfg_attr(feature = "ffi", ffier(foreign = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignBorrowed"))]
+        value: &mut ffier_test_foreign_lib_via_cdylib::ForeignBorrowed<'a>,
+    ) {
+        value.set_value(&self.name);
+    }
 }
 
 impl Default for Widget {
@@ -618,7 +652,7 @@ pub struct View<'a> {
     label: String,
 }
 
-#[cfg_attr(feature = "ffi", ffier::export(invariant('a)))]
+#[cfg_attr(feature = "ffi", ffier::export(send, sync, invariant('a)))]
 impl<'a> View<'a> {
     /// Create a view that borrows a widget.
     pub fn create(source: &'a Widget) -> Self {
@@ -657,6 +691,11 @@ impl<'a> View<'a> {
     /// Copy label from another snapshot (tests impl Trait auto-dispatch).
     pub fn copy_label(&mut self, other: impl Snapshot<'a>) {
         self.label = other.snap_description().to_owned();
+    }
+
+    /// Trait lifetime arguments do not imply value lifetime bounds.
+    pub fn snapshot_count<'b>(&self, other: impl Snapshot<'a> + 'b) -> i32 {
+        other.snap_source_count()
     }
 }
 
@@ -700,7 +739,68 @@ pub trait Processor {
     #[cfg_attr(feature = "ffi", ffier(index = 0))]
     fn process(&self, input: i32) -> i32;
     #[cfg_attr(feature = "ffi", ffier(index = 1))]
-    fn name(&self) -> &str;
+    #[allow(clippy::needless_lifetimes)]
+    fn name<'a>(&'a self) -> &'a str;
+}
+
+/// Defaults must retain the receiver borrow when extracted into helpers.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ReceiverDefaults {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn label(&self) -> &str;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn adjust(&mut self);
+
+    #[cfg_attr(feature = "ffi", ffier(index = 2))]
+    fn choose<'a>(&'a self, fallback: &'a str) -> &'a str {
+        if fallback.is_empty() {
+            self.label()
+        } else {
+            fallback
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 3))]
+    fn choose_mut<'a>(&'a mut self, fallback: &'a str) -> &'a str {
+        self.adjust();
+        if fallback.is_empty() {
+            self.label()
+        } else {
+            fallback
+        }
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 4))]
+    fn choose_elided(&self, _context: &str) -> &str {
+        self.label()
+    }
+
+    #[cfg_attr(feature = "ffi", ffier(index = 5))]
+    fn choose_mut_elided(&mut self, _context: &str) -> &str {
+        self.adjust();
+        self.label()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl ReceiverDefaults for Widget {
+    fn label(&self) -> &str {
+        &self.name
+    }
+
+    fn adjust(&mut self) {
+        self.count += 1;
+    }
+}
+
+/// Exercise callback overrides and library default fallback with tied borrows.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn probe_receiver_defaults(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] mut receiver: impl ReceiverDefaults,
+    fallback: &str,
+) -> usize {
+    receiver.choose(fallback).len() + receiver.choose_mut(fallback).len()
 }
 
 /// Empty traits have no virtual method slots, only the fixed drop callback.
@@ -1063,6 +1163,54 @@ impl Default for Mixer {
     }
 }
 
+/// Retains an owned callback after its constructor returns.
+pub struct RetainedFruit<'a> {
+    fruit: Box<dyn Fruit + 'a>,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export(invariant('a)))]
+impl<'a> RetainedFruit<'a> {
+    pub fn new(fruit: impl Fruit + 'a) -> Self {
+        Self {
+            fruit: Box::new(fruit),
+        }
+    }
+
+    pub fn new_dynamic(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'a,
+    ) -> Self {
+        Self::new(fruit)
+    }
+
+    pub fn new_static(
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'static,
+    ) -> Self {
+        Self::new(fruit)
+    }
+
+    pub fn value(&self) -> i32 {
+        self.fruit.value()
+    }
+
+    pub fn borrowed_value(&self, fruit: &(impl Fruit + 'a)) -> i32 {
+        fruit.value()
+    }
+
+    pub fn borrowed_value_dynamic(
+        &self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: &'_ (impl Fruit + 'a),
+    ) -> i32 {
+        fruit.value()
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn retain_fruit<'a>(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] fruit: impl Fruit + 'a,
+) -> RetainedFruit<'a> {
+    RetainedFruit::new(fruit)
+}
+
 // ---------------------------------------------------------------------------
 // Marker trait with supertrait — tests no_vtable (C can't implement, no
 // VtableCategorizable generated, but concrete dispatch still works)
@@ -1380,6 +1528,13 @@ impl SampleSource for FixedSource {
 /// Read one sample's sequence from a callback, defaulting to 0 when absent.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn source_next_sequence(mut source: impl SampleSource) -> Result<u32, TestError> {
+    borrowed_source_next_sequence(&mut source)
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn borrowed_source_next_sequence(
+    #[cfg_attr(feature = "ffi", ffier(dispatch = vtable))] source: &mut impl SampleSource,
+) -> Result<u32, TestError> {
     Ok(source.next_sample()?.map_or(0, |sample| sample.sequence))
 }
 
@@ -1708,6 +1863,18 @@ mod fieldless_error_client_tests {
     ));
 }
 
+#[cfg(test)]
+mod receiver_default_tests {
+    use super as api;
+
+    fn init() {}
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../receiver_defaults.rs"
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Library metadata — lists all exported types for batched generation
 // ---------------------------------------------------------------------------
@@ -1721,8 +1888,13 @@ ffier::library_definition!("ft", library_tag = 1,
     Widget = 2, Gadget = 3, Config = 4,
     Gizmo = 5, GizmoBuilder = 6,
     View<'_> = 7, ViewFactory = 8,
+    CovariantText<'_> = 44,
+    MixedVariance<'_, '_, '_, '_> = 46,
     Pipeline = 9,
     trait Processor = 10,
+    trait ReceiverDefaults = 43,
+    ReceiverDefaults for Widget,
+    fn probe_receiver_defaults,
     trait EmptyTrait = 31,
     trait RetiredTrait = 32,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,
@@ -1737,11 +1909,13 @@ ffier::library_definition!("ft", library_tag = 1,
     Fruit for Grape,
     Fruit for Lemon,
     Mixer = 21,
+    RetainedFruit<'_> = 100,
     Sprocket = 22,
     Attachment for Sprocket,
     trait Snapshot = 40,
     SendCounter = 47,
     SyncCounter = 48,
+    BackendWorker<'_> = 49,
     trait SendBackend = 37,
     SendBackend for SendCounter,
     trait SyncBackend = 38,
@@ -1750,6 +1924,8 @@ ffier::library_definition!("ft", library_tag = 1,
     ThreadBackend for Widget,
     fn borrow_send_backend,
     fn share_sync_backend,
+    fn own_sync_backend,
+    fn run_thread_backend,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,
@@ -1801,12 +1977,14 @@ ffier::library_definition!("ft", library_tag = 1,
     fn event_make,
     fn event_checked,
     fn source_next_sequence,
+    fn borrowed_source_next_sequence,
     fn sample_at,
     fn sample_optional,
     fn sample_optional_code,
     fn sample_bump_optional,
     fn opaque_round_trip,
     fn opaque_ptr_to_int,
+    fn retain_fruit,
     fn apply_foreign_config,
     fn read_foreign_item_score,
     fn double_foreign_item_score,
@@ -2931,6 +3109,66 @@ mod tests {
         process: Some(test_process),
         name: Some(test_processor_name),
     };
+
+    #[test]
+    fn retained_callback_bridge_ownership() {
+        use core::ffi::c_void;
+        use std::cell::Cell;
+
+        struct Data {
+            value: i32,
+            drops: Cell<usize>,
+        }
+        unsafe extern "C" fn value(data: *mut c_void) -> i32 {
+            unsafe { &*data.cast::<Data>() }.value
+        }
+        unsafe extern "C" fn drop_callback(data: *mut c_void) {
+            let data = unsafe { &*data.cast::<Data>() };
+            data.drops.set(data.drops.get() + 1);
+        }
+        static VTABLE: FruitVtable = FruitVtable {
+            _num_slots: 4,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: Some(drop_callback),
+            value: Some(value),
+            #[cfg(feature = "fruit-label")]
+            label: None,
+            try_count: None,
+            count_tags: None,
+        };
+        let data = Data {
+            value: 41,
+            drops: Cell::new(0),
+        };
+        let callback = || ffier::VtableHandle {
+            vtable_ptr: &VTABLE as *const _ as *const c_void,
+            user_data: &data as *const _ as *const c_void,
+        };
+        let raw = ffier::ffier_handle_new(VtableFruit::TYPE_TAG, unsafe {
+            VtableFruit::from_value(callback())
+        });
+        let retained = unsafe { ft_retained_fruit_new_dynamic(raw) };
+        assert_eq!(data.drops.get(), 0);
+        assert_eq!(unsafe { ft_retained_fruit_value(retained) }, 41);
+        let mut borrowed = ffier::FfierHandle {
+            type_tag: VtableFruit::TYPE_TAG,
+            metadata: 0,
+            value: callback(),
+        };
+        assert_eq!(
+            unsafe {
+                ft_retained_fruit_borrowed_value_dynamic(
+                    retained,
+                    &mut borrowed as *mut _ as *mut c_void,
+                )
+            },
+            41
+        );
+        assert_eq!(data.drops.get(), 0);
+        unsafe { ft_retained_fruit_destroy(retained) };
+        assert_eq!(data.drops.get(), 1);
+    }
 
     fn make_processor_handle(user_data: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
         unsafe {

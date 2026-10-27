@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 ffier = { path = "../../ffier" }
+ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib", optional = true }
 ffier-test-lib = { path = "../lib", optional = true }
 ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
 
@@ -14,3 +15,5 @@ ffier-test-lib-via-cdylib = { path = "../lib-via-cdylib", optional = true }
 native = ["dep:ffier-test-lib"]
 via-cdylib = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib/ffier-strong"]
 weak-client = ["dep:ffier-test-lib-via-cdylib", "ffier-test-lib-via-cdylib/ffier-dynlookup"]
+# Generated-client escape fixtures: link the cdylib client bindings.
+receiver-escapes = ["via-cdylib", "dep:ffier-test-foreign-lib-via-cdylib"]

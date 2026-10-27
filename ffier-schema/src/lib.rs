@@ -1151,3 +1151,51 @@ impl Library {
         result.map(|(name, entry)| (name.as_str(), entry))
     }
 }
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    fn library_with_lifetimes(params: Value) -> Result<Library, serde_json::Error> {
+        Library::from_json(&json!({
+            "prefix": "test", "exported_types": [], "errors": [], "traits": [], "trait_impls": [],
+            "type_registry": {"Opaque": {
+                "kind": {"handle": {"c_name": "Opaque"}}, "type_tag": 1, "lifetime_params": params
+            }}
+        }).to_string())
+    }
+
+    #[test]
+    fn opaque_schema_rejects_missing_or_duplicate_variance_entries() {
+        for (params, message) in [
+            (json!([{"name": "a"}]), "missing variance"),
+            (
+                json!([
+                    {"name": "a", "variance": "covariant"},
+                    {"name": "a", "variance": "invariant"}
+                ]),
+                "repeats lifetime",
+            ),
+        ] {
+            assert!(
+                library_with_lifetimes(params)
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
+        }
+    }
+
+    #[test]
+    fn registration_ignores_names_but_compares_variance() {
+        let library =
+            library_with_lifetimes(json!([{"name": "a", "variance": "covariant"}])).unwrap();
+        let entry = &library.type_registry["Opaque"];
+        let mut other = entry.clone();
+        other.lifetime_params[0].name = "renamed".into();
+        assert!(entry.same_registration(&other));
+        other.lifetime_params[0].variance = Some(LifetimeVariance::Invariant);
+        assert!(!entry.same_registration(&other));
+    }
+}

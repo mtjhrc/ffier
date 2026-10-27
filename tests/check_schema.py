@@ -29,6 +29,17 @@ def check_schema(schema_path: Path) -> None:
     schema = json.loads(schema_path.read_text())
     schema_text = json.dumps(schema)
 
+    lifetimes = schema["type_registry"]
+    assert lifetimes["CovariantText"]["lifetime_params"] == [
+        {"name": "a", "variance": "covariant"}
+    ]
+    assert lifetimes["MixedVariance"]["lifetime_params"] == [
+        {"name": "a", "variance": "covariant"},
+        {"name": "b", "variance": "contravariant"},
+        {"name": "c", "variance": "invariant"},
+        {"name": "d", "variance": "covariant"},
+    ]
+
     traits = {trait["name"]: trait for trait in schema["traits"]}
     expected_slots = {"EmptyTrait": 0, "RetiredTrait": 3, "Processor": 2, "Fruit": 4}
     for name, count in expected_slots.items():
@@ -60,6 +71,34 @@ def check_schema(schema_path: Path) -> None:
         assert data["fields"][0]["type_ref"]["type"] == type_name
     assert all("constructible" not in v and "is_unit" not in v for v in error["variants"])
 
+    widget = next(item for item in schema["exported_types"] if item["name"] == "Widget")
+    methods = {method["name"]: method for method in widget["methods"]}
+    for name in ["view", "view_mut", "replace_view", "name_bytes", "replace_foreign_borrowed"]:
+        assert methods[name]["receiver_lifetime"] == "a"
+        assert methods[name]["method_lifetimes"] == ["a"]
+    assert "receiver_lifetime" not in methods["new"]
+    assert "receiver_lifetime" not in methods["name"]
+    foreign = next(p for p in methods["replace_foreign_borrowed"]["params"] if p["name"] == "value")
+    assert foreign["type_args"] == ["a"]
+    assert foreign["ref_kind"] == "mut"
+    processor = next(item for item in schema["traits"] if item["name"] == "Processor")
+    name = next(method for method in processor["methods"] if method["name"] == "name")
+    assert name["receiver_lifetime"] == "a"
+    assert name["ret"]["ref_lifetime"] == "a"
+    receiver_defaults = next(
+        item for item in schema["traits"] if item["name"] == "ReceiverDefaults"
+    )
+    assert receiver_defaults["num_slots"] == 6
+    choose = next(
+        method for method in receiver_defaults["methods"] if method["name"] == "choose"
+    )
+    assert choose["receiver_lifetime"] == "a"
+    assert choose["method_lifetimes"] == ["a"]
+    choose_elided = next(
+        method for method in receiver_defaults["methods"] if method["name"] == "choose_elided"
+    )
+    assert "receiver_lifetime" not in choose_elided
+
     missing_names = [name for name in EXPECTED_NAMES if name not in schema_text]
     if missing_names:
         raise AssertionError(
@@ -76,6 +115,40 @@ def check_schema(schema_path: Path) -> None:
         raise AssertionError(f"expected >=8 cfg-gated items, got {len(cfg_items)}")
     assert all(isinstance(item["cfg"], dict) for item in cfg_items)
     assert all("kind" in item["cfg"] for item in cfg_items)
+
+    def method_param(owner: str, name: str) -> dict:
+        item = next(item for item in schema["exported_types"] if item["name"] == owner)
+        return next(method for method in item["methods"] if method["name"] == name)["params"][0]
+
+    assert method_param("RetainedFruit", "new_static")["lifetime_bounds"] == ["static"]
+    assert method_param("RetainedFruit", "new_dynamic")["lifetime_bounds"] == ["a"]
+    snapshot = method_param("View", "snapshot_count")
+    assert snapshot["type_args"] == ["a"]
+    assert snapshot["lifetime_bounds"] == ["b"]
+    assert method_param("RetainedFruit", "borrowed_value")["ref_kind"] == "shared"
+    assert method_param("RetainedFruit", "borrowed_value_dynamic")["ref_lifetime"] == "_"
+    borrowed_source = next(
+        item for item in schema["free_functions"] if item["name"] == "borrowed_source_next_sequence"
+    )
+    assert borrowed_source["params"][0]["ref_kind"] == "mut"
+    retain = next(item for item in schema["free_functions"] if item["name"] == "retain_fruit")
+    assert retain["lifetimes"] == ["a"]
+    assert retain["ret"]["type_args"] == ["a"]
+
+    def guarantees(section: str, name: str) -> dict:
+        item = next(item for item in schema[section] if item["name"] == name)
+        return item.get("thread_safety", {})
+
+    assert guarantees("exported_types", "Widget") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "View") == {"send": True, "sync": True}
+    assert guarantees("exported_types", "SendCounter") == {"send": True}
+    assert guarantees("exported_types", "SyncCounter") == {"sync": True}
+    assert guarantees("exported_types", "BackendWorker") == {"send": True}
+    assert guarantees("exported_types", "Gadget") == {}
+    assert guarantees("traits", "SendBackend") == {"send": True}
+    assert guarantees("traits", "SyncBackend") == {"sync": True}
+    assert guarantees("traits", "ThreadBackend") == {"send": True, "sync": True}
+    assert guarantees("traits", "Fruit") == {}
 
 
 def main() -> None:

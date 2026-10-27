@@ -1,9 +1,13 @@
 //! features: via-cdylib
 //! expected-error: unsafe and requires unsafe block
 
-use ffier_test_lib_via_cdylib as api;
+#[path = "../callback.rs"]
+mod callback;
+use callback::{BorrowedFruit, api};
 
 fn main() {
-    let raw = api::Widget::new().__into_raw();
-    let _forged = api::Widget::__from_raw(raw);
+    let local = 1;
+    let retained = api::RetainedFruit::new_dynamic(BorrowedFruit(&local));
+    let raw = retained.__into_raw();
+    let _forged: api::RetainedFruit<'static> = api::RetainedFruit::__from_raw(raw);
 }

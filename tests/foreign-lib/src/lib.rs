@@ -70,6 +70,10 @@ impl<'a> ForeignBorrowed<'a> {
     pub fn value(&self) -> &str {
         self.value
     }
+
+    pub fn set_value(&mut self, value: &'a str) {
+        self.value = value;
+    }
 }
 
 #[ffier::export]
