@@ -6,9 +6,10 @@ publish = false
 
 [features]
 ffier-strong = []
-ffier-dynlookup = []
+ffier-dynlookup = ["dep:libloading"]
 
 [dependencies]
+libloading = { version = "0.8", optional = true }
 ffier = { package = "ffier-rt", path = "../../ffier-rt" }
 
 [build-dependencies]

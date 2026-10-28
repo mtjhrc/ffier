@@ -5,15 +5,15 @@
 // The bindings below are generated source code, NOT macro invocations.
 // build.rs regenerates them from the library's JSON schema on every build.
 #![allow(clippy::should_implement_trait)]
-#![cfg(unix)]
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+include!("../../load_dll.rs");
 
 #[cfg(test)]
 mod thread_tests {
     use crate as api;
 
-    fn init() {}
+    use super::init;
 
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
 }
@@ -24,11 +24,21 @@ unsafe extern "C" {
 }
 
 #[cfg(test)]
+fn init() {
+    #[cfg(all(windows, not(feature = "ffier-strong")))]
+    {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| unsafe {
+            set_library_handle(Some(load_test_dll("ffier_test_lib"))).unwrap();
+        });
+    }
+    ffier_test_foreign_lib_via_cdylib::init_for_tests();
+}
+
+#[cfg(test)]
 mod callback_errors {
+    use super::init;
     use crate as api;
-
-    fn init() {}
-
     include!("callback_errors.rs");
 }
 
@@ -36,7 +46,7 @@ mod callback_errors {
 mod receiver_default_tests {
     use crate as api;
 
-    fn init() {}
+    use super::init;
 
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -48,7 +58,7 @@ mod receiver_default_tests {
 mod variance_tests {
     use crate as api;
 
-    fn init() {}
+    use super::init;
 
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -69,6 +79,10 @@ mod unloaded_fieldless_errors {
 
     #[test]
     fn fieldless_values_need_no_symbols_and_display_only_needs_result_message() {
+        #[cfg(all(windows, not(feature = "ffier-strong")))]
+        unsafe {
+            api::set_library_handle(Some(crate::load_test_dll("ffier_test_lib"))).unwrap();
+        }
         let custom = api::TestError::CustomMessage;
         let invalid = api::TestError::InvalidInput();
         assert!(matches!(custom, api::TestError::CustomMessage));
@@ -95,6 +109,7 @@ mod tests {
     #[test]
     #[cfg(feature = "ffier-strong")]
     fn generated_empty_trait_vtable_has_no_method_slots() {
+        init();
         use std::cell::Cell;
         use std::mem::size_of;
         use std::rc::Rc;
@@ -139,6 +154,7 @@ mod tests {
     #[cfg(any(not(feature = "ffier-strong"), feature = "optional-entry"))]
     #[test]
     fn optional_api_is_discoverable_without_its_schema_feature() {
+        init();
         require(&[
             Symbol::FtOptionalWidgetNew,
             Symbol::FtOptionalWidgetDestroy,
@@ -173,12 +189,14 @@ mod tests {
 
     #[test]
     fn static_method_returning_self() {
+        init();
         let w = Widget::new();
         assert_eq!(w.get_count(), 0);
     }
 
     #[test]
     fn static_method_returning_self_with_str_param() {
+        init();
         let w = Widget::with_name("hello");
         assert_eq!(w.name(), "hello");
     }
@@ -189,12 +207,14 @@ mod tests {
 
     #[test]
     fn immutable_ref_method_returning_primitive() {
+        init();
         let w = Widget::new();
         assert_eq!(w.get_count(), 0);
     }
 
     #[test]
     fn mutable_ref_method_void_return() {
+        init();
         let mut w = Widget::new();
         w.set_count(42);
         assert_eq!(w.get_count(), 42);
@@ -202,6 +222,7 @@ mod tests {
 
     #[test]
     fn by_value_method_void_return() {
+        init();
         let w = Widget::new();
         w.consume();
     }
@@ -212,12 +233,14 @@ mod tests {
 
     #[test]
     fn method_returning_bool() {
+        init();
         let w = Widget::new();
         assert!(w.is_active());
     }
 
     #[test]
     fn method_with_i64_param_returning_i64() {
+        init();
         let w = Widget::new();
         assert_eq!(w.negate(42), -42);
         assert_eq!(w.negate(-100), 100);
@@ -230,18 +253,21 @@ mod tests {
 
     #[test]
     fn method_returning_str() {
+        init();
         let w = Widget::new();
         assert_eq!(w.name(), "widget");
     }
 
     #[test]
     fn method_returning_bytes() {
+        init();
         let w = Widget::with_name("abc");
         assert_eq!(w.data(), b"abc");
     }
 
     #[test]
     fn method_with_str_param_returning_str() {
+        init();
         let w = Widget::new();
         assert_eq!(w.echo("ping"), "ping");
     }
@@ -252,6 +278,7 @@ mod tests {
 
     #[test]
     fn method_with_str_slice_param() {
+        init();
         let mut w = Widget::new();
         w.set_tags(&["alpha", "beta", "gamma"]);
         assert_eq!(w.tags_joined(), "alpha,beta,gamma");
@@ -263,12 +290,14 @@ mod tests {
 
     #[test]
     fn method_returning_result_void_ok() {
+        init();
         let w = Widget::new();
         assert!(w.validate().is_ok());
     }
 
     #[test]
     fn method_returning_result_void_err() {
+        init();
         let w = Widget::new();
         let err = w.fail_always().unwrap_err();
         assert!(matches!(err, TestError::CustomMessage));
@@ -276,12 +305,14 @@ mod tests {
 
     #[test]
     fn method_returning_result_value_ok() {
+        init();
         let w = Widget::new();
         assert_eq!(w.parse_count("hello").unwrap(), 5);
     }
 
     #[test]
     fn method_returning_result_value_err() {
+        init();
         let w = Widget::new();
         let err = w.parse_count("error").unwrap_err();
         assert!(matches!(err, TestError::NotFound(..)));
@@ -289,6 +320,7 @@ mod tests {
 
     #[test]
     fn method_returning_result_str_ok() {
+        init();
         let w = Widget::new();
         assert_eq!(w.describe(0).unwrap(), "zero");
         assert_eq!(w.describe(1).unwrap(), "one");
@@ -296,6 +328,7 @@ mod tests {
 
     #[test]
     fn method_returning_result_str_err() {
+        init();
         let w = Widget::new();
         let err = w.describe(99).unwrap_err();
         assert!(matches!(err, TestError::NotFound(..)));
@@ -303,6 +336,7 @@ mod tests {
 
     #[test]
     fn method_returning_result_handle_ok() {
+        init();
         let mut w = Widget::new();
         w.set_count(7);
         let g = w.try_create_gadget(true).unwrap();
@@ -311,6 +345,7 @@ mod tests {
 
     #[test]
     fn method_returning_result_handle_err() {
+        init();
         let w = Widget::new();
         let err = w.try_create_gadget(false).unwrap_err();
         assert!(matches!(err, TestError::NotFound(..)));
@@ -318,6 +353,7 @@ mod tests {
 
     #[test]
     fn method_returning_result_fail_with_value() {
+        init();
         let w = Widget::new();
         let err = w.fail_with_value().unwrap_err();
         assert!(matches!(err, TestError::InvalidInput(..)));
@@ -329,6 +365,7 @@ mod tests {
 
     #[test]
     fn method_with_borrowed_handle_param() {
+        init();
         let mut w = Widget::new();
         w.set_count(10);
         let g = w.create_gadget();
@@ -337,6 +374,7 @@ mod tests {
 
     #[test]
     fn method_with_mutable_handle_param() {
+        init();
         let w = Widget::new();
         let mut g = w.create_gadget();
         assert_eq!(g.get(), 0);
@@ -346,6 +384,7 @@ mod tests {
 
     #[test]
     fn method_returning_handle() {
+        init();
         let mut w = Widget::new();
         w.set_count(33);
         let g = w.create_gadget();
@@ -354,6 +393,7 @@ mod tests {
 
     #[test]
     fn method_returning_borrowed_handle() {
+        init();
         let w = Widget::new();
         // Widget has an internal gadget with value 42.
         let g = w.gadget();
@@ -372,6 +412,7 @@ mod tests {
 
     #[test]
     fn builder_method_returning_self() {
+        init();
         let c = Config::new().set_name("myconfig").set_size(42);
         assert_eq!(c.get_name(), "myconfig");
         assert_eq!(c.get_size(), 42);
@@ -379,18 +420,21 @@ mod tests {
 
     #[test]
     fn builder_method_returning_result_self_ok() {
+        init();
         let c = Config::new().set_name("valid").validated().unwrap();
         assert_eq!(c.get_name(), "valid");
     }
 
     #[test]
     fn builder_method_returning_result_self_err() {
+        init();
         let err = Config::new().validated().unwrap_err();
         assert!(matches!(err, TestError::InvalidInput(..)));
     }
 
     #[test]
     fn builder_consuming_self_returning_other_handle() {
+        init();
         let mut b = GizmoBuilder::new();
         b.set_name("mygizmo");
         b.set_size(100);
@@ -401,6 +445,7 @@ mod tests {
 
     #[test]
     fn builder_consuming_self_returning_result_handle_ok() {
+        init();
         let mut b = GizmoBuilder::new();
         b.set_name("valid");
         b.set_size(50);
@@ -411,6 +456,7 @@ mod tests {
 
     #[test]
     fn builder_consuming_self_returning_result_handle_err() {
+        init();
         let b = GizmoBuilder::new();
         // name empty — try_build() should fail
         let err = b.try_build().unwrap_err();
@@ -423,6 +469,7 @@ mod tests {
 
     #[test]
     fn error_display() {
+        init();
         // Payloads use native Display; fieldless variants use static ABI messages.
         let w = Widget::new();
         // describe(99) → NotFound("code 99")
@@ -442,6 +489,7 @@ mod tests {
 
     #[test]
     fn lifetime_type_borrowing_handle() {
+        init();
         let mut w = Widget::new();
         w.set_count(77);
         let v = View::create(&w);
@@ -450,6 +498,7 @@ mod tests {
 
     #[test]
     fn lifetime_type_str_methods() {
+        init();
         let w = Widget::new();
         let mut v = View::create(&w);
         assert_eq!(v.label(), "default");
@@ -463,6 +512,7 @@ mod tests {
 
     #[test]
     fn lifetime_trait_impl_compiles() {
+        init();
         let w = Widget::new();
         let v = View::create(&w);
         // Verifies impl<'a> Snapshot<'a> for View<'a> generated correctly
@@ -536,7 +586,9 @@ mod tests {
     // ================================================================
 
     #[test]
+    #[cfg(unix)]
     fn free_fn_clone_fd_via_rust_bindings() {
+        init();
         use std::os::unix::io::{AsFd, AsRawFd};
         let stdout = std::io::stdout();
         let cloned = clone_fd(stdout.as_fd()).unwrap();
@@ -550,6 +602,7 @@ mod tests {
 
     #[test]
     fn destroy_via_drop() {
+        init();
         let _w = Widget::new();
         // Drop runs ft_widget_destroy automatically
     }
@@ -560,6 +613,7 @@ mod tests {
 
     #[test]
     fn foreign_apply_config() {
+        init();
         let mut w = Widget::new();
         let config = ffier_test_foreign_lib_via_cdylib::ForeignConfig::new("imported", 99);
         apply_foreign_config(&mut w, &config);
@@ -569,12 +623,14 @@ mod tests {
 
     #[test]
     fn foreign_read_item_score() {
+        init();
         let item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("test", 42);
         assert_eq!(read_foreign_item_score(&item), 42);
     }
 
     #[test]
     fn foreign_create_item() {
+        init();
         let item = create_foreign_item("created", 7);
         assert_eq!(item.label(), "created");
         assert_eq!(item.score(), 7);
@@ -582,6 +638,7 @@ mod tests {
 
     #[test]
     fn foreign_create_config_checked_ok() {
+        init();
         let config = create_foreign_config_checked("valid", 55).unwrap();
         assert_eq!(config.name(), "valid");
         assert_eq!(config.value(), 55);
@@ -589,12 +646,14 @@ mod tests {
 
     #[test]
     fn foreign_create_config_checked_err() {
+        init();
         let err = create_foreign_config_checked("", 0).unwrap_err();
         assert!(matches!(err, TestError::NotFound(_)));
     }
 
     #[test]
     fn foreign_mut_param() {
+        init();
         let mut item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("test", 10);
         double_foreign_item_score(&mut item);
         assert_eq!(item.score(), 20);
@@ -602,6 +661,7 @@ mod tests {
 
     #[test]
     fn foreign_by_value_param() {
+        init();
         let item = ffier_test_foreign_lib_via_cdylib::ForeignItem::new("consumed", 33);
         let score = consume_foreign_item(item);
         assert_eq!(score, 33);
@@ -610,6 +670,7 @@ mod tests {
 
     #[test]
     fn foreign_param_on_method() {
+        init();
         let mut w = Widget::new();
         let config = ffier_test_foreign_lib_via_cdylib::ForeignConfig::new("method", 77);
         w.apply_config(&config);
@@ -619,6 +680,7 @@ mod tests {
 
     #[test]
     fn foreign_lifetime_handle_param() {
+        init();
         let text = String::from("borrowed");
         let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
         let w = Widget::new();

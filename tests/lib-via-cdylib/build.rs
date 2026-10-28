@@ -12,16 +12,18 @@ fn main() {
 
     ffier_test_codegen::write_rust_client(&lib, &out_dir, None).expect("client bindings");
 
-    #[cfg(unix)]
     link_test_lib(workspace_root);
 }
 
 /// Locate the test lib cdylib, linking it only in strong mode. It is built by the
 /// `build` recipe in tests/justfile before any test crate runs.
-#[cfg(unix)]
 fn link_test_lib(workspace_root: &std::path::Path) {
     let target_dir = workspace_root.join("target").join("debug");
     println!("cargo:rustc-link-search=native={}", target_dir.display());
-    #[cfg(feature = "ffier-strong")]
-    println!("cargo:rustc-link-lib=dylib=ffier_test_lib");
+    let name = if cfg!(windows) {
+        "ffier_test_lib.dll"
+    } else {
+        "ffier_test_lib"
+    };
+    println!("cargo:rustc-link-lib=dylib={name}");
 }
