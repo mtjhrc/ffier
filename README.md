@@ -354,3 +354,7 @@ your library            ffier-impl
 cargo test              # unit + integration tests
 just check              # fmt + clippy + full test suite (incl. no-codegen build)
 ```
+
+The native test runner keeps the shared API suite and the platform FD/HANDLE
+suite separate. Run `python3 tests/run.py platform-cfg` for the latter.
+Linux additionally runs Valgrind and both Miri models.
