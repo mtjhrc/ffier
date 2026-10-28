@@ -3,9 +3,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef _WIN32
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <windows.h>
+#endif
 #include "ffier_test.h"
 
 static int test_count = 0;
@@ -309,6 +313,7 @@ void method_with_bytes_param(void) {
 /* File descriptor params                                                */
 /* ===================================================================== */
 
+#ifndef _WIN32
 void method_with_borrowed_fd_param(void) {
     FtWidget w = ft_widget_new();
     /* stdin is fd 0 */
@@ -316,7 +321,9 @@ void method_with_borrowed_fd_param(void) {
     assert(fd_num == STDIN_FILENO);
     ft_widget_destroy(w);
 }
+#endif
 
+#ifndef _WIN32
 void method_with_borrowed_fd_returning_owned_fd(void) {
     FtWidget w = ft_widget_new();
     /* dup stdout */
@@ -326,6 +333,7 @@ void method_with_borrowed_fd_returning_owned_fd(void) {
     close(new_fd);
     ft_widget_destroy(w);
 }
+#endif
 
 /* ===================================================================== */
 /* Result return patterns                                                */
@@ -644,6 +652,7 @@ void error_payload_uses_native_field_indices(void) {
     ft_widget_destroy(widget);
 }
 
+#ifndef _WIN32
 static void assert_payload_access_aborts(FtError error, size_t index, size_t buf_size) {
     pid_t child = fork();
     assert(child >= 0);
@@ -681,6 +690,8 @@ void error_payload_invalid_access_aborts(void) {
         ft_error_destroy(error);
     }
 }
+
+#endif
 
 /* ===================================================================== */
 /* Vtable / implementable                                                */
@@ -826,6 +837,7 @@ void lifetime_type_str_methods(void) {
 /* Optional fd (Result<Option<BorrowedFd>, E>)                          */
 /* ===================================================================== */
 
+#ifndef _WIN32
 void method_returning_result_optional_fd_some(void) {
     FtWidget w = ft_widget_new();
     int fd = -1;
@@ -834,7 +846,9 @@ void method_returning_result_optional_fd_some(void) {
     assert(fd == 0); /* stdin */
     ft_widget_destroy(w);
 }
+#endif
 
+#ifndef _WIN32
 void method_returning_result_optional_fd_none(void) {
     FtWidget w = ft_widget_new();
     int fd = 99;
@@ -843,7 +857,9 @@ void method_returning_result_optional_fd_none(void) {
     assert(fd == -1); /* None sentinel */
     ft_widget_destroy(w);
 }
+#endif
 
+#ifndef _WIN32
 void method_returning_result_optional_fd_err(void) {
     FtWidget w = ft_widget_new();
     int fd = 99;
@@ -851,6 +867,7 @@ void method_returning_result_optional_fd_err(void) {
     assert(r == FT_ERROR_TEST_INVALID_INPUT);
     ft_widget_destroy(w);
 }
+#endif
 
 /* ===================================================================== */
 /* Destroy                                                               */
@@ -872,10 +889,32 @@ void destroy_null_handle(void) {
 /* ===================================================================== */
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
+    if (argc == 5 && strcmp(argv[1], "--payload-abort-case") == 0) {
+        FtError error = NULL;
+        FtWidget widget = NULL;
+        if (strcmp(argv[2], "mixed") == 0) {
+            widget = ft_widget_new();
+            assert(ft_widget_fail_with_mixed(widget, &error) == FT_ERROR_TEST_MIXED_ERROR);
+        } else {
+            assert(strcmp(argv[2], "unit") == 0 || strcmp(argv[2], "empty") == 0);
+            error = ft_error_new(strcmp(argv[2], "unit") == 0 ? FT_ERROR_TEST_CUSTOM_MESSAGE : FT_ERROR_TEST_INVALID_INPUT);
+        }
+        assert(error != NULL);
+        uint64_t output = 0;
+        ft_error_payload(error, (size_t)strtoull(argv[3], NULL, 10), &output, (size_t)strtoull(argv[4], NULL, 10));
+        ft_error_destroy(error);
+        if (widget != NULL) ft_widget_destroy(widget);
+        return 0; /* The parent requires an abort, so returning is a failure. */
+    }
+#ifndef _WIN32
     if (argc == 2 && strcmp(argv[1], "--payload-abort-tests") == 0) {
         RUN_TEST(error_payload_invalid_access_aborts);
         return 0;
     }
+#endif
     assert(argc == 1);
     printf("Running ffier C integration tests...\n");
 
@@ -902,8 +941,12 @@ int main(int argc, char** argv) {
     RUN_TEST(method_with_bytes_param);
 
     printf("\n[file descriptors]\n");
+    #ifndef _WIN32
     RUN_TEST(method_with_borrowed_fd_param);
+    #endif
+    #ifndef _WIN32
     RUN_TEST(method_with_borrowed_fd_returning_owned_fd);
+    #endif
 
     printf("\n[result returns]\n");
     RUN_TEST(method_returning_result_void_ok);
@@ -951,9 +994,15 @@ int main(int argc, char** argv) {
     RUN_TEST(lifetime_type_str_methods);
 
     printf("\n[optional fd]\n");
+    #ifndef _WIN32
     RUN_TEST(method_returning_result_optional_fd_some);
+    #endif
+    #ifndef _WIN32
     RUN_TEST(method_returning_result_optional_fd_none);
+    #endif
+    #ifndef _WIN32
     RUN_TEST(method_returning_result_optional_fd_err);
+    #endif
 
     printf("\n[value structs]\n");
     RUN_TEST(value_struct_inline_and_by_pointer);
