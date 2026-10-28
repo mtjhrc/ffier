@@ -366,9 +366,9 @@ pub fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
             let MetaParamKind::ImplTrait { trait_name, .. } = &param.kind else {
                 continue;
             };
-            if !trait_map
+            if trait_map
                 .get(trait_name)
-                .is_some_and(|info| info.implementable.is_some())
+                .is_none_or(|info| info.implementable.is_none())
             {
                 let message = format!(
                     "ffier: callback trait `{trait_name}` requires a registered exported trait definition to preserve its supertrait and lifetime contracts; annotate the trait and register `trait {trait_name}` in library_definition! (use no_vtable for concrete dispatch only)",
@@ -1645,58 +1645,62 @@ fn generate_free_fn_bridge(
     let fn_path = &meta.fn_path;
     let fn_pfx = meta.fn_pfx();
 
-    // A free function has exactly one "method" in its methods list.
-    let m = &meta.methods[0];
-    let ffi_name_str = format!("{}{}", fn_pfx, meta.ffi_name);
-    let ffi_name = format_ident!("{}", ffi_name_str);
+    meta.methods
+        .iter()
+        .map(|m| {
+            let ffi_name_str = format!("{}{}", fn_pfx, meta.ffi_name);
+            let ffi_name = format_ident!("{}", ffi_name_str);
 
-    // Use the same signature builder as methods.
-    let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
+            // Use the same signature builder as methods.
+            let c_sig =
+                c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
-    // Shared param conversion + impl Trait dispatch.
-    let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
-        Ok(cp) => cp,
-        Err(err) => return err,
-    };
+            // Shared param conversion + impl Trait dispatch.
+            let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+                Ok(cp) => cp,
+                Err(err) => return err,
+            };
 
-    let converted_args = &cp.converted_args;
-    let base_method_call = quote! { #fn_path(#(#converted_args),*) };
-    let method_call = wrap_concrete_dispatch(
-        base_method_call,
-        &cp.concrete_dispatch_params,
-        &ffi_name_str,
-        lib_crate,
-    );
+            let converted_args = &cp.converted_args;
+            let base_method_call = quote! { #fn_path(#(#converted_args),*) };
+            let method_call = wrap_concrete_dispatch(
+                base_method_call,
+                &cp.concrete_dispatch_params,
+                &ffi_name_str,
+                lib_crate,
+            );
 
-    let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
-    let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
-    let sig_ret = &c_sig.ret;
-    let pre_bindings = &cp.pre_bindings;
-    let vtable_pre_bindings = &cp.vtable_pre_bindings;
+            let sig_names: Vec<_> = c_sig.params.iter().map(|p| &p.name).collect();
+            let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
+            let sig_ret = &c_sig.ret;
+            let pre_bindings = &cp.pre_bindings;
+            let vtable_pre_bindings = &cp.vtable_pre_bindings;
 
-    let return_body = wrap_return(
-        method_call,
-        &m.ret,
-        &m.rust_ret,
-        handle_types,
-        value_types,
-        error_map,
-        None,
-        lib_crate,
-    );
+            let return_body = wrap_return(
+                method_call,
+                &m.ret,
+                &m.rust_ret,
+                handle_types,
+                value_types,
+                error_map,
+                None,
+                lib_crate,
+            );
 
-    let cfg_attr = m.cfg_attr();
-    quote! {
-        #cfg_attr
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #ffi_name(
-            #(#sig_names: #sig_types),*
-        ) #sig_ret {
-            #(#vtable_pre_bindings)*
-            #(#pre_bindings)*
-            #return_body
-        }
-    }
+            let cfg_attr = m.cfg_attr();
+            quote! {
+                #cfg_attr
+                #[unsafe(no_mangle)]
+                pub unsafe extern "C" fn #ffi_name(
+                    #(#sig_names: #sig_types),*
+                ) #sig_ret {
+                    #(#vtable_pre_bindings)*
+                    #(#pre_bindings)*
+                    #return_body
+                }
+            }
+        })
+        .collect()
 }
 
 // ===========================================================================
@@ -3959,7 +3963,11 @@ fn build_schema(
         .collect();
     let free_functions: Vec<_> = free_fns_parsed
         .iter()
-        .map(|f| convert_free_fn(f, &resolver, &handle_types, &type_registry, &value_types))
+        .flat_map(|f| {
+            f.methods.iter().map(|m| {
+                convert_free_fn(f, m, &resolver, &handle_types, &type_registry, &value_types)
+            })
+        })
         .collect();
     let traits: Vec<_> = implementables_parsed
         .iter()
@@ -4057,19 +4065,18 @@ fn convert_bitflags(meta: &MetaBitflags, r: &CTypeResolver) -> ffier_schema::Enu
 
 fn convert_free_fn(
     meta: &MetaFreeFunction,
+    m: &MetaMethod,
     r: &CTypeResolver,
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
 ) -> ffier_schema::FreeFunction {
-    // A free function has exactly one "method" in its methods list.
-    let m = &meta.methods[0];
     // Use type-level cfg_predicate if set, otherwise fall back to method-level cfg.
     let cfg = meta.cfg_predicate.as_ref().or(m.cfg.as_ref());
     ffier_schema::FreeFunction {
         name: meta.name.to_string(),
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
-        doc: meta.doc.clone(),
+        doc: m.doc.clone(),
         lifetimes: m.method_lifetimes.iter().map(ToString::to_string).collect(),
         params: m
             .params
