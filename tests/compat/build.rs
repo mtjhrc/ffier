@@ -17,15 +17,18 @@ fn main() {
     )
     .expect("compat client bindings");
 
-    #[cfg(unix)]
     link_test_lib(workspace_root);
 }
 
 /// Link against the test lib cdylib. The cdylib itself is built by the
 /// `build` recipe in tests/justfile before any test crate runs.
-#[cfg(unix)]
 fn link_test_lib(workspace_root: &std::path::Path) {
     let target_dir = workspace_root.join("target").join("debug");
     println!("cargo:rustc-link-search=native={}", target_dir.display());
-    println!("cargo:rustc-link-lib=dylib=ffier_test_lib");
+    let name = if cfg!(windows) {
+        "ffier_test_lib.dll"
+    } else {
+        "ffier_test_lib"
+    };
+    println!("cargo:rustc-link-lib=dylib={name}");
 }
