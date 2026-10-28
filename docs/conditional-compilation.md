@@ -5,6 +5,36 @@ FFI metadata retains conditions even when their Rust items are disabled. Use
 conditional methods. Gate the FFI annotations themselves with `cfg_attr` when
 the library also supports builds without FFI.
 
+To retain alternate signatures of the same function in one portable schema,
+put them in an inline module annotated with `#[ffier::export]`:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub mod logging {
+    #[cfg(unix)]
+    pub fn target_present(target: Option<std::os::fd::BorrowedFd<'static>>) -> bool {
+        target.is_some()
+    }
+
+    #[cfg(windows)]
+    pub fn target_present(target: Option<std::os::windows::io::BorrowedHandle<'static>>) -> bool {
+        target.is_some()
+    }
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("example", library_tag = 1, fn logging::target_present);
+```
+
+The attribute exports direct public functions, grouping declarations with the
+same name. Both signatures and their cfg predicates enter the schema; native
+Rust and generated bindings select the matching signature when compiled.
+Imports, private helpers, types, and nested modules keep their ordinary Rust
+behavior. Register each function name once. With `ffi` disabled, the module is
+ordinary Rust. Out-of-line declarations such as `mod logging;` are rejected:
+the attribute receives its declarations directly and does not read source files.
+Use cfg on the contained functions; module-level `export(cfg = ...)` is unsupported.
+
 For example, export a function behind the `files` feature while keeping its
 metadata available to the generators:
 

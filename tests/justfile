@@ -5,7 +5,7 @@ schema := root / "target" / "ffier-ft.json"
 foreign_schema := root / "target" / "ffier-fl.json"
 
 # Run all tests
-default: no-codegen check-cfg-library-entry check-header compile-fail conditional-bridge valgrind miri consumer rust-client compat cargo-test
+default: grouped-functions no-codegen check-cfg-library-entry check-header compile-fail conditional-bridge valgrind miri consumer rust-client compat cargo-test
     @echo ""
     @echo "All checks passed!"
 
@@ -120,3 +120,7 @@ conditional-bridge-disabled:
 # Writes to stdout; GitHub Actions appends to the job summary.
 codegen-diff base="origin/main":
     python3 render-codegen-diff.py {{base}}
+
+# One portable schema from explicit inline function groups.
+grouped-functions:
+    python3 grouped-functions/check.py

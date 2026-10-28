@@ -1,0 +1,14 @@
+[package]
+name = "ffier-test-grouped-functions"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[features]
+default = ["ffi"]
+ffi = ["dep:ffier"]
+
+[dependencies]
+ffier = { path = "../../ffier", optional = true }
+
+[workspace]

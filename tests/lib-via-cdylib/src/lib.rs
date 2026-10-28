@@ -11,7 +11,7 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
 #[cfg(test)]
 mod thread_tests {
-    use super as api;
+    use crate as api;
 
     fn init() {}
 
@@ -25,7 +25,7 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod callback_errors {
-    use super as api;
+    use crate as api;
 
     fn init() {}
 
@@ -34,7 +34,7 @@ mod callback_errors {
 
 #[cfg(test)]
 mod receiver_default_tests {
-    use super as api;
+    use crate as api;
 
     fn init() {}
 
@@ -46,7 +46,7 @@ mod receiver_default_tests {
 
 #[cfg(test)]
 mod variance_tests {
-    use super as api;
+    use crate as api;
 
     fn init() {}
 

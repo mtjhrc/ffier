@@ -13,6 +13,7 @@ use syn::{
 mod bridge;
 mod cfg;
 mod meta;
+mod module;
 
 use meta::{
     MetaErrorField, MetaErrorVariantData, camel_to_snake, camel_to_upper_snake, erase_lifetimes,
@@ -379,6 +380,16 @@ pub fn export(attr: TokenStream, item: TokenStream) -> TokenStream {
             return error.to_compile_error().into();
         }
         return exportable_enum(enum_item, &export_cfg);
+    }
+
+    // Inline modules keep cfg-selected function variants together in metadata.
+    if let Ok(module) = syn::parse2::<syn::ItemMod>(item2.clone()) {
+        if let Err(error) = export_cfg.reject_inherent_contracts(&module) {
+            return error.to_compile_error().into();
+        }
+        return module::export(module, &export_cfg)
+            .unwrap_or_else(syn::Error::into_compile_error)
+            .into();
     }
 
     // 4. Free function
@@ -1790,7 +1801,6 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
 
     let method_meta_tokens = emit_method_meta(&[method], MethodMetaKind::Impl);
     let fn_path = quote! { $crate::#fn_name };
-    let doc_lines = extract_doc_comments(&input.attrs);
 
     // Strip #[ffier(...)] attributes from the function and its params
     let clean_fn = {
@@ -1832,7 +1842,6 @@ fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> TokenStream
                     fn_path = (#fn_path),
                     prefix = $prefix,
                     ffi_name = #fn_name_str,
-                    doc = [#(#doc_lines),*],
                     methods = [#(#method_meta_tokens),*],
                     #cfg_pred_tokens
                 } $(, $($rest)*)? }
@@ -1922,7 +1931,7 @@ struct AliasContext {
     types: Vec<Type>,
     aliases: Vec<syn::Ident>,
     counter: u32,
-    helper_mod: syn::Ident,
+    helper_mod: proc_macro2::TokenStream,
 }
 
 /// Recognize Option, Box, and Result by their bare or standard-library paths.
@@ -1987,7 +1996,7 @@ impl AliasContext {
             types: Vec::new(),
             aliases: Vec::new(),
             counter: 0,
-            helper_mod,
+            helper_mod: quote! { #helper_mod },
         }
     }
 
