@@ -1179,6 +1179,7 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         quote! { <#(#static_lifetimes),*> }
     };
     let native_bridge_type = quote! { super::#native_alias_name #static_generics };
+    ctx.current_cfg = None;
     let struct_path_tokens = ctx.alias_tokens(&erase_lifetimes(self_ty));
     let local_type_aliases = ctx.local_type_aliases_for_native(self_ty, &native_bridge_type);
 
@@ -1957,6 +1958,8 @@ struct AliasContext {
     aliases: Vec<syn::Ident>,
     counter: u32,
     helper_mod: proc_macro2::TokenStream,
+    current_cfg: Option<proc_macro2::TokenStream>,
+    alias_cfgs: Vec<Option<proc_macro2::TokenStream>>,
 }
 
 /// Recognize Option, Box, and Result by their bare or standard-library paths.
@@ -2022,6 +2025,8 @@ impl AliasContext {
             aliases: Vec::new(),
             counter: 0,
             helper_mod: quote! { #helper_mod },
+            current_cfg: None,
+            alias_cfgs: Vec::new(),
         }
     }
 
@@ -2081,6 +2086,11 @@ impl AliasContext {
         }
         for (i, existing) in self.types.iter().enumerate() {
             if existing == ty {
+                self.alias_cfgs[i] = match (&self.alias_cfgs[i], &self.current_cfg) {
+                    (Some(a), Some(b)) if a.to_string() == b.to_string() => Some(a.clone()),
+                    (Some(a), Some(b)) => Some(quote! { any(#a, #b) }),
+                    _ => None,
+                };
                 let alias = &self.aliases[i];
                 let helper = &self.helper_mod;
                 return quote! { $crate::#helper::#alias };
@@ -2090,6 +2100,7 @@ impl AliasContext {
         self.counter += 1;
         self.types.push(ty.clone());
         self.aliases.push(alias.clone());
+        self.alias_cfgs.push(self.current_cfg.clone());
         let helper = &self.helper_mod;
         quote! { $crate::#helper::#alias }
     }
@@ -2120,25 +2131,28 @@ impl AliasContext {
             .types
             .iter()
             .zip(self.aliases.iter())
-            .map(|(ty, alias)| {
+            .zip(self.alias_cfgs.iter())
+            .map(|((ty, alias), cfg)| {
+                let cfg = meta::cfg_predicate_attr(cfg.as_ref());
                 let mut erased = erase_lifetimes(ty);
                 if let Some((native_ty, native_path)) = native
                     && &erased == native_ty
                 {
                     quote! {
                         #[allow(private_interfaces)]
+                        #cfg
                         pub type #alias = #native_path;
                     }
                 } else if is_absolute_type_path(&erased) {
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else if let Type::Path(tp) = &mut erased
                     && tp.path.segments[0].ident == "self"
                 {
                     tp.path.segments[0].ident =
                         syn::Ident::new("super", tp.path.segments[0].ident.span());
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else {
-                    quote! { pub type #alias = super::#erased; }
+                    quote! { #cfg pub type #alias = super::#erased; }
                 }
             })
             .collect();
@@ -3003,6 +3017,7 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
     if name.starts_with('_') {
         return Err(syn::Error::new_spanned(
