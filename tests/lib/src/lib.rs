@@ -1,6 +1,6 @@
 #![recursion_limit = "512"]
-#![cfg(unix)]
 
+#[cfg(unix)]
 use std::os::unix::io::{AsRawFd, BorrowedFd, OwnedFd};
 
 use ffier_test_foreign_lib_via_cdylib::ForeignItem;
@@ -406,17 +406,20 @@ impl Widget {
     }
 
     /// Get the raw fd number from a borrowed fd.
+    #[cfg(unix)]
     pub fn fd_number(&self, fd: BorrowedFd<'_>) -> i32 {
         fd.as_raw_fd()
     }
 
     /// Get the raw fd number, or -1 if None.
+    #[cfg(unix)]
     pub fn fd_number_optional(&self, fd: Option<BorrowedFd<'_>>) -> i32 {
         fd.map_or(-1, |f| f.as_raw_fd())
     }
 
     /// Maybe return a borrowed fd depending on `selector`:
     /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(stdin)).
+    #[cfg(unix)]
     pub fn maybe_fd(&self, selector: i32) -> Result<Option<BorrowedFd<'_>>, TestError> {
         if selector < 0 {
             Err(TestError::InvalidInput())
@@ -429,11 +432,13 @@ impl Widget {
     }
 
     /// Duplicate a file descriptor (returns owned fd).
+    #[cfg(unix)]
     pub fn dup_fd(&self, fd: BorrowedFd<'_>) -> OwnedFd {
         fd.try_clone_to_owned().expect("dup failed")
     }
 
     /// Maybe duplicate a file descriptor; returns None if input is None.
+    #[cfg(unix)]
     pub fn maybe_dup_fd(&self, fd: Option<BorrowedFd<'_>>) -> Result<Option<OwnedFd>, TestError> {
         match fd {
             Some(f) => f
@@ -446,6 +451,7 @@ impl Widget {
 
     /// Optionally return an owned fd depending on `selector`:
     /// < 0 → error, 0 → Ok(None), > 0 → Ok(Some(dup(stdin))).
+    #[cfg(unix)]
     pub fn maybe_owned_fd(&self, selector: i32) -> Result<Option<OwnedFd>, TestError> {
         if selector < 0 {
             Err(TestError::InvalidInput())
@@ -1661,7 +1667,8 @@ pub fn sample_at(selector: u32) -> Result<Option<InputEvent>, TestError> {
     }
 }
 
-#[cfg_attr(feature = "ffi", ffier::export)]
+#[cfg_attr(feature = "ffi", ffier::export(cfg = "unix"))]
+#[cfg_attr(not(feature = "ffi"), cfg(unix))]
 /// Duplicate a file descriptor.
 pub fn clone_fd(fd: BorrowedFd<'_>) -> Result<OwnedFd, TestError> {
     fd.try_clone_to_owned()
@@ -2018,6 +2025,7 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(feature = "optional-entry")]
     fn crate::optional_api::optional_sample,
     fn categorizable_value,
+    #[cfg(unix)]
     fn clone_fd,
     fn sum_gadget_values,
     fn event_sequence,
@@ -2271,6 +2279,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_borrowed_fd_param() {
         unsafe {
             let w = ft_widget_new();
@@ -2281,6 +2290,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_borrowed_fd_returning_owned_fd() {
         unsafe {
             use std::os::unix::io::FromRawFd;
@@ -2295,6 +2305,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_optional_owned_fd_return_some() {
         unsafe {
             use std::os::unix::io::FromRawFd;
@@ -2311,6 +2322,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_optional_owned_fd_return_none() {
         unsafe {
             let w = ft_widget_new();
@@ -2325,6 +2337,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_optional_borrowed_fd_param_dup_some() {
         unsafe {
             use std::os::unix::io::FromRawFd;
@@ -2343,6 +2356,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    #[cfg(unix)]
     fn method_with_optional_borrowed_fd_param_dup_none() {
         unsafe {
             let w = ft_widget_new();
@@ -3828,7 +3842,15 @@ mod tests {
     // ================================================================
 
     #[test]
+    #[cfg(unix)]
     fn free_fn_clone_fd() {
+        unsafe extern "C" {
+            fn ft_clone_fd(
+                fd: i32,
+                result: *mut i32,
+                error: *mut *mut core::ffi::c_void,
+            ) -> ffier::FfierResult;
+        }
         use std::os::unix::io::{AsRawFd, FromRawFd, OwnedFd};
         unsafe {
             // Use stdout as a known-valid fd to clone
@@ -4019,7 +4041,7 @@ mod tests {
                 metadata: meta,
                 ptr: borrowed.ptr,
             };
-            let rejected = std::panic::catch_unwind(|| unsafe {
+            let rejected = std::panic::catch_unwind(|| {
                 ffier::ffier_handle_drop::<Gadget>(&fake as *const _ as *mut core::ffi::c_void)
             });
             assert!(rejected.is_err(), "indirect drop must not be accepted");
@@ -4047,7 +4069,7 @@ mod tests {
             // Call the runtime directly: the extern "C" wrapper cannot unwind,
             // so a panic there would abort instead of being observable.
             let destroyed =
-                std::panic::catch_unwind(|| unsafe { ffier::ffier_handle_drop::<Gadget>(element) });
+                std::panic::catch_unwind(|| ffier::ffier_handle_drop::<Gadget>(element));
             assert!(
                 destroyed.is_err(),
                 "destroying an array element must be rejected"
