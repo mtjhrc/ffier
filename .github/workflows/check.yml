@@ -24,6 +24,35 @@ jobs:
       - name: just check
         run: just check
 
+      - name: Save the portable FD/HANDLE schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-schema
+          path: target/ffier-windows-handles.json
+
       - name: Generated-code diff summary
         if: github.event_name == 'pull_request'
         run: python3 tests/render-codegen-diff.py origin/${{ github.base_ref }}
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain and just
+        run: |
+          rustup toolchain install stable --component rustfmt,clippy
+          rustup default stable
+          cargo install just --locked
+
+      - name: Use the same portable schema produced on Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-schema
+          path: target/portable
+
+      - name: just check
+        env:
+          FFIER_WINDOWS_HANDLES_SCHEMA: ${{ github.workspace }}/target/portable/ffier-windows-handles.json
+        run: just check

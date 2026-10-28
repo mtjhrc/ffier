@@ -1,3 +1,6 @@
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+python := if os() == "windows" { "python" } else { "python3" }
+
 # Format, lint, and test — run before committing
 check: fmt-check clippy test
 
@@ -14,18 +17,10 @@ fmt:
 # Run clippy
 # Builds the test cdylibs first: the client crates' build scripts emit
 # link directives for them, so a fresh checkout cannot type-check the
-# workspace until the .so files exist.
+# workspace until the shared libraries exist.
 clippy:
-    just --justfile tests/justfile build
-    cargo clippy --workspace \
-        --features ffier-test-lib-via-cdylib/ffier-dynlookup,ffier-test-foreign-lib-via-cdylib/ffier-dynlookup,ffier-test-compat/ffier-strong \
-        -- -D warnings
-    cargo clippy --manifest-path tests/conditional-bridge/Cargo.toml \
-        --target-dir target/conditional-bridge --workspace --all-targets \
-        --features conditional-bridge/a_feature -- -D warnings
-    cargo clippy --manifest-path tests/conditional-bridge/Cargo.toml \
-        --target-dir target/conditional-bridge --workspace --all-targets -- -D warnings
+    {{python}} tests/run.py clippy
 
 # Run all tests
 test:
-    just --justfile tests/justfile
+    {{python}} tests/run.py all

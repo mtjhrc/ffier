@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+include!("../../load_dll.rs");
 
 #[cfg(test)]
 mod tests {
@@ -11,5 +12,16 @@ mod tests {
     #[test]
     fn fieldless_display_uses_variant_name_when_static_message_is_omitted() {
         assert_eq!(ForeignError::Invalid().to_string(), "Invalid");
+    }
+}
+
+/// Explicit initialization for the shared client test harnesses.
+pub fn init_for_tests() {
+    #[cfg(all(windows, not(feature = "ffier-strong")))]
+    {
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| unsafe {
+            set_library_handle(Some(load_test_dll("ffier_test_foreign_lib"))).unwrap();
+        });
     }
 }

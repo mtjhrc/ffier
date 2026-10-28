@@ -1,126 +1,81 @@
-set shell := ["bash", "-euo", "pipefail", "-c"]
-
+set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
+python := if os() == "windows" { "python" } else { "python3" }
 root := justfile_directory() / ".."
-schema := root / "target" / "ffier-ft.json"
-foreign_schema := root / "target" / "ffier-fl.json"
 
-# Run all tests
-default: grouped-functions no-codegen check-cfg-library-entry check-header compile-fail conditional-bridge valgrind miri consumer rust-client compat cargo-test
-    @echo ""
-    @echo "All checks passed!"
+# Run native tests; Linux also runs Valgrind and both Miri memory models.
+default:
+    {{python}} "{{root}}/tests/run.py" all
 
-# Build the foreign lib (produces cdylib + writes target/ffier-fl.json)
 build-foreign:
-    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-foreign-lib --crate-type cdylib
+    {{python}} "{{root}}/tests/run.py" build-foreign
 
-# Build the test lib (also produces the cdylib + writes target/ffier-ft.json)
-build: build-foreign
-    cargo rustc --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --crate-type cdylib
+build:
+    {{python}} "{{root}}/tests/run.py" build
 
-# Generate the C header into target/
-gen-header: build
-    cargo run --manifest-path {{root}}/Cargo.toml -p ffier-gen-c-header -- {{schema}} FFIER_FT_H > {{root}}/target/ffier_test.h
+gen-header:
+    {{python}} "{{root}}/tests/run.py" gen-header
 
-# Compile the generated header without additional includes.
-check-header: gen-header
-    cc -std=c11 -Wall -Wextra -Werror -x c -fsyntax-only {{root}}/target/ffier_test.h
+check-header:
+    {{python}} "{{root}}/tests/run.py" check-header
 
-# Compile and run the C tests
-c: build gen-header
-    cc -Wall -Wextra -Werror -g -o {{root}}/target/c_test_main c/test_main.c \
-        -I {{root}}/target \
-        -L {{root}}/target/debug \
-        -lffier_test_lib \
-        -lffier_test_foreign_lib \
-        -Wl,-rpath,{{root}}/target/debug \
-        -Wl,--disable-new-dtags
-    {{root}}/target/c_test_main
-    # Expected aborts bypass cleanup; check them outside the Valgrind run.
-    {{root}}/target/c_test_main --payload-abort-tests
+c:
+    {{python}} "{{root}}/tests/run.py" c
 
-# Run C tests under valgrind
-valgrind: c
-    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 \
-        {{root}}/target/c_test_main
+valgrind:
+    {{python}} "{{root}}/tests/run.py" valgrind
 
-# Run Miri with Stacked Borrows (default model)
 miri-stacked:
-    cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
+    {{python}} "{{root}}/tests/run.py" miri-stacked
 
-# Run Miri with Tree Borrows
 miri-tree:
-    MIRIFLAGS="-Zmiri-tree-borrows" cargo +nightly miri test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib
+    {{python}} "{{root}}/tests/run.py" miri-tree
 
-# Run Miri with both memory models
-miri: miri-stacked miri-tree
+miri:
+    {{python}} "{{root}}/tests/run.py" miri
 
-# Test consumer crate with native Rust linking
-consumer-native: build
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-consumer --no-default-features --features native
+consumer-native:
+    {{python}} "{{root}}/tests/run.py" consumer-native
 
-# Test consumer crate with C ABI dynamic linking
-consumer-cdylib: build
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-consumer --no-default-features --features via-cdylib
+consumer-cdylib:
+    {{python}} "{{root}}/tests/run.py" consumer-cdylib
 
-# Test consumer crate in both linking modes
-consumer: consumer-native consumer-cdylib
+consumer:
+    {{python}} "{{root}}/tests/run.py" consumer
 
-# Run the same wrapper/callback suite in separate Cargo invocations so other
-# workspace dependencies cannot silently enable link mode on the runtime-lookup test.
-rust-client: build
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features ffier-dynlookup \
-        --config 'target."cfg(unix)".runner = ["env", "LD_PRELOAD={{root}}/target/debug/libffier_test_lib.so", "DYLD_INSERT_LIBRARIES={{root}}/target/debug/libffier_test_lib.dylib"]'
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features ffier-strong
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib-via-cdylib --features ffier-dynlookup,ffier-strong
+rust-client:
+    {{python}} "{{root}}/tests/run.py" rust-client
 
-# Run vtable backward-compatibility tests (v1 client → v2 library)
-compat: build
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-compat --features ffier-strong
+compat:
+    {{python}} "{{root}}/tests/run.py" compat
 
-# Verify the test lib compiles without FFI (no codegen, pure Rust types).
-# Compilation alone proves no FFI symbols leak: library_definition! and
-# all #[ffier::export] annotations are cfg-gated behind feature = "ffi".
-no-codegen: build-foreign
-    cargo check --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features
-    cargo test --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features fieldless_error_client_tests
+no-codegen:
+    {{python}} "{{root}}/tests/run.py" no-codegen
 
-# Verify cfg-gated entries are PRESENT in the schema with a "cfg" field
-# even when the feature is off but FFI codegen is still enabled.
-check-cfg-library-entry: build-foreign
-    cargo build --manifest-path {{root}}/Cargo.toml -p ffier-test-lib --no-default-features --features ffi,fruit-label
-    python3 check_schema.py "{{schema}}"
+check-cfg-library-entry:
+    {{python}} "{{root}}/tests/run.py" check-cfg-library-entry
 
-# Run all Rust tests
-cargo-test: build
-    cargo test --manifest-path {{root}}/Cargo.toml \
-        --features ffier-test-lib-via-cdylib/ffier-dynlookup,ffier-test-compat/ffier-strong
+cargo-test:
+    {{python}} "{{root}}/tests/run.py" cargo-test
 
-# Verify compile-fail fixture diagnostics.
 compile-fail:
-    python3 compile-fail/check.py
+    {{python}} "{{root}}/tests/run.py" compile-fail
 
-# Expand with the same a_feature enabled in all three crates, then disabled in all.
-conditional-bridge: conditional-bridge-enabled conditional-bridge-disabled
+conditional-bridge:
+    {{python}} "{{root}}/tests/run.py" conditional-bridge
 
-# Forward bridge -> facade -> provider features and call the exported C functions.
 conditional-bridge-enabled:
-    cargo test --offline --manifest-path conditional-bridge/Cargo.toml \
-        --target-dir {{root}}/target/conditional-bridge -p conditional-bridge \
-        --features a_feature
+    {{python}} "{{root}}/tests/run.py" conditional-bridge-enabled
 
-# With all three features disabled, the cdylib must export no Widget bridge functions.
 conditional-bridge-disabled:
-    cargo build --offline --manifest-path conditional-bridge/Cargo.toml \
-        --target-dir {{root}}/target/conditional-bridge -p conditional-bridge
-    nm --dynamic --defined-only {{root}}/target/conditional-bridge/debug/libconditional_bridge.so \
-        > {{root}}/target/conditional-bridge/disabled-symbols.txt
-    ! grep ' conditional_widget_' {{root}}/target/conditional-bridge/disabled-symbols.txt
+    {{python}} "{{root}}/tests/run.py" conditional-bridge-disabled
 
-# Render generated-artifact diffs against a base ref (default origin/main).
-# Writes to stdout; GitHub Actions appends to the job summary.
+platform-cfg:
+    {{python}} "{{root}}/tests/run.py" platform-cfg
+
+# Render generated-artifact diffs against a base ref.
 codegen-diff base="origin/main":
-    python3 render-codegen-diff.py {{base}}
+    {{python}} "{{root}}/tests/render-codegen-diff.py" {{base}}
 
-# One portable schema from explicit inline function groups.
+# Verify explicit function groups and their portable schema.
 grouped-functions:
-    python3 grouped-functions/check.py
+    {{python}} "{{root}}/tests/run.py" grouped-functions

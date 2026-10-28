@@ -73,7 +73,7 @@ fn trait_thread_safety(lib: &Library, name: &str) -> ThreadSafety {
         .map_or(ThreadSafety::default(), |tr| tr.thread_safety)
 }
 
-/// Generate one Rust client source supporting both Unix linking modes.
+/// Generate one Rust client source supporting both Unix and Windows linking modes.
 /// The consuming crate selects the implementation with its `ffier-dynlookup` or
 /// `ffier-strong` feature, one of which is required. `ffier-strong` takes
 /// precedence when both are enabled.
@@ -2745,7 +2745,7 @@ impl Symbol {
     }
 
     #[cfg(not(feature = "ffier-strong"))]
-    fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
+    fn __lookup<F: Copy>(self, lib: &__FfierNativeLibrary) -> Result<F, libloading::Error> {
         let name: &[u8] = match self {
 "#,
     );
@@ -2773,12 +2773,12 @@ impl Symbol {
         }
         #[cfg(not(feature = "ffier-strong"))]
         {
-            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib).is_ok())
+            __ffier_with_library(|lib| self.__lookup::<*const ()>(lib).is_ok()).unwrap_or(false)
         }
     }
 
     #[cfg(not(feature = "ffier-strong"))]
-    fn __load(self, lib: &libloading::os::unix::Library) -> Result<(), LoadError> {
+    fn __load(self, lib: &__FfierNativeLibrary) -> Result<(), LoadError> {
         match self {
 "#,
     );
@@ -2841,11 +2841,13 @@ impl std::fmt::Display for SetLibraryError {
 impl std::error::Error for SetLibraryError {}
 
 /// Set this generated client's lookup source once.
-/// `None` selects the process-global namespace. `Some(handle)` borrows an
-/// existing `dlopen` handle. Probes, explicit loads, and lazy loads all use this
-/// source. Reconfiguration is rejected, even before a symbol is loaded.
+/// `None` selects the process-global namespace on Unix or the current executable
+/// on Windows. `Some(handle)` borrows an existing `dlopen` handle or Windows
+/// `HMODULE`. Windows clients should pass their DLL handle explicitly. Probes,
+/// explicit loads, and lazy loads all use this source. Reconfiguration is rejected,
+/// even before a symbol is loaded.
 /// Without this call, the first probe, load, or unloaded call fixes the source
-/// to the process-global namespace.
+/// to that platform default.
 /// With `ffier-strong`, this is a successful no-op and ignores the argument.
 ///
 /// # Safety
@@ -2863,7 +2865,7 @@ pub unsafe fn set_library_handle(
     #[cfg(not(feature = "ffier-strong"))]
     {
         let library = lib_handle.map(|handle| std::mem::ManuallyDrop::new(unsafe {
-            libloading::os::unix::Library::from_raw(handle.as_ptr())
+            __FfierNativeLibrary::from_raw(handle.as_ptr() as _)
         }));
         __FFIER_LIBRARY.set(library).map_err(|_| SetLibraryError)
     }
@@ -2886,19 +2888,32 @@ pub fn set_load_policy(load_policy: LoadPolicy) -> Result<(), SetLibraryError> {
     }
 }
 
+#[cfg(all(not(feature = "ffier-strong"), unix))]
+use libloading::os::unix::Library as __FfierNativeLibrary;
+#[cfg(all(not(feature = "ffier-strong"), windows))]
+use libloading::os::windows::Library as __FfierNativeLibrary;
 #[cfg(not(feature = "ffier-strong"))]
-type __FfierLibrary = Option<std::mem::ManuallyDrop<libloading::os::unix::Library>>;
+type __FfierLibrary = Option<std::mem::ManuallyDrop<__FfierNativeLibrary>>;
 #[cfg(not(feature = "ffier-strong"))]
 static __FFIER_LIBRARY: std::sync::OnceLock<__FfierLibrary> = std::sync::OnceLock::new();
 #[cfg(not(feature = "ffier-strong"))]
 static __FFIER_POLICY: std::sync::OnceLock<LoadPolicy> = std::sync::OnceLock::new();
 
 #[cfg(not(feature = "ffier-strong"))]
-fn __ffier_with_library<R>(operation: impl FnOnce(&libloading::os::unix::Library) -> R) -> R {
-    match __FFIER_LIBRARY.get_or_init(|| None) {
+fn __ffier_with_library<R>(
+    operation: impl FnOnce(&__FfierNativeLibrary) -> R,
+) -> Result<R, libloading::Error> {
+    let result = match __FFIER_LIBRARY.get_or_init(|| None) {
         Some(library) => operation(library),
-        None => operation(&libloading::os::unix::Library::this()),
-    }
+        None => {
+            #[cfg(unix)]
+            let library = __FfierNativeLibrary::this();
+            #[cfg(windows)]
+            let library = __FfierNativeLibrary::this()?;
+            operation(&library)
+        }
+    };
+    Ok(result)
 }
 
 #[cfg(not(feature = "ffier-strong"))]
@@ -2945,7 +2960,7 @@ impl From<libloading::Error> for LoadError {
 
 /// Load requested symbols from this client's configured source, skipping
 /// initialized caches and returning the first failure. Without a setter call,
-/// uses the process-global namespace.
+/// uses the process-global namespace on Unix or the current executable on Windows.
 /// A client with any exported vtable also loads the library's shared handle allocator.
 /// With `ffier-strong`, ignores the symbols and always succeeds.
 pub fn require(symbols: &[Symbol]) -> Result<(), LoadError> {
@@ -2969,7 +2984,7 @@ pub fn require(symbols: &[Symbol]) -> Result<(), LoadError> {
                 symbol.__load(lib)?;
             }
             Ok(())
-        })
+        })?
     }
 }
 "#,

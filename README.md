@@ -83,7 +83,7 @@ ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 See [conditional compilation](docs/conditional-compilation.md) for supported
 predicates and their schema representation.
 
-### Rust client linking (Unix)
+### Rust client linking
 
 One generation pass emits a single source file with two linking modes. Declare
 both features in the **crate containing the generated bindings**; neither is a
@@ -104,6 +104,12 @@ can run against a newer library than it was generated from. `ffier-strong`
 calls `unsafe extern "C"` functions resolved by the linker, for shared and
 static libraries. Enabling neither is a compile error; enabling both selects
 `ffier-strong`.
+
+Runtime lookup supports Unix and Windows. On Windows, the default lookup source
+is the current executable, so DLL clients should pass an explicit HMODULE from
+`libloading::os::windows::Library::into_raw()` (cast to a pointer). Keep the DLL
+loaded while the client is in use. Unix retains its process-global default.
+The separate loading-policy setter and lazy-loading default are unchanged.
 
 With `ffier-dynlookup`, configure the lookup source once:
 
@@ -349,3 +355,9 @@ your library            ffier-impl
 cargo test              # unit + integration tests
 just check              # fmt + clippy + full test suite (incl. no-codegen build)
 ```
+
+The native test runner keeps the shared API suite and the platform FD/HANDLE
+suite separate. Run `python3 tests/run.py platform-cfg` for the latter. CI
+passes the Linux-produced platform schema to Windows unchanged through
+`FFIER_WINDOWS_HANDLES_SCHEMA`, testing both native linking modes against the
+same input. Linux additionally runs Valgrind and both Miri models.

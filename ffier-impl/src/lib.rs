@@ -532,7 +532,17 @@ fn reexport_helpers(
     names: &[&syn::Ident],
     cfg_attr: &proc_macro2::TokenStream,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    let helper_mod = names[0];
+    let names: Vec<_> = names.iter().map(|name| (*name, cfg_attr.clone())).collect();
+    reexport_helpers_cfg(&names)
+}
+
+fn reexport_helpers_cfg(
+    names: &[(&syn::Ident, proc_macro2::TokenStream)],
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    let helper_mod = names[0].0;
+    let imports = names
+        .iter()
+        .map(|(name, cfg_attr)| quote! { #cfg_attr pub use super::#name; });
     let bundle_name = format_ident!("{helper_mod}_reexports");
     let arm = quote! {
         (@reexport_helpers ($($parent:tt)*)) => {
@@ -548,7 +558,7 @@ fn reexport_helpers(
         pub mod #bundle_name {
             pub use super::#bundle_name;
             // Evaluate the provider's cfg here, never in the importing crate.
-            #(#cfg_attr pub use super::#names;)*
+            #(#imports)*
         }
     };
     (arm, bundle)
@@ -1154,6 +1164,7 @@ fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) -> TokenStrea
         quote! { <#(#static_lifetimes),*> }
     };
     let native_bridge_type = quote! { super::#native_alias_name #static_generics };
+    ctx.current_cfg = None;
     let struct_path_tokens = ctx.alias_tokens(&erase_lifetimes(self_ty));
     let local_type_aliases = ctx.local_type_aliases_for_native(self_ty, &native_bridge_type);
 
@@ -1932,6 +1943,8 @@ struct AliasContext {
     aliases: Vec<syn::Ident>,
     counter: u32,
     helper_mod: proc_macro2::TokenStream,
+    current_cfg: Option<proc_macro2::TokenStream>,
+    alias_cfgs: Vec<Option<proc_macro2::TokenStream>>,
 }
 
 /// Recognize Option, Box, and Result by their bare or standard-library paths.
@@ -1997,6 +2010,8 @@ impl AliasContext {
             aliases: Vec::new(),
             counter: 0,
             helper_mod: quote! { #helper_mod },
+            current_cfg: None,
+            alias_cfgs: Vec::new(),
         }
     }
 
@@ -2056,6 +2071,11 @@ impl AliasContext {
         }
         for (i, existing) in self.types.iter().enumerate() {
             if existing == ty {
+                self.alias_cfgs[i] = match (&self.alias_cfgs[i], &self.current_cfg) {
+                    (Some(a), Some(b)) if a.to_string() == b.to_string() => Some(a.clone()),
+                    (Some(a), Some(b)) => Some(quote! { any(#a, #b) }),
+                    _ => None,
+                };
                 let alias = &self.aliases[i];
                 let helper = &self.helper_mod;
                 return quote! { $crate::#helper::#alias };
@@ -2065,6 +2085,7 @@ impl AliasContext {
         self.counter += 1;
         self.types.push(ty.clone());
         self.aliases.push(alias.clone());
+        self.alias_cfgs.push(self.current_cfg.clone());
         let helper = &self.helper_mod;
         quote! { $crate::#helper::#alias }
     }
@@ -2095,25 +2116,28 @@ impl AliasContext {
             .types
             .iter()
             .zip(self.aliases.iter())
-            .map(|(ty, alias)| {
+            .zip(self.alias_cfgs.iter())
+            .map(|((ty, alias), cfg)| {
+                let cfg = meta::cfg_predicate_attr(cfg.as_ref());
                 let mut erased = erase_lifetimes(ty);
                 if let Some((native_ty, native_path)) = native
                     && &erased == native_ty
                 {
                     quote! {
                         #[allow(private_interfaces)]
+                        #cfg
                         pub type #alias = #native_path;
                     }
                 } else if is_absolute_type_path(&erased) {
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else if let Type::Path(tp) = &mut erased
                     && tp.path.segments[0].ident == "self"
                 {
                     tp.path.segments[0].ident =
                         syn::Ident::new("super", tp.path.segments[0].ident.span());
-                    quote! { pub type #alias = #erased; }
+                    quote! { #cfg pub type #alias = #erased; }
                 } else {
-                    quote! { pub type #alias = super::#erased; }
+                    quote! { #cfg pub type #alias = super::#erased; }
                 }
             })
             .collect();
@@ -2959,6 +2983,7 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
     if name.starts_with('_') {
         return Err(syn::Error::new_spanned(
@@ -3601,12 +3626,17 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                     Some(pi.ident.clone())
                 })
                 .collect();
+            let predicates = match extract_cfg_predicates(&method.attrs) {
+                Ok(predicates) => predicates,
+                Err(error) => return Some(error.to_compile_error()),
+            };
+            let cfg_attr = meta::cfg_predicate_attr(combine_cfg_predicates(&predicates).as_ref());
             let lifetime_lint = sig
                 .receiver()
                 .and_then(|receiver| receiver.reference.as_ref())
                 .and_then(|(_, lifetime)| lifetime.as_ref())
                 .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
-            Some(quote! { #lifetime_lint #sig { (**self).#name(#(#params),*) } })
+            Some(quote! { #cfg_attr #lifetime_lint #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
@@ -3966,7 +3996,14 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         }
         helper_sig.ident = helper_name.clone();
 
+        let method_cfg = meta::cfg_predicate_attr(
+            combine_cfg_predicates(
+                &extract_cfg_predicates(&method.attrs).expect("validated method cfg"),
+            )
+            .as_ref(),
+        );
         default_helpers.push(quote! {
+            #method_cfg
             #[doc(hidden)]
             #[allow(clippy::needless_lifetimes)]
             pub #helper_sig #body
@@ -4171,7 +4208,20 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let mut reexport_names: Vec<_> = default_helper_names.values().collect();
     reexport_names.sort_by_key(|name| name.to_string());
     reexport_names.insert(0, &helper_mod_name);
-    let (reexport_helpers, reexport_bundle) = reexport_helpers(&reexport_names, &cfg_attr);
+    let reexport_names: Vec<_> = reexport_names
+        .into_iter()
+        .map(|name| {
+            let method = default_helper_names
+                .iter()
+                .find(|(_, helper)| *helper == name)
+                .and_then(|(method, _)| vtable_methods.iter().find(|m| m.name == method.as_str()));
+            let method_cfg =
+                method.and_then(|method| combine_cfg_predicates(&method.cfg_predicates));
+            let method_cfg = meta::cfg_predicate_attr(method_cfg.as_ref());
+            (name, quote! { #cfg_attr #method_cfg })
+        })
+        .collect();
+    let (reexport_helpers, reexport_bundle) = reexport_helpers_cfg(&reexport_names);
 
     let output = quote! {
         #reexport_bundle
@@ -5870,9 +5920,19 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         let method_name = &m.name;
         let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
 
+        let cfg_attr = m.cfg_attr();
         vtable_fields.push(quote! {
+            #cfg_attr
             pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
         });
+        if let Some(predicate) = &m.cfg {
+            let pad_name = format_ident!("__reserved_{idx}");
+            vtable_fields.push(quote! {
+                #[cfg(not(#predicate))]
+                #[doc(hidden)]
+                pub #pad_name: Option<unsafe extern "C" fn()>
+            });
+        }
         next_slot = idx + 1;
     }
 
@@ -6134,11 +6194,13 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             };
 
             // Full method body
+            let cfg_attr = m.cfg_attr();
             let lifetime_lint = m
                 .receiver_lifetime
                 .as_ref()
                 .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
             quote! {
+                #cfg_attr
                 #lifetime_lint
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
@@ -6165,7 +6227,9 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 let bt = &tp.bridge_type;
                 let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();
+                let cfg_attr = m.cfg_attr();
                 Some(quote! {
+                    #cfg_attr
                     assert!(
                         <#bt as FfiType>::IS_HANDLE == #ok_is_handle,
                         concat!(
