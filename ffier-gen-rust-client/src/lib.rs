@@ -2709,6 +2709,13 @@ fn symbol_to_variant(c_name: &str) -> String {
 
 /// Emit shared metadata and the feature-selected loading API.
 fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: Option<&str>) {
+    // Platform-specific signatures share one C symbol identity, but retain
+    // separate typed caches under their respective availability predicates.
+    let mut seen = HashSet::new();
+    let unique: Vec<_> = symbols
+        .iter()
+        .filter(|symbol| seen.insert(&symbol.c_name))
+        .collect();
     out.push_str(
         r#"
 /// An FFI symbol, with the same identity in both linking modes.
@@ -2717,7 +2724,7 @@ fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: O
 pub enum Symbol {
 "#,
     );
-    for s in symbols {
+    for s in &unique {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "    /// `{}`\n    {variant},", s.c_name).unwrap();
     }
@@ -2729,18 +2736,20 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
+    for s in &unique {
         let variant = symbol_to_variant(&s.c_name);
         writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
     }
-    out.push_str(r#"        }
+    out.push_str(
+        r#"        }
     }
 
     #[cfg(not(feature = "ffier-strong"))]
     fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
         let name: &[u8] = match self {
-"#);
-    for symbol in symbols {
+"#,
+    );
+    for symbol in &unique {
         let variant = symbol_to_variant(&symbol.c_name);
         writeln!(
             out,
@@ -2773,27 +2782,31 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
-        let variant = symbol_to_variant(&s.c_name);
-        let upper = &s.upper;
-        let fn_ptr_type = &s.fn_ptr_type;
+    for symbol in &unique {
+        let variant = symbol_to_variant(&symbol.c_name);
+        let variants: Vec<_> = symbols
+            .iter()
+            .filter(|s| s.c_name == symbol.c_name)
+            .collect();
         writeln!(out, "            Symbol::{variant} => {{").unwrap();
-        if s.cfg.is_some() {
+        for s in &variants {
+            let upper = &s.upper;
+            let fn_ptr_type = &s.fn_ptr_type;
             emit_cfg_attr(out, s.cfg.as_ref());
             writeln!(out, "                {{").unwrap();
+            writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
+            writeln!(
+                out,
+                "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
+            )
+            .unwrap();
+            writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
+            writeln!(out, "                }}\n                }}").unwrap();
         }
-        writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
-        writeln!(
-            out,
-            "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
-        )
-        .unwrap();
-        writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
-        writeln!(out, "                }}").unwrap();
-        if let Some(cfg) = &s.cfg {
-            writeln!(out, "                }}").unwrap();
-            let cfg = cfg::client_cfg(cfg);
-            writeln!(out, "                #[cfg(not({cfg}))]").unwrap();
+        if variants.iter().all(|s| s.cfg.is_some()) {
+            let enabled = Cfg::Any(variants.iter().map(|s| s.cfg.clone().unwrap()).collect());
+            let enabled = cfg::client_cfg(&enabled);
+            writeln!(out, "                #[cfg(not({enabled}))]").unwrap();
             writeln!(
                 out,
                 "                {{ self.__lookup::<*const ()>(lib)?; }}"

@@ -5,6 +5,52 @@ FFI metadata retains conditions even when their Rust items are disabled. Use
 conditional methods. Gate the FFI annotations themselves with `cfg_attr` when
 the library also supports builds without FFI.
 
+To retain alternate signatures of the same function in one portable schema,
+put them in an inline module annotated with `#[ffier::export]`:
+
+```rust
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub mod logging {
+    #[cfg(unix)]
+    pub fn target_present(target: Option<std::os::fd::BorrowedFd<'static>>) -> bool {
+        target.is_some()
+    }
+
+    #[cfg(windows)]
+    pub fn target_present(target: Option<std::os::windows::io::BorrowedHandle<'static>>) -> bool {
+        target.is_some()
+    }
+}
+
+#[cfg(feature = "ffi")]
+ffier::library_definition!("example", library_tag = 1, fn logging::target_present);
+```
+
+The attribute exports the module's functions, grouping declarations with the
+same name. Both signatures and their cfg predicates enter the schema; native
+Rust and generated bindings select the matching signature when compiled.
+Functions must be `pub`; `use` declarations pass through unchanged. Currently
+only functions are supported inside an exported module, and any other item is
+rejected — more item kinds may be supported later. Mark a `pub` function with
+`#[ffier(skip)]` to keep it in the module without exporting it.
+
+Registration is per function today: list every exported function as
+`fn module::name` in `library_definition!` and register each name once. A
+function left out of that list is not exported, even though the module
+attribute still validates it. Module-level registration is planned, at which
+point the module attribute alone selects the whole function set.
+
+With `ffi` disabled, the module is ordinary Rust. Declare the module inline;
+an out-of-line `mod logging;` is rejected because the attribute only sees
+inline declarations. Use cfg on the contained functions; module-level
+`export(cfg = ...)` is unsupported.
+
+Cross-crate codegen requires a `pub` module and a `crate::`-qualified
+registration path: `extern` bridge generation resolves `fn logging::init_log`
+only in the defining crate, so other crates must write
+`fn crate::logging::init_log` and the module must be reachable from the crate
+root.
+
 For example, export a function behind the `files` feature while keeping its
 metadata available to the generators:
 
