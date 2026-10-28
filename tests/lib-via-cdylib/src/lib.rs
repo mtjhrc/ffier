@@ -10,6 +10,9 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 include!("../../load_dll.rs");
 
 #[cfg(test)]
+mod never_tests;
+
+#[cfg(test)]
 mod thread_tests {
     use crate as api;
 
@@ -40,6 +43,82 @@ mod callback_errors {
     use super::init;
     use crate as api;
     include!("callback_errors.rs");
+}
+
+#[cfg(test)]
+mod never_returns {
+    use super::*;
+    use std::cell::Cell;
+    use std::convert::Infallible;
+    use std::rc::Rc;
+
+    struct ErrorOnlyCallback(Rc<Cell<usize>>);
+
+    impl NeverCallback for ErrorOnlyCallback {
+        fn fail(&self, tags: &[&str]) -> Result<Infallible, TestError> {
+            assert_eq!(tags, &["guest"]);
+            Err(TestError::CustomMessage)
+        }
+    }
+
+    impl Drop for ErrorOnlyCallback {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    #[test]
+    fn stable_clients_expose_uninhabited_success_and_diverging_returns() {
+        let _: fn() -> Result<Infallible, TestError> = never_error;
+        let _: fn() -> ! = never_return;
+        let _: fn(i32) -> ! = never_exit;
+
+        init();
+        assert!(matches!(never_error(), Err(TestError::CustomMessage)));
+        let error = NeverRun::new().run(false).unwrap_err();
+        let TestError::NumericError(data) = error else {
+            panic!("unexpected error");
+        };
+        assert_eq!(data.field_0(), 73);
+    }
+
+    #[test]
+    fn error_only_callbacks_and_native_defaults_preserve_errors_and_ownership() {
+        init();
+        for use_default in [false, true] {
+            let drops = Rc::new(Cell::new(0));
+            let error =
+                run_never_callback(ErrorOnlyCallback(drops.clone()), use_default).unwrap_err();
+            assert_eq!(drops.get(), 1);
+            if use_default {
+                assert!(matches!(error, TestError::InvalidInput()));
+            } else {
+                assert!(matches!(error, TestError::CustomMessage));
+            }
+        }
+
+        let native = NeverRun::new();
+        assert!(matches!(
+            native.fail(&["guest"]),
+            Err(TestError::CustomMessage)
+        ));
+        assert!(matches!(
+            native.fail_default(),
+            Err(TestError::InvalidInput())
+        ));
+    }
+
+    #[test]
+    fn error_only_vtable_slots_have_no_success_output() {
+        type ErrorOnlySlot = unsafe extern "C" fn(
+            *mut core::ffi::c_void,
+            *const ffier::FfierBytes,
+            usize,
+            *mut *mut core::ffi::c_void,
+        ) -> ffier::FfierResult;
+        let slot: Option<ErrorOnlySlot> = __ffier_vtable_NeverCallback::<ErrorOnlyCallback>().fail;
+        assert!(slot.is_some());
+    }
 }
 
 #[cfg(test)]

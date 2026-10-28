@@ -134,6 +134,7 @@ def miri(model=None):
 def no_codegen():
     cargo('check', '-p', 'ffier-test-lib', '--no-default-features')
     cargo('test', '-p', 'ffier-test-lib', '--no-default-features', 'fieldless_error_client_tests')
+    cargo('test', '-p', 'ffier-test-lib', '--no-default-features', 'never::tests')
 
 
 def check_cfg():

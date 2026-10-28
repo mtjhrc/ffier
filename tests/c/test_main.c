@@ -26,6 +26,28 @@ static void assert_ft_str_eq(FtStr s, const char* expected) {
     assert(memcmp(s.data, expected, s.len) == 0);
 }
 
+/* An error-only operation has an error output, but no success output. */
+static void never_result_reports_errors(void) {
+    FtError err = NULL;
+    FtResult result = ft_never_error(&err);
+    assert(result == FT_ERROR_TEST_CUSTOM_MESSAGE);
+    assert(err != NULL);
+    ft_error_destroy(err);
+
+    FtNeverRun run = ft_never_run_new();
+    err = NULL;
+    result = ft_never_run_run(run, false, &err);
+    assert(result == FT_ERROR_TEST_NUMERIC_ERROR);
+    assert(err != NULL);
+    int32_t number = 0;
+    ft_error_payload(err, 0, &number, sizeof(number));
+    assert(number == 73);
+    ft_error_destroy(err);
+
+    /* Ignoring the error payload is also valid and must not leak it. */
+    assert(ft_never_error(NULL) == FT_ERROR_TEST_CUSTOM_MESSAGE);
+}
+
 /* ===================================================================== */
 /* Fixed-layout value structs                                            */
 /* ===================================================================== */
@@ -949,6 +971,7 @@ int main(int argc, char** argv) {
     #endif
 
     printf("\n[result returns]\n");
+    RUN_TEST(never_result_reports_errors);
     RUN_TEST(method_returning_result_void_ok);
     RUN_TEST(method_returning_result_void_err);
     RUN_TEST(method_returning_result_value_ok);

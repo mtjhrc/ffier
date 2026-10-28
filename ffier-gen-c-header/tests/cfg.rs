@@ -578,3 +578,47 @@ fn c_compiler(source: &str, arguments: &[&str]) -> String {
     );
     String::from_utf8(output.stdout).unwrap()
 }
+
+#[test]
+fn never_result_keeps_a_returning_error_abi_without_a_success_output() {
+    let mut schema = schema();
+    schema["type_registry"]["Error"] = json!({
+        "kind": {"trait": {"c_name": "FtError"}}, "bless": "error_trait"
+    });
+    let mut error = processor(vec![], 0);
+    for (field, value) in [
+        ("name", "Error"),
+        ("destroy_ffi_name", "ft_error_destroy"),
+        ("type_tag_constant", "FT_ERROR_TYPE_TAG"),
+        ("vtable_struct_c_name", "FtErrorVtable"),
+        ("wrapper_c_name", "FtVtableError"),
+        ("vtable_struct_name", "ErrorVtable"),
+        ("wrapper_name", "VtableError"),
+    ] {
+        error[field] = json!(value);
+    }
+    let mut run = method("run", None, Some(0));
+    run["ret"] = json!({"return_kind": "result_never", "err_type": "RunError"});
+    schema["traits"] = json!([error, processor(vec![run], 1)]);
+    schema["free_functions"] = json!([
+        {"name": "exit", "ffi_name": "ft_exit", "params": [], "ret": {"return_kind": "never"}},
+        {"name": "run", "ffi_name": "ft_run", "params": [],
+         "ret": {"return_kind": "result_never", "err_type": "RunError"}}
+    ]);
+    let output = header(schema);
+    assert!(output.contains("/* Never returns normally. */\nvoid ft_exit(void);"));
+    assert!(output.contains("FtResult ft_run(FtError* err_out);"));
+    assert!(output.contains("typedef FtResult (*ft_run_fn)(FtError* err_out);"));
+    assert!(output.contains("FtResult (*run)(void* self_data, FtError* err_out);"));
+    assert!(output.contains("FtResult ft_processor_run(FtProcessor handle, FtError* err_out);"));
+    assert!(!output.contains("_Noreturn"));
+    assert!(!output.contains("* result,"));
+
+    #[cfg(unix)]
+    c_compiler(
+        &format!(
+            "{output}\nstatic FtResult fail(void* self_data, FtError* err_out) {{ (void)self_data; *err_out = NULL; return 7; }}\nFtResult check(FtError* err_out) {{ FtProcessorVtable vt = {{ .run = fail }}; return vt.run(NULL, err_out); }}\n"
+        ),
+        &["-fsyntax-only"],
+    );
+}

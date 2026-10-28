@@ -32,6 +32,18 @@ mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
 
+mod never;
+pub use never::NoReturn;
+#[cfg(feature = "ffi")]
+#[doc(hidden)]
+pub use never::{
+    __ffier_meta_NeverCallback_for_NeverRun, _ffier_impl_never_callback_for_never_run,
+};
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use never::{
+    NeverCallback, NeverRun, never_error, never_exit, never_return, run_never_callback,
+};
+
 // ---------------------------------------------------------------------------
 // Error type — uses thiserror for Display/Error, ffier for FFI codes
 // ---------------------------------------------------------------------------
@@ -1889,6 +1901,13 @@ mod receiver_default_tests {
 #[cfg(feature = "ffi")]
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
+    NeverRun = 50,
+    trait NeverCallback = 51,
+    NeverCallback for NeverRun,
+    fn never_error,
+    fn never_exit,
+    fn never_return,
+    fn run_never_callback,
     trait ErrorForwarder = 30,
     fn test_error_drop_count,
     fn roundtrip_callback_error,
