@@ -552,7 +552,6 @@ pub struct MetaFreeFunction {
     pub fn_path: TokenStream,
     pub prefix: String,
     pub ffi_name: String,
-    pub doc: Vec<String>,
     pub methods: Vec<MetaMethod>,
     /// `#[cfg(...)]` predicate for the entire free function. `None` = unconditional.
     pub cfg_predicate: Option<TokenStream>,
@@ -1420,10 +1419,6 @@ impl syn::parse::Parse for MetaFreeFunction {
         let ffi_name = parse_string(input)?;
         parse_comma(input)?;
 
-        expect_key(input, "doc")?;
-        let doc = parse_bracketed_list(input, parse_string)?;
-        parse_comma(input)?;
-
         expect_key(input, "methods")?;
         let methods = parse_bracketed_list(input, |inner| inner.parse::<MetaMethod>())?;
         parse_comma(input)?;
@@ -1435,7 +1430,6 @@ impl syn::parse::Parse for MetaFreeFunction {
             fn_path,
             prefix,
             ffi_name,
-            doc,
             methods,
             cfg_predicate,
         })
