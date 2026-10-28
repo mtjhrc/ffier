@@ -46,6 +46,12 @@ def main():
     assert all(item["params"][0]["optional"] for item in functions)
     assert all(item["doc"] for item in functions)
 
+    ready = next(item for item in schema["traits"] if item["name"] == "ReadySource")
+    assert ready["num_slots"] == 4
+    assert {method["name"] for method in ready["methods"]} == {
+        "ready_fd", "ready_handle", "ready_fd_is_valid", "ready_handle_is_valid"
+    }
+
     client = TARGET / "client"
     (client / "src").mkdir(parents=True, exist_ok=True)
     generate("ffier-gen-rust-client", client / "src" / "generated.rs")

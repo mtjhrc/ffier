@@ -1,3 +1,5 @@
+include!("ready_source.rs");
+
 #[derive(Debug)]
 #[cfg_attr(feature = "ffi", derive(ffier::FfiError))]
 #[non_exhaustive]
@@ -60,6 +62,8 @@ ffier::library_definition!("grouped", library_tag = 1,
     trait ffier::builtins::Error = 3,
     Error for LogError,
     fn logging::init_log,
+    trait ReadySource = 4,
+    PlatformApi = 5,
 );
 
 #[cfg(feature = "ffi")]

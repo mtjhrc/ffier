@@ -35,6 +35,11 @@ ordinary Rust. Out-of-line declarations such as `mod logging;` are rejected:
 the attribute receives its declarations directly and does not read source files.
 Use cfg on the contained functions; module-level `export(cfg = ...)` is unsupported.
 
+For methods, keep platform alternatives inside one exported impl or trait and
+apply `#[cfg(...)]` to the methods. An outer cfg on separate impl blocks removes
+the inactive block before ffier can retain it. Give distinct platform callback
+methods distinct indices; their disabled vtable slots remain reserved.
+
 For example, export a function behind the `files` feature while keeping its
 metadata available to the generators:
 
