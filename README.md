@@ -83,7 +83,7 @@ ffier-gen-rust-client target/ffier-mylib.json | rustfmt > src/generated.rs
 See [conditional compilation](docs/conditional-compilation.md) for supported
 predicates and their schema representation.
 
-### Rust client linking (Unix)
+### Rust client linking
 
 One generation pass emits a single source file with two linking modes. Declare
 both features in the **crate containing the generated bindings**; neither is a
@@ -105,13 +105,18 @@ calls `unsafe extern "C"` functions resolved by the linker, for shared and
 static libraries. Enabling neither is a compile error; enabling both selects
 `ffier-strong`.
 
+Runtime lookup uses the process-global namespace on Unix and the current
+executable on Windows. Windows DLL clients should pass an explicit `HMODULE`
+from `libloading::os::windows::Library::into_raw()` (cast to a pointer) and
+keep the DLL loaded while the client is in use.
+
 With `ffier-dynlookup`, configure the lookup source once:
 
 ```rust
 use my_client::{LoadPolicy, set_library_handle, set_load_policy};
 
-// `handle` is a dlopen handle kept loaded for the rest of the program;
-// `None` selects the process-global namespace.
+// `handle` is a dlopen handle or Windows HMODULE cast to a pointer.
+// Keep its library loaded; `None` selects the platform default lookup source.
 unsafe { set_library_handle(Some(handle))?; }
 set_load_policy(LoadPolicy::Explicit)?; // optional; Lazy is the default
 ```
@@ -120,7 +125,7 @@ set_load_policy(LoadPolicy::Explicit)?; // optional; Lazy is the default
 fails. `LoadPolicy::Explicit` panics on unloaded calls until
 `require(&[Symbol::...])` loads them, catching version mismatches up front.
 Each setter succeeds once; later calls return `SetLibraryError`. Without
-`set_library_handle`, lookups use the process-global namespace.
+`set_library_handle`, lookups use the platform default source described above.
 `Symbol::is_available()` probes without caching.
 
 If the schema exports any vtable, the library must provide
@@ -137,9 +142,9 @@ my-client = { version = "...", features = ["ffier-strong"] }
 
 Provide the usual linker configuration, for example through `build.rs`.
 Intermediate libraries should depend on `my-client` without a mode; Cargo
-feature unification selects `ffier-strong` for the final graph. Schema `cfg`
-predicates restrict the `ffier-strong` API only, so `ffier-dynlookup` clients
-can still discover optional symbols at runtime.
+feature unification selects `ffier-strong` for the final graph. Platform `cfg`
+predicates apply in both linking modes. Positive feature predicates allow
+`ffier-dynlookup` clients to discover optional symbols at runtime.
 
 ### 3. Call from C
 
