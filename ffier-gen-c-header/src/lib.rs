@@ -569,6 +569,7 @@ fn emit_vtable_section(
                 params.extend(extra_params);
 
                 let params_str = params.join(", ");
+                emit_return_contract(out, &m.ret, "    ");
                 out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
             });
             if let Some(cfg) = &m.cfg {
@@ -612,6 +613,7 @@ fn emit_type_section(
     for m in &ty.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
+            emit_return_contract(out, &m.ret, "");
             let (ret_type, params_str) =
                 build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
@@ -643,6 +645,7 @@ fn emit_trait_impl_section(
 
     for m in &ti.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
+            emit_return_contract(out, &m.ret, "");
             let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -668,6 +671,7 @@ fn emit_dispatch_section(
     for m in tr.methods.iter().take(tr.own_method_count) {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
+            emit_return_contract(out, &m.ret, "");
             let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -699,6 +703,7 @@ fn emit_free_functions(
     for f in functions {
         cfg::block(out, assumptions, f.cfg.as_ref(), |out| {
             emit_doc_comment(out, &f.doc);
+            emit_return_contract(out, &f.ret, "");
 
             let mut params: Vec<String> = Vec::new();
             format_c_params(&f.params, lib, &mut params);
@@ -911,7 +916,7 @@ fn format_return_and_out_params(
 ) -> (String, Vec<String>) {
     let result_c = || blessed_c_type(lib, ffier_schema::Blessing::Result);
     match ret {
-        Return::Void => ("void".to_string(), vec![]),
+        Return::Void | Return::Never => ("void".to_string(), vec![]),
         Return::Value(_) if is_builder => ("void".to_string(), vec![]),
         Return::Value(type_ref) => (lib.c_type_of_ref(type_ref), vec![]),
         Return::OptionalValue(type_ref) => (
@@ -961,6 +966,10 @@ fn format_return_and_out_params(
                 }
             }
         }
+        Return::ResultNever { .. } => {
+            let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
+            (result_c(), vec![format!("{error_c}* err_out")])
+        }
         Return::ObjectArray { .. } => {
             let object_array_c = blessed_c_type(lib, ffier_schema::Blessing::ObjectArray);
             (object_array_c.to_string(), vec![])
@@ -986,6 +995,17 @@ fn emit_doc_comment(out: &mut String, doc: &[String]) {
         }
         out.push_str(" */\n");
     }
+}
+
+fn emit_return_contract(out: &mut String, ret: &Return, indent: &str) {
+    let contract = match ret {
+        Return::Never => "Never returns normally.",
+        Return::ResultNever { .. } => {
+            "Returns only on error; a zero result code violates the return contract."
+        }
+        _ => return,
+    };
+    out.push_str(&format!("{indent}/* {contract} */\n"));
 }
 
 fn find_type_c_name(lib: &Library, name: &str) -> String {

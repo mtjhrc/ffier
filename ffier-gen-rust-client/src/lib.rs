@@ -1352,7 +1352,11 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
         Return::ObjectArray { element } => {
             format!(" -> ForeignSlice<{}>", element.type_name)
         }
-        Return::Value(_) | Return::OptionalValue(_) | Return::Result { .. } => {
+        Return::Never
+        | Return::ResultNever { .. }
+        | Return::Value(_)
+        | Return::OptionalValue(_)
+        | Return::Result { .. } => {
             format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
         }
     }
@@ -1438,6 +1442,9 @@ fn emit_method_body(
         }
         Return::Void => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
+        }
+        Return::Never | Return::ResultNever { .. } => {
+            emit_ffi_call_return(out, ffi_name, &args_str, &m.ret, "        ", lib);
         }
         Return::ObjectArray { .. } => {
             // Object array: wrap raw FfierObjectArray in ForeignSlice.
@@ -2168,7 +2175,7 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             }
             let call_str = call_args.join(", ");
 
-            let binding = if matches!(m.ret, Return::Void) {
+            let binding = if matches!(m.ret, Return::Void | Return::Never) {
                 ""
             } else {
                 "let __result = "
@@ -2181,8 +2188,34 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             .unwrap();
 
             match &m.ret {
-                Return::Void => {
-                    // Nothing to convert
+                Return::Void | Return::Never => {
+                    // Nothing to convert: Never methods diverge in the call above.
+                }
+                Return::ResultNever { .. } => {
+                    writeln!(out, "                    match __result {{").unwrap();
+                    writeln!(
+                        out,
+                        "                        Ok(__never) => match __never {{}},"
+                    )
+                    .unwrap();
+                    writeln!(out, "                        Err(__e) => {{").unwrap();
+                    writeln!(out, "                            if err_out.is_null() {{").unwrap();
+                    writeln!(out, "                                __e.ffi_result_of()").unwrap();
+                    writeln!(out, "                            }} else {{").unwrap();
+                    writeln!(
+                        out,
+                        "                                let (__code, __handle) = __e.into_ffi();"
+                    )
+                    .unwrap();
+                    writeln!(
+                        out,
+                        "                                unsafe {{ *err_out = __handle }};"
+                    )
+                    .unwrap();
+                    writeln!(out, "                                __code").unwrap();
+                    writeln!(out, "                            }}").unwrap();
+                    writeln!(out, "                        }}").unwrap();
+                    writeln!(out, "                    }}").unwrap();
                 }
                 Return::ObjectArray { .. } => {
                     // ObjectArray returns from vtable methods: pass through raw
@@ -3089,7 +3122,7 @@ fn emit_dynlookup_shim(
 fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder: bool) -> String {
     use ffier_schema::CResultConvention;
     match ret {
-        Return::Void => String::new(),
+        Return::Void | Return::Never => String::new(),
         Return::Value(_) if is_builder => String::new(),
         Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
@@ -3100,6 +3133,10 @@ fn push_return_and_out_params(ret: &Return, params: &mut Vec<String>, is_builder
             let ty = optional_value_out_type(tr);
             params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
             " -> bool".to_string()
+        }
+        Return::ResultNever { .. } => {
+            params.push("err_out: *mut *mut core::ffi::c_void".to_string());
+            " -> ffier::FfierResult".to_string()
         }
         Return::Result {
             ok, c_convention, ..
@@ -3166,7 +3203,7 @@ fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
 fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> String {
     use ffier_schema::CResultConvention;
     match ret {
-        Return::Void => String::new(),
+        Return::Void | Return::Never => String::new(),
         Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
@@ -3176,6 +3213,10 @@ fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> Strin
             let ty = optional_value_out_type(tr);
             out.push(format!("*mut <{ty} as FfiType>::CRepr"));
             " -> bool".to_string()
+        }
+        Return::ResultNever { .. } => {
+            out.push("*mut *mut core::ffi::c_void".to_string());
+            " -> ffier::FfierResult".to_string()
         }
         Return::Result {
             ok, c_convention, ..
@@ -3309,6 +3350,10 @@ fn emit_ffi_call_return(
         Return::Void => {
             writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
+        Return::Never => {
+            writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }};").unwrap();
+            writeln!(out, "{indent}std::process::abort()").unwrap();
+        }
         Return::ObjectArray { .. } => {
             writeln!(
                 out,
@@ -3349,6 +3394,20 @@ fn emit_ffi_call_return(
             .unwrap();
             let ty = tr.to_rust_type();
             writeln!(out, "{indent}unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
+        }
+        Return::ResultNever { err_type } => {
+            writeln!(
+                out,
+                "{indent}let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
+            )
+            .unwrap();
+            writeln!(out, "{indent}let __r = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
+            writeln!(out, "{indent}if __r == 0 {{ std::process::abort() }}").unwrap();
+            writeln!(
+                out,
+                "{indent}Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})"
+            )
+            .unwrap();
         }
         Return::Result {
             ok: None, err_type, ..
@@ -3820,6 +3879,9 @@ fn emit_free_function(
 
     let ret_type = match &f.ret {
         Return::Void => String::new(),
+        Return::Never | Return::ResultNever { .. } => {
+            format!(" -> {}", f.ret.to_rust_type(&lib.type_registry))
+        }
         Return::ObjectArray { element } => {
             format!(" -> ForeignSlice<{}>", element.type_name)
         }
@@ -3849,6 +3911,9 @@ fn emit_free_function(
     match &f.ret {
         Return::Void => {
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
+        }
+        Return::Never | Return::ResultNever { .. } => {
+            emit_ffi_call_return(out, &f.ffi_name, &args_str, &f.ret, "    ", lib);
         }
         Return::ObjectArray { .. } => {
             writeln!(

@@ -578,6 +578,8 @@ pub struct CParam {
 pub enum Return {
     /// Returns nothing.
     Void,
+    /// Never returns normally.
+    Never,
     /// Returns a single value.
     Value(TypeRef),
     /// Returns `Option<T>` for an inline value `T`. Presence is the C return
@@ -593,6 +595,13 @@ pub enum Return {
         /// The C-level calling convention for this Result return.
         /// Determined by the bridge at schema-emission time.
         c_convention: CResultConvention,
+    },
+    /// Returns only on error: `Result<Never, E>`.
+    /// The ABI returns the packed result code and an error handle out-param;
+    /// there is no success value or success out-param.
+    ResultNever {
+        /// Error type name — key into `type_registry`.
+        err_type: String,
     },
     /// Returns `&[T]` or `&[&T]` where T is a handle type.
     /// Encoded as `FfierObjectArray` at the C level.
@@ -657,6 +666,7 @@ impl Return {
     pub fn to_rust_type(&self, registry: &BTreeMap<String, TypeEntry>) -> String {
         match self {
             Return::Void => "()".to_string(),
+            Return::Never => "!".to_string(),
             Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
             Return::Value(tr) => tr.to_rust_type(),
             Return::OptionalValue(tr) => format!("Option<{}>", tr.to_rust_type()),
@@ -667,6 +677,9 @@ impl Return {
                     None => "()".to_string(),
                 };
                 format!("Result<{ok_str}, {err_type}>")
+            }
+            Return::ResultNever { err_type } => {
+                format!("Result<core::convert::Infallible, {err_type}>")
             }
             Return::ObjectArray { element } => {
                 format!("ForeignSlice<{}>", element.to_rust_type())
@@ -989,7 +1002,7 @@ impl Library {
 
         fn collect_from_return<'a>(ret: &'a Return, refs: &mut std::collections::HashSet<&'a str>) {
             match ret {
-                Return::Void => {}
+                Return::Void | Return::Never => {}
                 Return::Value(tr) => {
                     refs.insert(&tr.type_name);
                 }
@@ -1000,6 +1013,9 @@ impl Library {
                     if let Some(tr) = ok {
                         refs.insert(&tr.type_name);
                     }
+                    refs.insert(err_type);
+                }
+                Return::ResultNever { err_type } => {
                     refs.insert(err_type);
                 }
                 Return::ObjectArray { element } => {
@@ -1065,11 +1081,12 @@ impl Library {
                 .chain(self.trait_impls.iter().flat_map(|t| t.methods.iter()))
         };
 
-        let has_result = all_methods().any(|m| matches!(m.ret, Return::Result { .. }))
+        let has_result = all_methods()
+            .any(|m| matches!(m.ret, Return::Result { .. } | Return::ResultNever { .. }))
             || self
                 .free_functions
                 .iter()
-                .any(|f| matches!(f.ret, Return::Result { .. }));
+                .any(|f| matches!(f.ret, Return::Result { .. } | Return::ResultNever { .. }));
 
         let has_impl_trait = all_methods().any(|m| {
             m.params

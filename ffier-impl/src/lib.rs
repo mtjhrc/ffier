@@ -142,6 +142,10 @@ enum ParamKind {
 
 enum ReturnKind {
     Void,
+    Never,
+    ResultNever {
+        err_ident: String,
+    },
     Value(TypePair),
     Result {
         ok: Option<TypePair>,
@@ -2614,6 +2618,8 @@ struct FfierMethodAttrs {
     raw_handle: bool,
     dispatch: Option<String>,
     skip: bool,
+    /// Native alias whose return (or Result success) violates the export contract.
+    never_type: Option<syn::Path>,
     /// Absolute foreign ffier library crate path for the return type.
     foreign_return: Option<syn::Path>,
     /// C typedef name for the foreign return handle type.
@@ -2628,6 +2634,7 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
         raw_handle: false,
         dispatch: None,
         skip: false,
+        never_type: None,
         foreign_return: None,
         foreign_return_c_name: None,
     };
@@ -2657,6 +2664,8 @@ fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<FfierMethod
                 result.dispatch = Some(mode.to_string());
             } else if meta.path.is_ident("skip") {
                 result.skip = true;
+            } else if meta.path.is_ident("never_type") {
+                result.never_type = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("foreign_return") {
                 result.foreign_return = Some(parse_foreign_crate_path(meta.value()?)?);
             } else if meta.path.is_ident("c_name") {
@@ -3240,6 +3249,34 @@ fn parse_method_sig(
         false
     };
 
+    let never_type = parse_ffier_method_attrs(attrs)?.never_type;
+    let never = never_type.is_some();
+    if never && (is_builder || foreign_return.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &sig.output,
+            "#[ffier(never_type = ...)] cannot be combined with a builder or foreign return",
+        ));
+    }
+    if never && matches!(sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            sig,
+            "#[ffier(never_type = ...)] requires an explicit return type",
+        ));
+    }
+    if let Some(never_type) = &never_type
+        && let ReturnType::Type(_, ty) = &sig.output
+    {
+        let target = extract_result_types(ty)
+            .map(|(ok, _)| ok)
+            .unwrap_or((**ty).clone());
+        if target.to_token_stream().to_string() != never_type.to_token_stream().to_string() {
+            return Err(syn::Error::new_spanned(
+                &sig.output,
+                "never_type must match the return type or the Result success type",
+            ));
+        }
+    }
+
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
         ReturnType::Type(_, ty) => {
@@ -3254,7 +3291,15 @@ fn parse_method_sig(
                 None => (**ty).clone(),
             };
 
-            if is_builder && extract_result_types(&ty_bridge).is_none() {
+            if let Some((ok, err)) = extract_result_types(&ty_bridge)
+                && (never || matches!(ok, Type::Never(_)))
+            {
+                ReturnKind::ResultNever {
+                    err_ident: type_ident_name(&err),
+                }
+            } else if never || matches!(ty_bridge, Type::Never(_)) {
+                ReturnKind::Never
+            } else if is_builder && extract_result_types(&ty_bridge).is_none() {
                 // Builder returning Self → void in C
                 ReturnKind::Void
             } else if let Some(inner_ty) = handle_slice_elem(&ty_bridge) {
@@ -3493,6 +3538,10 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
 
     let ret_tokens = match &m.ret {
         ReturnKind::Void => quote! { void },
+        ReturnKind::Never => quote! { never },
+        ReturnKind::ResultNever { err_ident } => {
+            quote! { result_never(err_ident = #err_ident,) }
+        }
         ReturnKind::Value(tp) => {
             let bt = &tp.bridge;
             let rt = &tp.rust;
@@ -5825,7 +5874,11 @@ fn vtable_c_fn_sig(
     };
 
     let fn_ret = match &m.ret {
-        crate::meta::MetaReturn::Void => quote! {},
+        crate::meta::MetaReturn::Void | crate::meta::MetaReturn::Never => quote! {},
+        crate::meta::MetaReturn::ResultNever { .. } => {
+            param_types.push(quote! { *mut *mut core::ffi::c_void });
+            quote! { -> ffier::FfierResult }
+        }
         crate::meta::MetaReturn::Value(tp) => {
             if crate::meta::option_value_struct_inner(&tp.rust_type, value_names).is_some()
                 && let Some(inner) = crate::meta::option_inner_tokens(&tp.bridge_type)
@@ -6032,6 +6085,26 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             } else {
                 match &m.ret {
                     crate::meta::MetaReturn::Void => raw_call.clone(),
+                    crate::meta::MetaReturn::Never => quote! {{
+                        #raw_call;
+                        std::process::abort()
+                    }},
+                    crate::meta::MetaReturn::ResultNever { err_ident } => {
+                        let err_ty = format_ident!("{err_ident}");
+                        quote! {{
+                            #(#vtable_pre)*
+                            let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                            let __r = unsafe { __f(
+                                self.value.user_data as *mut core::ffi::c_void,
+                                #(#vtable_args,)*
+                                &mut __err as *mut *mut core::ffi::c_void,
+                            ) };
+                            if __r == ffier::FFIER_RESULT_SUCCESS {
+                                std::process::abort()
+                            }
+                            Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                        }}
+                    }
                     crate::meta::MetaReturn::Value(tp) => {
                         if crate::meta::option_value_struct_inner(&tp.rust_type, &value_names)
                             .is_some()

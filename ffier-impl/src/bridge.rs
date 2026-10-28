@@ -1761,6 +1761,37 @@ fn wrap_return(
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     match ret {
+        MetaReturn::Never => quote! {
+            #[allow(unreachable_code)]
+            {
+                #call_expr;
+                std::process::abort()
+            }
+        },
+        MetaReturn::ResultNever { err_ident } => {
+            let ordinary_result = MetaReturn::Result {
+                ok: None,
+                err_ident: err_ident.clone(),
+            };
+            // Reuse normal error marshalling, but guard the inhabited native
+            // alias (e.g. `type Never = ()`) before an Ok can cross the ABI.
+            let checked_call = quote! {
+                match #call_expr {
+                    Ok(_) => std::process::abort(),
+                    Err(__error) => Result::<(), _>::Err(__error),
+                }
+            };
+            wrap_return(
+                checked_call,
+                &ordinary_result,
+                rust_ret,
+                handle_types,
+                value_types,
+                error_map,
+                None,
+                lib_crate,
+            )
+        }
         MetaReturn::Void => {
             if let Some(b) = builder.filter(|b| b.is_by_value) {
                 // Builder by-value void: method returns Self, write back new handle.
@@ -2087,7 +2118,14 @@ fn c_signature_for_method(
 
     // Return type + out-param for handle returns or Result
     let ret = match &method.ret {
-        MetaReturn::Void => quote! {},
+        MetaReturn::Void | MetaReturn::Never => quote! {},
+        MetaReturn::ResultNever { .. } => {
+            params.push(CExternParam {
+                name: format_ident!("err_out"),
+                c_type: quote! { *mut *mut core::ffi::c_void },
+            });
+            quote! { -> ffier::FfierResult }
+        }
         MetaReturn::Value(vk) => {
             if option_value_struct_inner(&vk.rust_type, value_types).is_some()
                 && let Some(inner) = crate::meta::option_inner_tokens(&vk.bridge_type)
@@ -4427,6 +4465,10 @@ fn convert_return(
             ffier_schema::Return::Value(builder_self_type_ref())
         }
         MetaReturn::Void => ffier_schema::Return::Void,
+        MetaReturn::Never => ffier_schema::Return::Never,
+        MetaReturn::ResultNever { err_ident } => ffier_schema::Return::ResultNever {
+            err_type: err_ident.clone(),
+        },
         MetaReturn::Value(tp) => {
             if let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types) {
                 return ffier_schema::Return::OptionalValue(r.type_ref_from_tokens(&inner));
