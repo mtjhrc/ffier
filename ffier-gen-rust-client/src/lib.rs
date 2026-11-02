@@ -2366,6 +2366,64 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
 // Trait impl generation
 // ===========================================================================
 
+/// Predicate under which a default forwarder must be emitted, or `None` when the
+/// impl always provides its own body for this method.
+///
+/// An impl may override one cfg-exclusive variant of a method and inherit the
+/// default for another, so a name-only check is wrong. Predicates are compared
+/// after flattening single-element `all(...)`/`any(...)`, so `#[cfg(unix)]` and
+/// `#[cfg(all(unix))]` count as the same variant; that is the only equivalence
+/// this generator needs, since it sees both forms for one user-level cfg.
+///
+/// The forwarder is gated on the default's predicate minus every override guard,
+/// so it exists exactly where the impl supplies no body.
+fn forwarder_cfg(dm: &Method, ti: &TraitImpl) -> Option<Option<Cfg>> {
+    let overrides: Vec<&Method> = ti.methods.iter().filter(|m| m.name == dm.name).collect();
+    if overrides.iter().any(|m| m.cfg.is_none()) {
+        return None;
+    }
+    let override_cfgs: Vec<&Cfg> = overrides.iter().filter_map(|m| m.cfg.as_ref()).collect();
+    if dm
+        .cfg
+        .as_ref()
+        .is_some_and(|default| override_cfgs.iter().any(|o| cfg_eq(o, default)))
+    {
+        return None;
+    }
+    if override_cfgs.is_empty() {
+        return Some(dm.cfg.clone());
+    }
+    // Negate the guard the override is actually emitted under, not the raw
+    // predicate: `emit_cfg_attr` relaxes positive feature predicates for dynamic
+    // lookup, and a raw negation would then overlap the relaxed guard.
+    let mut guards: Vec<Cfg> = override_cfgs
+        .iter()
+        .map(|o| Cfg::Not(Box::new(cfg::client_cfg_cfg(o))))
+        .collect();
+    if let Some(default_cfg) = dm.cfg.as_ref() {
+        guards.insert(0, default_cfg.clone());
+    }
+    Some(Some(Cfg::All(guards)))
+}
+
+/// Compare predicates, ignoring redundant single-element `all(...)`/`any(...)`
+/// nesting.
+fn cfg_eq(a: &Cfg, b: &Cfg) -> bool {
+    normalize_cfg(a) == normalize_cfg(b)
+}
+
+/// Flatten single-element `all`/`any` so equivalent predicates compare equal.
+fn normalize_cfg(cfg: &Cfg) -> Cfg {
+    match cfg {
+        Cfg::All(items) if items.len() == 1 => normalize_cfg(&items[0]),
+        Cfg::Any(items) if items.len() == 1 => normalize_cfg(&items[0]),
+        Cfg::Not(item) => Cfg::Not(Box::new(normalize_cfg(item))),
+        Cfg::All(items) => Cfg::All(items.iter().map(normalize_cfg).collect()),
+        Cfg::Any(items) => Cfg::Any(items.iter().map(normalize_cfg).collect()),
+        other => other.clone(),
+    }
+}
+
 fn emit_trait_impl(
     out: &mut String,
     ti: &TraitImpl,
@@ -2433,8 +2491,6 @@ fn emit_trait_impl(
     .unwrap();
 
     // Emit methods from this impl
-    let impl_method_names: HashSet<&str> = ti.methods.iter().map(|m| m.name.as_str()).collect();
-
     for m in &ti.methods {
         emit_cfg_attr(out, m.cfg.as_ref());
         let sig = build_trait_method_sig(m, lib);
@@ -2452,10 +2508,10 @@ fn emit_trait_impl(
     // Emit default method forwarders (from trait defaults not in this impl)
     if let Some(defaults) = trait_defaults.get(&ti.trait_name) {
         for dm in defaults {
-            if impl_method_names.contains(dm.name.as_str()) {
+            let Some(cfg) = forwarder_cfg(dm, ti) else {
                 continue;
-            }
-            emit_cfg_attr(out, dm.cfg.as_ref());
+            };
+            emit_cfg_attr(out, cfg.as_ref());
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
@@ -4131,5 +4187,90 @@ mod tests {
             assert!(output.contains(&format!("&'static {vtable}")));
             assert!(!output.contains("__ffier_vtable_Screen::<Self>()"));
         }
+    }
+
+    /// Build a trait default method and an impl method sharing its name.
+    fn default_and_override(
+        default_cfg: Option<Cfg>,
+        override_cfg: Option<Cfg>,
+    ) -> (Method, TraitImpl) {
+        let method = |cfg: Option<Cfg>, has_default: bool| Method {
+            name: "go".into(),
+            doc: Vec::new(),
+            receiver: ffier_schema::Receiver::Ref,
+            receiver_lifetime: None,
+            method_lifetimes: Vec::new(),
+            params: Vec::new(),
+            ret: ffier_schema::Return::Void,
+            ffi_name: "probe_go".into(),
+            trait_definition: Some(ffier_schema::TraitMethodDefinition {
+                index: 0,
+                has_default,
+            }),
+            cfg,
+        };
+        let ti = TraitImpl {
+            trait_name: "T".into(),
+            struct_name: "Widget".into(),
+            lifetimes: Vec::new(),
+            trait_lifetime_args: Vec::new(),
+            struct_lifetime_args: Vec::new(),
+            methods: vec![method(override_cfg, false)],
+            cfg: None,
+        };
+        (method(default_cfg, true), ti)
+    }
+
+    #[test]
+    fn forwarder_is_skipped_when_impl_supplies_an_unconditional_body() {
+        let (dm, ti) = default_and_override(Some(Cfg::Unix), None);
+        assert_eq!(forwarder_cfg(&dm, &ti), None);
+    }
+
+    #[test]
+    fn forwarder_is_skipped_when_the_same_variant_is_overridden() {
+        // A user-level `#[cfg(unix)]` reaches the generator as `unix` for a trait
+        // item but as `all(unix)` for an impl item.
+        let (dm, ti) = default_and_override(Some(Cfg::Unix), Some(Cfg::All(vec![Cfg::Unix])));
+        assert_eq!(forwarder_cfg(&dm, &ti), None);
+    }
+
+    #[test]
+    fn forwarder_is_emitted_for_the_variant_the_impl_does_not_override() {
+        let (dm, ti) = default_and_override(
+            Some(Cfg::All(vec![Cfg::Not(Box::new(Cfg::Windows))])),
+            Some(Cfg::Windows),
+        );
+        let cfg = forwarder_cfg(&dm, &ti).flatten().expect("forwarder");
+        let rendered = cfg.to_string();
+        // Keeps the default's own guard and excludes the overridden variant.
+        assert!(rendered.contains("not(windows)"), "{rendered}");
+        assert!(
+            rendered.contains("windows"),
+            "excludes override: {rendered}"
+        );
+    }
+
+    #[test]
+    fn forwarder_excludes_the_relaxed_feature_guard_not_the_raw_predicate() {
+        // Overrides on `feature = "x"` are emitted relaxed for dynamic lookup, so
+        // the forwarder must negate that guard. Negating the raw predicate would
+        // leave both true under `ffier-dynlookup`.
+        let feature = Cfg::Feature("x".into());
+        let (dm, ti) = default_and_override(None, Some(feature.clone()));
+        let cfg = forwarder_cfg(&dm, &ti).flatten().expect("forwarder");
+        let override_guard = cfg::client_cfg(&feature);
+        // The relaxed guard mentions `ffier-strong`; the raw predicate does not.
+        assert_ne!(override_guard, feature.to_string());
+        assert!(
+            cfg.to_string().contains("ffier-strong"),
+            "must negate the emitted guard: {}",
+            cfg
+        );
+        assert!(
+            !cfg.to_string().contains(&format!("not({feature})")),
+            "must not negate the raw predicate: {}",
+            cfg
+        );
     }
 }
