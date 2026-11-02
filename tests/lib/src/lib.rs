@@ -811,6 +811,52 @@ pub trait EmptyTrait {}
 #[cfg_attr(feature = "ffi", ffier::export(reserved(0, 2)))]
 pub trait RetiredTrait {}
 
+/// One method name, two platform-exclusive signatures, one vtable slot.
+///
+/// `describe` occupies slot 0 on every platform, but takes a different C
+/// argument on windows. `trailing` stays in slot 1 either way.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait PlatformSplit {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    #[cfg(not(windows))]
+    fn describe(&self, path: &str) -> i32;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    #[cfg(windows)]
+    fn describe(&self, path: &str, drive: u32) -> i32;
+
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn trailing(&self, input: i32) -> i32;
+}
+
+pub struct PlatformWidget {
+    base: i32,
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl PlatformWidget {
+    pub fn new(base: i32) -> Self {
+        Self { base }
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+impl PlatformSplit for PlatformWidget {
+    #[cfg(not(windows))]
+    fn describe(&self, path: &str) -> i32 {
+        self.base + path.len() as i32
+    }
+
+    #[cfg(windows)]
+    fn describe(&self, path: &str, drive: u32) -> i32 {
+        self.base + path.len() as i32 + drive as i32
+    }
+
+    fn trailing(&self, input: i32) -> i32 {
+        self.base - input
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline — uses dyn_param with Processor
 // ---------------------------------------------------------------------------
@@ -1897,6 +1943,9 @@ ffier::library_definition!("ft", library_tag = 1,
     fn probe_receiver_defaults,
     trait EmptyTrait = 31,
     trait RetiredTrait = 32,
+    trait PlatformSplit = 50,
+    PlatformSplit for PlatformWidget,
+    PlatformWidget = 51,
     Apple = 11, Orange = 12, Banana = 13, Mango = 14,
     Peach = 15, Plum = 16, Grape = 17, Lemon = 18,
     trait Fruit = 20,
