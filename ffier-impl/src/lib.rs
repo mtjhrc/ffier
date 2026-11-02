@@ -521,6 +521,18 @@ fn reexport_helpers(
     names: &[&syn::Ident],
     cfg_attr: &proc_macro2::TokenStream,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    reexport_helpers_with(names, cfg_attr, &HashMap::new())
+}
+
+/// [`reexport_helpers`] with per-name predicates.
+///
+/// Helpers generated for cfg-gated methods only exist in the configurations
+/// where their method exists, so their reexports must carry the same predicate.
+fn reexport_helpers_with(
+    names: &[&syn::Ident],
+    cfg_attr: &proc_macro2::TokenStream,
+    name_cfgs: &HashMap<String, proc_macro2::TokenStream>,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let helper_mod = names[0];
     let bundle_name = format_ident!("{helper_mod}_reexports");
     let arm = quote! {
@@ -530,6 +542,14 @@ fn reexport_helpers(
             pub use $($parent)* #bundle_name::*;
         };
     };
+    let reexports: Vec<proc_macro2::TokenStream> = names
+        .iter()
+        .map(|name| match name_cfgs.get(&name.to_string()) {
+            // The helper exists only where both the trait and its method do.
+            Some(pred) => quote! { #cfg_attr #[cfg(#pred)] pub use super::#name; },
+            None => quote! { #cfg_attr pub use super::#name; },
+        })
+        .collect();
     // A glob import can coexist with the explicit helper imports emitted by
     // qualified library_definition! entries, without duplicate-name errors.
     let bundle = quote! {
@@ -537,7 +557,7 @@ fn reexport_helpers(
         pub mod #bundle_name {
             pub use super::#bundle_name;
             // Evaluate the provider's cfg here, never in the importing crate.
-            #(#cfg_attr pub use super::#names;)*
+            #(#reexports)*
         }
     };
     (arm, bundle)
@@ -3597,7 +3617,15 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                 .and_then(|receiver| receiver.reference.as_ref())
                 .and_then(|(_, lifetime)| lifetime.as_ref())
                 .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
-            Some(quote! { #lifetime_lint #sig { (**self).#name(#(#params),*) } })
+            // Cfg-exclusive trait methods must stay gated here too: this macro
+            // sees the trait before cfg-stripping, so an ungated forward would
+            // name a method the compiled trait may not have.
+            let cfg_attrs: Vec<&syn::Attribute> = method
+                .attrs
+                .iter()
+                .filter(|attr| attr.path().is_ident("cfg"))
+                .collect();
+            Some(quote! { #(#cfg_attrs)* #lifetime_lint #sig { (**self).#name(#(#params),*) } })
         })
         .collect();
 
@@ -3862,6 +3890,9 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let mut default_helpers: Vec<proc_macro2::TokenStream> = Vec::new();
     // Map from method name → helper fn ident (only for methods with defaults)
     let mut default_helper_names: HashMap<String, syn::Ident> = HashMap::new();
+    // Predicates under which a helper exists, keyed by helper ident. Empty means
+    // the helper exists wherever the trait does.
+    let mut default_helper_cfgs: HashMap<String, proc_macro2::TokenStream> = HashMap::new();
 
     // Build modified trait: replace default bodies with helper calls
     // and strip #[ffier(index = N)] attributes (consumed by macro).
@@ -3957,7 +3988,25 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         }
         helper_sig.ident = helper_name.clone();
 
+        // A cfg-gated method's helper only exists where the method does, so it
+        // carries the same predicate and its reexport is gated to match.
+        let cfg_attrs: Vec<&syn::Attribute> = method
+            .attrs
+            .iter()
+            .filter(|attr| attr.path().is_ident("cfg"))
+            .collect();
+        let cfg_metas: Vec<syn::Meta> = cfg_attrs
+            .iter()
+            .map(|attr| {
+                attr.parse_args_with(cfg::parse_meta)
+                    .expect("cfg attributes were validated when parsing the trait")
+            })
+            .collect();
+        if let Some(pred) = combine_cfg_predicates(&cfg_metas) {
+            default_helper_cfgs.insert(helper_name.to_string(), pred);
+        }
         default_helpers.push(quote! {
+            #(#cfg_attrs)*
             #[doc(hidden)]
             #[allow(clippy::needless_lifetimes)]
             pub #helper_sig #body
@@ -4162,7 +4211,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let mut reexport_names: Vec<_> = default_helper_names.values().collect();
     reexport_names.sort_by_key(|name| name.to_string());
     reexport_names.insert(0, &helper_mod_name);
-    let (reexport_helpers, reexport_bundle) = reexport_helpers(&reexport_names, &cfg_attr);
+    let (reexport_helpers, reexport_bundle) =
+        reexport_helpers_with(&reexport_names, &cfg_attr, &default_helper_cfgs);
 
     let output = quote! {
         #reexport_bundle
@@ -5861,9 +5911,29 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
         let method_name = &m.name;
         let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
 
-        vtable_fields.push(quote! {
+        // The field type names the method's own parameter and return types, so
+        // it must carry the method's predicate: those types may not exist in
+        // every configuration. The complement keeps the slot filled where the
+        // method is absent, so later slots keep their offsets.
+        let field = quote! {
             pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
-        });
+        };
+        match m.cfg.as_ref() {
+            Some(cfg) => {
+                let cfg_attr = m.cfg_attr();
+                vtable_fields.push(quote! {
+                    #cfg_attr
+                    #field
+                });
+                let pad_name = format_ident!("__reserved_{idx}");
+                vtable_fields.push(quote! {
+                    #[doc(hidden)]
+                    #[cfg(not(#cfg))]
+                    pub #pad_name: Option<unsafe extern "C" fn()>
+                });
+            }
+            None => vtable_fields.push(field),
+        }
         next_slot = idx + 1;
     }
 
@@ -6108,12 +6178,15 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
 
             // None branch: fallback or panic
             let name_str = method_name.to_string();
+            // Only a method that actually has a default may fall back to one.
+            // The helper map is keyed by method name, so it can hold an entry
+            // that belongs to a differently-gated method of the same name.
             let none_branch = match default_helper_map.get(&name_str) {
-                Some(helper_path) => {
+                Some(helper_path) if m.has_default() => {
                     let param_names: Vec<_> = m.params.iter().map(|p| &p.name).collect();
                     quote! { #helper_path(self #(, #param_names)*) }
                 }
-                None => {
+                _ => {
                     let wrapper_str = wrapper.to_string();
                     quote! {
                         panic!(
@@ -6129,7 +6202,11 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 .receiver_lifetime
                 .as_ref()
                 .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
+            // The method only exists where its predicate holds, so the generated
+            // impl must be gated the same way.
+            let cfg_attr = m.cfg_attr();
             quote! {
+                #cfg_attr
                 #lifetime_lint
                 #sig {
                     let __field: Option<#fn_ptr_type> = unsafe {
@@ -6156,7 +6233,11 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 let bt = &tp.bridge_type;
                 let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
                 let method_name = m.name.to_string();
+                // The assertion names the ok type, which may only exist in the
+                // configurations where the method itself exists.
+                let cfg_attr = m.cfg_attr();
                 Some(quote! {
+                    #cfg_attr
                     assert!(
                         <#bt as FfiType>::IS_HANDLE == #ok_is_handle,
                         concat!(
