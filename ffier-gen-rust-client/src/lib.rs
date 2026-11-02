@@ -1984,6 +1984,20 @@ fn emit_default_dispatch_body(
     emit_ffi_call_return(out, dispatch_fn, &args_str, &m.ret, "        ", lib);
 }
 
+/// Guard for a slot's padding: every configuration no variant covers.
+///
+/// `None` when a variant is unconditional, since the slot is then always filled
+/// and a padding field would collide with it. Otherwise the guard is
+/// `all(not(P1), .., not(Pn))`; the predicate tree is left unfolded for the
+/// compiler to evaluate.
+fn uncovered_guard<'a>(cfgs: impl IntoIterator<Item = Option<&'a Cfg>>) -> Option<String> {
+    let mut negations = Vec::new();
+    for cfg in cfgs {
+        negations.push(format!("not({})", cfg::client_cfg(cfg?)));
+    }
+    Some(format!("all({})", negations.join(", ")))
+}
+
 fn emit_vtable_struct(
     out: &mut String,
     tr: &ImplementableTrait,
@@ -2009,15 +2023,23 @@ fn emit_vtable_struct(
     )
     .unwrap();
 
-    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    let mut methods_by_index: HashMap<usize, Vec<&Method>> = HashMap::new();
     for m in &tr.methods {
         if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
+            methods_by_index.entry(td.index).or_default().push(m);
         }
     }
 
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
+        let Some(variants) = methods_by_index.get(&slot) else {
+            writeln!(
+                out,
+                "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
+            )
+            .unwrap();
+            continue;
+        };
+        for m in variants {
             emit_cfg_attr(out, m.cfg.as_ref());
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
             push_extern_param_types(&m.params, &mut params);
@@ -2029,16 +2051,11 @@ fn emit_vtable_struct(
                 m.name
             )
             .unwrap();
-            if let Some(cfg) = &m.cfg {
-                let cfg = cfg::client_cfg(cfg);
-                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
-                writeln!(
-                    out,
-                    "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
-                )
-                .unwrap();
-            }
-        } else {
+        }
+        // Keep the slot filled wherever no variant applies, so later slots keep
+        // their offsets.
+        if let Some(guard) = uncovered_guard(variants.iter().map(|m| m.cfg.as_ref())) {
+            writeln!(out, "#[cfg({guard})]").unwrap();
             writeln!(
                 out,
                 "    pub __reserved_{slot}: Option<unsafe extern \"C\" fn()>,"
@@ -2046,7 +2063,6 @@ fn emit_vtable_struct(
             .unwrap();
         }
     }
-
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -2072,15 +2088,19 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
     writeln!(out, "                __drop_trampoline::<__T>").unwrap();
     writeln!(out, "            }}),").unwrap();
 
-    let mut method_by_index: HashMap<usize, &Method> = HashMap::new();
+    let mut methods_by_index: HashMap<usize, Vec<&Method>> = HashMap::new();
     for m in &tr.methods {
         if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
+            methods_by_index.entry(td.index).or_default().push(m);
         }
     }
 
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
+        let Some(variants) = methods_by_index.get(&slot) else {
+            writeln!(out, "            __reserved_{slot}: None,").unwrap();
+            continue;
+        };
+        for m in variants {
             emit_cfg_attr(out, m.cfg.as_ref());
             let is_mut = m.receiver == Receiver::Mut;
             let borrow = if is_mut { "&mut *" } else { "&*" };
@@ -2330,12 +2350,11 @@ fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
             writeln!(out, "                }}").unwrap();
             writeln!(out, "                __trampoline::<__T>").unwrap();
             writeln!(out, "            }}),").unwrap();
-            if let Some(cfg) = &m.cfg {
-                let cfg = cfg::client_cfg(cfg);
-                writeln!(out, "#[cfg(not({cfg}))]").unwrap();
-                writeln!(out, "            __reserved_{slot}: None,").unwrap();
-            }
-        } else {
+        }
+        // Keep the slot filled wherever no variant applies, so later slots keep
+        // their offsets.
+        if let Some(guard) = uncovered_guard(variants.iter().map(|m| m.cfg.as_ref())) {
+            writeln!(out, "#[cfg({guard})]").unwrap();
             writeln!(out, "            __reserved_{slot}: None,").unwrap();
         }
     }
@@ -2709,6 +2728,16 @@ fn symbol_to_variant(c_name: &str) -> String {
 
 /// Emit shared metadata and the feature-selected loading API.
 fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: Option<&str>) {
+    // Cfg-exclusive variants of one trait method share a C symbol name, so the
+    // enum and its name mapping key off unique names; the loader keeps one arm
+    // per variant.
+    let mut names: Vec<&str> = Vec::new();
+    for s in symbols {
+        if !names.contains(&s.c_name.as_str()) {
+            names.push(&s.c_name);
+        }
+    }
+
     out.push_str(
         r#"
 /// An FFI symbol, with the same identity in both linking modes.
@@ -2717,9 +2746,9 @@ fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: O
 pub enum Symbol {
 "#,
     );
-    for s in symbols {
-        let variant = symbol_to_variant(&s.c_name);
-        writeln!(out, "    /// `{}`\n    {variant},", s.c_name).unwrap();
+    for name in &names {
+        let variant = symbol_to_variant(name);
+        writeln!(out, "    /// `{name}`\n    {variant},").unwrap();
     }
     out.push_str(
         r#"}
@@ -2729,9 +2758,9 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
-        let variant = symbol_to_variant(&s.c_name);
-        writeln!(out, "            Symbol::{variant} => \"{}\",", s.c_name).unwrap();
+    for name in &names {
+        let variant = symbol_to_variant(name);
+        writeln!(out, "            Symbol::{variant} => \"{name}\",").unwrap();
     }
     out.push_str(r#"        }
     }
@@ -2740,14 +2769,9 @@ impl Symbol {
     fn __lookup<F: Copy>(self, lib: &libloading::os::unix::Library) -> Result<F, libloading::Error> {
         let name: &[u8] = match self {
 "#);
-    for symbol in symbols {
-        let variant = symbol_to_variant(&symbol.c_name);
-        writeln!(
-            out,
-            "            Symbol::{variant} => b\"{}\\0\",",
-            symbol.c_name
-        )
-        .unwrap();
+    for name in &names {
+        let variant = symbol_to_variant(name);
+        writeln!(out, "            Symbol::{variant} => b\"{name}\\0\",").unwrap();
     }
     out.push_str(
         r#"        };
@@ -2773,27 +2797,37 @@ impl Symbol {
         match self {
 "#,
     );
-    for s in symbols {
-        let variant = symbol_to_variant(&s.c_name);
-        let upper = &s.upper;
-        let fn_ptr_type = &s.fn_ptr_type;
+    for name in &names {
+        let variant = symbol_to_variant(name);
+        let variants: Vec<&SymbolInfo> = symbols.iter().filter(|s| s.c_name == *name).collect();
         writeln!(out, "            Symbol::{variant} => {{").unwrap();
-        if s.cfg.is_some() {
-            emit_cfg_attr(out, s.cfg.as_ref());
-            writeln!(out, "                {{").unwrap();
+        // One block per variant, each under its own predicate. A variant with no
+        // predicate emits its body directly.
+        for s in &variants {
+            let indent = if s.cfg.is_some() {
+                emit_cfg_attr(out, s.cfg.as_ref());
+                writeln!(out, "                {{").unwrap();
+                "                    "
+            } else {
+                "                "
+            };
+            writeln!(out, "{indent}if {}.get().is_none() {{", s.upper).unwrap();
+            writeln!(
+                out,
+                "{indent}    let f = self.__lookup::<{}>(lib)?;",
+                s.fn_ptr_type
+            )
+            .unwrap();
+            writeln!(out, "{indent}    let _ = {}.set(f);", s.upper).unwrap();
+            writeln!(out, "{indent}}}").unwrap();
+            if s.cfg.is_some() {
+                writeln!(out, "                }}").unwrap();
+            }
         }
-        writeln!(out, "                if {upper}.get().is_none() {{").unwrap();
-        writeln!(
-            out,
-            "                    let f = self.__lookup::<{fn_ptr_type}>(lib)?;"
-        )
-        .unwrap();
-        writeln!(out, "                    let _ = {upper}.set(f);").unwrap();
-        writeln!(out, "                }}").unwrap();
-        if let Some(cfg) = &s.cfg {
-            writeln!(out, "                }}").unwrap();
-            let cfg = cfg::client_cfg(cfg);
-            writeln!(out, "                #[cfg(not({cfg}))]").unwrap();
+        // Wherever no variant applies the symbol still has to exist, so probing
+        // it keeps `require()` honest.
+        if let Some(guard) = uncovered_guard(variants.iter().map(|s| s.cfg.as_ref())) {
+            writeln!(out, "                #[cfg({guard})]").unwrap();
             writeln!(
                 out,
                 "                {{ self.__lookup::<*const ()>(lib)?; }}"

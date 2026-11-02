@@ -547,35 +547,44 @@ fn emit_vtable_section(
     out.push_str("    /* Releases transferred user_data exactly once; never called for borrowed parameters. */\n");
     out.push_str("    void (*drop)(void* self_data);\n");
 
-    // Build a map of index → method for gap detection
-    let mut method_by_index: std::collections::HashMap<usize, &Method> =
+    // Build a map of index → methods for gap detection. One slot may hold
+    // cfg-exclusive variants of a method, each gated by its own predicate.
+    let mut methods_by_index: std::collections::HashMap<usize, Vec<&Method>> =
         std::collections::HashMap::new();
     for m in &tr.methods {
         if let Some(td) = &m.trait_definition {
-            method_by_index.insert(td.index, m);
+            methods_by_index.entry(td.index).or_default().push(m);
         }
     }
 
     // Emit virtual method slots after drop at struct position 0.
     // Method index N occupies struct position N+1.
     for slot in 0..tr.num_slots {
-        if let Some(m) = method_by_index.get(&slot) {
-            cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
-                // Build the function pointer signature
-                let mut params = vec!["void* self_data".to_string()];
-                format_c_params(&m.params, lib, &mut params);
+        if let Some(variants) = methods_by_index.get(&slot) {
+            for m in variants {
+                cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
+                    // Build the function pointer signature
+                    let mut params = vec!["void* self_data".to_string()];
+                    format_c_params(&m.params, lib, &mut params);
 
-                let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
-                params.extend(extra_params);
+                    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
+                    params.extend(extra_params);
 
-                let params_str = params.join(", ");
-                out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
-            });
-            if let Some(cfg) = &m.cfg {
+                    let params_str = params.join(", ");
+                    out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
+                });
+            }
+            // Keep the slot filled wherever no variant applies, so later slots
+            // keep their offsets. Folding handles complementary predicates.
+            let uncovered: Vec<Cfg> = variants
+                .iter()
+                .map(|m| m.cfg.clone().unwrap_or(Cfg::All(vec![])))
+                .collect();
+            if !uncovered.contains(&Cfg::All(vec![])) {
                 cfg::block(
                     out,
                     assumptions,
-                    Some(&Cfg::Not(Box::new(cfg.clone()))),
+                    Some(&Cfg::Not(Box::new(Cfg::Any(uncovered)))),
                     |out| {
                         out.push_str(&format!(
                             "    void (*__reserved_{slot})(void); /* reserved slot {slot} */\n"

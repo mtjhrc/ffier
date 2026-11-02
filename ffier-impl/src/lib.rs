@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use ffier_schema::{LifetimeVariance, ThreadSafety};
@@ -528,10 +528,12 @@ fn reexport_helpers(
 ///
 /// Helpers generated for cfg-gated methods only exist in the configurations
 /// where their method exists, so their reexports must carry the same predicate.
+/// One helper ident may be shared by several cfg-exclusive variants of a method,
+/// so every predicate that makes it exist gets its own reexport.
 fn reexport_helpers_with(
     names: &[&syn::Ident],
     cfg_attr: &proc_macro2::TokenStream,
-    name_cfgs: &HashMap<String, proc_macro2::TokenStream>,
+    name_cfgs: &HashMap<String, Vec<proc_macro2::TokenStream>>,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
     let helper_mod = names[0];
     let bundle_name = format_ident!("{helper_mod}_reexports");
@@ -542,14 +544,17 @@ fn reexport_helpers_with(
             pub use $($parent)* #bundle_name::*;
         };
     };
-    let reexports: Vec<proc_macro2::TokenStream> = names
-        .iter()
-        .map(|name| match name_cfgs.get(&name.to_string()) {
-            // The helper exists only where both the trait and its method do.
-            Some(pred) => quote! { #cfg_attr #[cfg(#pred)] pub use super::#name; },
-            None => quote! { #cfg_attr pub use super::#name; },
-        })
-        .collect();
+    let mut reexports: Vec<proc_macro2::TokenStream> = Vec::new();
+    for name in names {
+        match name_cfgs.get(&name.to_string()) {
+            Some(preds) => reexports.extend(preds.iter().map(|pred| {
+                // The helper exists only where both the trait and its method do.
+                let guard = quote! { #cfg_attr #[cfg(#pred)] };
+                quote! { #guard pub use super::#name; }
+            })),
+            None => reexports.push(quote! { #cfg_attr pub use super::#name; }),
+        }
+    }
     // A glob import can coexist with the explicit helper imports emitted by
     // qualified library_definition! entries, without duplicate-name errors.
     let bundle = quote! {
@@ -2921,14 +2926,33 @@ fn extract_vtable_methods(
         }
     }
 
-    // Validate: no duplicate indices
-    let mut seen: HashMap<usize, &syn::Ident> = HashMap::new();
+    // Validate: one slot may hold cfg-exclusive variants of one method, and
+    // only under the same name. The name is what makes them the same slot, so a
+    // name that repeats must also repeat its index.
+    let mut slot_names: HashMap<usize, &syn::Ident> = HashMap::new();
+    let mut name_slots: HashMap<&syn::Ident, usize> = HashMap::new();
     for m in &methods {
-        if let Some(prev) = seen.insert(m.index, &m.name) {
+        if let Some(prev) = name_slots.insert(&m.name, m.index)
+            && prev != m.index
+        {
             return Err(syn::Error::new_spanned(
                 &m.name,
                 format!(
-                    "duplicate vtable index {}: both `{}` and `{}` use index {}",
+                    "`{name}` uses vtable indices {prev} and {index}; \
+                     cfg-exclusive variants of one method must share an index",
+                    name = m.name,
+                    index = m.index,
+                ),
+            ));
+        }
+        if let Some(prev) = slot_names.insert(m.index, &m.name)
+            && prev != &m.name
+        {
+            return Err(syn::Error::new_spanned(
+                &m.name,
+                format!(
+                    "duplicate vtable index {}: both `{}` and `{}` use index {}; \
+                     cfg-exclusive variants must keep the same method name",
                     m.index, prev, m.name, m.index,
                 ),
             ));
@@ -3674,6 +3698,21 @@ pub fn dispatch(_attr: TokenStream, item: TokenStream) -> TokenStream {
     output.into()
 }
 
+/// Find the vtable method a trait item describes.
+///
+/// Names repeat when cfg-exclusive variants share a slot, so the item's own cfg
+/// predicates are part of its identity. Matching by name alone would classify an
+/// ordinary variant as `raw_handle` whenever a sibling variant is.
+fn vtable_method_matches<'a>(
+    vtable_methods: &'a [MethodInfo],
+    method: &syn::TraitItemFn,
+) -> Option<&'a MethodInfo> {
+    let predicates = extract_cfg_predicates(&method.attrs).ok()?;
+    vtable_methods
+        .iter()
+        .find(|vm| vm.name == method.sig.ident && vm.cfg_predicates == predicates)
+}
+
 fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenStream {
     let is_foreign = args.foreign;
     let original_trait = trait_item.clone();
@@ -3871,9 +3910,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     if is_foreign {
         for item in &trait_item.items {
             if let TraitItem::Fn(method) = item {
-                let is_raw_handle = vtable_methods
-                    .iter()
-                    .any(|vm| vm.name == method.sig.ident && vm.raw_handle);
+                let is_raw_handle =
+                    vtable_method_matches(&vtable_methods, method).is_some_and(|vm| vm.raw_handle);
                 if method.default.is_some() && !is_raw_handle {
                     return syn::Error::new_spanned(
                         &method.sig.ident,
@@ -3890,9 +3928,11 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     let mut default_helpers: Vec<proc_macro2::TokenStream> = Vec::new();
     // Map from method name → helper fn ident (only for methods with defaults)
     let mut default_helper_names: HashMap<String, syn::Ident> = HashMap::new();
-    // Predicates under which a helper exists, keyed by helper ident. Empty means
-    // the helper exists wherever the trait does.
-    let mut default_helper_cfgs: HashMap<String, proc_macro2::TokenStream> = HashMap::new();
+    // Predicates under which a helper exists, keyed by helper ident. Helper
+    // names drop the method's cfg, so cfg-exclusive variants of one method share
+    // a helper ident and each contributes a predicate. Empty means the helper
+    // exists wherever the trait does.
+    let mut default_helper_cfgs: HashMap<String, Vec<proc_macro2::TokenStream>> = HashMap::new();
 
     // Build modified trait: replace default bodies with helper calls
     // and strip #[ffier(index = N)] attributes (consumed by macro).
@@ -3902,9 +3942,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             continue;
         };
         // Strip all #[ffier(...)] from emitted method attrs (consumed by this macro)
-        let is_raw_handle = vtable_methods
-            .iter()
-            .any(|vm| vm.name == method.sig.ident && vm.raw_handle);
+        let is_raw_handle =
+            vtable_method_matches(&vtable_methods, method).is_some_and(|vm| vm.raw_handle);
         strip_ffier_attrs(&mut method.attrs);
         let Some(default_block) = &method.default else {
             continue;
@@ -3988,8 +4027,9 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         }
         helper_sig.ident = helper_name.clone();
 
-        // A cfg-gated method's helper only exists where the method does, so it
-        // carries the same predicate and its reexport is gated to match.
+        // Cfg-exclusive variants of one method would otherwise generate the same
+        // helper name twice. Only the active variant's helper is compiled, so the
+        // name-keyed lookup stays unambiguous.
         let cfg_attrs: Vec<&syn::Attribute> = method
             .attrs
             .iter()
@@ -4002,9 +4042,15 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                     .expect("cfg attributes were validated when parsing the trait")
             })
             .collect();
-        if let Some(pred) = combine_cfg_predicates(&cfg_metas) {
-            default_helper_cfgs.insert(helper_name.to_string(), pred);
-        }
+        // A variant with no predicate exists wherever the trait does, so it
+        // contributes `all()`: an unguarded reexport. Without this, a
+        // same-named gated variant could leave the map holding only a false
+        // predicate and the unconditional helper would lose its reexport.
+        let pred = combine_cfg_predicates(&cfg_metas).unwrap_or_else(|| quote!(all()));
+        default_helper_cfgs
+            .entry(helper_name.to_string())
+            .or_default()
+            .push(pred);
         default_helpers.push(quote! {
             #(#cfg_attrs)*
             #[doc(hidden)]
@@ -4063,7 +4109,12 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 return None;
             };
             let name = &method.sig.ident;
-            let vm = vtable_methods.iter().find(|v| v.name == *name)?;
+            // Cfg-exclusive variants share a name, so pair them by name and
+            // predicate: that pair is unique.
+            let predicates = extract_cfg_predicates(&method.attrs).unwrap_or_default();
+            let vm = vtable_methods
+                .iter()
+                .find(|v| v.name == *name && v.cfg_predicates == predicates)?;
             if vm.raw_handle {
                 return None;
             }
@@ -5888,15 +5939,17 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
     let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut next_slot = 0usize;
 
-    // Sort methods by index for vtable layout
-    let mut sorted_methods: Vec<&crate::meta::MetaMethod> = parsed_methods.iter().collect();
-    sorted_methods.sort_by_key(|m| m.index());
+    // One slot may hold cfg-exclusive variants of a method: same name, same
+    // index, disjoint predicates. Each variant gets its own guarded field, and
+    // the complement of all variants keeps the slot filled with a reserved
+    // pointer so later slots keep their offsets.
+    let mut slot_methods: BTreeMap<usize, Vec<&crate::meta::MetaMethod>> = BTreeMap::new();
+    for m in parsed_methods.iter().filter(|m| !m.raw_handle()) {
+        slot_methods.entry(m.index()).or_default().push(m);
+    }
 
-    for m in &sorted_methods {
-        if m.raw_handle() {
-            continue;
-        }
-        let idx = m.index();
+    for (idx, variants) in &slot_methods {
+        let idx = *idx;
 
         // Padding for gaps
         while next_slot < idx {
@@ -5908,32 +5961,45 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             next_slot += 1;
         }
 
-        let method_name = &m.name;
-        let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
-
-        // The field type names the method's own parameter and return types, so
-        // it must carry the method's predicate: those types may not exist in
-        // every configuration. The complement keeps the slot filled where the
-        // method is absent, so later slots keep their offsets.
-        let field = quote! {
-            pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
-        };
-        match m.cfg.as_ref() {
-            Some(cfg) => {
-                let cfg_attr = m.cfg_attr();
-                vtable_fields.push(quote! {
-                    #cfg_attr
-                    #field
-                });
-                let pad_name = format_ident!("__reserved_{idx}");
-                vtable_fields.push(quote! {
-                    #[doc(hidden)]
-                    #[cfg(not(#cfg))]
-                    pub #pad_name: Option<unsafe extern "C" fn()>
-                });
+        let mut negations: Vec<proc_macro2::TokenStream> = Vec::new();
+        // An unconditional variant always fills the slot, so no padding is
+        // needed alongside it.
+        let mut slot_always_filled = false;
+        for m in variants {
+            let method_name = &m.name;
+            let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
+            let field = quote! {
+                pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
+            };
+            // Each variant carries its own predicate. An unconditional variant
+            // needs no guard; the others guard on their predicate alone, since
+            // exclusive variants never coexist in one build.
+            match m.cfg.as_ref() {
+                Some(cfg) => {
+                    let cfg_attr = m.cfg_attr();
+                    vtable_fields.push(quote! {
+                        #cfg_attr
+                        #field
+                    });
+                    negations.push(quote!(not(#cfg)));
+                }
+                None => {
+                    slot_always_filled = true;
+                    vtable_fields.push(field);
+                }
             }
-            None => vtable_fields.push(field),
         }
+
+        if !slot_always_filled && !negations.is_empty() {
+            let pad_name = format_ident!("__reserved_{idx}");
+            let guard = quote!(all(#(#negations),*));
+            vtable_fields.push(quote! {
+                #[doc(hidden)]
+                #[cfg(#guard)]
+                pub #pad_name: Option<unsafe extern "C" fn()>
+            });
+        }
+
         next_slot = idx + 1;
     }
 
@@ -6179,8 +6245,7 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
             // None branch: fallback or panic
             let name_str = method_name.to_string();
             // Only a method that actually has a default may fall back to one.
-            // The helper map is keyed by method name, so it can hold an entry
-            // that belongs to a differently-gated method of the same name.
+            // A required variant must never call the other variant's helper.
             let none_branch = match default_helper_map.get(&name_str) {
                 Some(helper_path) if m.has_default() => {
                     let param_names: Vec<_> = m.params.iter().map(|p| &p.name).collect();
@@ -6202,8 +6267,8 @@ pub fn __generate_vtable(input: TokenStream) -> TokenStream {
                 .receiver_lifetime
                 .as_ref()
                 .map(|_| quote! { #[allow(clippy::needless_lifetimes)] });
-            // The method only exists where its predicate holds, so the generated
-            // impl must be gated the same way.
+            // Cfg-exclusive variants share one slot but may differ in signature,
+            // so each variant is gated exactly like its trait item.
             let cfg_attr = m.cfg_attr();
             quote! {
                 #cfg_attr
