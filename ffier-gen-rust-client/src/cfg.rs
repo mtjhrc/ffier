@@ -1,22 +1,28 @@
 use ffier_schema::Cfg;
 
+/// Rewrite a predicate into the availability guard a generated client actually
+/// emits for it.
+///
+/// [`client_cfg`] does this as text. Callers that need to combine or negate the
+/// result need the same rewrite as a `Cfg`, so the two must stay in step.
+pub fn client_cfg_cfg(cfg: &Cfg) -> Cfg {
+    match cfg {
+        Cfg::Feature(_) => Cfg::Any(vec![
+            Cfg::Not(Box::new(Cfg::Feature("ffier-strong".into()))),
+            cfg.clone(),
+        ]),
+        Cfg::All(items) => Cfg::All(items.iter().map(client_cfg_cfg).collect()),
+        Cfg::Any(items) => Cfg::Any(items.iter().map(client_cfg_cfg).collect()),
+        Cfg::Not(_) | Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) => cfg.clone(),
+    }
+}
+
 /// Render an availability predicate for generated Rust clients.
 pub fn client_cfg(cfg: &Cfg) -> String {
     // TODO: Support explicit assumptions for non-additive features that change
     // signatures, like C header feature options in docs/conditional-compilation.md.
-    match cfg {
-        Cfg::Feature(name) => format!("any(not(feature = \"ffier-strong\"), feature = {name:?})"),
-        Cfg::All(items) | Cfg::Any(items) => {
-            let operator = if matches!(cfg, Cfg::All(_)) {
-                "all"
-            } else {
-                "any"
-            };
-            let items = items.iter().map(client_cfg).collect::<Vec<_>>().join(", ");
-            format!("{operator}({items})")
-        }
-        Cfg::Not(_) | Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) => cfg.to_string(),
-    }
+    // `client_cfg_cfg` performs the same rewrite structurally; keep them in step.
+    client_cfg_cfg(cfg).to_string()
 }
 
 pub fn combine(a: Option<&Cfg>, b: Option<&Cfg>) -> Option<Cfg> {
