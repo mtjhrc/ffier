@@ -63,6 +63,15 @@ mod tests {
     }
 
     #[test]
+    fn skipped_native_methods_work_through_concrete_dispatch() {
+        let label = String::from("attached");
+        let device = api::AttachItem::new(&label);
+        assert_eq!(api::attach_device(device), 6 + label.len());
+        // The skipped default method still runs: requirements sums to 6.
+        assert_eq!(api::attach_device(api::AttachItem::new("")), 6);
+    }
+
+    #[test]
     fn borrowed_callbacks_do_not_transfer_ownership() {
         let value = 17;
         let drops = std::rc::Rc::new(std::cell::Cell::new(0));

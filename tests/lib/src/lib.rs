@@ -28,6 +28,11 @@ mod thread_tests {
     include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../thread_client.rs"));
 }
 
+mod native_attachment;
+pub use native_attachment::{AttachContext, Requirements};
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use native_attachment::{AttachDevice, AttachItem, attach_device};
+
 mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
@@ -1991,6 +1996,10 @@ ffier::library_definition!("ft", library_tag = 1,
     Sprocket = 22,
     Attachment for Sprocket,
     trait Snapshot = 40,
+    trait AttachDevice = 41,
+    AttachItem<'_> = 42,
+    AttachDevice for native_attachment::AttachItem,
+    fn attach_device,
     SendCounter = 47,
     SyncCounter = 48,
     BackendWorker<'_> = 49,

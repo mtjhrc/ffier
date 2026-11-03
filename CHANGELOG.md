@@ -133,6 +133,12 @@
   schema, and native and generated method signatures. Retained local and
   foreign handles and returned values tie to the receiver borrow, and callback
   trampoline receivers must outlive their named borrows (`__T: Trait + 'lt`).
+- `#[ffier(skip)]` on a trait-definition method excludes it from FFI plumbing.
+  A skipped method needs no `#[ffier(index = N)]`, keeps its native signature
+  and default body, and is omitted from default helpers and dynamic
+  forwarding. This allows Rust-only methods with non-FFI-able signatures, such
+  as `self: Box<Self>` receivers or non-exported return types, on registered
+  `no_vtable` callback traits.
 
 ### Fixed
 
