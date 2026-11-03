@@ -942,7 +942,10 @@ pub trait Fruit {
     /// Default label — returns "fruit". C can override by providing the
     /// vtable field; if left NULL, this default runs.
     #[cfg_attr(feature = "ffi", ffier(index = 1))]
-    fn label(&self) -> &str {
+    fn label(&self) -> &str
+    where
+        Self: Sized,
+    {
         "fruit"
     }
 
@@ -1268,16 +1271,32 @@ pub fn retain_fruit<'a>(
 // VtableCategorizable generated, but concrete dispatch still works)
 // ---------------------------------------------------------------------------
 
-/// A marker trait: implementors are `Fruit`s that can be categorized.
-/// Has no methods of its own — used purely as a type bound.
+/// A trait used purely as a type bound: implementors are `Fruit`s that can be
+/// categorized.
+///
+/// `category` carries `where Self: Sized`, which only relaxes object safety
+/// and therefore needs no schema representation.
 #[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
-pub trait Categorizable: Fruit {}
+pub trait Categorizable: Fruit {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn category(&self) -> i32
+    where
+        Self: Sized;
+}
 
 #[cfg_attr(feature = "ffi", ffier::export)]
-impl Categorizable for Apple {}
+impl Categorizable for Apple {
+    fn category(&self) -> i32 {
+        self.weight
+    }
+}
 
 #[cfg_attr(feature = "ffi", ffier::export)]
-impl Categorizable for Orange {}
+impl Categorizable for Orange {
+    fn category(&self) -> i32 {
+        self.juice
+    }
+}
 
 /// Accepts only categorizable fruits (not all fruits).
 #[cfg_attr(feature = "ffi", ffier::export)]
@@ -1544,7 +1563,10 @@ impl FixedSource {
 
     /// Same optional value shape as the vtable slot, but as a plain
     /// exported method on a handle.
-    pub fn peek_sample(&mut self) -> Result<Option<InputEvent>, TestError> {
+    pub fn peek_sample(&mut self) -> Result<Option<InputEvent>, TestError>
+    where
+        Self: Sized,
+    {
         <Self as SampleSource>::next_sample(self)
     }
 }
@@ -4157,6 +4179,23 @@ mod tests {
         unsafe {
             let o = ft_orange_new(13);
             assert_eq!(ft_categorizable_value(o), 13);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // `where Self: Sized` on an exported trait method
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn sized_where_clause_trait_method_dispatches() {
+        unsafe {
+            let a = ft_apple_new(7);
+            assert_eq!(ft_apple_category(a), 7);
+            ft_apple_destroy(a);
+
+            let o = ft_orange_new(13);
+            assert_eq!(ft_orange_category(o), 13);
+            ft_orange_destroy(o);
         }
     }
 }

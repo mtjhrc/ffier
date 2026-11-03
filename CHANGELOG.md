@@ -156,9 +156,10 @@
 
 - Reject typed `self` parameters (`self: &Self`), `'static` receivers on
   vtable traits (use a named method lifetime or `no_vtable`), lifetime bounds
-  and where clauses other than `Self: Sized` on raw-handle methods, and named
-  reference lifetimes on non-byte slice parameters. These contracts cannot be
-  represented in the schema; they now fail at the macro instead of silently
-  weakening generated client signatures.
+  and where clauses other than `Self: Sized`, and named reference lifetimes on
+  non-byte slice parameters. These contracts cannot be represented in the
+  schema; they now fail at the macro instead of silently weakening generated
+  client signatures. `Self: Sized` is accepted on any exported method: it only
+  relaxes object safety and imposes nothing on callers.
 
 ## 0.2.0

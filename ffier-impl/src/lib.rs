@@ -2998,6 +2998,25 @@ fn extract_vtable_methods(
     Ok(methods)
 }
 
+/// Whether the signature's only where predicate is exactly `Self: Sized`.
+///
+/// Such a clause restricts the method to concrete implementors and therefore
+/// never constrains a caller of the generated FFI function, so it carries no
+/// information the schema must record.
+fn sized_self_where(sig: &syn::Signature) -> bool {
+    sig.generics.where_clause.as_ref().is_some_and(|clause| {
+        clause.predicates.len() == 1
+            && matches!(&clause.predicates[0], syn::WherePredicate::Type(predicate)
+                if predicate.lifetimes.is_none()
+                    && matches!(&predicate.bounded_ty, Type::Path(ty) if ty.path.is_ident("Self"))
+                    && predicate.bounds.len() == 1
+                    && matches!(&predicate.bounds[0], syn::TypeParamBound::Trait(bound)
+                        if bound.lifetimes.is_none()
+                            && matches!(bound.modifier, syn::TraitBoundModifier::None)
+                            && bound.path.is_ident("Sized")))
+    })
+}
+
 /// Parse a single method signature into a unified `MethodInfo`.
 ///
 /// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
@@ -3369,22 +3388,14 @@ fn parse_method_sig(
 
     // The schema records lifetime names, not constraints. Reject constraints
     // rather than expose a safe client signature with weaker requirements.
-    let supported_raw_where = raw_handle
-        && sig.generics.where_clause.as_ref().is_some_and(|clause| {
-            clause.predicates.iter().all(|predicate| {
-                matches!(predicate, syn::WherePredicate::Type(predicate)
-                    if predicate.lifetimes.is_none()
-                        && matches!(&predicate.bounded_ty, Type::Path(ty) if ty.path.is_ident("Self"))
-                        && predicate.bounds.len() == 1
-                        && matches!(&predicate.bounds[0], syn::TypeParamBound::Trait(bound)
-                            if bound.lifetimes.is_none()
-                                && matches!(bound.modifier, syn::TraitBoundModifier::None)
-                                && bound.path.is_ident("Sized")))
-            })
-        });
-    if sig.generics.lifetimes().any(|lt| !lt.bounds.is_empty())
-        || (sig.generics.where_clause.is_some() && !supported_raw_where)
-    {
+    // `Self: Sized` is the one exception: it only relaxes object safety of the
+    // Rust trait and imposes nothing on callers, so a client signature without
+    // it is not weaker. Generated FFI functions are per-concrete-type, so the
+    // bound carries no information the schema would need to represent. Every
+    // other where clause constrains a caller-visible type or lifetime and
+    // would silently weaken the generated client if dropped.
+    let supported_where = sig.generics.where_clause.is_none() || sized_self_where(sig);
+    if sig.generics.lifetimes().any(|lt| !lt.bounds.is_empty()) || !supported_where {
         return Err(syn::Error::new_spanned(
             &sig.generics,
             "ffier exported method lifetime bounds and where clauses are unsupported",
@@ -3629,6 +3640,20 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
 
 /// Share forwarding bodies between owned and borrowed dynamic dispatch.
 fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
+    // A `where Self: Sized` method is not callable on a trait object, so a
+    // forwarding impl cannot provide it. A default body already satisfies one,
+    // but a required method would leave the impl incomplete.
+    let sized_methods: Vec<&syn::TraitItemFn> = trait_item
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            TraitItem::Fn(method) if sized_self_where(&method.sig) => Some(method),
+            _ => None,
+        })
+        .collect();
+    if sized_methods.iter().any(|method| method.default.is_none()) {
+        return quote! {};
+    }
     let trait_name = &trait_item.ident;
     let mut generics = trait_item.generics.clone();
     generics
@@ -3644,7 +3669,7 @@ fn emit_dyn_dispatch_impl(trait_item: &ItemTrait) -> proc_macro2::TokenStream {
                 return None;
             };
             let sig = &method.sig;
-            if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) {
+            if !matches!(sig.inputs.first(), Some(FnArg::Receiver(_))) || sized_self_where(sig) {
                 return None;
             }
             let name = &sig.ident;
@@ -3989,6 +4014,11 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
 
         // Preserve the receiver's borrow contract in the extracted helper.
         let mut helper_sig = method.sig.clone();
+        // The helper is a free function over `impl Trait`, where `Self` does not
+        // exist. Its only callers are the method bodies that carry the clause.
+        if sized_self_where(&helper_sig) {
+            helper_sig.generics.where_clause = None;
+        }
         let receiver = helper_sig
             .receiver()
             .cloned()
@@ -6574,4 +6604,97 @@ pub fn generate_bridge(input: TokenStream) -> TokenStream {
     }
 
     quote! { #path!(#mode, #schema_output); }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(sig: syn::Signature, self_ty: Option<&Type>) -> syn::Result<Option<MethodInfo>> {
+        parse_method_sig(
+            &sig,
+            &[],
+            &mut AliasContext::new(format_ident!("helper")),
+            self_ty,
+            false,
+            false,
+            None,
+            None,
+        )
+    }
+
+    fn assert_accepted(sig: syn::Signature) {
+        let method = parse(sig, None).expect("signature rejected");
+        assert!(method.is_some(), "signature skipped");
+    }
+
+    fn assert_rejected(sig: syn::Signature) {
+        let result = parse(sig, None);
+        assert!(result.is_err(), "signature accepted");
+        assert!(
+            result.err().unwrap().to_string().contains("where clauses"),
+            "unexpected diagnostic"
+        );
+    }
+
+    #[test]
+    fn accepts_self_sized_on_trait_method() {
+        assert_accepted(syn::parse_quote! {
+            fn probe(&self) -> i32
+            where
+                Self: Sized
+        });
+    }
+
+    #[test]
+    fn accepts_self_sized_on_exported_impl_method() {
+        let self_ty: Type = syn::parse_quote!(Widget);
+        let method = parse(
+            syn::parse_quote! {
+                fn probe(&self) -> i32
+                where
+                    Self: Sized
+            },
+            Some(&self_ty),
+        )
+        .expect("signature rejected");
+        assert!(method.is_some(), "signature skipped");
+    }
+
+    #[test]
+    fn rejects_other_self_bounds() {
+        assert_rejected(syn::parse_quote! {
+            fn probe(&self) -> i32
+            where
+                Self: Clone
+        });
+    }
+
+    #[test]
+    fn rejects_other_where_predicates() {
+        assert_rejected(syn::parse_quote! {
+            fn probe<T>(&self) -> i32
+            where
+                T: 'static
+        });
+    }
+
+    #[test]
+    fn rejects_extra_predicates_beside_self_sized() {
+        assert_rejected(syn::parse_quote! {
+            fn probe(&self) -> i32
+            where
+                Self: Sized,
+                Self: Clone
+        });
+    }
+
+    #[test]
+    fn rejects_lifetime_bounds_on_the_sized_predicate() {
+        assert_rejected(syn::parse_quote! {
+            fn probe(&self) -> i32
+            where
+                Self: Sized + 'static
+        });
+    }
 }
