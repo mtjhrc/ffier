@@ -23,6 +23,12 @@
   restrict the `ffier-strong` API while runtime lookup clients retain optional
   symbol discovery.
 
+- Place generated Rust clients' symbol loading and library configuration API in
+  an inline public `ffi` module: `ffi::require`, `ffi::Symbol`,
+  `ffi::set_library_handle`, `ffi::set_load_policy`, `ffi::LoadPolicy`,
+  `ffi::LoadError`, and `ffi::SetLibraryError`. Library types and functions
+  remain at the client root.
+
 - Add independent `send`/`sync` annotations for opaque handles and preserve
   ordinary Send/Sync supertraits on exported callback traits. Rust checks native
   guarantees and generated trait implementations. Traits used in callback

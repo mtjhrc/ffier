@@ -571,7 +571,7 @@ pub fn generate(lib: &Library) -> String {
         emit_free_function(&mut out, f, lib, &mut symbols);
     }
 
-    // 6. Shared symbol API (Symbol enum + require + is_available)
+    // 6. Namespaced loading/configuration API and symbol caches.
     if !symbols.is_empty() {
         emit_symbol_api(&mut out, &symbols, handle_allocator.as_deref());
     }
@@ -2784,6 +2784,24 @@ fn symbol_to_variant(c_name: &str) -> String {
 
 /// Emit shared metadata and the feature-selected loading API.
 fn emit_symbol_api(out: &mut String, symbols: &[SymbolInfo], handle_allocator: Option<&str>) {
+    out.push_str("/// FFI symbol loading and client configuration.\npub mod ffi {\n");
+
+    // Resolve ABI types in the library API's scope, separate from loader types
+    // such as Symbol and LoadError, which may also be user-defined type names.
+    out.push_str(
+        "#[cfg(not(feature = \"ffier-strong\"))]\npub(super) mod __symbols {\n#[allow(unused_imports)]\nuse super::super::*;\n",
+    );
+    for symbol in symbols {
+        emit_cfg_attr(out, symbol.cfg.as_ref());
+        writeln!(
+            out,
+            "pub(in super::super) static {}: std::sync::OnceLock<{}> = std::sync::OnceLock::new();",
+            symbol.upper, symbol.fn_ptr_type
+        )
+        .unwrap();
+    }
+    out.push_str("}\n");
+
     // Cfg-exclusive variants of one trait method share a C symbol name, so the
     // enum and its name mapping key off unique names; the loader keeps one arm
     // per variant.
@@ -2869,14 +2887,9 @@ impl Symbol {
             } else {
                 "                "
             };
-            writeln!(out, "{indent}if {}.get().is_none() {{", s.upper).unwrap();
-            writeln!(
-                out,
-                "{indent}    let f = self.__lookup::<{}>(lib)?;",
-                s.fn_ptr_type
-            )
-            .unwrap();
-            writeln!(out, "{indent}    let _ = {}.set(f);", s.upper).unwrap();
+            writeln!(out, "{indent}if __symbols::{}.get().is_none() {{", s.upper).unwrap();
+            writeln!(out, "{indent}    let f = self.__lookup(lib)?;").unwrap();
+            writeln!(out, "{indent}    let _ = __symbols::{}.set(f);", s.upper).unwrap();
             writeln!(out, "{indent}}}").unwrap();
             if s.cfg.is_some() {
                 writeln!(out, "                }}").unwrap();
@@ -2996,11 +3009,11 @@ fn __ffier_with_library<R>(
 }
 
 #[cfg(not(feature = "ffier-strong"))]
-fn __ffier_symbol<F>(symbol: Symbol, slot: &std::sync::OnceLock<F>) -> &F {
+pub(super) fn __ffier_symbol<F>(symbol: Symbol, slot: &std::sync::OnceLock<F>) -> &F {
     slot.get().unwrap_or_else(|| {
         match __FFIER_POLICY.get_or_init(|| LoadPolicy::Lazy) {
             LoadPolicy::Explicit => panic!(
-                "symbol `{}` not loaded; call require() first", symbol.c_name()),
+                "symbol `{}` not loaded; call ffi::require() first", symbol.c_name()),
             LoadPolicy::Lazy => require(&[symbol]).unwrap_or_else(|error|
                 panic!("failed to load symbol `{}`: {error}", symbol.c_name())),
         }
@@ -3066,6 +3079,7 @@ pub fn require(symbols: &[Symbol]) -> Result<(), LoadError> {
         })?
     }
 }
+}
 "#,
     );
 }
@@ -3082,7 +3096,7 @@ struct SymbolInfo {
     cfg: Option<Cfg>,
 }
 
-/// Emit a single dynlookup-binding shim: OnceLock + shim fn.
+/// Emit a single dynlookup-binding shim using its cache in the ffi module.
 /// Pushes symbol info into `symbols` for the enum/require generation.
 fn emit_dynlookup_shim(
     out: &mut String,
@@ -3112,15 +3126,6 @@ fn emit_dynlookup_shim(
         .collect();
     let args_str = arg_names.join(", ");
 
-    // OnceLock
-    emit_cfg_attr(out, cfg);
-    writeln!(out, "#[cfg(not(feature = \"ffier-strong\"))]").unwrap();
-    writeln!(
-        out,
-        "static {upper}: std::sync::OnceLock<{fn_ptr_type}> = std::sync::OnceLock::new();"
-    )
-    .unwrap();
-
     // Shim function
     let vis = if f.public { "pub " } else { "" };
     emit_cfg_attr(out, cfg);
@@ -3137,7 +3142,7 @@ fn emit_dynlookup_shim(
     let variant = symbol_to_variant(name);
     writeln!(
         out,
-        "    unsafe {{ (__ffier_symbol(Symbol::{variant}, &{upper}))({args_str}) }}"
+        "    unsafe {{ (ffi::__ffier_symbol(ffi::Symbol::{variant}, &ffi::__symbols::{upper}))({args_str}) }}"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();

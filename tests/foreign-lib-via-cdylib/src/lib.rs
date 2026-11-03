@@ -21,7 +21,7 @@ pub fn init_for_tests() {
     {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| unsafe {
-            set_library_handle(Some(load_test_dll("ffier_test_foreign_lib"))).unwrap();
+            ffi::set_library_handle(Some(load_test_dll("ffier_test_foreign_lib"))).unwrap();
         });
     }
 }
