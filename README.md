@@ -356,5 +356,7 @@ just check              # fmt + clippy + full test suite (incl. no-codegen build
 ```
 
 The native test runner keeps the shared API suite and the platform FD/HANDLE
-suite separate. Run `python3 tests/run.py platform-cfg` for the latter.
-Linux additionally runs Valgrind and both Miri models.
+suite separate. Run `python3 tests/run.py platform-cfg` for the latter. Linux
+and Windows CI run `just check` using their native schemas; a separate job
+compares the schemas byte for byte. Linux additionally runs Valgrind and both
+Miri models.
