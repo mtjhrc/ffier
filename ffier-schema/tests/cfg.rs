@@ -11,6 +11,10 @@ fn predicates_round_trip_as_objects() {
             "target_os = \"windows\"",
         ),
         (
+            json!({"kind": "target_arch", "value": "x86_64"}),
+            "target_arch = \"x86_64\"",
+        ),
+        (
             json!({"kind": "feature", "value": "files"}),
             "feature = \"files\"",
         ),
@@ -42,7 +46,6 @@ fn rejects_unsupported_predicates_and_invalid_shapes() {
     for json in [
         json!("unix"),
         json!({}),
-        json!({"kind": "target_arch", "value": "x86_64"}),
         json!({"kind": "target_family", "value": "unix"}),
         json!({"kind": "target_pointer_width", "value": "64"}),
         json!({"kind": "custom"}),

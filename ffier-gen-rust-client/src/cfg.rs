@@ -13,7 +13,9 @@ pub fn client_cfg_cfg(cfg: &Cfg) -> Cfg {
         ]),
         Cfg::All(items) => Cfg::All(items.iter().map(client_cfg_cfg).collect()),
         Cfg::Any(items) => Cfg::Any(items.iter().map(client_cfg_cfg).collect()),
-        Cfg::Not(_) | Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) => cfg.clone(),
+        Cfg::Not(_) | Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) | Cfg::TargetArch(_) => {
+            cfg.clone()
+        }
     }
 }
 
@@ -55,6 +57,11 @@ mod tests {
             (Cfg::Windows, "windows"),
             (Cfg::Unix, "unix"),
             (Cfg::TargetOs("linux".into()), "target_os = \"linux\""),
+            (Cfg::TargetArch("x86_64".into()), "target_arch = \"x86_64\""),
+            (
+                Cfg::Not(Box::new(Cfg::TargetArch("aarch64".into()))),
+                "not(target_arch = \"aarch64\")",
+            ),
             (Cfg::All(vec![]), "all()"),
             (Cfg::Any(vec![]), "any()"),
         ] {

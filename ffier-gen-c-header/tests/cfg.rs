@@ -206,6 +206,13 @@ fn invalid_or_colliding_guard_names_return_errors() {
             ],
             "FT_CFG_TARGET_OS_CUSTOM_OS",
         ),
+        (
+            vec![
+                Cfg::TargetArch("custom-arch".into()),
+                Cfg::TargetArch("custom_arch".into()),
+            ],
+            "FT_CFG_TARGET_ARCH_CUSTOM_ARCH",
+        ),
         (vec![Cfg::Feature("".into())], "unsupported cfg name"),
         (
             vec![Cfg::Feature("with spaces".into())],
@@ -217,6 +224,10 @@ fn invalid_or_colliding_guard_names_return_errors() {
         ),
         (
             vec![Cfg::TargetOs("os/name".into())],
+            "unsupported cfg name",
+        ),
+        (
+            vec![Cfg::TargetArch("arch/name".into())],
             "unsupported cfg name",
         ),
     ] {
@@ -480,11 +491,136 @@ fn platform_assumptions_resolve_exact_os_and_keep_unknown_unix_status() {
 }
 
 #[test]
+fn target_arch_predicates_use_compiler_macros_and_assumptions() {
+    let mut arch_schema = schema();
+    arch_schema["free_functions"] = json!([
+        {"name": "x86_64", "ffi_name": "ft_x86_64", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetArch("x86_64".into())},
+        {"name": "aarch64", "ffi_name": "ft_aarch64", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetArch("aarch64".into())},
+        {"name": "not_x86_64", "ffi_name": "ft_not_x86_64", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::Not(Box::new(Cfg::TargetArch("x86_64".into())))},
+        {"name": "custom", "ffi_name": "ft_custom", "params": [], "ret": {"return_kind": "void"},
+         "cfg": Cfg::TargetArch("custom-arch".into())}
+    ]);
+    let library: Library = serde_json::from_value(arch_schema).unwrap();
+
+    let guarded = generate(&library, "TEST_H", &Options::default()).unwrap();
+    let x86_64_guard = "(defined(__x86_64__) || defined(_M_X64))";
+    let aarch64_guard = "(defined(__aarch64__) || defined(_M_ARM64))";
+    assert!(guarded.contains(&format!(
+        "#if {x86_64_guard}\nvoid ft_x86_64(void);\n#endif"
+    )));
+    assert!(guarded.contains(&format!(
+        "#if {aarch64_guard}\nvoid ft_aarch64(void);\n#endif"
+    )));
+    assert!(guarded.contains(&format!(
+        "#if !({x86_64_guard})\nvoid ft_not_x86_64(void);\n#endif"
+    )));
+    assert!(
+        guarded
+            .contains("#if defined(FT_CFG_TARGET_ARCH_CUSTOM_ARCH)\nvoid ft_custom(void);\n#endif")
+    );
+
+    for (arch, included, omitted) in [
+        (
+            "x86_64",
+            vec!["x86_64"],
+            vec!["aarch64", "not_x86_64", "custom"],
+        ),
+        (
+            "aarch64",
+            vec!["aarch64", "not_x86_64"],
+            vec!["x86_64", "custom"],
+        ),
+    ] {
+        let output = generate(
+            &library,
+            "TEST_H",
+            &Options {
+                cfg: vec![format!("target_arch={arch}")],
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        for name in included {
+            assert!(
+                output.contains(&format!("void ft_{name}(void);")),
+                "missing {name} for {arch}"
+            );
+        }
+        for name in omitted {
+            assert!(
+                !output.contains(&format!("ft_{name}(")),
+                "included {name} for {arch}"
+            );
+        }
+        assert!(!output.contains("#if (defined(__x86_64__)"));
+        assert!(!output.contains("#if (defined(__aarch64__)"));
+        assert!(!output.contains("FT_CFG_TARGET_ARCH_"));
+    }
+
+    let output = generate(
+        &library,
+        "TEST_H",
+        &Options {
+            cfg: vec!["target_arch=x86_64".into()],
+            guard: vec!["target_arch=x86_64".into()],
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert!(output.contains(&format!(
+        "#if {x86_64_guard}\nvoid ft_x86_64(void);\n#endif"
+    )));
+    assert!(output.contains(&format!(
+        "#if !({x86_64_guard})\nvoid ft_not_x86_64(void);\n#endif"
+    )));
+    assert!(!output.contains("ft_aarch64("));
+
+    #[cfg(unix)]
+    for (arch, defines, expected) in [
+        ("x86_64", &["__x86_64__"][..], true),
+        ("x86_64", &["_M_X64"], true),
+        ("aarch64", &["__aarch64__"], true),
+        ("aarch64", &["_M_ARM64"], true),
+        ("riscv64", &["__riscv", "__riscv_xlen=64"], true),
+        ("riscv64", &["__riscv", "__riscv_xlen=32"], false),
+        ("arm", &["__arm__"], true),
+        ("arm", &["_M_ARM"], true),
+        ("x86", &["__i386__"], true),
+        ("x86", &["_M_IX86"], true),
+        ("wasm32", &["__wasm32__"], true),
+    ] {
+        let mut arch_schema = schema();
+        arch_schema["free_functions"] = json!([{
+            "name": "gated", "ffi_name": "ft_gated", "params": [], "ret": {"return_kind": "void"},
+            "cfg": Cfg::TargetArch(arch.into())
+        }]);
+        let header = header(arch_schema);
+        let guard = header
+            .lines()
+            .take_while(|line| !line.contains("void ft_gated(void);"))
+            .last()
+            .and_then(|line| line.strip_prefix("#if "))
+            .expect("guarded declaration");
+        let source = format!("#if {guard}\nenabled\n#else\ndisabled\n#endif\n");
+        let mut arguments = vec!["-E", "-P", "-undef"];
+        let flags: Vec<String> = defines.iter().map(|define| format!("-D{define}")).collect();
+        arguments.extend(flags.iter().map(String::as_str));
+        let output = c_compiler(&source, &arguments);
+        let expected = if expected { "enabled" } else { "disabled" };
+        assert_eq!(output.trim(), expected, "{arch} with {defines:?}: {guard}");
+    }
+}
+
+#[test]
 fn conflicting_or_unsupported_assumptions_return_errors() {
     let library: Library = serde_json::from_value(schema()).unwrap();
     for atoms in [
         vec!["windows", "unix"],
         vec!["target_os=windows", "target_os=linux"],
+        vec!["target_arch=x86_64", "target_arch=aarch64"],
         vec!["windows", "target_os=linux"],
         vec!["unix", "target_os=windows"],
     ] {
@@ -503,7 +639,6 @@ fn conflicting_or_unsupported_assumptions_return_errors() {
         );
     }
     for atom in [
-        "target_arch=x86_64",
         "target_family=unix",
         "target_pointer_width=64",
         "feature=files",
@@ -511,6 +646,9 @@ fn conflicting_or_unsupported_assumptions_return_errors() {
         "all(unix)",
         "target_os=",
         "target_os=\"windows",
+        "target_arch=",
+        "target_arch=arch/name",
+        "target_arch=\"x86_64",
     ] {
         for guarded in [false, true] {
             let mut options = Options::default();

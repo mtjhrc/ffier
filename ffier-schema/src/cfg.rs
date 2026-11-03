@@ -13,6 +13,7 @@ pub enum Cfg {
     Windows,
     Unix,
     TargetOs(String),
+    TargetArch(String),
     Feature(String),
     All(Vec<Cfg>),
     Any(Vec<Cfg>),
@@ -26,6 +27,7 @@ impl fmt::Display for Cfg {
             Self::Windows => f.write_str("windows"),
             Self::Unix => f.write_str("unix"),
             Self::TargetOs(value) => write!(f, "target_os = {value:?}"),
+            Self::TargetArch(value) => write!(f, "target_arch = {value:?}"),
             Self::Feature(value) => write!(f, "feature = {value:?}"),
             Self::All(items) | Self::Any(items) => {
                 f.write_str(if matches!(self, Self::All(_)) {

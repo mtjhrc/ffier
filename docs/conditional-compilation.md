@@ -81,10 +81,10 @@ pub fn unix_value() -> i32 {
 }
 ```
 
-Supported predicates are `windows`, `unix`, `target_os = "..."`, and
-`feature = "..."`. Combine them with `all(...)`, `any(...)`, and
-`not(predicate)`. Empty `all()` is true; empty `any()` is false. Other flags
-and keys, including `target_arch` and `target_family`, are rejected.
+Supported predicates are `windows`, `unix`, `target_os = "..."`,
+`target_arch = "..."`, and `feature = "..."`. Combine them with `all(...)`,
+`any(...)`, and `not(predicate)`. Empty `all()` is true; empty `any()` is
+false. Other flags and keys, including `target_family`, are rejected.
 
 ## Schema representation
 
@@ -102,9 +102,9 @@ has a `kind`; predicates with operands also have a `value`:
 }
 ```
 
-`all` and `any` take arrays. `not` takes one predicate. `target_os` and
-`feature` take strings. `windows` and `unix` have no operand. An omitted
-`cfg` field means unconditional availability.
+`all` and `any` take arrays. `not` takes one predicate. `target_os`,
+`target_arch`, and `feature` take strings. `windows` and `unix` have no
+operand. An omitted `cfg` field means unconditional availability.
 
 This replaces the previous string representation. Regenerate schemas and
 bindings together. Rust clients render the predicate tree as Rust `cfg`
@@ -126,6 +126,25 @@ maps `target_os` values `windows`, `linux`, `macos`, `freebsd`, `openbsd`,
 `netbsd`, and `android` to compiler macros. Linux guards exclude Android;
 macOS guards exclude Apple mobile targets.
 
+It maps `target_arch` values `x86_64`, `aarch64`, `riscv64`, `arm`, `x86`, and
+`wasm32` to compiler macros. Where MSVC has an equivalent, the guard accepts
+both it and the GNU macro, because MSVC does not define the GNU macros:
+
+| `target_arch` | guard |
+| --- | --- |
+| `x86_64` | `__x86_64__` or `_M_X64` |
+| `aarch64` | `__aarch64__` or `_M_ARM64` |
+| `riscv64` | `__riscv` with `__riscv_xlen == 64` |
+| `arm` | `__arm__` or `_M_ARM` |
+| `x86` | `__i386__` or `_M_IX86` |
+| `wasm32` | `__wasm32__` |
+
+`__riscv` marks the whole RISC-V family, so the `riscv64` guard also requires
+a 64-bit register width. Architecture guards stay independent of OS guards, so
+combining both narrows the declaration to the matching architecture on any OS.
+Unmapped architecture values use the library-prefixed
+`FT_CFG_TARGET_ARCH_...` form, like unmapped OS values.
+
 Unresolved feature predicates use library-prefixed macros: prefix `ft` and feature
 `files` produce `FT_CFG_FEATURE_FILES`. Define the macro when compiling a
 consumer to select the matching API.
@@ -144,10 +163,11 @@ ffier-gen-c-header target/ffier-example.json \
 - `--guard-features files` leaves named features for the consumer to select.
 - `--unspecified-features enabled|disabled|guard` controls unlisted features.
   The default is `enabled`.
-- `--cfg windows`, `--cfg unix`, or `--cfg target_os=linux` asserts a platform
-  predicate. Repeat `--cfg` for multiple assumptions.
-- `--guard unix` or `--guard target_os=linux` keeps a platform predicate
-  guarded, even when `--cfg` would resolve it.
+- `--cfg windows`, `--cfg unix`, `--cfg target_os=linux`, or
+  `--cfg target_arch=x86_64` asserts a platform predicate. Repeat `--cfg` for
+  multiple assumptions.
+- `--guard unix`, `--guard target_os=linux`, or `--guard target_arch=x86_64`
+  keeps a platform predicate guarded, even when `--cfg` would resolve it.
 
 Feature lists accept repeated options or comma-separated names. Features must
 not appear in more than one list. Platform assumptions must not contradict
@@ -160,8 +180,9 @@ build or keep the feature guarded. Use `--unspecified-features guard` to leave
 all unlisted features for the consumer to select.
 
 Platform predicates stay guarded unless asserted. Selecting one `target_os`
-rules out other OS values. Known OS values resolve the matching `windows`
-and `unix` flags. The `unix` flag does not identify one OS.
+rules out other OS values, and selecting one `target_arch` rules out other
+architecture values. Known OS values resolve the matching `windows` and `unix`
+flags. The `unix` flag does not identify one OS.
 
 Resolved true predicates emit declarations directly. Resolved false predicates
 omit declarations. Only unresolved predicates produce C guards. The Rust

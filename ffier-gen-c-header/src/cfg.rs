@@ -110,7 +110,7 @@ impl Assumptions {
     /// Resolve atoms from the caller's assumptions and fold Boolean constants.
     pub fn constant(&self, cfg: &Cfg) -> Option<bool> {
         match cfg {
-            Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) => self.platform(cfg),
+            Cfg::Windows | Cfg::Unix | Cfg::TargetOs(_) | Cfg::TargetArch(_) => self.platform(cfg),
             Cfg::Feature(name) => self.feature(name),
             Cfg::All(items) | Cfg::Any(items) => {
                 let all = matches!(cfg, Cfg::All(_));
@@ -138,23 +138,40 @@ fn parse_platform_atom(text: &str) -> Result<Cfg, String> {
         "windows" => Ok(Cfg::Windows),
         "unix" => Ok(Cfg::Unix),
         _ => {
-            let (_, value) = text
+            let (key, value) = text
                 .split_once('=')
-                .filter(|(key, _)| key.trim() == "target_os")
-                .ok_or_else(|| format!(
-                    "unsupported platform predicate `{text}`; expected windows, unix, or target_os=VALUE"
-                ))?;
-            let value = value.trim();
-            let value = if value.starts_with('"') {
-                serde_json::from_str::<String>(value)
-                    .map_err(|_| format!("invalid target_os value in `{text}`"))?
-            } else {
-                value.to_string()
-            };
-            validate_name(&value)?;
-            Ok(Cfg::TargetOs(value))
+                .ok_or_else(|| unsupported_platform_atom(text))?;
+            let key = key.trim();
+            let value = parse_atom_value(key, value, text)?;
+            match key {
+                "target_os" => Ok(Cfg::TargetOs(value)),
+                "target_arch" => {
+                    validate_arch_name(&value)?;
+                    Ok(Cfg::TargetArch(value))
+                }
+                _ => Err(unsupported_platform_atom(text)),
+            }
         }
     }
+}
+
+fn unsupported_platform_atom(text: &str) -> String {
+    format!(
+        "unsupported platform predicate `{text}`; expected windows, unix, \
+         target_os=VALUE, or target_arch=VALUE"
+    )
+}
+
+fn parse_atom_value(key: &str, value: &str, text: &str) -> Result<String, String> {
+    let value = value.trim();
+    let value = if value.starts_with('"') {
+        serde_json::from_str::<String>(value)
+            .map_err(|_| format!("invalid {key} value in `{text}`"))?
+    } else {
+        value.to_string()
+    };
+    validate_name(&value)?;
+    Ok(value)
 }
 
 fn is_unix_os(os: &str) -> bool {
@@ -168,6 +185,7 @@ fn is_unix_os(os: &str) -> bool {
 fn contradict(a: &Cfg, b: &Cfg) -> bool {
     match (a, b) {
         (Cfg::TargetOs(a), Cfg::TargetOs(b)) => a != b,
+        (Cfg::TargetArch(a), Cfg::TargetArch(b)) => a != b,
         (Cfg::Windows, Cfg::Unix) | (Cfg::Unix, Cfg::Windows) => true,
         (Cfg::Windows, Cfg::TargetOs(os)) | (Cfg::TargetOs(os), Cfg::Windows) => os != "windows",
         (Cfg::Unix, Cfg::TargetOs(os)) | (Cfg::TargetOs(os), Cfg::Unix) => os == "windows",
@@ -182,11 +200,15 @@ pub fn validate_library(lib: &Library) -> Result<(), String> {
         guards: &mut HashMap<String, String>,
     ) -> Result<(), String> {
         match cfg {
-            Cfg::Feature(name) | Cfg::TargetOs(name) => {
+            Cfg::Feature(name) | Cfg::TargetOs(name) | Cfg::TargetArch(name) => {
                 validate_name(name)?;
+                if matches!(cfg, Cfg::TargetArch(_)) {
+                    validate_arch_name(name)?;
+                }
                 let kind = match cfg {
                     Cfg::Feature(_) => "FEATURE",
                     Cfg::TargetOs(os) if os_guard(os).is_none() => "TARGET_OS",
+                    Cfg::TargetArch(arch) if arch_guard(arch).is_none() => "TARGET_ARCH",
                     _ => return Ok(()),
                 };
                 let guard = format!(
@@ -253,6 +275,17 @@ fn validate_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Rust target architectures are identifiers; a leading digit or a bare number
+/// is never a valid value.
+fn validate_arch_name(name: &str) -> Result<(), String> {
+    if !name.starts_with(|first: char| first.is_ascii_alphabetic()) {
+        return Err(format!(
+            "unsupported target_arch name `{name}`; expected an architecture name such as x86_64"
+        ));
+    }
+    Ok(())
+}
+
 fn os_guard(os: &str) -> Option<&'static str> {
     match os {
         "windows" => Some("defined(_WIN32)"),
@@ -262,6 +295,25 @@ fn os_guard(os: &str) -> Option<&'static str> {
         "openbsd" => Some("defined(__OpenBSD__)"),
         "netbsd" => Some("defined(__NetBSD__)"),
         "android" => Some("defined(__ANDROID__)"),
+        _ => None,
+    }
+}
+
+/// Architecture values use compiler macros where they exist and library-prefixed
+/// guard macros otherwise.
+///
+/// MSVC does not define the GNU architecture macros, so each guard accepts its
+/// `_M_*` equivalent too. `__riscv` marks the whole family, so riscv64 also
+/// needs a 64-bit register width; `defined(__riscv_xlen)` keeps the comparison
+/// from tripping `-Wundef`.
+fn arch_guard(arch: &str) -> Option<&'static str> {
+    match arch {
+        "x86_64" => Some("(defined(__x86_64__) || defined(_M_X64))"),
+        "x86" => Some("(defined(__i386__) || defined(_M_IX86))"),
+        "aarch64" => Some("(defined(__aarch64__) || defined(_M_ARM64))"),
+        "arm" => Some("(defined(__arm__) || defined(_M_ARM))"),
+        "riscv64" => Some("(defined(__riscv) && defined(__riscv_xlen) && (__riscv_xlen == 64))"),
+        "wasm32" => Some("defined(__wasm32__)"),
         _ => None,
     }
 }
@@ -293,6 +345,16 @@ pub fn expression(assumptions: &Assumptions, cfg: &Cfg) -> String {
             "defined({}_CFG_FEATURE_{})",
             assumptions.prefix,
             macro_part(name)
+        ),
+        Cfg::TargetArch(arch) => arch_guard(arch).map_or_else(
+            || {
+                format!(
+                    "defined({}_CFG_TARGET_ARCH_{})",
+                    assumptions.prefix,
+                    macro_part(arch)
+                )
+            },
+            str::to_owned,
         ),
         Cfg::All(items) | Cfg::Any(items) => {
             let all = matches!(cfg, Cfg::All(_));
@@ -353,6 +415,31 @@ mod tests {
             (
                 Cfg::TargetOs("custom-os".into()),
                 "defined(FT_CFG_TARGET_OS_CUSTOM_OS)",
+            ),
+            (
+                Cfg::TargetArch("x86_64".into()),
+                "(defined(__x86_64__) || defined(_M_X64))",
+            ),
+            (
+                Cfg::TargetArch("aarch64".into()),
+                "(defined(__aarch64__) || defined(_M_ARM64))",
+            ),
+            (
+                Cfg::TargetArch("riscv64".into()),
+                "(defined(__riscv) && defined(__riscv_xlen) && (__riscv_xlen == 64))",
+            ),
+            (
+                Cfg::TargetArch("arm".into()),
+                "(defined(__arm__) || defined(_M_ARM))",
+            ),
+            (
+                Cfg::TargetArch("x86".into()),
+                "(defined(__i386__) || defined(_M_IX86))",
+            ),
+            (Cfg::TargetArch("wasm32".into()), "defined(__wasm32__)"),
+            (
+                Cfg::TargetArch("custom-arch".into()),
+                "defined(FT_CFG_TARGET_ARCH_CUSTOM_ARCH)",
             ),
         ] {
             assert_eq!(expression(&assumptions, &cfg), expected);
