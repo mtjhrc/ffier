@@ -32,10 +32,11 @@ pub fn from_meta(meta: &Meta) -> syn::Result<Cfg> {
             };
             match key.as_str() {
                 "target_os" => Ok(Cfg::TargetOs(value.value())),
+                "target_arch" => Ok(Cfg::TargetArch(value.value())),
                 "feature" => Ok(Cfg::Feature(value.value())),
                 _ => Err(syn::Error::new_spanned(
                     meta,
-                    "unsupported cfg key; expected target_os or feature",
+                    "unsupported cfg key; expected target_os, target_arch, or feature",
                 )),
             }
         }
@@ -78,6 +79,7 @@ fn predicate_tokens(cfg: &Cfg) -> TokenStream {
         Cfg::Windows => quote!(windows),
         Cfg::Unix => quote!(unix),
         Cfg::TargetOs(value) => quote!(target_os = #value),
+        Cfg::TargetArch(value) => quote!(target_arch = #value),
         Cfg::Feature(value) => quote!(feature = #value),
         Cfg::All(items) | Cfg::Any(items) => {
             let items = items.iter().map(predicate_tokens);
@@ -146,10 +148,29 @@ mod tests {
     }
 
     #[test]
+    fn parses_target_arch_predicates() {
+        assert_eq!(
+            from_tokens(&quote!(target_arch = "x86_64")).unwrap(),
+            Cfg::TargetArch("x86_64".into())
+        );
+        let tokens = quote!(all(target_arch = "aarch64", not(target_arch = "x86_64")));
+        assert_eq!(
+            from_tokens(&normalize_tokens(&tokens).unwrap()).unwrap(),
+            from_tokens(&tokens).unwrap()
+        );
+        assert_eq!(
+            from_tokens(&tokens).unwrap(),
+            Cfg::All(vec![
+                Cfg::TargetArch("aarch64".into()),
+                Cfg::Not(Box::new(Cfg::TargetArch("x86_64".into()))),
+            ])
+        );
+    }
+
+    #[test]
     fn rejects_unsupported_and_invalid_cfg_tokens() {
         for tokens in [
             quote!(custom),
-            quote!(target_arch = "x86_64"),
             quote!(target_family = "unix"),
             quote!(target_pointer_width = "64"),
             quote!(target_feature = "sse"),
@@ -159,6 +180,7 @@ mod tests {
             quote!(not()),
             quote!(not(unix, windows)),
             quote!(target_os = 42),
+            quote!(target_arch = 42),
             quote!(other(unix)),
             quote!(unix,,),
             quote!(unix, windows),

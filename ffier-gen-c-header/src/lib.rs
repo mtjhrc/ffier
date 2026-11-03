@@ -44,12 +44,12 @@ pub struct Options {
     #[arg(long, value_enum, default_value_t = UnspecifiedFeatures::Enabled)]
     pub unspecified_features: UnspecifiedFeatures,
 
-    /// Assume windows, unix, or target_os=VALUE; repeatable.
+    /// Assume windows, unix, target_os=VALUE, or target_arch=VALUE; repeatable.
     #[arg(long = "cfg", value_name = "PREDICATE")]
     pub cfg: Vec<String>,
 
     /// Keep platform predicates guarded, including predicates implied by --cfg.
-    /// Accepts windows, unix, or target_os=VALUE; repeatable.
+    /// Accepts windows, unix, target_os=VALUE, or target_arch=VALUE; repeatable.
     #[arg(long, value_name = "PREDICATE")]
     pub guard: Vec<String>,
 }
