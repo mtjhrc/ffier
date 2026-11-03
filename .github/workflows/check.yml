@@ -4,6 +4,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -24,6 +27,49 @@ jobs:
       - name: just check
         run: just check
 
+      - name: Save the Linux FD/HANDLE schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-platform-schema
+          path: target/ffier-windows-handles.json
+
       - name: Generated-code diff summary
         if: github.event_name == 'pull_request'
         run: python3 tests/render-codegen-diff.py origin/${{ github.base_ref }}
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain and just
+        run: |
+          rustup toolchain install stable --component rustfmt,clippy
+          rustup default stable
+          cargo install just --locked
+
+      - name: just check
+        run: just check
+
+      - name: Save the Windows FD/HANDLE schema
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-platform-schema
+          path: target/ffier-windows-handles.json
+
+  compare-schemas:
+    needs: [check, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-platform-schema
+          path: linux
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-platform-schema
+          path: windows
+
+      - name: Compare Linux and Windows schemas
+        run: cmp linux/ffier-windows-handles.json windows/ffier-windows-handles.json
