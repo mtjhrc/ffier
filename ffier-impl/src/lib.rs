@@ -2925,6 +2925,9 @@ fn extract_vtable_methods(
         };
         let has_default = method.default.is_some();
         let mattrs = parse_ffier_method_attrs(&method.attrs)?;
+        if mattrs.skip {
+            continue;
+        }
         if let Some(mut m) = parse_method_sig(
             &method.sig,
             &method.attrs,
@@ -3959,9 +3962,10 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
     if is_foreign {
         for item in &trait_item.items {
             if let TraitItem::Fn(method) = item {
-                let is_raw_handle =
-                    vtable_method_matches(&vtable_methods, method).is_some_and(|vm| vm.raw_handle);
-                if method.default.is_some() && !is_raw_handle {
+                let Some(vm) = vtable_method_matches(&vtable_methods, method) else {
+                    continue;
+                };
+                if method.default.is_some() && !vm.raw_handle {
                     return syn::Error::new_spanned(
                         &method.sig.ident,
                         "foreign trait methods must not have default bodies \
@@ -3991,16 +3995,19 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
             continue;
         };
         // Strip all #[ffier(...)] from emitted method attrs (consumed by this macro)
-        let is_raw_handle =
-            vtable_method_matches(&vtable_methods, method).is_some_and(|vm| vm.raw_handle);
+        let vm = vtable_method_matches(&vtable_methods, method);
         strip_ffier_attrs(&mut method.attrs);
+        let Some(vm) = vm else {
+            // Rust-only methods retain their signatures and default bodies.
+            continue;
+        };
         let Some(default_block) = &method.default else {
             continue;
         };
         // raw_handle methods keep their default body as-is — they don't
         // go through the vtable helper extraction, and the VtableWrapper
         // uses the trait's default impl directly.
-        if is_raw_handle {
+        if vm.raw_handle {
             continue;
         }
 
@@ -4197,7 +4204,8 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         && !trait_item.supertraits.iter().any(|bound| thread_safety_bound(bound).is_none())
         && !vtable_methods.iter().any(|m| m.params.iter().any(ParamInfo::is_impl_trait))
         && trait_item.items.iter().all(|item| match item {
-            TraitItem::Fn(method) => matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some())
+            TraitItem::Fn(method) => vtable_methods.iter().any(|vm| vm.name == method.sig.ident)
+                && matches!(method.sig.inputs.first(), Some(FnArg::Receiver(r)) if r.reference.is_some())
                 && method.sig.generics.type_params().next().is_none(),
             _ => false,
         });

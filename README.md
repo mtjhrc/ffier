@@ -237,6 +237,12 @@ anything else. Validation may be added in a later version.
   lifetimes.
 - `&[&str]` and `&[&T]` slice parameters
 - File descriptor passing (`OwnedFd`, `BorrowedFd`)
+- `#[ffier(skip)]` marks a Rust-only method on a `no_vtable` callback trait:
+  it needs no vtable slot index and keeps its native signature and default
+  body. Skipped methods contribute no FFI methods or callback slots, and are
+  excluded from default helpers and dynamic forwarding. The registered trait
+  still carries its thread-safety and lifetime requirements for concrete
+  dispatch.
 - Conditional compilation via standard `#[cfg_attr]` -- no FFI overhead when
   the feature is off
 

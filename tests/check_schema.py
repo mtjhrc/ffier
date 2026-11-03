@@ -143,6 +143,24 @@ def check_schema(schema_path: Path) -> None:
     assert guarantees("exported_types", "View") == {"send": True, "sync": True}
     assert guarantees("exported_types", "SendCounter") == {"send": True}
     assert guarantees("exported_types", "SyncCounter") == {"sync": True}
+
+    attach = traits["AttachDevice"]
+    assert attach["no_vtable"]
+    assert attach["num_slots"] == 0
+    assert attach["methods"] == []
+    assert attach["thread_safety"] == {"send": True}
+    assert guarantees("exported_types", "AttachItem") == {"send": True}
+    implementation = next(
+        item for item in schema["trait_impls"] if item["trait_name"] == "AttachDevice"
+    )
+    assert implementation["methods"] == []
+    assert implementation["trait_lifetime_args"] == ["a"]
+    assert "AttachContext" not in schema_text and "Requirements" not in schema_text
+    attach_fn = next(
+        item for item in schema["free_functions"] if item["name"] == "attach_device"
+    )
+    assert attach_fn["params"][0]["type_args"] == ["a"]
+    assert attach_fn["params"][0]["lifetime_bounds"] == ["a"]
     assert guarantees("exported_types", "BackendWorker") == {"send": True}
     assert guarantees("exported_types", "Gadget") == {}
     assert guarantees("traits", "SendBackend") == {"send": True}
