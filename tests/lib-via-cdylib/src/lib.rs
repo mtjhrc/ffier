@@ -29,7 +29,7 @@ fn init() {
     {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| unsafe {
-            set_library_handle(Some(load_test_dll("ffier_test_lib"))).unwrap();
+            ffi::set_library_handle(Some(load_test_dll("ffier_test_lib"))).unwrap();
         });
     }
     ffier_test_foreign_lib_via_cdylib::init_for_tests();
@@ -81,7 +81,7 @@ mod unloaded_fieldless_errors {
     fn fieldless_values_need_no_symbols_and_display_only_needs_result_message() {
         #[cfg(all(windows, not(feature = "ffier-strong")))]
         unsafe {
-            api::set_library_handle(Some(crate::load_test_dll("ffier_test_lib"))).unwrap();
+            api::ffi::set_library_handle(Some(crate::load_test_dll("ffier_test_lib"))).unwrap();
         }
         let custom = api::TestError::CustomMessage;
         let invalid = api::TestError::InvalidInput();
@@ -90,8 +90,8 @@ mod unloaded_fieldless_errors {
         drop(custom);
         drop(invalid);
 
-        use api::Symbol;
-        api::require(&[Symbol::FtResultMessage, Symbol::FtTestErrorDropCount]).unwrap();
+        use api::ffi::Symbol;
+        api::ffi::require(&[Symbol::FtResultMessage, Symbol::FtTestErrorDropCount]).unwrap();
         let before = api::test_error_drop_count();
         assert_eq!(
             api::TestError::CustomMessage.to_string(),
@@ -155,7 +155,9 @@ mod tests {
     #[test]
     fn optional_api_is_discoverable_without_its_schema_feature() {
         init();
-        require(&[
+        use ffi::Symbol;
+
+        ffi::require(&[
             Symbol::FtOptionalWidgetNew,
             Symbol::FtOptionalWidgetDestroy,
             Symbol::FtOptionalWidgetBase,

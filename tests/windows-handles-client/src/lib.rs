@@ -22,22 +22,23 @@ mod tests {
                     libloading::os::windows::Library::new(env!("FIXTURE_LIBRARY")).unwrap();
                 #[cfg(unix)]
                 let library = libloading::os::unix::Library::new(env!("FIXTURE_LIBRARY")).unwrap();
-                set_library_handle(core::ptr::NonNull::new(library.into_raw() as *mut _)).unwrap();
-                set_load_policy(LoadPolicy::Explicit).unwrap();
+                ffi::set_library_handle(core::ptr::NonNull::new(library.into_raw() as *mut _))
+                    .unwrap();
+                ffi::set_load_policy(ffi::LoadPolicy::Explicit).unwrap();
             });
         }
-        require(&[
-            Symbol::WindowsHandlesHandleApiRaw,
-            Symbol::WindowsHandlesHandleApiOptionalRaw,
-            Symbol::WindowsHandlesHandleApiTake,
-            Symbol::WindowsHandlesHandleApiOptionalTake,
-            Symbol::WindowsHandlesHandleApiFromReady,
-            Symbol::WindowsHandlesConsoleBuilderNew,
-            Symbol::WindowsHandlesConsoleBuilderAddTtyPort,
-            Symbol::WindowsHandlesConsoleBuilderDestroy,
-            Symbol::WindowsHandlesInitLog,
-            Symbol::WindowsHandlesNewConsole,
-            Symbol::WindowsHandlesReadySourceReadyIsValid,
+        ffi::require(&[
+            ffi::Symbol::WindowsHandlesHandleApiRaw,
+            ffi::Symbol::WindowsHandlesHandleApiOptionalRaw,
+            ffi::Symbol::WindowsHandlesHandleApiTake,
+            ffi::Symbol::WindowsHandlesHandleApiOptionalTake,
+            ffi::Symbol::WindowsHandlesHandleApiFromReady,
+            ffi::Symbol::WindowsHandlesConsoleBuilderNew,
+            ffi::Symbol::WindowsHandlesConsoleBuilderAddTtyPort,
+            ffi::Symbol::WindowsHandlesConsoleBuilderDestroy,
+            ffi::Symbol::WindowsHandlesInitLog,
+            ffi::Symbol::WindowsHandlesNewConsole,
+            ffi::Symbol::WindowsHandlesReadySourceReadyIsValid,
         ])
         .unwrap();
     }
@@ -131,11 +132,11 @@ mod lazy_client {
             let library = libloading::os::windows::Library::new(env!("FIXTURE_LIBRARY")).unwrap();
             #[cfg(unix)]
             let library = libloading::os::unix::Library::new(env!("FIXTURE_LIBRARY")).unwrap();
-            set_library_handle(core::ptr::NonNull::new(library.into_raw() as *mut _)).unwrap();
+            ffi::set_library_handle(core::ptr::NonNull::new(library.into_raw() as *mut _)).unwrap();
         }
         assert!(!init_log(None));
-        assert!(set_load_policy(LoadPolicy::Explicit).is_err());
-        assert!(unsafe { set_library_handle(None) }.is_err());
+        assert!(ffi::set_load_policy(ffi::LoadPolicy::Explicit).is_err());
+        assert!(unsafe { ffi::set_library_handle(None) }.is_err());
     }
 }
 
@@ -153,8 +154,8 @@ mod executable_client {
     fn default_source_does_not_search_loaded_dlls() {
         let _library =
             unsafe { libloading::os::windows::Library::new(env!("FIXTURE_LIBRARY")).unwrap() };
-        assert!(!Symbol::WindowsHandlesInitLog.is_available());
-        let error = require(&[Symbol::WindowsHandlesInitLog]).unwrap_err();
+        assert!(!ffi::Symbol::WindowsHandlesInitLog.is_available());
+        let error = ffi::require(&[ffi::Symbol::WindowsHandlesInitLog]).unwrap_err();
         assert!(std::error::Error::source(&error).is_some());
     }
 }

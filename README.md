@@ -110,30 +110,33 @@ executable on Windows. Windows DLL clients should pass an explicit `HMODULE`
 from `libloading::os::windows::Library::into_raw()` (cast to a pointer) and
 keep the DLL loaded while the client is in use.
 
-With `ffier-dynlookup`, configure the lookup source once:
+Generated clients keep ffier loading and configuration APIs in an inline `ffi`
+module, alongside the library's root-level types and functions. With
+`ffier-dynlookup`, configure the lookup source once:
 
 ```rust
-use my_client::{LoadPolicy, set_library_handle, set_load_policy};
+use my_client::ffi;
 
 // `handle` is a dlopen handle or Windows HMODULE cast to a pointer.
 // Keep its library loaded; `None` selects the platform default lookup source.
-unsafe { set_library_handle(Some(handle))?; }
-set_load_policy(LoadPolicy::Explicit)?; // optional; Lazy is the default
+unsafe { ffi::set_library_handle(Some(handle))?; }
+ffi::set_load_policy(ffi::LoadPolicy::Explicit)?; // optional; Lazy is the default
 ```
 
-`LoadPolicy::Lazy` resolves each symbol on first call and panics if lookup
-fails. `LoadPolicy::Explicit` panics on unloaded calls until
-`require(&[Symbol::...])` loads them, catching version mismatches up front.
-Each setter succeeds once; later calls return `SetLibraryError`. Without
-`set_library_handle`, lookups use the platform default source described above.
-`Symbol::is_available()` probes without caching.
+`ffi::LoadPolicy::Lazy` resolves each symbol on first call and panics if lookup
+fails. `ffi::LoadPolicy::Explicit` panics on unloaded calls until
+`ffi::require(&[ffi::Symbol::...])` loads them, catching version mismatches up
+front. Each setter succeeds once; later calls return `ffi::SetLibraryError`.
+Without `ffi::set_library_handle`, lookups use the platform default source
+described above.
+`ffi::Symbol::is_available()` probes without caching.
 
 If the schema exports any vtable, the library must provide
 `PREFIX_vtable_handle_new`. All vtables share this allocator; explicit and lazy
 loading resolve it automatically.
 
-Strong linking keeps the same API: both setters and `require()` succeed as
-no-ops, and `Symbol::is_available()` returns `true`. Select it per application
+Strong linking keeps the same API: both setters and `ffi::require()` succeed as
+no-ops, and `ffi::Symbol::is_available()` returns `true`. Select it per application
 without regenerating:
 
 ```toml
