@@ -524,6 +524,18 @@ mod tests {
     }
 
     // ================================================================
+    // `where Self: Sized` on exported trait methods
+    // ================================================================
+
+    #[test]
+    fn sized_where_clause_trait_method_calls_through_client() {
+        init();
+        use super::{Apple, Categorizable, Orange};
+        assert_eq!(Apple::new(7).category(), 7);
+        assert_eq!(Orange::new(13).category(), 13);
+    }
+
+    // ================================================================
     // Vtable / exported traits
     // TODO: VtableProcessor needs `impl Processor` from the generator
     //       before these tests can work. See generated.rs.
