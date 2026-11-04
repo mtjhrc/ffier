@@ -160,6 +160,13 @@
 
 ### Changed
 
+- Exported traits keep only their `Send`/`Sync` supertraits in the schema and
+  generated clients, so another supertrait cannot be reproduced. Reject such a
+  trait everywhere instead of only when it also declares a thread guarantee; a
+  `no_vtable` trait is exempt because concrete-only dispatch means nobody can
+  implement it through the ABI. Previously `trait T: Debug` was accepted with
+  `Debug` silently dropped while `trait T: Send + Debug` was rejected, so the
+  declaration of a thread guarantee made an existing hole visible.
 - Reject typed `self` parameters (`self: &Self`), `'static` receivers on
   vtable traits (use a named method lifetime or `no_vtable`), lifetime bounds
   and where clauses other than `Self: Sized`, and named reference lifetimes on

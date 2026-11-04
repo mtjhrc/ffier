@@ -29,7 +29,7 @@ mod thread_tests {
 }
 
 mod native_attachment;
-pub use native_attachment::{AttachContext, Requirements};
+pub use native_attachment::{AttachContext, Describable, Requirements};
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use native_attachment::{AttachDevice, AttachItem, attach_device};
 
