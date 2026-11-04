@@ -3781,14 +3781,20 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
         .into();
     }
     let thread_safety = trait_thread_safety(&trait_item);
-    if !thread_safety.is_empty()
-        && (trait_item
+    // The schema records only Send/Sync and the generated client trait repeats
+    // only those, so any other supertrait is dropped and cannot be reproduced.
+    // Silently dropping one would weaken the client's contract, so vtable
+    // traits reject it whenever it appears. A `no_vtable` trait is exempt:
+    // dispatch is concrete-only, so nobody implements it through the ABI and
+    // the missing bound cannot surprise a caller.
+    if !args.no_vtable
+        && trait_item
             .supertraits
             .iter()
-            .any(|bound| thread_safety_bound(bound).is_none()))
+            .any(|bound| thread_safety_bound(bound).is_none())
     {
         return syn::Error::new_spanned(&trait_item,
-            "ffier thread-safe traits support only explicit Send/Sync supertraits; additional supertraits are unsupported")
+            "ffier exported traits support only Send/Sync supertraits; additional supertraits need no_vtable dispatch")
             .to_compile_error().into();
     }
     let ThreadSafety { send, sync } = thread_safety;

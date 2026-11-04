@@ -12,8 +12,19 @@ pub struct AttachContext {
 
 pub struct Requirements(Vec<usize>);
 
+/// A native-only supertrait that never crosses FFI.
+pub trait Describable {
+    fn describe(&self) -> &str {
+        "device"
+    }
+}
+
+// `Describable` cannot reach the generated client trait, which repeats only
+// Send. That is safe because `no_vtable` dispatch is concrete-only: nobody can
+// implement this trait through the ABI, so the missing supertrait cannot
+// weaken a caller's expectations.
 #[cfg_attr(feature = "ffi", ffier::export(no_vtable))]
-pub trait AttachDevice<'a>: Send {
+pub trait AttachDevice<'a>: Describable + Send {
     #[cfg_attr(feature = "ffi", ffier(skip))]
     fn requirements(&self) -> Requirements {
         Requirements(vec![1, 2, 3])
@@ -31,6 +42,12 @@ pub struct AttachItem<'a> {
 impl<'a> AttachItem<'a> {
     pub fn new(label: &'a str) -> Self {
         Self { label }
+    }
+}
+
+impl<'a> Describable for AttachItem<'a> {
+    fn describe(&self) -> &str {
+        self.label
     }
 }
 
