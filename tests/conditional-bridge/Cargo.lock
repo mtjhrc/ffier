@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "ffier"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ffier-bridge",
  "ffier-builtins",
@@ -37,14 +37,14 @@ dependencies = [
 
 [[package]]
 name = "ffier-bridge"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ffier-rt",
 ]
 
 [[package]]
 name = "ffier-builtins"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ffier-impl",
  "ffier-rt",
@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "ffier-impl"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ffier-schema",
  "proc-macro2",
@@ -63,11 +63,11 @@ dependencies = [
 
 [[package]]
 name = "ffier-rt"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "ffier-schema"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
