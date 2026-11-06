@@ -3,8 +3,15 @@
 //! Nothing here imports `BorrowedFd`, `Cell`, or the provider's private
 //! dependencies, so every type in the registered API must resolve through the
 //! definition-site aliases. Before those aliases existed for the standard OS
-//! types, registering this trait here failed with
-//! `cannot find type BorrowedFd in this scope`.
+//! types, merely compiling this crate failed with
+//! `cannot find type BorrowedFd in this scope` and
+//! `lifetime may not live long enough`, because the generated vtable impl is
+//! emitted here and pinned those types to `'static`.
+//!
+//! The generated `VtableSource` impl therefore has to accept non-`'static`
+//! lifetimes for an invariant handle and for a privately imported
+//! `BorrowedFd`. Implementing the provider trait with matching signatures below
+//! forces both the registration and the generated conversions to compile.
 
 #![cfg(unix)]
 
@@ -52,20 +59,49 @@ mod tests {
         }
     }
 
-    /// The generated conversions must accept real (non-`'static`) lifetimes for
-    /// an invariant handle in parameter and return position, and keep working
-    /// for a privately imported `BorrowedFd` with and without an elided
-    /// lifetime argument.
+    /// Round-trip a handle and a descriptor at a lifetime bounded by a local,
+    /// so the conversions cannot be satisfied by `'static`.
     #[test]
     fn private_imports_resolve_across_crates() {
         let native = Native;
         let file = std::fs::File::open("/dev/null").unwrap();
-        let borrowed = file.as_fd();
 
-        assert!(Source::consume(&native, Handle::new()).is_ok());
-        assert!(Source::echo_fd(&native, borrowed).is_ok());
-        assert!(Source::bare_fd(&native, borrowed).is_ok());
+        {
+            let borrowed = file.as_fd();
+            assert!(Source::echo_fd(&native, borrowed).is_ok());
+            assert!(Source::bare_fd(&native, borrowed).is_ok());
+        }
+
+        {
+            let handle = Handle::new();
+            assert!(Source::consume(&native, handle).is_ok());
+        }
+
         let made = Source::make(&native).unwrap();
         assert!(made.is_empty());
+    }
+
+    /// The generated vtable wrapper must expose the same API. Referencing its
+    /// impl forces the generated conversions to be compiled against these
+    /// concrete, short lifetimes.
+    #[test]
+    fn generated_vtable_impl_typechecks_with_short_lifetimes() {
+        fn take<'a>(
+            wrapper: &VtableSource<'a>,
+            handle: Handle<'a>,
+            fd: BorrowedFd<'a>,
+        ) -> Result<(), PrivateError> {
+            // Not called: the vtable slots are unset. Compiling this body is
+            // what proves the generated impl accepts a non-'static lifetime.
+            if handle.is_empty() {
+                let _ = Source::echo_fd(wrapper, fd)?;
+                let _ = Source::consume(wrapper, handle)?;
+            }
+            Ok(())
+        }
+
+        // Force the body to be typechecked without calling it (the vtable
+        // slots are unset, so calling would abort).
+        let _ = take;
     }
 }

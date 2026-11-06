@@ -2046,7 +2046,15 @@ fn alias_body(ty: &Type, formals: &[syn::Lifetime]) -> Type {
 ///
 /// The signature keeps its own lifetimes and `impl Trait` structure; only
 /// named types are replaced by definition-site aliases.
-fn resolve_signature_types(sig: &mut syn::Signature, ctx: &mut AliasContext) {
+fn resolve_signature_types(
+    sig: &mut syn::Signature,
+    attrs: &[syn::Attribute],
+    ctx: &mut AliasContext,
+) {
+    // Aliases registered below belong to this method, so they must carry its
+    // predicate; otherwise a platform- or feature-exclusive method would emit
+    // an alias gated by whichever method happened to be parsed last.
+    ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs).unwrap_or_default());
     for arg in &mut sig.inputs {
         let syn::FnArg::Typed(pat_type) = arg else {
             continue;
@@ -2237,6 +2245,9 @@ impl AliasContext {
         if is_primitive(ty) {
             return quote! { #ty };
         }
+        // Normalize first so this path and `alias_type` register one alias for
+        // an omitted-lifetime type rather than two.
+        let ty = &normalize_omitted_lifetimes(ty);
         let key = erase_lifetimes(ty);
         for (i, existing) in self.types.iter().enumerate() {
             if erase_lifetimes(existing) == key {
@@ -4398,7 +4409,7 @@ fn implementable_inner(args: ImplementableArgs, trait_item: ItemTrait) -> TokenS
                 return None;
             }
             let mut sig = method.sig.clone();
-            resolve_signature_types(&mut sig, &mut ctx);
+            resolve_signature_types(&mut sig, &method.attrs, &mut ctx);
             Some(quote! { (#sig) })
         })
         .collect();
