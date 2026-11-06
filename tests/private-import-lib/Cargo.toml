@@ -1,0 +1,8 @@
+[package]
+name = "ffier-test-private-import-lib"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ffier = { path = "../../ffier" }
+thiserror = "2"
