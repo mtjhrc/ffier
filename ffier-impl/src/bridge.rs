@@ -2798,7 +2798,7 @@ mod tests {
                 { name = Hidden, code = 5, message = "hidden", data = tuple [opaque, opaque], },
             ],
         }).unwrap();
-        let error = convert_error(&meta, &CTypeResolver::new("test", None));
+        let error = convert_error(&meta, &CTypeResolver::new("test", None)).unwrap();
         assert_eq!(error.variants[0].data, ErrorVariantData::Fieldless);
         assert_eq!(error.variants[1].data, ErrorVariantData::Tuple(vec![]));
         assert_eq!(error.variants[2].data.fields().len(), 1);
@@ -2853,7 +2853,7 @@ mod tests {
                 message: attrs.message.unwrap(),
                 data: MetaErrorVariantData::Tuple(fields),
             }];
-            let converted = convert_error(&meta, &CTypeResolver::new("test", None));
+            let converted = convert_error(&meta, &CTypeResolver::new("test", None)).unwrap();
             assert_eq!(
                 serde_json::to_value(&converted.variants[0]).unwrap(),
                 expected
@@ -2876,8 +2876,8 @@ mod tests {
             let source = crate::extract_result_types(&source).map_or(source, |(ok, _)| ok);
             let canonical: syn::Type = syn::parse_str(canonical).unwrap();
             assert_eq!(
-                resolver.type_ref_from_syn(&source),
-                resolver.type_ref_from_syn(&canonical),
+                resolver.type_ref_from_syn(&source).unwrap(),
+                resolver.type_ref_from_syn(&canonical).unwrap(),
                 "source: {source:?}",
             );
         }
@@ -3179,25 +3179,29 @@ impl CTypeResolver {
     /// Build a `TypeRef` from a parsed `syn::Type`, extracting references,
     /// lifetimes, `Option<_>`, `Box<str>`, qualified paths, and generic
     /// lifetime arguments structurally — without stringifying and re-parsing.
-    fn type_ref_from_syn(&self, ty: &syn::Type) -> ffier_schema::TypeRef {
+    ///
+    /// Types that have no schema representation are rejected here rather than
+    /// stringified: a stringified name is absent from the type registry, so it
+    /// only failed later as an unrelated "type not found" panic.
+    fn type_ref_from_syn(&self, ty: &syn::Type) -> syn::Result<ffier_schema::TypeRef> {
         match ty {
             // Option<T> → recurse into T and set optional = true.
             syn::Type::Path(tp) if crate::is_option(tp) => {
                 let inner = crate::option_inner(tp);
-                let mut tr = self.type_ref_from_syn(inner);
+                let mut tr = self.type_ref_from_syn(inner)?;
                 tr.optional = true;
-                tr
+                Ok(tr)
             }
 
             // Box<str> → owned str.
-            syn::Type::Path(tp) if crate::is_box_str(tp) => ffier_schema::TypeRef {
+            syn::Type::Path(tp) if crate::is_box_str(tp) => Ok(ffier_schema::TypeRef {
                 type_name: "str".to_string(),
                 ref_kind: ffier_schema::RefKind::None,
                 ref_lifetime: None,
                 type_args: vec![],
                 optional: false,
                 owned: true,
-            },
+            }),
 
             // &T or &mut T — extract reference kind, lifetime, then recurse.
             syn::Type::Reference(ref_ty) => {
@@ -3209,39 +3213,30 @@ impl CTypeResolver {
                 let ref_lifetime = ref_ty.lifetime.as_ref().map(|lt| lt.ident.to_string());
                 match ref_ty.elem.as_ref() {
                     syn::Type::Path(tp) => {
-                        self.type_ref_from_path(&tp.path, ref_kind, ref_lifetime)
+                        Ok(self.type_ref_from_path(&tp.path, ref_kind, ref_lifetime))
                     }
                     // &[u8] slice — type name is "[u8]".
                     syn::Type::Slice(sl) => {
                         let elem_str = sl.elem.to_token_stream().to_string().replace(' ', "");
-                        ffier_schema::TypeRef {
+                        Ok(ffier_schema::TypeRef {
                             type_name: format!("[{elem_str}]"),
                             ref_kind,
                             ref_lifetime,
                             type_args: vec![],
                             optional: false,
                             owned: false,
-                        }
+                        })
                     }
-                    // &str — Path("str") should be handled above, but just in case.
-                    other => {
-                        let name = other.to_token_stream().to_string().replace(' ', "");
-                        ffier_schema::TypeRef {
-                            type_name: name,
-                            ref_kind,
-                            ref_lifetime,
-                            type_args: vec![],
-                            optional: false,
-                            owned: false,
-                        }
-                    }
+                    // &str is a path and was handled above. Anything else
+                    // (`&dyn Trait`, `&(A, B)`, ...) has no schema shape.
+                    _ => Err(unsupported_ffi_type(ty)),
                 }
             }
 
             // Bare path: i32, str, Widget, View<'a>,
             // ffier_test_foreign_lib::ForeignConfig, etc.
             syn::Type::Path(tp) => {
-                self.type_ref_from_path(&tp.path, ffier_schema::RefKind::None, None)
+                Ok(self.type_ref_from_path(&tp.path, ffier_schema::RefKind::None, None))
             }
 
             // *mut c_void / *const c_void → opaque pointer primitives.
@@ -3251,41 +3246,32 @@ impl CTypeResolver {
                 } else {
                     ffier_schema::C_VOID_CONST_PTR
                 };
-                ffier_schema::TypeRef {
+                Ok(ffier_schema::TypeRef {
                     type_name: type_name.to_string(),
                     ref_kind: ffier_schema::RefKind::None,
                     ref_lifetime: None,
                     type_args: vec![],
                     optional: false,
                     owned: false,
-                }
+                })
             }
 
-            // Other raw pointers — stringify as last resort.
-            syn::Type::Ptr(ptr) => {
-                let name = ptr.elem.to_token_stream().to_string().replace(' ', "");
-                ffier_schema::TypeRef {
-                    type_name: name,
-                    ref_kind: ffier_schema::RefKind::None,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                }
-            }
+            // The unit type is the only tuple with a schema spelling; it
+            // appears as a typed (non-opaque) error payload field.
+            syn::Type::Tuple(tuple) if tuple.elems.is_empty() => Ok(ffier_schema::TypeRef {
+                type_name: "()".to_string(),
+                ref_kind: ffier_schema::RefKind::None,
+                ref_lifetime: None,
+                type_args: vec![],
+                optional: false,
+                owned: false,
+            }),
 
-            // Anything else — stringify as last resort.
-            other => {
-                let name = other.to_token_stream().to_string().replace(' ', "");
-                ffier_schema::TypeRef {
-                    type_name: name,
-                    ref_kind: ffier_schema::RefKind::None,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                }
-            }
+            // Arrays, non-unit tuples, typed raw pointers, trait objects, bare
+            // fn pointers, and everything else have no schema representation. A
+            // typed raw pointer is not stringified to its pointee: that would
+            // claim a `*mut u8` slot holds a plain `u8`.
+            _ => Err(unsupported_ffi_type(ty)),
         }
     }
 
@@ -3333,11 +3319,35 @@ impl CTypeResolver {
     /// Build a `TypeRef` from a `proc_macro2::TokenStream` by parsing it
     /// as a `syn::Type` first. This is the primary entry point for converting
     /// metadata type tokens to schema type references.
-    fn type_ref_from_tokens(&self, tokens: &proc_macro2::TokenStream) -> ffier_schema::TypeRef {
+    fn type_ref_from_tokens(
+        &self,
+        tokens: &proc_macro2::TokenStream,
+    ) -> syn::Result<ffier_schema::TypeRef> {
         let ty: syn::Type = syn::parse2(tokens.clone())
             .unwrap_or_else(|e| panic!("failed to parse type tokens `{tokens}`: {e}"));
         self.type_ref_from_syn(&ty)
     }
+}
+
+/// Diagnostic for a Rust type that has no schema representation.
+///
+/// Such a type is absent from the type registry, so accepting it only deferred
+/// the failure to an unrelated `type ... not found in type_registry` panic.
+fn unsupported_ffi_type(ty: &syn::Type) -> syn::Error {
+    // `ToTokens` separates `*`/`&` from the pointee, but Rust spells them
+    // without a space. No valid type needs `* ` or `& `.
+    let rendered = quote!(#ty)
+        .to_string()
+        .replace("* ", "*")
+        .replace("& ", "&");
+    syn::Error::new_spanned(
+        ty,
+        format!(
+            "ffier: unsupported FFI type `{rendered}`; expected a scalar, `&str`, `Box<str>`, \
+             `&[u8]`, `&mut [u8]`, `&[T]`, `&[&T]`, `Option<T>`, `*mut c_void`, \
+             `*const c_void`, or a registered handle, value struct, enum, or bitflags type"
+        ),
+    )
 }
 
 /// Check if a `syn::Type` is `c_void` or `core::ffi::c_void` (any qualification).
@@ -3882,7 +3892,7 @@ fn build_schema(
     {
         let mut record_foreign = |tp: &MetaTypePair| -> syn::Result<()> {
             if let Some(fc) = &tp.foreign_crate {
-                let type_ref = resolver.type_ref_from_tokens(&tp.rust_type);
+                let type_ref = resolver.type_ref_from_tokens(&tp.rust_type)?;
                 let type_name = type_ref.type_name;
                 let crate_path = fc.to_string().replace(' ', "");
                 let entry = ffier_schema::TypeEntry {
@@ -3944,11 +3954,11 @@ fn build_schema(
     let exported_types: Vec<_> = exportables_parsed
         .iter()
         .map(|e| convert_exportable(e, &resolver, &handle_types, &type_registry, &value_types))
-        .collect();
+        .collect::<syn::Result<_>>()?;
     let errors: Vec<_> = errors_parsed
         .iter()
         .map(|e| convert_error(e, &resolver))
-        .collect();
+        .collect::<syn::Result<_>>()?;
     let enum_constants: Vec<_> = enums_parsed
         .iter()
         .map(|e| convert_enum(e, &resolver))
@@ -3960,23 +3970,29 @@ fn build_schema(
     let value_structs: Vec<_> = value_structs_parsed
         .iter()
         .map(|v| convert_value_struct(v, &resolver))
-        .collect();
+        .collect::<syn::Result<_>>()?;
     let free_functions: Vec<_> = free_fns_parsed
         .iter()
-        .flat_map(|f| {
-            f.methods.iter().map(|m| {
-                convert_free_fn(f, m, &resolver, &handle_types, &type_registry, &value_types)
-            })
+        .map(|f| {
+            f.methods
+                .iter()
+                .map(|m| {
+                    convert_free_fn(f, m, &resolver, &handle_types, &type_registry, &value_types)
+                })
+                .collect::<syn::Result<Vec<_>>>()
         })
+        .collect::<syn::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
         .collect();
     let traits: Vec<_> = implementables_parsed
         .iter()
         .map(|i| convert_implementable(i, &resolver, &handle_types, &type_registry, &value_types))
-        .collect();
+        .collect::<syn::Result<_>>()?;
     let trait_impls: Vec<_> = trait_impls_parsed
         .iter()
         .map(|t| convert_trait_impl(t, &resolver, &handle_types, &type_registry, &value_types))
-        .collect();
+        .collect::<syn::Result<_>>()?;
 
     let mut library = ffier_schema::Library {
         prefix: prefix.to_string(),
@@ -4000,21 +4016,26 @@ fn cfg_to_schema(cfg: Option<&TokenStream2>) -> Option<ffier_schema::Cfg> {
     cfg.map(|tokens| crate::cfg::from_tokens(tokens).expect("valid cfg predicate"))
 }
 
-fn convert_value_struct(meta: &MetaValueStruct, r: &CTypeResolver) -> ffier_schema::ValueStruct {
+fn convert_value_struct(
+    meta: &MetaValueStruct,
+    r: &CTypeResolver,
+) -> syn::Result<ffier_schema::ValueStruct> {
     let name = meta.name.to_string();
-    ffier_schema::ValueStruct {
+    Ok(ffier_schema::ValueStruct {
         c_name: r.handle_c_name(&name),
         fields: meta
             .fields
             .iter()
-            .map(|field| ffier_schema::ValueField {
-                name: field.name.to_string(),
-                type_ref: r.type_ref_from_tokens(&field.rust_type),
+            .map(|field| {
+                Ok(ffier_schema::ValueField {
+                    name: field.name.to_string(),
+                    type_ref: r.type_ref_from_tokens(&field.rust_type)?,
+                })
             })
-            .collect(),
+            .collect::<syn::Result<_>>()?,
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
         name,
-    }
+    })
 }
 
 fn convert_enum(meta: &MetaEnum, r: &CTypeResolver) -> ffier_schema::EnumType {
@@ -4070,10 +4091,10 @@ fn convert_free_fn(
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
-) -> ffier_schema::FreeFunction {
+) -> syn::Result<ffier_schema::FreeFunction> {
     // Use type-level cfg_predicate if set, otherwise fall back to method-level cfg.
     let cfg = meta.cfg_predicate.as_ref().or(m.cfg.as_ref());
-    ffier_schema::FreeFunction {
+    Ok(ffier_schema::FreeFunction {
         name: meta.name.to_string(),
         ffi_name: r.ffi_fn_name(&meta.ffi_name),
         doc: m.doc.clone(),
@@ -4082,10 +4103,10 @@ fn convert_free_fn(
             .params
             .iter()
             .map(|p| convert_param(p, r, type_registry))
-            .collect(),
-        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types, value_types),
+            .collect::<syn::Result<_>>()?,
+        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types, value_types)?,
         cfg: cfg_to_schema(cfg),
-    }
+    })
 }
 
 fn convert_exportable(
@@ -4094,14 +4115,14 @@ fn convert_exportable(
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
-) -> ffier_schema::ExportedType {
+) -> syn::Result<ffier_schema::ExportedType> {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
     let is_builder_type = meta
         .methods
         .iter()
         .any(|m| m.is_builder() && m.receiver == MetaReceiver::Value);
-    ffier_schema::ExportedType {
+    Ok(ffier_schema::ExportedType {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         is_builder_type,
@@ -4110,13 +4131,13 @@ fn convert_exportable(
             .methods
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry, value_types))
-            .collect(),
+            .collect::<syn::Result<_>>()?,
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
-    }
+    })
 }
 
-fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType {
-    ffier_schema::ErrorType {
+fn convert_error(meta: &MetaError, r: &CTypeResolver) -> syn::Result<ffier_schema::ErrorType> {
+    Ok(ffier_schema::ErrorType {
         name: meta.name.to_string(),
         variants: meta
             .variants
@@ -4127,25 +4148,29 @@ fn convert_error(meta: &MetaError, r: &CTypeResolver) -> ffier_schema::ErrorType
                     MetaErrorVariantData::Tuple(fields) => ffier_schema::ErrorVariantData::Tuple(
                         fields
                             .iter()
-                            .map(|field| match field {
-                                MetaErrorField::Typed(tokens) => {
-                                    ffier_schema::ErrorField::Typed(r.type_ref_from_tokens(tokens))
-                                }
-                                MetaErrorField::Opaque => ffier_schema::ErrorField::Opaque,
+                            .map(|field| {
+                                Ok(match field {
+                                    MetaErrorField::Typed(tokens) => {
+                                        ffier_schema::ErrorField::Typed(
+                                            r.type_ref_from_tokens(tokens)?,
+                                        )
+                                    }
+                                    MetaErrorField::Opaque => ffier_schema::ErrorField::Opaque,
+                                })
                             })
-                            .collect(),
+                            .collect::<syn::Result<_>>()?,
                     ),
                 };
-                ffier_schema::ErrorVariant {
+                Ok(ffier_schema::ErrorVariant {
                     name: v.name.to_string(),
                     c_name: r.error_const_name(&meta.name.to_string(), &v.name.to_string()),
                     code: v.code,
                     message: v.message.clone(),
                     data,
-                }
+                })
             })
-            .collect(),
-    }
+            .collect::<syn::Result<_>>()?,
+    })
 }
 
 fn convert_implementable(
@@ -4154,12 +4179,12 @@ fn convert_implementable(
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
-) -> ffier_schema::ImplementableTrait {
+) -> syn::Result<ffier_schema::ImplementableTrait> {
     let name = meta.trait_name.to_string();
     let name_snake = camel_to_snake(&name);
     let ffi_prefix = format!("{name_snake}_");
     let name_upper_snake = camel_to_snake(&name).to_ascii_uppercase();
-    ffier_schema::ImplementableTrait {
+    Ok(ffier_schema::ImplementableTrait {
         name: name.clone(),
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
         type_tag_constant: format!("{}{name_upper_snake}_TYPE_TAG", r.upper_pfx),
@@ -4181,12 +4206,12 @@ fn convert_implementable(
                     value_types,
                 )
             })
-            .collect(),
+            .collect::<syn::Result<_>>()?,
         own_method_count: meta.own_method_count,
         num_slots: meta.num_slots,
         no_vtable: meta.no_vtable,
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
-    }
+    })
 }
 
 fn convert_trait_impl(
@@ -4195,8 +4220,8 @@ fn convert_trait_impl(
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
-) -> ffier_schema::TraitImpl {
-    ffier_schema::TraitImpl {
+) -> syn::Result<ffier_schema::TraitImpl> {
+    Ok(ffier_schema::TraitImpl {
         trait_name: meta.trait_name.to_string(),
         struct_name: meta.struct_name.to_string(),
         lifetimes: meta.lifetimes.iter().map(|lt| lt.to_string()).collect(),
@@ -4206,9 +4231,9 @@ fn convert_trait_impl(
             .methods
             .iter()
             .map(|m| convert_method(m, r, None, handle_types, type_registry, value_types))
-            .collect(),
+            .collect::<syn::Result<_>>()?,
         cfg: cfg_to_schema(meta.cfg_predicate.as_ref()),
-    }
+    })
 }
 
 /// Convert a method to its schema representation.
@@ -4222,7 +4247,7 @@ fn convert_method(
     handle_types: &HashSet<String>,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
     value_types: &HashSet<String>,
-) -> ffier_schema::Method {
+) -> syn::Result<ffier_schema::Method> {
     let (ffi_name, trait_definition) = match &meta.context {
         MetaMethodContext::Exportable { ffi_name, .. } => (r.ffi_fn_name(ffi_name), None),
         MetaMethodContext::Trait {
@@ -4245,9 +4270,9 @@ fn convert_method(
         meta.is_builder(),
         handle_types,
         value_types,
-    );
+    )?;
 
-    ffier_schema::Method {
+    Ok(ffier_schema::Method {
         name: meta.name.to_string(),
         doc: meta.doc().to_vec(),
         receiver: convert_receiver(meta.receiver),
@@ -4261,12 +4286,12 @@ fn convert_method(
             .params
             .iter()
             .map(|p| convert_param(p, r, type_registry))
-            .collect(),
+            .collect::<syn::Result<_>>()?,
         ret,
         ffi_name,
         trait_definition,
         cfg: cfg_to_schema(meta.cfg.as_ref()),
-    }
+    })
 }
 
 fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
@@ -4282,10 +4307,10 @@ fn convert_param(
     p: &crate::meta::MetaParam,
     r: &CTypeResolver,
     type_registry: &BTreeMap<String, ffier_schema::TypeEntry>,
-) -> ffier_schema::Param {
+) -> syn::Result<ffier_schema::Param> {
     let param_type = match &p.kind {
         MetaParamKind::Regular(tp) => {
-            ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type))
+            ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type)?)
         }
         MetaParamKind::StrSlice => {
             // &[&str] → two C params: pointer to FfierBytes array + length.
@@ -4314,7 +4339,7 @@ fn convert_param(
         }
         MetaParamKind::HandleSlice(tp) => {
             // &[&T] → two C params: pointer to handle array + length.
-            let elem_ref = r.type_ref_from_tokens(&tp.rust_type);
+            let elem_ref = r.type_ref_from_tokens(&tp.rust_type)?;
             let handle_c = r.handle_c_name(&elem_ref.type_name);
             ffier_schema::ParamType::Slice {
                 element: ffier_schema::TypeRef {
@@ -4339,7 +4364,7 @@ fn convert_param(
         }
         MetaParamKind::PrimitiveSlice(tp) => {
             // &[T] where T is a primitive → two C params: pointer to T array + length.
-            let elem_ref = r.type_ref_from_tokens(&tp.rust_type);
+            let elem_ref = r.type_ref_from_tokens(&tp.rust_type)?;
             let entry = type_registry.get(&elem_ref.type_name).unwrap_or_else(|| {
                 panic!(
                     "primitive type `{}` not found in type_registry",
@@ -4396,10 +4421,10 @@ fn convert_param(
             ref_lifetime: ref_lifetime.as_ref().map(ToString::to_string),
         },
     };
-    ffier_schema::Param {
+    Ok(ffier_schema::Param {
         name: p.name.to_string(),
         param_type,
-    }
+    })
 }
 
 fn builder_self_type_ref() -> ffier_schema::TypeRef {
@@ -4420,8 +4445,8 @@ fn convert_return(
     is_builder: bool,
     handle_types: &HashSet<String>,
     value_types: &HashSet<String>,
-) -> ffier_schema::Return {
-    match ret {
+) -> syn::Result<ffier_schema::Return> {
+    Ok(match ret {
         MetaReturn::Void if is_builder => {
             // `-> Self`: encode as Value(Self).
             ffier_schema::Return::Value(builder_self_type_ref())
@@ -4429,14 +4454,16 @@ fn convert_return(
         MetaReturn::Void => ffier_schema::Return::Void,
         MetaReturn::Value(tp) => {
             if let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types) {
-                return ffier_schema::Return::OptionalValue(r.type_ref_from_tokens(&inner));
+                return Ok(ffier_schema::Return::OptionalValue(
+                    r.type_ref_from_tokens(&inner)?,
+                ));
             }
-            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type))
+            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)?)
         }
         MetaReturn::HandleSlice { types, .. } => {
             // &[&T] or &[T] → returns FfierObjectArray with element type info.
             ffier_schema::Return::ObjectArray {
-                element: r.type_ref_from_tokens(&types.rust_type),
+                element: r.type_ref_from_tokens(&types.rust_type)?,
             }
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
@@ -4444,7 +4471,7 @@ fn convert_return(
             // annotations; restore it as Self.
             let ok_ref = match ok {
                 None => Some(builder_self_type_ref()),
-                Some(tp) => Some(r.type_ref_from_tokens(&tp.rust_type)),
+                Some(tp) => Some(r.type_ref_from_tokens(&tp.rust_type)?),
             };
             let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
             ffier_schema::Return::Result {
@@ -4463,15 +4490,18 @@ fn convert_return(
             if let Some(tp) = ok
                 && let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types)
             {
-                let mut ok_ref = r.type_ref_from_tokens(&inner);
+                let mut ok_ref = r.type_ref_from_tokens(&inner)?;
                 ok_ref.optional = true;
-                return ffier_schema::Return::Result {
+                return Ok(ffier_schema::Return::Result {
                     ok: Some(ok_ref),
                     err_type: err_ident.clone(),
                     c_convention: ffier_schema::CResultConvention::OptionalValueOutParam,
-                };
+                });
             }
-            let ok_ref = ok.as_ref().map(|tp| r.type_ref_from_tokens(&tp.rust_type));
+            let ok_ref = ok
+                .as_ref()
+                .map(|tp| r.type_ref_from_tokens(&tp.rust_type))
+                .transpose()?;
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
             let ok_is_handle =
                 ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
@@ -4491,5 +4521,5 @@ fn convert_return(
                 },
             }
         }
-    }
+    })
 }
