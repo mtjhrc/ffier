@@ -275,6 +275,14 @@ mod tests {
     }
 
     #[test]
+    fn method_with_path_param() {
+        init();
+        let w = Widget::new();
+        assert_eq!(w.describe_path(std::path::Path::new("/tmp/x")), 6);
+        assert_eq!(w.describe_path(std::path::Path::new("")), 0);
+    }
+
+    #[test]
     fn method_with_mutable_bytes_param() {
         init();
         let w = Widget::new();

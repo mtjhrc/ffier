@@ -633,6 +633,9 @@ pub const C_VOID_PTR: &str = "*mut core::ffi::c_void";
 /// Well-known type name for `*const core::ffi::c_void` (opaque const pointer).
 pub const C_VOID_CONST_PTR: &str = "*const core::ffi::c_void";
 
+/// Well-known registry key for `std::path::Path`.
+pub const PATH_TYPE: &str = "Path";
+
 /// Check whether a type name refers to a `ReplacesSelf` sentinel in the registry.
 fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> bool {
     registry
@@ -1213,7 +1216,7 @@ mod lifetime_tests {
                 "prefix": "test", "exported_types": [], "errors": [], "traits": [], "trait_impls": [],
                 "type_registry": {
                     "[u8]": {"kind": {"bytes": {"c_name": "TestBytes"}}, "bless": "bytes"},
-                    "FfierPath": {"kind": {"bytes": {"c_name": "TestPath"}}, "bless": "path"}
+                    "Path": {"kind": {"bytes": {"c_name": "TestPath"}}, "bless": "path"}
                 }
             })
             .to_string(),
@@ -1242,7 +1245,7 @@ mod lifetime_tests {
         // mutable reference keeps the read-only spelling instead of naming a
         // typedef the header never emits.
         assert_eq!(
-            library.c_type_of_ref(&type_ref("FfierPath", RefKind::Mut)),
+            library.c_type_of_ref(&type_ref("Path", RefKind::Mut)),
             "TestPath"
         );
     }

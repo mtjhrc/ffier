@@ -310,6 +310,18 @@ allocation, no copy, no ownership transfer.
 A convenience macro (`PREFIX_STR(s)`, e.g. `MYLIB_STR(s)`) is generated in
 the C header to construct these from string literals.
 
+## Path representation
+
+Paths reuse the `ptr + len` shape, aliased to the bytes struct in the C header
+(`typedef MylibBytes MylibPath;`), and come with a `PREFIX_PATH(s)` macro for
+NUL-terminated strings. The bytes are `OsStr`'s internal representation, so a
+Rust path round-trips unchanged and is never converted through a platform
+string type. UTF-8 is valid on every platform and is not re-validated:
+
+- Windows: WTF-8, a superset of UTF-8.
+- macOS: the OS resolves names as UTF-8.
+- Linux and other Unixes: arbitrary bytes except NUL.
+
 ## Thread safety
 
 See [Thread safety](docs/thread-safety.md) for handle declarations and callback

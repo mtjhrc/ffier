@@ -331,6 +331,25 @@ void method_with_mutable_bytes_param(void) {
     ft_widget_destroy(w);
 }
 
+void method_with_path_param(void) {
+    FtWidget w = ft_widget_new();
+
+    /* FT_PATH builds a path from a NUL-terminated string. On Unix the length
+       is the byte count: no UTF-8 validation and no platform string convert. */
+    assert(ft_widget_describe_path(w, FT_PATH("/tmp/x")) == 6);
+
+    /* UTF-8 is valid on every platform; a multibyte character counts as its
+       encoded bytes, not as one character. */
+    assert(ft_widget_describe_path(w, FT_PATH("\xc3\xa4")) == 2);
+    assert(ft_widget_describe_path(w, FT_PATH("")) == 0);
+
+    /* A path that is not NUL-terminated needs a compound literal instead. */
+    static const uint8_t raw[] = { '/', 'a', 'b' };
+    assert(ft_widget_describe_path(w, (FtPath){ .data = raw, .len = 3 }) == 3);
+
+    ft_widget_destroy(w);
+}
+
 /* ===================================================================== */
 /* File descriptor params                                                */
 /* ===================================================================== */
@@ -993,6 +1012,7 @@ int main(int argc, char** argv) {
     RUN_TEST(method_with_str_slice_param);
     RUN_TEST(method_with_bytes_param);
     RUN_TEST(method_with_mutable_bytes_param);
+    RUN_TEST(method_with_path_param);
 
     printf("\n[file descriptors]\n");
     #ifndef _WIN32

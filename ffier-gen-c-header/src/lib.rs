@@ -305,11 +305,19 @@ fn emit_shared_types(
         out.push_str("    size_t len;\n");
         out.push_str(&format!("}} {bytes_c}Mut;\n\n"));
         if let Some(path_c) = &path_c {
-            out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
+            out.push_str("/* OS path, passed as OsStr's internal byte representation;\n");
+            out.push_str(" * UTF-8 is valid everywhere and is not re-validated.\n");
+            out.push_str(" * Windows: WTF-8 (a superset of UTF-8).\n");
+            out.push_str(" * macOS: UTF-8, which is what the OS resolves.\n");
+            out.push_str(" * Linux and other Unixes: arbitrary bytes except NUL. */\n");
             out.push_str(&format!("typedef {bytes_c} {path_c};\n\n"));
         }
     } else if let Some(path_c) = &path_c {
-        out.push_str("/* OS path — arbitrary bytes on Unix, not necessarily UTF-8 */\n");
+        out.push_str("/* OS path, passed as OsStr's internal byte representation;\n");
+        out.push_str(" * UTF-8 is valid everywhere and is not re-validated.\n");
+        out.push_str(" * Windows: WTF-8 (a superset of UTF-8).\n");
+        out.push_str(" * macOS: UTF-8, which is what the OS resolves.\n");
+        out.push_str(" * Linux and other Unixes: arbitrary bytes except NUL. */\n");
         out.push_str("typedef struct {\n");
         out.push_str("    const uint8_t* data;\n");
         out.push_str("    size_t len;\n");
@@ -337,6 +345,18 @@ fn emit_shared_types(
             "    (({bytes_c}){{ .data = (const uint8_t*)(arr), .len = sizeof(arr) }})\n"
         ));
         out.push_str("#endif\n\n");
+    }
+
+    if let Some(path_c) = &path_c {
+        let path_macro = format!("{prim_upper_pfx}PATH");
+        out.push_str(&format!(
+            "/* Build a {path_c} from a NUL-terminated C string.\n"
+        ));
+        out.push_str(" * Use a compound literal for a path that is not NUL-terminated or\n");
+        out.push_str(" * contains embedded NULs. */\n");
+        out.push_str(&format!(
+            "#define {path_macro}(s) (({path_c}){{ .data = (const uint8_t*)(s), .len = (s) ? strlen(s) : 0 }})\n\n"
+        ));
     }
 
     let num_slots_macro = format!("{prim_upper_pfx}VTABLE_LEN");
