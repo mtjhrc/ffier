@@ -474,6 +474,37 @@ void method_returning_handle(void) {
 }
 
 /* ===================================================================== */
+/* Macro-generated exports                                               */
+/* ===================================================================== */
+
+/* A `$t:ty` capture reaches the proc macro as an invisible delimiter group.
+   Both shapes must reach the C ABI with the real handle type rather than the
+   capture's wrapper: the by-value capture consumes the handle, the one nested
+   under `&` borrows it. */
+
+void macro_generated_export_takes_handle_by_value(void) {
+    FtWidget w = ft_widget_new();
+    ft_widget_set_count(w, 21);
+    FtGadget g = ft_widget_create_gadget(w);
+    assert(g != NULL);
+    /* The generated export takes the handle by value, so it consumes it. */
+    assert(ft_gadget_value(g) == 21);
+    ft_widget_destroy(w);
+}
+
+void macro_generated_export_takes_handle_by_reference(void) {
+    FtWidget w = ft_widget_new();
+    ft_widget_set_count(w, 34);
+    FtGadget g = ft_widget_create_gadget(w);
+    assert(g != NULL);
+    assert(ft_gadget_ref_value(g) == 34);
+    /* Borrowed, so the caller still owns and must destroy it. */
+    assert(ft_gadget_get(g) == 34);
+    ft_gadget_destroy(g);
+    ft_widget_destroy(w);
+}
+
+/* ===================================================================== */
 /* Builder pattern (by-value self -> Self)                               */
 /* ===================================================================== */
 
@@ -986,6 +1017,10 @@ int main(int argc, char** argv) {
     RUN_TEST(method_with_borrowed_handle_param);
     RUN_TEST(method_with_mutable_handle_param);
     RUN_TEST(method_returning_handle);
+
+    printf("\n[macro-generated exports]\n");
+    RUN_TEST(macro_generated_export_takes_handle_by_value);
+    RUN_TEST(macro_generated_export_takes_handle_by_reference);
 
     printf("\n[builder pattern]\n");
     RUN_TEST(builder_method_returning_self);
