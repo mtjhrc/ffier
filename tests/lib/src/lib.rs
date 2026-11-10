@@ -256,6 +256,11 @@ impl Widget {
         s
     }
 
+    /// Describe a path without borrowing it back.
+    pub fn describe_path(&self, path: &std::path::Path) -> usize {
+        path.as_os_str().as_encoded_bytes().len()
+    }
+
     /// Check if the widget is active.
     pub fn is_active(&self) -> bool {
         self.active

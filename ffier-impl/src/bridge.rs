@@ -3593,7 +3593,7 @@ fn build_schema(
         proc_macro2::Span::call_site(),
     )?;
     registry.register(
-        "FfierPath",
+        ffier_schema::PATH_TYPE,
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Bytes {
                 c_name: format!("{prim_type_pfx}Path"),

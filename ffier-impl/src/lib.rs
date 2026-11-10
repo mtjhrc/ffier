@@ -5381,18 +5381,15 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             }
         }
 
-        #[cfg(unix)]
         impl FfiType for &std::path::Path {
             type CRepr = ffier::FfierBytes;
             const C_TYPE_NAME: &'static str = "FfierPath";
             const IS_HANDLE: bool = false;
-            fn into_c(self) -> ffier::FfierBytes { unsafe { ffier::FfierBytes::from_path(self) } }
+            fn into_c(self) -> ffier::FfierBytes {
+                unsafe { ffier::FfierBytes::from_path(self) }
+            }
             unsafe fn from_c(repr: ffier::FfierBytes) -> Self {
-                use std::os::unix::ffi::OsStrExt;
-                unsafe {
-                    let bytes = core::slice::from_raw_parts(repr.data, repr.len);
-                    std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
-                }
+                unsafe { repr.as_path() }
             }
         }
 

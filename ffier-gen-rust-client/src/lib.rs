@@ -92,6 +92,10 @@ pub fn generate(lib: &Library) -> String {
     // emitted as a single `use` statement to avoid duplicates.
     {
         use ffier_schema::Blessing;
+        // Generated signatures spell paths as bare `Path`, and the `&Path`
+        // FfiType impl below is emitted for every library, so import it
+        // unconditionally.
+        writeln!(out, "use std::path::Path;").unwrap();
         let fd_blessing_symbols: &[(Blessing, &[&str])] = &[
             (Blessing::RawFd, &["RawFd"]),
             (Blessing::BorrowedFd, &["AsRawFd", "BorrowedFd", "RawFd"]),
@@ -286,6 +290,19 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "    type CRepr = ffier::FfierMutBytes; const C_TYPE_NAME: &'static str = \"FfierBytesMut\"; const IS_HANDLE: bool = false;").unwrap();
     writeln!(out, "    fn into_c(self) -> ffier::FfierMutBytes {{ unsafe {{ ffier::FfierMutBytes::from_bytes(self) }} }}").unwrap();
     writeln!(out, "    unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {{ unsafe {{ repr.into_bytes() }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // OS paths reuse the byte-slice repr but keep OsStr's internal
+    // representation rather than going through a platform string type.
+    writeln!(out, "impl FfiType for &Path {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierPath\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_path(self) }} }}").unwrap();
+    writeln!(
+        out,
+        "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ repr.as_path() }} }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 

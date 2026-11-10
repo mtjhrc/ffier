@@ -404,12 +404,50 @@ impl FfierBytes {
         unsafe { core::str::from_utf8_unchecked(self.as_bytes()) }
     }
 
+    /// Borrow these bytes as a path.
+    ///
+    /// The bytes are interpreted as `OsStr`'s internal representation, never
+    /// through a platform string type, so a path produced by
+    /// [`FfierBytes::from_path`] round-trips unchanged. Nothing is validated;
+    /// the happy path is a UTF-8 path.
+    ///
+    /// - Windows: WTF-8, the encoding `OsStr` uses internally. It is a superset
+    ///   of UTF-8, so a UTF-8 path is always valid and is not checked again.
+    /// - macOS: byte paths are accepted unchanged, but the OS resolves names as
+    ///   UTF-8, so non-UTF-8 bytes will not name a file.
+    /// - Linux and other Unixes: arbitrary bytes except NUL, passed through
+    ///   untouched whether or not they are UTF-8.
+    ///
+    /// Takes `self` by value, so the returned path has the caller's lifetime
+    /// rather than one tied to this temporary. The borrow it represents is the
+    /// one the raw pointer came from.
+    ///
     /// # Safety
-    /// `data` must point to valid UTF-8 of length `len`.
-    #[cfg(unix)]
-    pub unsafe fn as_path(&self) -> &std::path::Path {
-        use std::os::unix::ffi::OsStrExt;
-        std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe { self.as_bytes() }))
+    /// On Windows, `data` must be either valid UTF-8 or bytes obtained from
+    /// `OsStr::as_encoded_bytes` on the same Rust version and target. On Unix
+    /// the conversion cannot fail, so only `data`'s validity for `len` bytes
+    /// is required, and the result must not outlive the buffer.
+    pub unsafe fn as_path<'a>(self) -> &'a std::path::Path {
+        // SAFETY: the caller guarantees `data` is valid for `len` bytes. A
+        // zero-length buffer may carry a null pointer, which `from_raw_parts`
+        // rejects, so borrow the empty slice instead — the same null-means-empty
+        // rule `as_bytes` uses.
+        let bytes: &[u8] = if self.len == 0 {
+            &[]
+        } else {
+            unsafe { core::slice::from_raw_parts(self.data, self.len) }
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::path::Path::new(std::ffi::OsStr::from_bytes(bytes))
+        }
+        #[cfg(windows)]
+        {
+            // SAFETY: the caller guarantees UTF-8 or `as_encoded_bytes` provenance.
+            let os_str = unsafe { std::ffi::OsStr::from_encoded_bytes_unchecked(bytes) };
+            std::path::Path::new(os_str)
+        }
     }
 
     /// Create from a byte slice. The returned `FfierBytes` holds a raw pointer
@@ -438,13 +476,19 @@ impl FfierBytes {
     /// Create from a path. The returned `FfierBytes` holds a raw pointer
     /// into `p`'s data — no copy is made.
     ///
+    /// The bytes are `OsStr`'s internal representation, obtained through
+    /// `OsStr::as_encoded_bytes`, so they round-trip through
+    /// [`FfierBytes::as_path`] unchanged.
+    ///
+    /// - Windows: WTF-8, a superset of UTF-8.
+    /// - macOS: UTF-8 in practice, which is what the OS resolves.
+    /// - Linux and other Unixes: arbitrary bytes except NUL.
+    ///
     /// # Safety
     /// The caller must ensure the source path outlives the `FfierBytes` and any
     /// FFI call that receives it.
-    #[cfg(unix)]
     pub unsafe fn from_path(p: &std::path::Path) -> Self {
-        use std::os::unix::ffi::OsStrExt;
-        unsafe { Self::from_bytes(p.as_os_str().as_bytes()) }
+        unsafe { Self::from_bytes(p.as_os_str().as_encoded_bytes()) }
     }
 }
 
