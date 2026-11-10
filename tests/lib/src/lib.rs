@@ -540,6 +540,39 @@ impl Gadget {
 }
 
 // ---------------------------------------------------------------------------
+// Macro-generated exports
+//
+// `$t:ty` captures reach the proc macro as invisible `Delimiter::None` groups,
+// which the resolver has to look through rather than treat as a distinct type.
+// These exports take the type both by value and through a reference, so a
+// capture standing for the whole type and one nested inside a written type are
+// both covered by the schema and the generated clients.
+// ---------------------------------------------------------------------------
+
+macro_rules! export_gadget_reader {
+    ($name:ident: $t:ty) => {
+        /// Read a gadget through a macro-generated export (by-value capture).
+        #[cfg_attr(feature = "ffi", ffier::export)]
+        pub fn gadget_value($name: $t) -> i32 {
+            $name.get()
+        }
+    };
+}
+
+macro_rules! export_gadget_ref_reader {
+    ($t:ty) => {
+        /// Read a gadget through a macro-generated export (capture under `&`).
+        #[cfg_attr(feature = "ffi", ffier::export)]
+        pub fn gadget_ref_value(gadget: &$t) -> i32 {
+            gadget.get()
+        }
+    };
+}
+
+export_gadget_reader!(gadget: Gadget);
+export_gadget_ref_reader!(Gadget);
+
+// ---------------------------------------------------------------------------
 // Config — builder pattern (by-value self -> Self)
 // ---------------------------------------------------------------------------
 
@@ -2029,6 +2062,8 @@ ffier::library_definition!("ft", library_tag = 1,
     fn share_sync_backend,
     fn own_sync_backend,
     fn run_thread_backend,
+    fn gadget_value,
+    fn gadget_ref_value,
     Snapshot for View,
     Snapshot for Widget,
     Snapshot for Gadget,

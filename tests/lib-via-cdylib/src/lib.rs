@@ -407,6 +407,31 @@ mod tests {
         assert_eq!(g.get(), 33);
     }
 
+    /// A `$t:ty` capture reaches the proc macro as an invisible delimiter
+    /// group. The generated client must still name the real handle type, both
+    /// for a capture standing for the whole parameter type and for one nested
+    /// under a reference.
+    #[test]
+    fn macro_generated_export_takes_handle_by_value() {
+        init();
+        let mut w = Widget::new();
+        w.set_count(21);
+        let g = w.create_gadget();
+        // Consumes the handle, so it is not used again.
+        assert_eq!(gadget_value(g), 21);
+    }
+
+    #[test]
+    fn macro_generated_export_takes_handle_by_reference() {
+        init();
+        let mut w = Widget::new();
+        w.set_count(34);
+        let g = w.create_gadget();
+        assert_eq!(gadget_ref_value(&g), 34);
+        // Borrowed: still usable afterwards.
+        assert_eq!(g.get(), 34);
+    }
+
     #[test]
     fn method_returning_borrowed_handle() {
         init();
