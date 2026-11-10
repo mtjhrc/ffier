@@ -3184,6 +3184,10 @@ impl CTypeResolver {
     /// stringified: a stringified name is absent from the type registry, so it
     /// only failed later as an unrelated "type not found" panic.
     fn type_ref_from_syn(&self, ty: &syn::Type) -> syn::Result<ffier_schema::TypeRef> {
+        // A `macro_rules!` `$t:ty` capture arrives as an invisible
+        // `Delimiter::None` group. It does not change the type, so resolve what
+        // it wraps.
+        let ty = unwrap_invisible_group(ty);
         match ty {
             // Option<T> → recurse into T and set optional = true.
             syn::Type::Path(tp) if crate::is_option(tp) => {
@@ -3211,7 +3215,9 @@ impl CTypeResolver {
                     ffier_schema::RefKind::Shared
                 };
                 let ref_lifetime = ref_ty.lifetime.as_ref().map(|lt| lt.ident.to_string());
-                match ref_ty.elem.as_ref() {
+                // A capture written into a reference (`&$t`) groups the
+                // pointee, so unwrap it before classifying the target.
+                match unwrap_invisible_group(ref_ty.elem.as_ref()) {
                     syn::Type::Path(tp) => {
                         Ok(self.type_ref_from_path(&tp.path, ref_kind, ref_lifetime))
                     }
@@ -3348,6 +3354,16 @@ fn unsupported_ffi_type(ty: &syn::Type) -> syn::Error {
              `*const c_void`, or a registered handle, value struct, enum, or bitflags type"
         ),
     )
+}
+
+/// Strip the invisible `Delimiter::None` groups `macro_rules!` puts around a
+/// `$t:ty` capture. They carry no syntax of their own; nesting can occur when a
+/// capture is itself substituted into another capture's tokens.
+fn unwrap_invisible_group(mut ty: &syn::Type) -> &syn::Type {
+    while let syn::Type::Group(group) = ty {
+        ty = &group.elem;
+    }
+    ty
 }
 
 /// Check if a `syn::Type` is `c_void` or `core::ffi::c_void` (any qualification).
