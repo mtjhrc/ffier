@@ -9,6 +9,7 @@ description = "Automatic FFI binding generator for Rust libraries"
 default = ["std"]
 std = ["ffier-rt/std", "ffier-bridge/std"]
 unstable_unsafe_handle_slices = ["ffier-impl/unstable_unsafe_handle_slices"]
+unstable_unsafe_borrowed_self = ["ffier-impl/unstable_unsafe_borrowed_self"]
 
 [dependencies]
 ffier-rt = { path = "../ffier-rt" }
