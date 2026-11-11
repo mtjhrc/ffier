@@ -7,12 +7,14 @@
 //! - Trait definitions with vtable structs for exported traits
 //! - Trait impl blocks for concrete types
 
+mod borrow;
 mod cfg;
+mod lifetimes;
 
 use ffier_schema::{
     Cfg, EnumType, ErrorType, ErrorVariant, ErrorVariantData, ExportedType, FreeFunction,
-    ImplementableTrait, Library, LifetimeVariance, Method, ParamType, Receiver, Return,
-    ThreadSafety, TraitImpl, TypeKind,
+    ImplementableTrait, Library, LifetimeVariance, Method, ParamType, Receiver, RefKind, Return,
+    ThreadSafety, TraitImpl, TypeKind, TypeRef,
 };
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -214,6 +216,8 @@ pub fn generate(lib: &Library) -> String {
 
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+
+    borrow::emit(&mut out);
 
     // Primitive FfiType impls
     writeln!(out, "macro_rules! impl_ffi_identity {{").unwrap();
@@ -1028,20 +1032,105 @@ fn find_error_message_fn(lib: &Library) -> String {
         .expect("error trait has no 'message' method")
 }
 
-/// Check if a Return is a borrowed handle: `&HandleType` or `Result<&HandleType, E>`.
-/// Returns the bare type name (e.g. "Gadget") if so.
-fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a str> {
-    let tr = match ret {
-        Return::Value(tr) => tr,
-        Return::Result { ok: Some(tr), .. } => tr,
-        _ => return None,
-    };
-    if tr.ref_kind != ffier_schema::RefKind::Shared && tr.ref_kind != ffier_schema::RefKind::Mut {
-        return None;
+fn is_borrowed_handle(tr: &TypeRef, lib: &Library) -> bool {
+    tr.ref_kind != RefKind::None
+        && lib
+            .type_entry(&tr.type_name)
+            .is_some_and(|entry| entry.kind.is_handle())
+}
+
+fn is_local_borrowed_handle(tr: &TypeRef, lib: &Library) -> bool {
+    is_borrowed_handle(tr, lib)
+        && matches!(
+            lib.type_entry(&tr.type_name).unwrap().kind,
+            TypeKind::Handle { .. }
+        )
+}
+
+fn borrowed_foreign_handle_name<'a>(tr: &'a TypeRef, lib: &Library) -> Option<&'a str> {
+    (is_borrowed_handle(tr, lib)
+        && matches!(
+            lib.type_entry(&tr.type_name).unwrap().kind,
+            TypeKind::ForeignHandle { .. }
+        ))
+    .then_some(tr.type_name.as_str())
+}
+
+/// Render client handle borrows without discarding either reference or type lifetimes.
+fn client_type(tr: &TypeRef, lib: &Library) -> String {
+    if !is_borrowed_handle(tr, lib) {
+        return tr.to_rust_type();
     }
-    lib.type_entry(&tr.type_name)
-        .filter(|e| e.kind.is_handle())
-        .map(|_| tr.type_name.as_str())
+    let mut value = tr.clone();
+    value.ref_kind = RefKind::None;
+    value.ref_lifetime = None;
+    value.optional = false;
+    let wrapper = if tr.ref_kind == RefKind::Mut {
+        "RefMut"
+    } else {
+        "Ref"
+    };
+    let namespace = match &lib.type_entry(&tr.type_name).unwrap().kind {
+        TypeKind::ForeignHandle { foreign_crate, .. } => format!("{foreign_crate}::"),
+        _ => String::new(),
+    };
+    let lifetime = tr.ref_lifetime.as_deref().unwrap_or("_");
+    let ty = format!(
+        "{namespace}{wrapper}<'{lifetime}, {}>",
+        value.to_rust_type()
+    );
+    if tr.optional {
+        format!("Option<{ty}>")
+    } else {
+        ty
+    }
+}
+
+fn client_return_type(ret: &Return, lib: &Library) -> String {
+    let value_type = |tr: &TypeRef| {
+        if is_local_borrowed_handle(tr, lib) {
+            client_type(tr, lib)
+        } else {
+            tr.to_rust_type()
+        }
+    };
+    match ret {
+        Return::Value(tr) => value_type(tr),
+        Return::OptionalValue(tr) => format!("Option<{}>", value_type(tr)),
+        Return::Result { ok, err_type, .. } => {
+            let ok = ok.as_ref().map_or_else(|| "()".into(), value_type);
+            format!("Result<{ok}, {err_type}>")
+        }
+        _ => ret.to_rust_type(&lib.type_registry),
+    }
+}
+
+fn client_from_c(tr: &TypeRef, raw: &str, lib: &Library) -> String {
+    if is_local_borrowed_handle(tr, lib) {
+        let ty = client_type(tr, lib);
+        if tr.optional {
+            let mut bare = tr.clone();
+            bare.optional = false;
+            let some = client_from_c(&bare, "__handle", lib);
+            format!(
+                "{{ let __handle = {raw}; if __handle.is_null() {{ None }} else {{ Some({some}) }} }}"
+            )
+        } else {
+            format!("<{ty}>::__from_raw({raw})")
+        }
+    } else {
+        let ty = tr.to_rust_type();
+        format!("<{ty} as FfiType>::from_c({raw})")
+    }
+}
+
+fn method_from_c(tr: &TypeRef, raw: &str, lib: &Library) -> String {
+    if let Some(name) = borrowed_foreign_handle_name(tr, lib) {
+        // Preserve the existing method path; foreign shells have separate ownership.
+        format!("<{name} as FfiHandle>::__from_raw({raw})")
+    } else {
+        client_from_c(tr, raw, lib)
+    }
 }
 
 fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
@@ -1256,10 +1345,12 @@ fn emit_exported_type(
     emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(out, m, &m.ffi_name, ty.is_builder_type, has_lifetimes, lib);
+        emit_method_wrapper(out, m, ty.is_builder_type, has_lifetimes, lib, false);
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+
+    borrow::emit_methods(out, ty, lib);
 
     // Default — emit if there's a zero-param `new()` static constructor returning Self
     let default_new = ty.methods.iter().find(|m| {
@@ -1297,11 +1388,12 @@ fn emit_exported_type(
 fn emit_method_wrapper(
     out: &mut String,
     m: &Method,
-    ffi_name: &str,
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
+    borrowed_receiver: bool,
 ) {
+    let m = &lifetimes::method(m, lib);
     emit_cfg_attr(out, m.cfg.as_ref());
 
     // Doc comments — escape inner quotes to prevent broken string literals
@@ -1316,23 +1408,36 @@ fn emit_method_wrapper(
     // Signature: receiver + params + return type
     let receiver_str = format_receiver(m);
 
-    let param_sigs: Vec<String> = m.params.iter().map(format_param_sig).collect();
+    let param_sigs: Vec<String> = m
+        .params
+        .iter()
+        .map(|p| format_param_sig(p, lib, true))
+        .collect();
     let params_str = param_sigs.join(", ");
 
     let ret_type = build_wrapper_return_type(m, lib);
+    let bounds = lifetimes::input_bounds(&m.params, lib);
 
     if m.receiver_lifetime.is_some() {
         writeln!(out, "    #[allow(clippy::needless_lifetimes)]").unwrap();
     }
     writeln!(
         out,
-        "    pub fn {}{method_lt}({receiver_str}{params_str}){ret_type} {{",
+        "    pub fn {}{method_lt}({receiver_str}{params_str}){ret_type}{bounds} {{",
         m.name
     )
     .unwrap();
 
     // Method body
-    emit_method_body(out, m, ffi_name, is_builder_type, has_lifetimes, lib);
+    emit_method_body(
+        out,
+        m,
+        &m.ffi_name,
+        is_builder_type,
+        has_lifetimes,
+        lib,
+        borrowed_receiver,
+    );
 
     writeln!(out, "    }}").unwrap();
 }
@@ -1361,13 +1466,16 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
         };
     }
 
-    // Borrowed handle returns (&HandleType) → return owned wrapper in client.
-    // The wrapper's Drop calls destroy, which deallocates the borrowed shell
-    // without dropping the inner value.
-    if let Some(bare_name) = borrowed_handle_return_type(&m.ret, lib) {
+    let foreign_return = match &m.ret {
+        Return::Value(tr) | Return::Result { ok: Some(tr), .. } => {
+            borrowed_foreign_handle_name(tr, lib)
+        }
+        _ => None,
+    };
+    if let Some(name) = foreign_return {
         return match &m.ret {
-            Return::Value(_) => format!(" -> {bare_name}"),
-            Return::Result { err_type, .. } => format!(" -> Result<{bare_name}, {err_type}>"),
+            Return::Value(_) => format!(" -> {name}"),
+            Return::Result { err_type, .. } => format!(" -> Result<{name}, {err_type}>"),
             _ => unreachable!(),
         };
     }
@@ -1378,7 +1486,7 @@ fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
             format!(" -> ForeignSlice<{}>", element.type_name)
         }
         Return::Value(_) | Return::OptionalValue(_) | Return::Result { .. } => {
-            format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
+            format!(" -> {}", client_return_type(&m.ret, lib))
         }
     }
 }
@@ -1390,6 +1498,7 @@ fn emit_method_body(
     is_builder_type: bool,
     has_lifetimes: bool,
     lib: &Library,
+    borrowed_receiver: bool,
 ) {
     let is_builder = m.ret.is_builder_self(&lib.type_registry);
     // Build FFI call arguments
@@ -1410,7 +1519,7 @@ fn emit_method_body(
         .unwrap();
     }
 
-    emit_param_pre_bindings(out, &m.params, "        ");
+    emit_param_pre_bindings(out, &m.params, "        ", lib);
 
     // Build the FFI call argument list
     let mut ffi_args = Vec::new();
@@ -1428,7 +1537,14 @@ fn emit_method_body(
             ffi_args.push("__handle".to_string());
         }
         _ => {
-            ffi_args.push("self.0".to_string());
+            ffi_args.push(
+                if borrowed_receiver {
+                    "self.__as_raw()"
+                } else {
+                    "self.0"
+                }
+                .to_string(),
+            );
         }
     }
 
@@ -1501,18 +1617,8 @@ fn emit_method_body(
                 "        let __raw = unsafe {{ {ffi_name}({args_str}) }};"
             )
             .unwrap();
-            if borrowed_handle_return_type(&m.ret, lib).is_some() {
-                // Borrowed handle: wrap raw pointer in owned struct directly.
-                let bare_name = &tr.type_name;
-                writeln!(
-                    out,
-                    "        unsafe {{ <{bare_name} as FfiHandle>::__from_raw(__raw) }}"
-                )
-                .unwrap();
-            } else {
-                let ty = tr.to_rust_type();
-                writeln!(out, "        unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
-            }
+            let conversion = method_from_c(tr, "__raw", lib);
+            writeln!(out, "        unsafe {{ {conversion} }}").unwrap();
         }
         Return::Result {
             ok: Some(_),
@@ -1571,7 +1677,6 @@ fn emit_method_body(
             ..
         } if is_ok_handle => {
             // Handle-or-null: returns handle, null on error
-            let is_borrowed = borrowed_handle_return_type(&m.ret, lib).is_some();
             writeln!(
                 out,
                 "        let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();"
@@ -1580,21 +1685,8 @@ fn emit_method_body(
             writeln!(out, "        let __raw = unsafe {{ {ffi_name}({args_str}{sep}&mut __err as *mut *mut core::ffi::c_void) }};").unwrap();
             let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
             writeln!(out, "        if !__raw.is_null() {{").unwrap();
-            if is_borrowed {
-                let bare_name = &ok_tr.type_name;
-                writeln!(
-                    out,
-                    "            Ok(unsafe {{ <{bare_name} as FfiHandle>::__from_raw(__raw) }})"
-                )
-                .unwrap();
-            } else {
-                let ty = ok_tr.to_rust_type();
-                writeln!(
-                    out,
-                    "            Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
-                )
-                .unwrap();
-            }
+            let conversion = method_from_c(ok_tr, "__raw", lib);
+            writeln!(out, "            Ok(unsafe {{ {conversion} }})").unwrap();
             writeln!(out, "        }} else {{").unwrap();
             writeln!(
                 out,
@@ -1937,7 +2029,11 @@ fn emit_callback_handle_methods(
 fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
     let receiver_str = format_receiver(m);
 
-    let params: Vec<String> = m.params.iter().map(format_param_sig).collect();
+    let params: Vec<String> = m
+        .params
+        .iter()
+        .map(|p| format_param_sig(p, lib, false))
+        .collect();
     let params_str = params.join(", ");
 
     let ret = match &m.ret {
@@ -1997,7 +2093,7 @@ fn emit_default_dispatch_body(
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
 
-    emit_param_pre_bindings(out, &m.params, "        ");
+    emit_param_pre_bindings(out, &m.params, "        ", lib);
 
     let mut call_args = vec![
         "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
@@ -2521,7 +2617,7 @@ fn emit_trait_impl(
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
-        emit_param_pre_bindings(out, &m.params, "        ");
+        emit_param_pre_bindings(out, &m.params, "        ", lib);
         let mut ffi_args = vec!["self.0".to_string()];
         ffi_args.extend(build_ffi_param_args(&m.params, lib));
         let args_str = ffi_args.join(", ");
@@ -2540,7 +2636,7 @@ fn emit_trait_impl(
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
-            emit_param_pre_bindings(out, &dm.params, "        ");
+            emit_param_pre_bindings(out, &dm.params, "        ", lib);
             let mut ffi_args = vec!["self.0".to_string()];
             ffi_args.extend(build_ffi_param_args(&dm.params, lib));
             let args_str = ffi_args.join(", ");
@@ -3347,7 +3443,7 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                         .type_entry(&tr.type_name)
                         .is_some_and(|e| e.kind.is_handle());
                 if is_borrowed_handle {
-                    args.push(format!("FfiHandle::as_handle({})", p.name));
+                    args.push(format!("FfiHandle::as_handle(&*__ffi_{})", p.name));
                 } else {
                     let ty = tr.to_rust_type();
                     args.push(format!("<{ty} as FfiType>::into_c({})", p.name));
@@ -3380,8 +3476,24 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
 }
 
 /// Emit borrowed callback guards and ref-element slice conversions.
-fn emit_param_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
+fn emit_param_pre_bindings(
+    out: &mut String,
+    params: &[ffier_schema::Param],
+    indent: &str,
+    lib: &Library,
+) {
     for p in params {
+        if let ParamType::Regular(tr) = &p.param_type
+            && is_borrowed_handle(tr, lib)
+        {
+            let ty = client_type(tr, lib);
+            writeln!(
+                out,
+                "{indent}let __ffi_{}: {ty} = {}.into();",
+                p.name, p.name
+            )
+            .unwrap();
+        }
         if let ParamType::ImplTrait { ref_kind, .. } = &p.param_type {
             let method = match ref_kind {
                 ffier_schema::RefKind::None => continue,
@@ -3915,6 +4027,7 @@ fn emit_free_function(
     lib: &Library,
     symbols: &mut Vec<SymbolInfo>,
 ) {
+    let f = &lifetimes::free_function(f, lib);
     // Extern declaration
     emit_extern_fns(out, &[extern_fn_from_free(f)], None, symbols);
 
@@ -3924,34 +4037,29 @@ fn emit_free_function(
         writeln!(out, "#[doc = \"{escaped}\"]").unwrap();
     }
 
-    let param_sigs: Vec<String> = f.params.iter().map(format_param_sig).collect();
+    let param_sigs: Vec<String> = f
+        .params
+        .iter()
+        .map(|p| format_param_sig(p, lib, true))
+        .collect();
     let params_str = param_sigs.join(", ");
 
-    let ret_type = match &f.ret {
-        Return::Void => String::new(),
-        Return::ObjectArray { element } => {
-            format!(" -> ForeignSlice<{}>", element.type_name)
-        }
-        Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
-        Return::OptionalValue(tr) => format!(" -> Option<{}>", tr.to_rust_type()),
-        Return::Result { ok, err_type, .. } => {
-            let ok_str = match ok {
-                Some(tr) => tr.to_rust_type(),
-                None => "()".to_string(),
-            };
-            format!(" -> Result<{ok_str}, {err_type}>")
-        }
+    let ret_type = if matches!(f.ret, Return::Void) {
+        String::new()
+    } else {
+        format!(" -> {}", client_return_type(&f.ret, lib))
     };
 
     let lifetimes = lifetime_generics(&f.lifetimes);
+    let bounds = lifetimes::input_bounds(&f.params, lib);
     writeln!(
         out,
-        "pub fn {}{lifetimes}({params_str}){ret_type} {{",
+        "pub fn {}{lifetimes}({params_str}){ret_type}{bounds} {{",
         f.name
     )
     .unwrap();
 
-    emit_param_pre_bindings(out, &f.params, "    ");
+    emit_param_pre_bindings(out, &f.params, "    ", lib);
     let ffi_args = build_ffi_param_args(&f.params, lib);
     let args_str = ffi_args.join(", ");
     let sep = if args_str.is_empty() { "" } else { ", " };
@@ -4000,8 +4108,8 @@ fn emit_free_function(
                 f.ffi_name
             )
             .unwrap();
-            let ty = tr.to_rust_type();
-            writeln!(out, "    unsafe {{ <{ty} as FfiType>::from_c(__raw) }}").unwrap();
+            let conversion = client_from_c(tr, "__raw", lib);
+            writeln!(out, "    unsafe {{ {conversion} }}").unwrap();
         }
         Return::Result {
             ok: None, err_type, ..
@@ -4082,12 +4190,8 @@ fn emit_free_function(
                 .unwrap();
                 let (error_result_fn, _error_destroy_fn) = find_error_dispatch_fns(lib);
                 writeln!(out, "    if !__raw.is_null() {{").unwrap();
-                let ty = ok_tr.to_rust_type();
-                writeln!(
-                    out,
-                    "        Ok(unsafe {{ <{ty} as FfiType>::from_c(__raw) }})"
-                )
-                .unwrap();
+                let conversion = client_from_c(ok_tr, "__raw", lib);
+                writeln!(out, "        Ok(unsafe {{ {conversion} }})").unwrap();
                 writeln!(out, "    }} else {{").unwrap();
                 writeln!(
                     out,
@@ -4114,12 +4218,8 @@ fn emit_free_function(
                 )
                 .unwrap();
                 writeln!(out, "    if __r == 0 {{").unwrap();
-                let ty = ok_tr.to_rust_type();
-                writeln!(
-                    out,
-                    "        Ok(unsafe {{ <{ty} as FfiType>::from_c(__out.assume_init()) }})"
-                )
-                .unwrap();
+                let conversion = client_from_c(ok_tr, "__out.assume_init()", lib);
+                writeln!(out, "        Ok(unsafe {{ {conversion} }})").unwrap();
                 writeln!(out, "    }} else {{").unwrap();
                 writeln!(
                     out,
@@ -4150,9 +4250,21 @@ fn lifetime_generics(lifetimes: &[String]) -> String {
     }
 }
 
-fn format_param_sig(p: &ffier_schema::Param) -> String {
+fn format_param_sig(p: &ffier_schema::Param, lib: &Library, into: bool) -> String {
     match &p.param_type {
-        ParamType::Regular(tr) => format!("{}: {}", p.name, tr.to_rust_type()),
+        ParamType::Regular(tr) => {
+            let ty = if into {
+                client_type(tr, lib)
+            } else {
+                tr.to_rust_type()
+            };
+            let ty = if into && is_borrowed_handle(tr, lib) && !tr.optional {
+                format!("impl Into<{ty}>")
+            } else {
+                ty
+            };
+            format!("{}: {ty}", p.name)
+        }
         ParamType::Slice { element, .. } => {
             format!("{}: &[{}]", p.name, element.to_rust_type())
         }
