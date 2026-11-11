@@ -8,6 +8,9 @@ description = "Proc macros and bridge codegen for ffier"
 [lib]
 proc-macro = true
 
+[features]
+unstable_unsafe_handle_slices = []
+
 [dependencies]
 ffier-schema = { path = "../ffier-schema" }
 syn = { version = "2", features = ["extra-traits", "full", "visit-mut"] }

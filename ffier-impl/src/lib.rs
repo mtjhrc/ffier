@@ -12,6 +12,7 @@ use syn::{
 
 mod bridge;
 mod cfg;
+mod feature_guards;
 mod meta;
 mod module;
 
@@ -3242,6 +3243,7 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    feature_guards::check_handle_slices(sig)?;
     ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
     if name.starts_with('_') {
@@ -6852,6 +6854,25 @@ mod tests {
             result.err().unwrap().to_string().contains("where clauses"),
             "unexpected diagnostic"
         );
+    }
+
+    #[test]
+    fn handle_slice_exports_require_explicit_feature() {
+        for signature in [
+            syn::parse_quote!(fn input(&self, values: &[&Widget])),
+            syn::parse_quote!(fn direct(&self) -> &[Widget]),
+            syn::parse_quote!(fn indirect(&self) -> &[&Widget]),
+        ] {
+            let result = parse(signature, None);
+            if cfg!(feature = "unstable_unsafe_handle_slices") {
+                assert!(result.expect("opted-in signature rejected").is_some());
+            } else {
+                let error = result.err().expect("handle-slice signature accepted");
+                assert!(error.to_string().contains("unstable_unsafe_handle_slices"));
+            }
+        }
+        assert_accepted(syn::parse_quote!(fn strings(&self, values: &[&str])));
+        assert_accepted(syn::parse_quote!(fn primitives(&self, values: &[u16])));
     }
 
     #[test]
