@@ -261,6 +261,11 @@ impl Widget {
         path.as_os_str().as_encoded_bytes().len()
     }
 
+    /// Describe a path, or return `usize::MAX` if no path was given.
+    pub fn describe_optional_path(&self, path: Option<&std::path::Path>) -> usize {
+        path.map_or(usize::MAX, |p| p.as_os_str().as_encoded_bytes().len())
+    }
+
     /// Check if the widget is active.
     pub fn is_active(&self) -> bool {
         self.active
