@@ -5393,6 +5393,25 @@ pub fn library_definition(input: TokenStream) -> TokenStream {
             }
         }
 
+        impl<'a> FfiType for Option<&'a std::path::Path> {
+            type CRepr = ffier::FfierBytes;
+            const C_TYPE_NAME: &'static str = "FfierPath";
+            const IS_HANDLE: bool = false;
+            fn into_c(self) -> ffier::FfierBytes {
+                match self {
+                    Some(p) => unsafe { ffier::FfierBytes::from_path(p) },
+                    None => ffier::FfierBytes::EMPTY,
+                }
+            }
+            unsafe fn from_c(repr: ffier::FfierBytes) -> Self {
+                if repr.data.is_null() {
+                    None
+                } else {
+                    unsafe { Some(repr.as_path()) }
+                }
+            }
+        }
+
         #[cfg(unix)]
         const _: () = {
             use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd};

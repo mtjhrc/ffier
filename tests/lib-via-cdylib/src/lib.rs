@@ -283,6 +283,17 @@ mod tests {
     }
 
     #[test]
+    fn method_with_optional_path_param() {
+        init();
+        let w = Widget::new();
+        assert_eq!(
+            w.describe_optional_path(Some(std::path::Path::new("/tmp/x"))),
+            6
+        );
+        assert_eq!(w.describe_optional_path(None), usize::MAX);
+    }
+
+    #[test]
     fn method_with_mutable_bytes_param() {
         init();
         let w = Widget::new();

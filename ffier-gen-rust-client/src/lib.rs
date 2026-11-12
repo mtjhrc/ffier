@@ -306,6 +306,13 @@ pub fn generate(lib: &Library) -> String {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "impl FfiType for Option<&Path> {{").unwrap();
+    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierPath\"; const IS_HANDLE: bool = false;").unwrap();
+    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(p) => unsafe {{ ffier::FfierBytes::from_path(p) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
+    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(repr.as_path()) }} }} }}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     // Blessed fd type FfiType impls
     emit_blessed_fd_impls(&mut out, lib);
 
