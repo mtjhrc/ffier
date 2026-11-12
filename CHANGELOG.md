@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 0.3.1
+
+### Added
+
+- Add support for `&mut [u8]` in exported methods and callbacks.
+- Accept `&Path` on every platform.
+- Accept `Option<&Path>`; `None` encodes as `FfierBytes::EMPTY`.
+
+### Fixed
+
+- Resolve `macro_rules!` `$t:ty` captures through their invisible group, so a
+  capture nested under `&` no longer becomes an unresolvable type name.
+- Resolve standard OS types through definition-site aliases, so an exported
+  trait mentioning `BorrowedFd` compiles without the crate importing it.
+- Reject a type with no schema representation with a proper error message
+  instead of generating a broken type-registry key and failing later.
+
+## 0.3.0
+
 ### Breaking changes
 
 - Generate one Unix Rust client supporting `ffier-dynlookup` runtime symbol
