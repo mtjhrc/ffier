@@ -456,14 +456,99 @@ mod tests {
         init();
         let w = Widget::new();
         // Widget has an internal gadget with value 42.
-        let g = w.gadget();
+        let g: Ref<'_, Gadget> = w.gadget();
         assert_eq!(g.get(), 42);
-        // g is an owned Gadget wrapper around a borrowed handle.
-        // Dropping g calls ft_gadget_destroy, which deallocates the
-        // shell without dropping the inner Gadget (still owned by w).
+        assert_eq!(w.read_gadget(&g), 42);
+        // The view owns its shell; the gadget remains owned by w.
         drop(g);
         // Widget is still alive and usable.
         assert_eq!(w.name(), "widget");
+    }
+
+    #[test]
+    fn method_returning_exclusive_handle_borrow() {
+        init();
+        let mut owner = Widget::new();
+        let reader = Widget::new();
+        let mut gadget: RefMut<'_, Gadget> = owner.gadget_mut();
+        gadget.set(70).set(71);
+        assert_eq!(reader.read_gadget(&gadget), 71);
+        reader.update_gadget(&mut gadget, 72);
+        assert_eq!(gadget.get(), 72);
+        let mut reborrow = RefMut::from(&mut gadget);
+        reborrow.set(73);
+        drop(reborrow);
+        assert_eq!(Ref::from(&gadget).get(), 73);
+        drop(gadget);
+        assert_eq!(owner.gadget().get(), 73);
+    }
+
+    #[test]
+    fn method_returning_fallible_handle_borrows() {
+        init();
+        let mut owner = Widget::new();
+        let gadget: Ref<'_, Gadget> = owner.try_gadget(true).unwrap();
+        assert_eq!(gadget.get(), 42);
+        drop(gadget);
+        assert!(matches!(
+            owner.try_gadget(false),
+            Err(TestError::InvalidInput())
+        ));
+        let mut gadget: RefMut<'_, Gadget> = owner.try_gadget_mut(true).unwrap();
+        gadget.set(81);
+        drop(gadget);
+        assert!(matches!(
+            owner.try_gadget_mut(false),
+            Err(TestError::InvalidInput())
+        ));
+        assert_eq!(owner.gadget().get(), 81);
+    }
+
+    #[test]
+    fn free_functions_preserve_shared_handle_borrows() {
+        init();
+        let owner = Widget::new();
+        let gadget = owner.gadget();
+        assert_eq!(gadget_identity(&gadget).get(), 42);
+        assert_eq!(gadget_identity(Ref::from(&gadget)).get(), 42);
+        let selected = {
+            let other = String::from("unrelated");
+            gadget_identity_explicit(&gadget, &other)
+        };
+        assert_eq!(selected.get(), 42);
+        assert_eq!(try_gadget_identity(&gadget, true).unwrap().get(), 42);
+        assert!(matches!(
+            try_gadget_identity(&gadget, false),
+            Err(TestError::InvalidInput())
+        ));
+        drop(selected);
+        drop(gadget);
+        assert_eq!(owner.gadget().get(), 42);
+    }
+
+    #[test]
+    fn free_functions_preserve_exclusive_handle_borrows() {
+        init();
+        let mut owner = Widget::new();
+        let mut gadget = owner.gadget_mut();
+        let mut selected = gadget_identity_mut(&mut gadget);
+        selected.set(91);
+        drop(selected);
+        let mut selected = {
+            let other = String::from("unrelated");
+            gadget_identity_mut_explicit(&mut gadget, &other)
+        };
+        selected.set(92);
+        drop(selected);
+        let mut selected = try_gadget_identity_mut(&mut gadget, true).unwrap();
+        selected.set(93);
+        drop(selected);
+        assert!(matches!(
+            try_gadget_identity_mut(&mut gadget, false),
+            Err(TestError::InvalidInput())
+        ));
+        drop(gadget);
+        assert_eq!(owner.gadget().get(), 93);
     }
 
     // ================================================================
@@ -554,6 +639,18 @@ mod tests {
         w.set_count(77);
         let v = View::create(&w);
         assert_eq!(v.source_count(), 77);
+    }
+
+    #[test]
+    fn borrowed_handle_retains_inner_type_lifetime() {
+        init();
+        let owner = Widget::new();
+        let view = View::create(&owner);
+        let borrowed: Ref<'_, View<'_>> = view.same();
+        assert_eq!(borrowed.source().get_count(), 0);
+        assert_eq!(borrowed.source_count(), 0);
+        drop(borrowed);
+        assert_eq!(view.source().name(), "widget");
     }
 
     #[test]
@@ -757,6 +854,31 @@ mod tests {
         let value = ffier_test_foreign_lib_via_cdylib::ForeignBorrowed::new(&text);
         let w = Widget::new();
         assert_eq!(w.read_foreign_borrowed(&value), text.len() as i32);
+    }
+
+    #[test]
+    fn foreign_handle_views_preserve_exclusive_access() {
+        use ffier_test_foreign_lib_via_cdylib as foreign;
+
+        init();
+        let owner = Widget::with_name("owner");
+        let text = String::from("borrowed");
+        let replacement = String::from("replacement");
+        let mut value = foreign::ForeignBorrowed::new(&text);
+        let mut view: foreign::RefMut<'_, foreign::ForeignBorrowed<'_>> =
+            foreign::RefMut::from(&mut value);
+        assert_eq!(view.value(), text);
+        view.set_value(&replacement);
+        let shared = foreign::Ref::from(&view);
+        assert_eq!(
+            owner.read_foreign_borrowed(&shared),
+            replacement.len() as i32
+        );
+        drop(shared);
+        owner.replace_foreign_borrowed(&mut view);
+        assert_eq!(view.value(), "owner");
+        drop(view);
+        assert_eq!(value.value(), "owner");
     }
 
     #[test]
