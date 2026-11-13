@@ -10,7 +10,7 @@ ffi = []
 optional-entry = []
 
 [dependencies]
-ffier = { path = "../../ffier" }
+ffier = { path = "../../ffier", features = ["unstable_unsafe_handle_slices", "unstable_unsafe_borrowed_self"] }
 ffier-builtins = { path = "../../ffier-builtins" }
 foreign-trait-crate = { path = "../foreign-trait-crate" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib", features = ["ffier-strong"] }

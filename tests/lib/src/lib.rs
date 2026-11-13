@@ -382,6 +382,29 @@ impl Widget {
         &self.gadget
     }
 
+    /// Borrow the widget's gadget exclusively.
+    pub fn gadget_mut(&mut self) -> &mut Gadget {
+        &mut self.gadget
+    }
+
+    /// Borrow the widget's gadget when requested.
+    pub fn try_gadget(&self, ok: bool) -> Result<&Gadget, TestError> {
+        if ok {
+            Ok(&self.gadget)
+        } else {
+            Err(TestError::InvalidInput())
+        }
+    }
+
+    /// Borrow the widget's gadget exclusively when requested.
+    pub fn try_gadget_mut(&mut self, ok: bool) -> Result<&mut Gadget, TestError> {
+        if ok {
+            Ok(&mut self.gadget)
+        } else {
+            Err(TestError::InvalidInput())
+        }
+    }
+
     /// Return a borrowed slice of the widget's gadgets (&[T] pattern).
     pub fn gadgets(&self) -> &[Gadget] {
         &self.gadgets
@@ -546,6 +569,12 @@ impl Gadget {
     /// Get the gadget value.
     pub fn get(&self) -> i32 {
         self.value
+    }
+
+    /// Set the gadget value and retain exclusive access for chaining.
+    pub fn set(&mut self, value: i32) -> &mut Self {
+        self.value = value;
+        self
     }
 }
 
@@ -746,6 +775,17 @@ impl<'a> View<'a> {
     /// Read the source widget's count through the borrow.
     pub fn source_count(&self) -> i32 {
         self.source.count
+    }
+
+    /// Borrow the source through this view.
+    pub fn source(&self) -> &Widget {
+        self.source
+    }
+
+    /// Retain both the view borrow and its source lifetime.
+    #[allow(clippy::needless_lifetimes)]
+    pub fn same<'b>(&'b self) -> &'b View<'a> {
+        self
     }
 
     /// Set the view label.
@@ -1562,6 +1602,52 @@ pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
+/// Return the shared handle borrow with an elided lifetime.
+pub fn gadget_identity(gadget: &Gadget) -> &Gadget {
+    gadget
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Return the exclusive handle borrow with an elided lifetime.
+pub fn gadget_identity_mut(gadget: &mut Gadget) -> &mut Gadget {
+    gadget
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Keep the handle lifetime independent of another input borrow.
+pub fn gadget_identity_explicit<'a>(gadget: &'a Gadget, other: &str) -> &'a Gadget {
+    let _ = other;
+    gadget
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Keep the exclusive handle lifetime independent of another input borrow.
+pub fn gadget_identity_mut_explicit<'a>(gadget: &'a mut Gadget, other: &str) -> &'a mut Gadget {
+    let _ = other;
+    gadget
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Return a shared handle borrow through a fallible free function.
+pub fn try_gadget_identity(gadget: &Gadget, ok: bool) -> Result<&Gadget, TestError> {
+    if ok {
+        Ok(gadget)
+    } else {
+        Err(TestError::InvalidInput())
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
+/// Return an exclusive handle borrow through a fallible free function.
+pub fn try_gadget_identity_mut(gadget: &mut Gadget, ok: bool) -> Result<&mut Gadget, TestError> {
+    if ok {
+        Ok(gadget)
+    } else {
+        Err(TestError::InvalidInput())
+    }
+}
+
+#[cfg_attr(feature = "ffi", ffier::export)]
 /// Read a value struct passed inline.
 pub fn event_sequence(event: InputEvent) -> u32 {
     event.sequence
@@ -2120,6 +2206,12 @@ ffier::library_definition!("ft", library_tag = 1,
     #[cfg(unix)]
     fn clone_fd,
     fn sum_gadget_values,
+    fn gadget_identity,
+    fn gadget_identity_mut,
+    fn gadget_identity_explicit,
+    fn gadget_identity_mut_explicit,
+    fn try_gadget_identity,
+    fn try_gadget_identity_mut,
     fn event_sequence,
     fn event_payload_code,
     fn event_bump_payload_code,
@@ -4266,6 +4358,29 @@ mod tests {
             let o = ft_orange_new(13);
             assert_eq!(ft_orange_category(o), 13);
             ft_orange_destroy(o);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "ffi"))]
+mod borrowed_return_tests {
+    #[test]
+    fn mutable_return_shells_preserve_write_permissions() {
+        unsafe {
+            let owner = crate::ft_widget_new();
+            let reader = crate::ft_widget_new();
+            let borrowed = crate::ft_widget_gadget_mut(owner);
+            crate::ft_widget_update_gadget(reader, borrowed, 29);
+            crate::ft_gadget_destroy(borrowed);
+
+            let mut error = core::ptr::null_mut();
+            let borrowed = crate::ft_widget_try_gadget_mut(owner, true, &mut error);
+            assert!(error.is_null());
+            crate::ft_widget_update_gadget(reader, borrowed, 37);
+            assert_eq!(crate::ft_gadget_get(borrowed), 37);
+            crate::ft_gadget_destroy(borrowed);
+            crate::ft_widget_destroy(reader);
+            crate::ft_widget_destroy(owner);
         }
     }
 }

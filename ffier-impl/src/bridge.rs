@@ -1737,6 +1737,22 @@ fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
 // Shared return-value conversion
 // ===========================================================================
 
+/// Preserve write permissions when a mutable reference becomes a borrowed handle.
+fn borrowed_handle_pointer(
+    bridge_type: &TokenStream2,
+    value: TokenStream2,
+) -> (TokenStream2, TokenStream2) {
+    let reference = syn::parse2::<syn::TypeReference>(bridge_type.clone())
+        .expect("borrowed handle bridge type must be a reference");
+    let inner = reference.elem;
+    let pointer = if reference.mutability.is_some() {
+        quote! { #value as *mut #inner as *const #inner }
+    } else {
+        quote! { #value as *const #inner }
+    };
+    (quote! { #inner }, pointer)
+}
+
 /// Optional builder context for methods that consume `self` and write
 /// the new handle back through a double pointer.
 struct BuilderCtx<'a> {
@@ -1802,23 +1818,14 @@ fn wrap_return(
                     .as_ref()
                     .is_some_and(|ty| is_borrowed_handle(ty, handle_types))
             {
-                // &T where T is a handle — shallow-copy into a borrowed handle.
-                // Strip the reference to get the inner bridge_type for the
-                // FfiHandle::TYPE_TAG lookup.
-                let inner_bridge = if let Ok(syn::Type::Reference(ref_ty)) =
-                    syn::parse2::<syn::Type>(bridge_type.clone())
-                {
-                    let elem = &ref_ty.elem;
-                    quote! { #elem }
-                } else {
-                    bridge_type.clone()
-                };
+                let (inner_bridge, pointer) =
+                    borrowed_handle_pointer(bridge_type, quote! { result });
                 quote! {
                     let result = #call_expr;
                     unsafe {
                         ffier::ffier_handle_new_borrowed::<#inner_bridge>(
                             <#inner_bridge as #tc::FfiHandle>::TYPE_TAG,
-                            result as *const #inner_bridge,
+                            #pointer,
                         )
                     }
                 }
@@ -1939,20 +1946,14 @@ fn wrap_return(
             } else if ok_is_borrowed_handle {
                 // Borrowed handle return: Result<&Handle, E> → new_borrowed, NULL on error.
                 let ok_pair = ok.as_ref().unwrap();
-                let inner_bridge = if let Ok(syn::Type::Reference(ref_ty)) =
-                    syn::parse2::<syn::Type>(ok_pair.bridge_type.clone())
-                {
-                    let elem = &ref_ty.elem;
-                    quote! { #elem }
-                } else {
-                    ok_pair.bridge_type.clone()
-                };
+                let (inner_bridge, pointer) =
+                    borrowed_handle_pointer(&ok_pair.bridge_type, quote! { ok_val });
                 quote! {
                     match #call_expr {
                         Ok(ok_val) => unsafe {
                             ffier::ffier_handle_new_borrowed::<#inner_bridge>(
                                 <#inner_bridge as #ok_tc::FfiHandle>::TYPE_TAG,
-                                ok_val as *const #inner_bridge,
+                                #pointer,
                             )
                         },
                         Err(e) => { #box_expr core::ptr::null_mut() }

@@ -12,6 +12,7 @@ use syn::{
 
 mod bridge;
 mod cfg;
+mod feature_guards;
 mod meta;
 mod module;
 
@@ -3242,6 +3243,7 @@ fn parse_method_sig(
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
 ) -> syn::Result<Option<MethodInfo>> {
+    feature_guards::check_handle_slices(sig)?;
     ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
     if name.starts_with('_') {
@@ -3498,6 +3500,8 @@ fn parse_method_sig(
     } else {
         false
     };
+
+    feature_guards::check_borrowed_self(sig, self_ty, is_builder)?;
 
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
@@ -6871,6 +6875,95 @@ mod tests {
             result.err().unwrap().to_string().contains("where clauses"),
             "unexpected diagnostic"
         );
+    }
+
+    #[test]
+    fn handle_slice_exports_require_explicit_feature() {
+        for signature in [
+            syn::parse_quote!(fn input(&self, values: &[&Widget])),
+            syn::parse_quote!(fn direct(&self) -> &[Widget]),
+            syn::parse_quote!(fn indirect(&self) -> &[&Widget]),
+        ] {
+            let result = parse(signature, None);
+            if cfg!(feature = "unstable_unsafe_handle_slices") {
+                assert!(result.expect("opted-in signature rejected").is_some());
+            } else {
+                let error = result.err().expect("handle-slice signature accepted");
+                assert!(error.to_string().contains("unstable_unsafe_handle_slices"));
+            }
+        }
+        assert_accepted(syn::parse_quote!(fn strings(&self, values: &[&str])));
+        assert_accepted(syn::parse_quote!(fn primitives(&self, values: &[u16])));
+    }
+
+    #[test]
+    fn borrowed_self_returns_require_explicit_feature() {
+        let self_ty: Type = syn::parse_quote!(Widget);
+        let check = |signature, self_ty| {
+            let result = parse(signature, self_ty);
+            if cfg!(feature = "unstable_unsafe_borrowed_self") {
+                assert!(result.expect("opted-in signature rejected").is_some());
+            } else {
+                let error = result.err().expect("borrowed Self return accepted");
+                assert!(error.to_string().contains("unstable_unsafe_borrowed_self"));
+            }
+        };
+        for signature in [
+            syn::parse_quote!(fn shared(&self) -> &Self),
+            syn::parse_quote!(fn mutable(&mut self) -> &mut Self),
+            syn::parse_quote!(fn concrete(&self) -> &Widget),
+            syn::parse_quote!(fn result(&self) -> Result<&Self, Error>),
+            syn::parse_quote!(fn mutable_result(&mut self) -> Result<&mut Self, Error>),
+            syn::parse_quote!(fn concrete_result(&self) -> Result<&Widget, Error>),
+            syn::parse_quote!(fn optional(&self) -> Option<&Self>),
+            syn::parse_quote!(fn optional_mut(&mut self) -> Option<&mut Self>),
+            syn::parse_quote!(fn optional_concrete(&self) -> Option<&Widget>),
+            syn::parse_quote!(fn optional_result(&self) -> Result<Option<&Self>, Error>),
+            syn::parse_quote!(fn optional_result_mut(&mut self) -> Result<Option<&mut Self>, Error>),
+            syn::parse_quote!(fn nested(&self) -> Option<Result<Option<&Self>, Error>>),
+            syn::parse_quote!(fn nested_result(&self) -> Result<Result<&Self, Error>, Error>),
+            syn::parse_quote!(fn nested_result_mut(&mut self) -> Result<Result<&mut Self, Error>, Error>),
+            syn::parse_quote!(fn nested_result_concrete(&self) -> Result<Result<&Widget, Error>, Error>),
+            syn::parse_quote!(fn nested_result_identity(other: &Self) -> Result<Result<&Self, Error>, Error>),
+            syn::parse_quote!(fn qualified_result(&self) -> std::result::Result<core::result::Result<&Self, Error>, Error>),
+            syn::parse_quote!(fn deeper_result(&self) -> Result<Result<Result<&Self, Error>, Error>, Error>),
+            syn::parse_quote!(fn qualified(&self) -> std::result::Result<core::option::Option<&Self>, Error>),
+            syn::parse_quote!(fn optional_identity(other: &Self) -> Option<&Self>),
+        ] {
+            check(signature, Some(&self_ty));
+        }
+        check(syn::parse_quote!(fn shared(&self) -> &Self), None);
+        check(
+            syn::parse_quote!(fn result(&mut self) -> Result<&mut Self, Error>),
+            None,
+        );
+        check(syn::parse_quote!(fn optional(&self) -> Option<&Self>), None);
+        check(
+            syn::parse_quote!(fn optional_result(&mut self) -> Result<Option<&mut Self>, Error>),
+            None,
+        );
+        check(
+            syn::parse_quote!(fn nested_result(&self) -> Result<Result<&Self, Error>, Error>),
+            None,
+        );
+        let generic_self: Type = syn::parse_quote!(Widget<'a>);
+        check(
+            syn::parse_quote!(fn optional(&self) -> Option<&Widget<'a>>),
+            Some(&generic_self),
+        );
+        for signature in [
+            syn::parse_quote!(fn owned(self) -> Self),
+            syn::parse_quote!(fn owned_result(self) -> Result<Self, Error>),
+            syn::parse_quote!(fn optional_owned(self) -> Option<Self>),
+            syn::parse_quote!(fn nested_owned(self) -> Result<Result<Self, Error>, Error>),
+            syn::parse_quote!(fn other(&self) -> &Gadget),
+            syn::parse_quote!(fn optional_other(&self) -> Option<&Gadget>),
+            syn::parse_quote!(fn nested_other(&self) -> Result<Result<&Gadget, Error>, Error>),
+            syn::parse_quote!(fn identity(other: &Self) -> &Self),
+            syn::parse_quote!(fn result_identity(other: &Self) -> Result<&Self, Error>),
+        ] {
+            assert!(parse(signature, Some(&self_ty)).unwrap().is_some());
+        }
     }
 
     #[test]
