@@ -4,13 +4,17 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{FnArg, Item, ItemFn, ItemMod, Visibility};
 
+use super::ExportCfg;
 use crate::{
-    AliasContext, ExportCfg, MACRO_COUNTER, MethodMetaKind, combine_cfg_predicates,
-    emit_method_meta, extract_cfg_predicates, parse_ffier_method_attrs, parse_method_sig,
-    reexport_helpers, strip_ffier_attrs,
+    MACRO_COUNTER,
+    alias::AliasContext,
+    attrs::{parse_ffier_method_attrs, strip_ffier_attrs},
+    cfg::{combine_cfg_predicates, extract_cfg_predicates},
+    reexport::reexport_helpers,
+    signature::{MethodMetaKind, emit_method_meta, parse_method_sig},
 };
 
-pub fn export(mut module: ItemMod, config: &ExportCfg) -> syn::Result<TokenStream> {
+pub(super) fn export(mut module: ItemMod, config: &ExportCfg) -> syn::Result<TokenStream> {
     if config.cfg.is_some() {
         return Err(syn::Error::new_spanned(
             &module,

@@ -3,6 +3,7 @@
 //! `generate_batch_impl` takes batched metadata token streams and produces
 //! the corresponding `extern "C"` FFI functions.
 
+use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{ToTokens, format_ident, quote};
 use syn::spanned::Spanned;
@@ -2838,14 +2839,14 @@ mod tests {
             },
         ] {
             let variant: syn::Variant = variant;
-            let attrs = crate::parse_ffier_variant_attrs(&variant.attrs).unwrap();
+            let attrs = crate::error::parse_ffier_variant_attrs(&variant.attrs).unwrap();
             let syn::Fields::Unnamed(fields) = &variant.fields else {
                 panic!("expected tuple variant");
             };
             let fields = fields
                 .unnamed
                 .iter()
-                .map(|field| crate::parse_ffier_error_field(field, attrs.opaque).unwrap())
+                .map(|field| crate::error::parse_ffier_error_field(field, attrs.opaque).unwrap())
                 .collect();
             meta.variants = vec![crate::meta::MetaErrorVariant {
                 name: variant.ident,
@@ -2873,7 +2874,7 @@ mod tests {
             ),
         ] {
             let source: syn::Type = syn::parse_str(source).unwrap();
-            let source = crate::extract_result_types(&source).map_or(source, |(ok, _)| ok);
+            let source = crate::types::extract_result_types(&source).map_or(source, |(ok, _)| ok);
             let canonical: syn::Type = syn::parse_str(canonical).unwrap();
             assert_eq!(
                 resolver.type_ref_from_syn(&source).unwrap(),
@@ -3190,15 +3191,15 @@ impl CTypeResolver {
         let ty = unwrap_invisible_group(ty);
         match ty {
             // Option<T> → recurse into T and set optional = true.
-            syn::Type::Path(tp) if crate::is_option(tp) => {
-                let inner = crate::option_inner(tp);
+            syn::Type::Path(tp) if crate::types::is_option(tp) => {
+                let inner = crate::types::option_inner(tp);
                 let mut tr = self.type_ref_from_syn(inner)?;
                 tr.optional = true;
                 Ok(tr)
             }
 
             // Box<str> → owned str.
-            syn::Type::Path(tp) if crate::is_box_str(tp) => Ok(ffier_schema::TypeRef {
+            syn::Type::Path(tp) if crate::types::is_box_str(tp) => Ok(ffier_schema::TypeRef {
                 type_name: "str".to_string(),
                 ref_kind: ffier_schema::RefKind::None,
                 ref_lifetime: None,
@@ -4538,4 +4539,110 @@ fn convert_return(
             }
         }
     })
+}
+
+/// Parse a public bridge request and invoke its metadata macro.
+pub(crate) fn generate_bridge(input: TokenStream) -> TokenStream {
+    let input2: proc_macro2::TokenStream = input.into();
+    let mut iter = input2.into_iter().peekable();
+
+    // Parse mode keyword
+    let mode_ident = match iter.next() {
+        Some(proc_macro2::TokenTree::Ident(id)) => id,
+        _ => {
+            return quote! {
+                compile_error!("expected `local = <path>, schema_output = \"...\"` or `external = <path>, schema_output = \"...\"`");
+            }
+            .into();
+        }
+    };
+
+    let mode_str = mode_ident.to_string();
+    let mode = match mode_str.as_str() {
+        "local" => quote! { @local },
+        "external" => quote! { @cross_crate },
+        _ => {
+            return quote! {
+                compile_error!(concat!(
+                    "unknown mode `", stringify!(#mode_ident),
+                    "`: expected `local` or `external`"
+                ));
+            }
+            .into();
+        }
+    };
+
+    // Consume `=`
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `=` after mode keyword");
+            }
+            .into();
+        }
+    }
+
+    // Collect metadata macro path tokens until `,`
+    let mut path_tokens = Vec::new();
+    loop {
+        match iter.peek() {
+            Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == ',' => {
+                iter.next(); // consume `,`
+                break;
+            }
+            Some(_) => path_tokens.push(iter.next().unwrap()),
+            None => {
+                return quote! {
+                    compile_error!("expected `, schema_output = \"...\"` after metadata macro path");
+                }
+                .into();
+            }
+        }
+    }
+    let path: proc_macro2::TokenStream = path_tokens.into_iter().collect();
+    if path.is_empty() {
+        return quote! {
+            compile_error!("expected metadata macro path after `=`");
+        }
+        .into();
+    }
+
+    // Parse `schema_output = "..."`
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Ident(id)) if id == "schema_output" => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `schema_output = \"...\"`");
+            }
+            .into();
+        }
+    }
+    match iter.next() {
+        Some(proc_macro2::TokenTree::Punct(p)) if p.as_char() == '=' => {}
+        _ => {
+            return quote! {
+                compile_error!("expected `=` after `schema_output`");
+            }
+            .into();
+        }
+    }
+    let schema_output = match iter.next() {
+        Some(proc_macro2::TokenTree::Literal(lit)) => lit,
+        _ => {
+            return quote! {
+                compile_error!("expected string literal for schema_output path");
+            }
+            .into();
+        }
+    };
+
+    if iter.next().is_some() {
+        return quote! {
+            compile_error!("unexpected trailing tokens after schema_output");
+        }
+        .into();
+    }
+
+    quote! { #path!(#mode, #schema_output); }.into()
 }
