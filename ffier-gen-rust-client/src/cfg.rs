@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use ffier_schema::Cfg;
 
 /// Rewrite a predicate into the availability guard a generated client actually
@@ -32,6 +34,30 @@ pub fn combine(a: Option<&Cfg>, b: Option<&Cfg>) -> Option<Cfg> {
         (Some(a), Some(b)) => Some(Cfg::All(vec![a.clone(), b.clone()])),
         (a, b) => a.or(b).cloned(),
     }
+}
+
+/// Enforce platform restrictions in both modes. Dynamic clients discover
+/// optional Cargo-feature API independently of the consumer's features.
+pub(crate) fn emit_cfg_attr(out: &mut String, cfg: Option<&ffier_schema::Cfg>) {
+    if let Some(pred) = cfg {
+        writeln!(out, "#[cfg({})]", client_cfg(pred)).unwrap();
+    }
+}
+
+/// Guard for a slot's padding: every configuration no variant covers.
+///
+/// `None` when a variant is unconditional, since the slot is then always filled
+/// and a padding field would collide with it. Otherwise the guard is
+/// `all(not(P1), .., not(Pn))`; the predicate tree is left unfolded for the
+/// compiler to evaluate.
+pub(crate) fn uncovered_guard<'a>(
+    cfgs: impl IntoIterator<Item = Option<&'a Cfg>>,
+) -> Option<String> {
+    let mut negations = Vec::new();
+    for cfg in cfgs {
+        negations.push(format!("not({})", client_cfg(cfg?)));
+    }
+    Some(format!("all({})", negations.join(", ")))
 }
 
 #[cfg(test)]
