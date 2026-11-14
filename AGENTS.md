@@ -13,7 +13,7 @@ ffier              lib — re-exports ffier-impl + ffier-rt + ffier-bridge + ffi
 ffier-impl         proc-macro crate — all codegen
   src/lib.rs         #[export], #[derive(FfiError)], library_definition!, etc.
   src/meta.rs        metadata types (MetaMethod, etc.) + syn::Parse impls
-  src/bridge.rs      extern "C" bridge generation + JSON schema emission
+  src/bridge/        extern "C" bridge generation + JSON schema emission
 ffier-rt           handle layout, metadata bits, read-only accessors — no allocation
 ffier-bridge       handle allocation and destruction (Box::new / Box::from_raw)
 ffier-builtins     pre-annotated PushStr + Error traits
