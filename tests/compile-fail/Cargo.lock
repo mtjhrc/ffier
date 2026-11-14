@@ -233,6 +233,7 @@ dependencies = [
  "ffier-builtins",
  "ffier-test-foreign-lib-via-cdylib",
  "foreign-trait-crate",
+ "rustversion",
  "thiserror",
 ]
 

@@ -243,6 +243,7 @@ dependencies = [
  "ffier-builtins",
  "ffier-test-foreign-lib-via-cdylib",
  "foreign-trait-crate",
+ "rustversion",
  "thiserror",
 ]
 
@@ -256,6 +257,7 @@ dependencies = [
  "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
  "libloading",
+ "rustversion",
 ]
 
 [[package]]
