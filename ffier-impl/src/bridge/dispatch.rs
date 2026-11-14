@@ -247,7 +247,14 @@ pub(super) fn generate_self_dispatch_bridge(
         let sig_ret = &c_sig.ret;
 
         // Shared param conversion (same as exported methods / free functions).
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            handle_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };

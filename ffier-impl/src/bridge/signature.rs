@@ -6,7 +6,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
 use crate::c_abi::{CParam, c_signature};
-use crate::meta::{MetaMethod, MetaReceiver, MetaTypePair};
+use crate::meta::{MetaMethod, MetaReceiver};
 
 /// Complete C extern function signature for a method.
 ///
@@ -48,13 +48,4 @@ pub(super) fn c_signature_for_method(
         params,
         ret: sig.ret,
     }
-}
-
-/// Resolve the crate whose `__FfierLocalToken` a type pair's conversions use.
-/// Returns `foreign_crate` if set, otherwise falls back to `lib_crate`.
-pub(super) fn resolve_trait_crate<'a>(
-    tp: &'a MetaTypePair,
-    lib_crate: &'a TokenStream2,
-) -> &'a TokenStream2 {
-    tp.foreign_crate.as_ref().unwrap_or(lib_crate)
 }

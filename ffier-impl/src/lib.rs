@@ -11,6 +11,7 @@ mod bridge;
 mod c_abi;
 mod cfg;
 mod contracts;
+mod conv;
 mod error;
 mod export;
 mod ffi_traits;

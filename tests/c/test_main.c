@@ -299,6 +299,8 @@ void method_with_str_slice_param(void) {
     FtStr tags[] = { FT_STR("alpha"), FT_STR("beta"), FT_STR("gamma") };
     ft_widget_set_tags(w, tags, 3);
     assert_ft_str_eq(ft_widget_tags_joined(w), "alpha,beta,gamma");
+    ft_widget_set_tags(w, NULL, 0);
+    assert(ft_widget_tags_joined(w).len == 0);
     ft_widget_destroy(w);
 }
 

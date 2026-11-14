@@ -211,7 +211,7 @@ fn is_std_reference(ty: &syn::Type) -> bool {
 }
 
 /// Check if a type is `&T` or `&mut T` where `T` is a handle type.
-fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
+pub(crate) fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {
         type_last_name(&ref_ty.elem)
             .is_some_and(|name| name == "Self" || handle_types.contains(&name))
