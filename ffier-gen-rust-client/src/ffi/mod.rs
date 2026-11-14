@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ffier_schema::{Cfg, FreeFunction, Library, Method, Receiver};
 
-use crate::abi::{push_extern_params, push_return_and_out_params};
+use crate::abi::{ParamNames, push_extern_params, push_return_and_out_params};
 use crate::cfg;
 
 mod dynlookup;
@@ -67,7 +67,6 @@ pub(crate) fn extern_fn_private(name: &str, params: Vec<String>, ret: String) ->
 
 /// Build an `ExternFn` from a method's signature.
 pub(crate) fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn {
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
     let mut params = Vec::new();
     match m.receiver {
         Receiver::None => {}
@@ -75,24 +74,24 @@ pub(crate) fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -
             params.push("handle: *mut core::ffi::c_void".to_string());
         }
     }
-    push_extern_params(&m.params, &mut params);
-    let ret = push_return_and_out_params(&m.ret, &mut params, is_builder);
+    push_extern_params(&m.params, &mut params, ParamNames::Named);
+    let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a dispatch method signature.
-pub(crate) fn extern_fn_from_dispatch(ffi_name: &str, m: &Method) -> ExternFn {
+pub(crate) fn extern_fn_from_dispatch(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
-    push_extern_params(&m.params, &mut params);
-    let ret = push_return_and_out_params(&m.ret, &mut params, false);
+    push_extern_params(&m.params, &mut params, ParamNames::Named);
+    let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
 
 /// Build an `ExternFn` from a free function.
-pub(crate) fn extern_fn_from_free(f: &FreeFunction) -> ExternFn {
+pub(crate) fn extern_fn_from_free(f: &FreeFunction, lib: &Library) -> ExternFn {
     let mut params = Vec::new();
-    push_extern_params(&f.params, &mut params);
-    let ret = push_return_and_out_params(&f.ret, &mut params, false);
+    push_extern_params(&f.params, &mut params, ParamNames::Named);
+    let ret = push_return_and_out_params(&f.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(&f.ffi_name, params, ret, f.cfg.clone())
 }
 

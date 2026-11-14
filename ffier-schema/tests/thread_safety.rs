@@ -18,7 +18,7 @@ fn thread_flags_round_trip_on_all_carriers() {
         let mut schema = json!({
             "prefix": "ft", "type_registry": {}, "errors": [], "trait_impls": [],
             "exported_types": [{"name": "Widget", "destroy_ffi_name": "ft_widget_destroy",
-                "is_builder_type": false, "methods": []}],
+                "replaces_self_by_value": false, "methods": []}],
             "traits": [{"name": "Backend", "destroy_ffi_name": "ft_backend_destroy",
                 "type_tag_constant": "FT_BACKEND_TYPE_TAG", "vtable_struct_c_name": "FtBackendVtable",
                 "wrapper_c_name": "FtVtableBackend", "vtable_struct_name": "BackendVtable",

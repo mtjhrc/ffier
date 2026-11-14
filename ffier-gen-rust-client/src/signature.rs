@@ -35,8 +35,7 @@ pub(super) fn format_receiver(m: &Method) -> String {
 }
 
 pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    if is_builder {
+    if m.ret.replaces_self(&lib.type_registry) {
         return match m.receiver {
             Receiver::Mut => " -> &mut Self".to_string(),
             Receiver::Value => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),

@@ -1,56 +1,52 @@
 //! Shared C ABI parameters, return types, and out-parameters.
 
-use ffier_schema::{ParamType, Return};
+use ffier_schema::{AbiOutParam, AbiReturn, Library, Param, ParamType, Return, TypeRef};
 
-/// Append return-type out-params and return the return-type string for an
-/// extern "C" function. Handles Void, Value, Result (FfierResult-style with
-/// out-params and GLib-style for handle-returning Results).
-///
-/// Shared by all extern signature builders.
+/// Whether ABI parameter lists carry names (`name: Type`, for `extern "C"`
+/// declarations and trampolines) or only types (for fn-pointer fields).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ParamNames {
+    Named,
+    TypesOnly,
+}
+
+impl ParamNames {
+    fn render(self, name: &str, ty: String) -> String {
+        match self {
+            ParamNames::Named => format!("{name}: {ty}"),
+            ParamNames::TypesOnly => ty,
+        }
+    }
+}
+
+/// `<T as FfiType>::CRepr` for a schema type, with lifetimes erased.
+fn c_repr(tr: &TypeRef) -> String {
+    format!("<{} as FfiType>::CRepr", tr.to_rust_type_static())
+}
+
+/// Append the return out-params to `out` and return the extern return type
+/// (` -> T`, or empty for void), following [`Return::c_abi`].
 pub(crate) fn push_return_and_out_params(
     ret: &Return,
-    params: &mut Vec<String>,
-    is_builder: bool,
+    out: &mut Vec<String>,
+    lib: &Library,
+    names: ParamNames,
 ) -> String {
-    use ffier_schema::CResultConvention;
-    match ret {
-        Return::Void => String::new(),
-        Return::Value(_) if is_builder => String::new(),
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as FfiType>::CRepr")
-        }
-        Return::OptionalValue(tr) => {
-            let ty = optional_value_out_type(tr);
-            params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
-            " -> bool".to_string()
-        }
-        Return::Result {
-            ok, c_convention, ..
-        } => match c_convention {
-            CResultConvention::HandleOrNull => {
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> *mut core::ffi::c_void".to_string()
-            }
-            CResultConvention::OutParam => {
-                if let Some(ok_tr) = ok.as_ref().filter(|_| !is_builder) {
-                    let ty = ok_tr.to_rust_type_static();
-                    params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
-                }
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-            CResultConvention::OptionalValueOutParam => {
-                let ok_tr = ok
-                    .as_ref()
-                    .expect("OptionalValueOutParam requires an ok type");
-                let ty = optional_value_out_type(ok_tr);
-                params.push("result_is_some: *mut bool".to_string());
-                params.push(format!("result: *mut <{ty} as FfiType>::CRepr"));
-                params.push("err_out: *mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-        },
+    let (abi_ret, out_params) = ret.c_abi(&lib.type_registry);
+    for p in &out_params {
+        let ty = match p {
+            AbiOutParam::Result(tr) => format!("*mut {}", c_repr(tr)),
+            AbiOutParam::ResultIsSome => "*mut bool".to_string(),
+            AbiOutParam::ErrOut => "*mut *mut core::ffi::c_void".to_string(),
+        };
+        out.push(names.render(p.name(), ty));
+    }
+    match abi_ret {
+        AbiReturn::Void => String::new(),
+        AbiReturn::Value(tr) => format!(" -> {}", c_repr(tr)),
+        AbiReturn::Bool => " -> bool".to_string(),
+        AbiReturn::Handle(_) => " -> *mut core::ffi::c_void".to_string(),
+        AbiReturn::FfierResult => " -> ffier::FfierResult".to_string(),
     }
 }
 
@@ -58,90 +54,25 @@ pub(crate) fn push_return_and_out_params(
 ///
 /// The schema marks the ok type `optional` so generated wrapper signatures can
 /// say `Option<T>`, but the C out-param is a bare `T`.
-pub(crate) fn optional_value_out_type(tr: &ffier_schema::TypeRef) -> String {
+pub(crate) fn optional_value_out_type(tr: &TypeRef) -> String {
     tr.without_optional().to_rust_type_static()
 }
 
-/// Append C extern param strings (`"name: <Type as FfiType>::CRepr"` etc.)
-/// for a list of schema params. Shared by all extern signature builders.
-pub(crate) fn push_extern_params(params: &[ffier_schema::Param], out: &mut Vec<String>) {
+/// Append the extern params for a list of schema params. A slice expands to
+/// the pointer and length params the schema records in `c_params`.
+pub(crate) fn push_extern_params(params: &[Param], out: &mut Vec<String>, names: ParamNames) {
     for p in params {
         match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type_static();
-                out.push(format!("{}: <{ty} as FfiType>::CRepr", p.name));
-            }
-            ParamType::Slice { element, .. } => {
-                let elem_ty = element.to_rust_type_static();
-                out.push(format!("{}: *const <{elem_ty} as FfiType>::CRepr", p.name));
-                out.push(format!("{}_len: usize", p.name));
-            }
-            ParamType::ImplTrait { .. } => {
-                out.push(format!("{}: *mut core::ffi::c_void", p.name));
-            }
-        }
-    }
-}
-
-/// Append return type-only strings (no param names) for vtable fn pointer
-/// fields. Companion to `push_extern_param_types`.
-pub(crate) fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String>) -> String {
-    use ffier_schema::CResultConvention;
-    match ret {
-        Return::Void => String::new(),
-        Return::Value(tr) => {
-            let ty = tr.to_rust_type_static();
-            format!(" -> <{ty} as FfiType>::CRepr")
-        }
-        Return::OptionalValue(tr) => {
-            let ty = optional_value_out_type(tr);
-            out.push(format!("*mut <{ty} as FfiType>::CRepr"));
-            " -> bool".to_string()
-        }
-        Return::Result {
-            ok, c_convention, ..
-        } => match c_convention {
-            CResultConvention::HandleOrNull => {
-                out.push("*mut *mut core::ffi::c_void".to_string());
-                " -> *mut core::ffi::c_void".to_string()
-            }
-            CResultConvention::OutParam => {
-                if let Some(ok_tr) = ok {
-                    let ty = ok_tr.to_rust_type_static();
-                    out.push(format!("*mut <{ty} as FfiType>::CRepr"));
-                }
-                out.push("*mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-            CResultConvention::OptionalValueOutParam => {
-                let ok_tr = ok
-                    .as_ref()
-                    .expect("OptionalValueOutParam requires an ok type");
-                let ty = optional_value_out_type(ok_tr);
-                out.push("*mut bool".to_string());
-                out.push(format!("*mut <{ty} as FfiType>::CRepr"));
-                out.push("*mut *mut core::ffi::c_void".to_string());
-                " -> ffier::FfierResult".to_string()
-            }
-        },
-    }
-}
-
-/// Append C type-only strings (no param names) for vtable struct fields.
-pub(crate) fn push_extern_param_types(params: &[ffier_schema::Param], out: &mut Vec<String>) {
-    for p in params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                let ty = tr.to_rust_type_static();
-                out.push(format!("<{ty} as FfiType>::CRepr"));
-            }
-            ParamType::Slice { element, .. } => {
-                let elem_ty = element.to_rust_type_static();
-                out.push(format!("*const <{elem_ty} as FfiType>::CRepr"));
-                out.push("usize".to_string());
+            ParamType::Regular(tr) => out.push(names.render(&p.name, c_repr(tr))),
+            ParamType::Slice { element, c_params } => {
+                let [ptr, len] = c_params.as_slice() else {
+                    panic!("slice param `{}` must expand to pointer + length", p.name);
+                };
+                out.push(names.render(&ptr.name, format!("*const {}", c_repr(element))));
+                out.push(names.render(&len.name, "usize".to_string()));
             }
             ParamType::ImplTrait { .. } => {
-                out.push("*mut core::ffi::c_void".to_string());
+                out.push(names.render(&p.name, "*mut core::ffi::c_void".to_string()));
             }
         }
     }

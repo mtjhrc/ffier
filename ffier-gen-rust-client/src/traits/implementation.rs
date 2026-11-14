@@ -89,7 +89,7 @@ pub(crate) fn emit_trait_impl(
     let fns: Vec<ExternFn> = ti
         .methods
         .iter()
-        .map(|m| extern_fn_from_dispatch(&m.ffi_name, m))
+        .map(|m| extern_fn_from_dispatch(&m.ffi_name, m, lib))
         .collect();
     emit_extern_fns(out, &fns, ti.cfg.as_ref(), symbols);
 

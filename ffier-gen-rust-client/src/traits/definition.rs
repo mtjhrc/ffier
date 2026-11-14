@@ -89,7 +89,7 @@ pub(crate) fn emit_implementable_trait(
         tr.name, tr.name
     )
     .unwrap();
-    emit_vtable_constructor(out, tr);
+    emit_vtable_constructor(out, tr, lib);
     writeln!(out, "}}").unwrap();
 
     // Self-dispatch externs for defaulted methods
@@ -101,7 +101,7 @@ pub(crate) fn emit_implementable_trait(
             if !td.has_default {
                 return None;
             }
-            Some(extern_fn_from_dispatch(&m.ffi_name, m))
+            Some(extern_fn_from_dispatch(&m.ffi_name, m, lib))
         })
         .collect();
     if !default_fns.is_empty() {

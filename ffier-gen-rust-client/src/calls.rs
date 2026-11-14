@@ -84,10 +84,11 @@ fn emit_param_pre_bindings(out: &mut String, params: &[ffier_schema::Param], ind
 /// How a safe wrapper turns the FFI result into its Rust return value.
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ReturnPolicy {
-    /// Set for builder methods returning `Self` (`-> Self` /
-    /// `-> Result<Self, E>`). The bridge writes the new handle back instead
-    /// of returning a value, so the wrapper rebuilds `Self` itself.
-    pub(crate) builder: Option<BuilderReceiver>,
+    /// How `Self` is rebuilt when the return [replaces the
+    /// receiver](ffier_schema::Return::replaces_self) (`-> Self` /
+    /// `-> Result<Self, E>`): the bridge writes the new handle back instead of
+    /// returning a value. `None` where no receiver can be replaced.
+    pub(crate) replaces_self: Option<SelfReceiver>,
     /// Surface `&Handle` returns as the owned wrapper via
     /// `FfiHandle::__from_raw`. Only inherent methods set this, because
     /// `build_wrapper_return_type` rewrites their signature to the owned
@@ -95,23 +96,24 @@ pub(crate) struct ReturnPolicy {
     pub(crate) own_borrowed_handles: bool,
 }
 
-/// Receiver of a builder method, which decides how `Self` is produced.
+/// Receiver of a method whose return replaces `self`, which decides how
+/// `Self` is produced.
 #[derive(Clone, Copy)]
-pub(crate) enum BuilderReceiver {
+pub(crate) enum SelfReceiver {
     /// `&mut self` — the handle is updated in place; return `self`.
     Mut,
     /// `self` — the bridge wrote the new handle into `__handle`.
     Value { has_lifetimes: bool },
 }
 
-impl BuilderReceiver {
+impl SelfReceiver {
     fn self_expr(self) -> &'static str {
         match self {
-            BuilderReceiver::Mut => "self",
-            BuilderReceiver::Value {
+            SelfReceiver::Mut => "self",
+            SelfReceiver::Value {
                 has_lifetimes: true,
             } => "Self(__handle, std::marker::PhantomData)",
-            BuilderReceiver::Value {
+            SelfReceiver::Value {
                 has_lifetimes: false,
             } => "Self(__handle)",
         }
@@ -183,11 +185,11 @@ fn emit_ffi_call_return(
             )
         }
     };
-    let builder = policy
-        .builder
-        .filter(|_| ret.is_builder_self(&lib.type_registry));
+    let replaced_self = policy
+        .replaces_self
+        .filter(|_| ret.replaces_self(&lib.type_registry));
 
-    match (ret, builder) {
+    match (ret, replaced_self) {
         (Return::Value(_), Some(b)) => {
             writeln!(out, "{i}unsafe {{ {} }};", call(&[])).unwrap();
             writeln!(out, "{i}{}", b.self_expr()).unwrap();

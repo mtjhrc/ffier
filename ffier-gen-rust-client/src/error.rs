@@ -412,12 +412,12 @@ fn find_push_str_trait(lib: &Library) -> PushStrTraitInfo {
 pub(crate) fn emit_error_trait_externs(
     out: &mut String,
     tr: &ImplementableTrait,
-    _lib: &Library,
+    lib: &Library,
     symbols: &mut Vec<SymbolInfo>,
 ) {
     let mut fns = Vec::new();
     for m in &tr.methods {
-        fns.push(extern_fn_from_dispatch(&m.ffi_name, m));
+        fns.push(extern_fn_from_dispatch(&m.ffi_name, m, lib));
     }
     // Destroy
     fns.push(extern_fn(

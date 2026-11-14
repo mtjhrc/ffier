@@ -16,8 +16,8 @@ mod cfg;
 pub use cfg::UnspecifiedFeatures;
 
 use ffier_schema::{
-    Cfg, EnumType, ErrorType, ExportedType, FreeFunction, ImplementableTrait, Library, Method,
-    Param, ParamType, Receiver, Return, TraitImpl,
+    AbiOutParam, AbiReturn, Cfg, EnumType, ErrorType, ExportedType, FreeFunction,
+    ImplementableTrait, Library, Method, Param, ParamType, Receiver, Return, TraitImpl,
 };
 
 /// Options controlling C header generation.
@@ -553,10 +553,7 @@ fn emit_vtable_section(
                 cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
                     // Build the function pointer signature
                     let mut params = vec!["void* self_data".to_string()];
-                    format_c_params(&m.params, lib, &mut params);
-
-                    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, false, lib);
-                    params.extend(extra_params);
+                    let ret_type = push_params_and_return(&m.params, &m.ret, lib, &mut params);
 
                     let params_str = params.join(", ");
                     out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
@@ -610,7 +607,7 @@ fn emit_type_section(
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc);
             let (ret_type, params_str) =
-                build_c_declaration_parts(c_name, m, ty.is_builder_type, lib);
+                build_c_declaration_parts(c_name, m, ty.replaces_self_by_value, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
     }
@@ -698,10 +695,7 @@ fn emit_free_functions(
             emit_doc_comment(out, &f.doc);
 
             let mut params: Vec<String> = Vec::new();
-            format_c_params(&f.params, lib, &mut params);
-
-            let (ret_type, extra_params) = format_return_and_out_params(&f.ret, false, lib);
-            params.extend(extra_params);
+            let ret_type = push_params_and_return(&f.params, &f.ret, lib, &mut params);
 
             let params_str = if params.is_empty() {
                 "void".to_string()
@@ -841,7 +835,7 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
 fn build_c_declaration_parts(
     handle_c_name: &str,
     m: &Method,
-    is_builder_type: bool,
+    replaces_self_by_value: bool,
     lib: &Library,
 ) -> (String, String) {
     let mut params: Vec<String> = Vec::new();
@@ -849,7 +843,7 @@ fn build_c_declaration_parts(
     // Handle param (self)
     match m.receiver {
         Receiver::None => {}
-        Receiver::Value if is_builder_type => {
+        Receiver::Value if replaces_self_by_value => {
             params.push(format!("{handle_c_name}* handle"));
         }
         Receiver::Ref | Receiver::Mut | Receiver::Value => {
@@ -857,11 +851,7 @@ fn build_c_declaration_parts(
         }
     }
 
-    format_c_params(&m.params, lib, &mut params);
-
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
-    params.extend(extra_params);
+    let ret_type = push_params_and_return(&m.params, &m.ret, lib, &mut params);
 
     let params_str = params.join(", ");
     (ret_type, params_str)
@@ -875,11 +865,7 @@ fn build_dispatch_declaration_parts(
     lib: &Library,
 ) -> (String, String) {
     let mut params = vec![format!("{handle_c_name} handle")];
-    format_c_params(&m.params, lib, &mut params);
-
-    let is_builder = m.ret.is_builder_self(&lib.type_registry);
-    let (ret_type, extra_params) = format_return_and_out_params(&m.ret, is_builder, lib);
-    params.extend(extra_params);
+    let ret_type = push_params_and_return(&m.params, &m.ret, lib, &mut params);
 
     let params_str = params.join(", ");
     (ret_type, params_str)
@@ -899,66 +885,44 @@ fn write_decl(out: &mut String, ret_type: &str, fn_name: &str, params_str: &str,
     }
 }
 
-/// Compute the C return type and any extra out-parameters for a method.
-/// Returns `(c_return_type, extra_params_to_append)`.
-fn format_return_and_out_params(
+/// Append a function's C params and return out-params to `out` (after any
+/// receiver already there) and return the C return type.
+fn push_params_and_return(
+    params: &[Param],
     ret: &Return,
-    is_builder: bool,
     lib: &Library,
-) -> (String, Vec<String>) {
-    let result_c = || blessed_c_type(lib, ffier_schema::Blessing::Result);
-    match ret {
-        Return::Void => ("void".to_string(), vec![]),
-        Return::Value(_) if is_builder => ("void".to_string(), vec![]),
-        Return::Value(type_ref) => (lib.c_type_of_ref(type_ref), vec![]),
-        Return::OptionalValue(type_ref) => (
-            "bool".to_string(),
-            vec![format!("{}* result", lib.c_type_of_ref(type_ref))],
-        ),
-        Return::Result {
-            ok, c_convention, ..
-        } => {
-            let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
-            use ffier_schema::CResultConvention;
-            match c_convention {
-                CResultConvention::HandleOrNull => {
-                    // GLib-style: return handle pointer, NULL on error
-                    let ok_ref = ok.as_ref().expect("HandleOrNull requires an ok type");
-                    (
-                        lib.c_type_of_ref(ok_ref),
-                        vec![format!("{error_c}* err_out")],
-                    )
-                }
-                CResultConvention::OutParam => match ok {
-                    None | Some(_) if is_builder => {
-                        (result_c(), vec![format!("{error_c}* err_out")])
-                    }
-                    Some(ok_ref) => {
-                        let c_type = lib.c_type_of_ref(ok_ref);
-                        (
-                            result_c(),
-                            vec![format!("{}* result", c_type), format!("{error_c}* err_out")],
-                        )
-                    }
-                    None => (result_c(), vec![format!("{error_c}* err_out")]),
-                },
-                CResultConvention::OptionalValueOutParam => {
-                    let ok_ref = ok
-                        .as_ref()
-                        .expect("OptionalValueOutParam requires an ok type");
-                    let c_type = lib.c_type_of_ref(ok_ref);
-                    (
-                        result_c(),
-                        vec![
-                            "bool* result_is_some".to_string(),
-                            format!("{c_type}* result"),
-                            format!("{error_c}* err_out"),
-                        ],
-                    )
-                }
+    out: &mut Vec<String>,
+) -> String {
+    format_c_params(params, lib, out);
+    let (ret_type, extra_params) = format_return_and_out_params(ret, lib);
+    out.extend(extra_params);
+    ret_type
+}
+
+/// Compute the C return type and any extra out-parameters for a method,
+/// following [`Return::c_abi`]. Returns `(c_return_type, extra_params_to_append)`.
+fn format_return_and_out_params(ret: &Return, lib: &Library) -> (String, Vec<String>) {
+    let (abi_ret, out_params) = ret.c_abi(&lib.type_registry);
+    let out_params = out_params
+        .iter()
+        .map(|p| match p {
+            AbiOutParam::Result(tr) => format!("{}* result", lib.c_type_of_ref(tr)),
+            AbiOutParam::ResultIsSome => "bool* result_is_some".to_string(),
+            AbiOutParam::ErrOut => {
+                let error_c = blessed_c_type(lib, ffier_schema::Blessing::ErrorTrait);
+                format!("{error_c}* err_out")
             }
-        }
-    }
+        })
+        .collect();
+    let ret_type = match abi_ret {
+        AbiReturn::Void => "void".to_string(),
+        AbiReturn::Value(tr) => lib.c_type_of_ref(tr),
+        AbiReturn::Bool => "bool".to_string(),
+        // GLib-style: return the handle pointer, NULL on error.
+        AbiReturn::Handle(ok) => lib.c_type_of_ref(ok.expect("HandleOrNull requires an ok type")),
+        AbiReturn::FfierResult => blessed_c_type(lib, ffier_schema::Blessing::Result),
+    };
+    (ret_type, out_params)
 }
 
 fn emit_section_header(out: &mut String, name: &str) {

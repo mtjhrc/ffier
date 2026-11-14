@@ -449,10 +449,10 @@ pub struct ExportedType {
     pub name: String,
     /// FFI destroy function name (e.g. `"ft_widget_destroy"`).
     pub destroy_ffi_name: String,
-    /// Whether this type uses by-value self (builder pattern). When true,
-    /// by-value self methods in C take a pointer-to-handle so the bridge
-    /// can update the handle in place.
-    pub is_builder_type: bool,
+    /// Whether some by-value `self` method returns `Self`, replacing the
+    /// receiver. When true, every by-value `self` method takes a pointer to
+    /// the handle so the bridge can write the new handle back in place.
+    pub replaces_self_by_value: bool,
     /// Compiler-checked guarantees declared on the inherent export.
     #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
     pub thread_safety: ThreadSafety,
@@ -624,7 +624,47 @@ pub enum CResultConvention {
     OptionalValueOutParam,
 }
 
-/// Well-known type name for builder methods that return `Self`.
+/// How a [`Return`] travels through the C ABI, independent of the language
+/// a generator renders it in. Produced by [`Return::c_abi`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiReturn<'a> {
+    /// No return value.
+    Void,
+    /// The value's C representation.
+    Value(&'a TypeRef),
+    /// Presence flag of an optional value; the value goes through
+    /// [`AbiOutParam::Result`].
+    Bool,
+    /// The ok handle itself, null on error ([`CResultConvention::HandleOrNull`]).
+    Handle(Option<&'a TypeRef>),
+    /// Packed `FfierResult` status code.
+    FfierResult,
+}
+
+/// An out-parameter appended after a function's regular parameters, in ABI
+/// order. Produced by [`Return::c_abi`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AbiOutParam {
+    /// `result`: pointer to the C representation of the given type.
+    Result(TypeRef),
+    /// `result_is_some`: pointer to a `bool` presence flag.
+    ResultIsSome,
+    /// `err_out`: pointer to the error handle.
+    ErrOut,
+}
+
+impl AbiOutParam {
+    /// Parameter name used by the bridge and every generator.
+    pub fn name(&self) -> &'static str {
+        match self {
+            AbiOutParam::Result(_) => "result",
+            AbiOutParam::ResultIsSome => "result_is_some",
+            AbiOutParam::ErrOut => "err_out",
+        }
+    }
+}
+
+/// Well-known type name for a returned `Self` that replaces the receiver.
 pub const SELF_TYPE: &str = "Self";
 
 /// Well-known type name for `*mut core::ffi::c_void` (opaque mutable pointer).
@@ -644,10 +684,62 @@ fn is_replaces_self(type_name: &str, registry: &BTreeMap<String, TypeEntry>) -> 
 }
 
 impl Return {
-    /// True if this return type represents a builder pattern (`-> Self` or
-    /// `-> Result<Self, E>`), detected via `Blessing::ReplacesSelf` in the
-    /// type registry.
-    pub fn is_builder_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
+    /// Lower this return to its C ABI shape: the C return value and the
+    /// out-parameters appended after the regular params.
+    ///
+    /// A returned `Self` that [replaces the receiver](Self::replaces_self) is
+    /// written back through the receiver's handle instead of being returned.
+    pub fn c_abi(
+        &self,
+        registry: &BTreeMap<String, TypeEntry>,
+    ) -> (AbiReturn<'_>, Vec<AbiOutParam>) {
+        let replaces_self = self.replaces_self(registry);
+        match self {
+            Return::Void => (AbiReturn::Void, vec![]),
+            Return::Value(_) if replaces_self => (AbiReturn::Void, vec![]),
+            Return::Value(tr) => (AbiReturn::Value(tr), vec![]),
+            // The schema marks inline optional values `optional`, but the
+            // out-param holds a bare `T`.
+            Return::OptionalValue(tr) => (
+                AbiReturn::Bool,
+                vec![AbiOutParam::Result(tr.without_optional())],
+            ),
+            Return::Result {
+                ok, c_convention, ..
+            } => match c_convention {
+                CResultConvention::HandleOrNull => {
+                    (AbiReturn::Handle(ok.as_ref()), vec![AbiOutParam::ErrOut])
+                }
+                CResultConvention::OutParam => {
+                    let mut out = Vec::new();
+                    if let Some(tr) = ok.as_ref().filter(|_| !replaces_self) {
+                        out.push(AbiOutParam::Result(tr.clone()));
+                    }
+                    out.push(AbiOutParam::ErrOut);
+                    (AbiReturn::FfierResult, out)
+                }
+                CResultConvention::OptionalValueOutParam => {
+                    let tr = ok
+                        .as_ref()
+                        .expect("OptionalValueOutParam requires an ok type");
+                    (
+                        AbiReturn::FfierResult,
+                        vec![
+                            AbiOutParam::ResultIsSome,
+                            AbiOutParam::Result(tr.without_optional()),
+                            AbiOutParam::ErrOut,
+                        ],
+                    )
+                }
+            },
+        }
+    }
+
+    /// True if this returns `Self` (`-> Self` or `-> Result<Self, E>`) that
+    /// replaces the receiver, detected via `Blessing::ReplacesSelf` in the
+    /// type registry. The new value is written back through the receiver's
+    /// handle rather than returned at the C level.
+    pub fn replaces_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
         match self {
             Return::Value(tr) => is_replaces_self(&tr.type_name, registry),
             Return::Result { ok: Some(tr), .. } => is_replaces_self(&tr.type_name, registry),
