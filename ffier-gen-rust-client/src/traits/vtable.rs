@@ -175,21 +175,25 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                     ParamType::ImplTrait { .. } => {
                         call_args.push(p.name.clone());
                     }
-                    ParamType::Slice { element, .. } => {
+                    ParamType::Slice { element, c_params } => {
+                        // The trampoline params are named after the schema's
+                        // C params (see `abi::push_extern_params`).
+                        let [ptr, len] = c_params.as_slice() else {
+                            panic!("slice param `{}` must expand to pointer + length", p.name);
+                        };
+                        let (ptr, len) = (&ptr.name, &len.name);
                         let slice_name = format!("__slice_{}", p.name);
+                        let elem_ty = element.to_rust_type();
                         if element.ref_kind != ffier_schema::RefKind::None {
                             // Ref elements: reconstruct Vec<&T> from C repr array.
-                            let elem_ty = element.to_rust_type();
                             writeln!(out,
-                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({}, {}_len) }}.iter().map(|v| unsafe {{ <{elem_ty} as FfiType>::from_c(*v) }}).collect();",
-                                p.name, p.name
+                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }}.iter().map(|v| unsafe {{ <{elem_ty} as FfiType>::from_c(*v) }}).collect();",
                             ).unwrap();
                             call_args.push(format!("&{slice_name}"));
                         } else {
                             // Non-ref elements (primitives): from_raw_parts gives &[T] directly.
                             writeln!(out,
-                                "                    let {slice_name} = if {}_len == 0 {{ &[] as &[{}] }} else {{ unsafe {{ core::slice::from_raw_parts({}, {}_len) }} }};",
-                                p.name, element.to_rust_type(), p.name, p.name
+                                "                    let {slice_name} = if {len} == 0 {{ &[] as &[{elem_ty}] }} else {{ unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }} }};",
                             ).unwrap();
                             call_args.push(slice_name);
                         }
