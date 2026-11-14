@@ -8,6 +8,7 @@ mod alias;
 mod attrs;
 mod bitflags;
 mod bridge;
+mod c_abi;
 mod cfg;
 mod contracts;
 mod error;
