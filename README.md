@@ -235,7 +235,8 @@ anything else. Validation may be added in a later version.
   explicitly declared, compiler-verified lifetime variance. Trait default
   helpers preserve receiver mutability and the receiver tie of elided output
   lifetimes.
-- `&[&str]` and `&[&T]` slice parameters
+- `&[&str]` and primitive slice parameters (`&[u8]`, `&[i32]`, ...). Slices
+  of handles are rejected at compile time.
 - File descriptor passing (`OwnedFd`, `BorrowedFd`)
 - `#[ffier(skip)]` marks a Rust-only method on a `no_vtable` callback trait:
   it needs no vtable slot index and keeps its native signature and default
