@@ -89,6 +89,12 @@ enum ParamKind {
 
 enum ReturnKind {
     Void,
+    /// Never returns normally: `-> !` or `#[ffier(never_type = …)]`.
+    Never,
+    /// Returns only on error: `Result<Never, E>`.
+    ResultNeverOk {
+        err_ident: String,
+    },
     Value(TypePair),
     Result {
         ok: Option<TypePair>,
@@ -485,6 +491,32 @@ pub(crate) fn parse_method_sig(
         false
     };
 
+    let never_type = crate::attrs::parse_ffier_method_attrs(attrs)?.never_type;
+    let never = never_type.is_some();
+    if never && (replaces_self || foreign_return.is_some()) {
+        return Err(syn::Error::new_spanned(
+            &sig.output,
+            "#[ffier(never_type = ...)] cannot be combined with a returned Self or a foreign return",
+        ));
+    }
+    if never && matches!(sig.output, ReturnType::Default) {
+        return Err(syn::Error::new_spanned(
+            sig,
+            "#[ffier(never_type = ...)] requires an explicit return type",
+        ));
+    }
+    // Both types must resolve to `ffier::Never`. Rust checks their identity;
+    // equivalent imported and qualified alias paths need not share a spelling.
+    if let Some(never_type) = &never_type
+        && let ReturnType::Type(_, ty) = &sig.output
+    {
+        let target = extract_result_types(ty)
+            .map(|(ok, _)| ok)
+            .unwrap_or_else(|| (**ty).clone());
+        ctx.require_ffier_never(&syn::parse_quote!(#never_type));
+        ctx.require_ffier_never(&target);
+    }
+
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
         ReturnType::Type(_, ty) => {
@@ -499,7 +531,15 @@ pub(crate) fn parse_method_sig(
                 None => (**ty).clone(),
             };
 
-            if replaces_self && extract_result_types(&ty_bridge).is_none() {
+            if let Some((ok, err)) = extract_result_types(&ty_bridge)
+                && (never || matches!(ok, Type::Never(_)))
+            {
+                ReturnKind::ResultNeverOk {
+                    err_ident: type_ident_name(&err),
+                }
+            } else if never || matches!(ty_bridge, Type::Never(_)) {
+                ReturnKind::Never
+            } else if replaces_self && extract_result_types(&ty_bridge).is_none() {
                 // A returned Self replacing the receiver → void in C
                 ReturnKind::Void
             } else if is_handle_slice(&ty_bridge) {
@@ -705,6 +745,10 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
 
     let ret_tokens = match &m.ret {
         ReturnKind::Void => quote! { void },
+        ReturnKind::Never => quote! { never },
+        ReturnKind::ResultNeverOk { err_ident } => {
+            quote! { result_never_ok(err_ident = #err_ident,) }
+        }
         ReturnKind::Value(tp) => {
             let fields = tp.meta_tokens();
             quote! { value(#fields) }

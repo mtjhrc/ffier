@@ -534,6 +534,45 @@ pub const fn extract_type_tag(tag: u32) -> u32 {
 // FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
 // ---------------------------------------------------------------------------
 
+/// The success type of an operation that never succeeds normally.
+///
+/// It is `!` where the compiler supports it (Rust 1.100 and later) and `()`
+/// before. A `#[ffier(never_type = ...)]` alias must be this same type, so a
+/// library defines it the same way:
+///
+/// ```ignore
+/// #[rustversion::since(1.100)]
+/// pub type Never = !;
+/// #[rustversion::before(1.100)]
+/// pub type Never = ();
+/// ```
+///
+/// With `!`, Rust rejects a success value and a trait impl that declares
+/// one. With `()`, the bridge and generated clients abort on success.
+#[rustversion::since(1.100)]
+pub type Never = !;
+/// The success type of an operation that never succeeds normally.
+///
+/// It is `!` from Rust 1.100 and `()` on this older compiler. See the
+/// Rust 1.100 definition.
+#[rustversion::before(1.100)]
+pub type Never = ();
+
+/// Implemented only by [`Never`]; generated code requires it of each
+/// `#[ffier(never_type = ...)]` alias.
+#[doc(hidden)]
+#[diagnostic::on_unimplemented(
+    message = "`never_type` `{Self}` is not `ffier::Never`",
+    label = "must be `!` on Rust 1.100 and later and `()` before, like `ffier::Never`"
+)]
+pub trait IsFfierNever: never_sealed::Sealed {}
+impl IsFfierNever for Never {}
+
+mod never_sealed {
+    pub trait Sealed {}
+    impl Sealed for super::Never {}
+}
+
 /// Packed error result: `0` = success, nonzero = `(type_tag << 32) | code`.
 ///
 /// Users compare against generated constants (`FT_ERROR_CALC_OVERFLOW` etc.).

@@ -371,6 +371,10 @@ pub enum MetaParamKind {
 
 pub enum MetaReturn {
     Void,
+    Never,
+    ResultNeverOk {
+        err_ident: String,
+    },
     Value(MetaTypePair),
     Result {
         ok: Option<MetaTypePair>,
@@ -1101,6 +1105,15 @@ impl syn::parse::Parse for MetaReturn {
         let kind: Ident = input.parse()?;
         match kind.to_string().as_str() {
             "void" => Ok(MetaReturn::Void),
+            "never" => Ok(MetaReturn::Never),
+            "result_never_ok" => {
+                let content;
+                syn::parenthesized!(content in input);
+                expect_key(&content, "err_ident")?;
+                let err_ident = parse_string(&content)?;
+                parse_comma(&content)?;
+                Ok(MetaReturn::ResultNeverOk { err_ident })
+            }
             "value" => {
                 let content;
                 syn::parenthesized!(content in input);

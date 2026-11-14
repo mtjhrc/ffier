@@ -30,7 +30,32 @@ pub(super) fn wrap_return(
     replaced_self: Option<&TokenStream2>,
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
+    let mut call_expr = call_expr;
     let (ok, err_ident, conv) = match classify_return(ret, rust_ret, handle_types, value_types) {
+        // The native function must not return; abort before control comes
+        // back to C if it does.
+        ReturnShape::Never => {
+            return quote! {
+                #[allow(unreachable_code)]
+                {
+                    #call_expr;
+                    std::process::abort()
+                }
+            };
+        }
+        // The native alias may be inhabited (e.g. `type Never = ()`): abort on
+        // success before anything crosses the ABI, then marshal the error like
+        // `Result<(), E>`. Matching on `.err()` avoids an `Ok` arm that is
+        // unreachable (and linted) when the alias is uninhabited.
+        ReturnShape::ResultNeverOk { err_ident } => {
+            call_expr = quote! {
+                match (#call_expr).err() {
+                    Some(__error) => Result::<(), _>::Err(__error),
+                    None => std::process::abort(),
+                }
+            };
+            (None, err_ident, ResultConv::OutParam)
+        }
         ReturnShape::Void => {
             return match replaced_self {
                 // The method returns the new Self: write its handle back.

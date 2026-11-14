@@ -556,6 +556,7 @@ fn emit_vtable_section(
                     let ret_type = push_params_and_return(&m.params, &m.ret, lib, &mut params);
 
                     let params_str = params.join(", ");
+                    emit_doc_comment(out, &[], &m.ret, "    ");
                     out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
                 });
             }
@@ -605,7 +606,7 @@ fn emit_type_section(
 
     for m in &ty.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
-            emit_doc_comment(out, &m.doc);
+            emit_doc_comment(out, &m.doc, &m.ret, "");
             let (ret_type, params_str) =
                 build_c_declaration_parts(c_name, m, ty.replaces_self_by_value, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
@@ -637,6 +638,7 @@ fn emit_trait_impl_section(
 
     for m in &ti.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
+            emit_doc_comment(out, &[], &m.ret, "");
             let (ret_type, params_str) = build_dispatch_declaration_parts(&struct_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -661,7 +663,7 @@ fn emit_dispatch_section(
     // Only emit dispatch for own methods (not supertrait methods)
     for m in tr.methods.iter().take(tr.own_method_count) {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
-            emit_doc_comment(out, &m.doc);
+            emit_doc_comment(out, &m.doc, &m.ret, "");
             let (ret_type, params_str) = build_dispatch_declaration_parts(handle_c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
@@ -692,7 +694,7 @@ fn emit_free_functions(
 
     for f in functions {
         cfg::block(out, assumptions, f.cfg.as_ref(), |out| {
-            emit_doc_comment(out, &f.doc);
+            emit_doc_comment(out, &f.doc, &f.ret, "");
 
             let mut params: Vec<String> = Vec::new();
             let ret_type = push_params_and_return(&f.params, &f.ret, lib, &mut params);
@@ -930,18 +932,26 @@ fn emit_section_header(out: &mut String, name: &str) {
     out.push_str(&format!("\n/* {name} {dashes} */\n\n"));
 }
 
-fn emit_doc_comment(out: &mut String, doc: &[String]) {
-    if doc.is_empty() {
+/// Include return contracts that the C signature cannot express.
+fn emit_doc_comment(out: &mut String, doc: &[String], ret: &Return, indent: &str) {
+    let contract = match ret {
+        Return::Never => Some(" Never returns."),
+        Return::ResultNeverOk { .. } => Some(" Never returns unless an error has occurred."),
+        _ => None,
+    };
+    let line_count = doc.len() + usize::from(contract.is_some());
+    let mut lines = doc.iter().map(String::as_str).chain(contract);
+    if line_count == 0 {
         return;
     }
-    if doc.len() == 1 {
-        out.push_str(&format!("/**{} */\n", doc[0]));
+    if line_count == 1 {
+        out.push_str(&format!("{indent}/**{} */\n", lines.next().unwrap()));
     } else {
-        out.push_str("/**\n");
-        for line in doc {
-            out.push_str(&format!(" *{line}\n"));
+        out.push_str(&format!("{indent}/**\n"));
+        for line in lines {
+            out.push_str(&format!("{indent} *{line}\n"));
         }
-        out.push_str(" */\n");
+        out.push_str(&format!("{indent} */\n"));
     }
 }
 

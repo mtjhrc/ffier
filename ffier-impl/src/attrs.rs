@@ -157,6 +157,9 @@ pub(crate) struct FfierMethodAttrs {
     pub(crate) raw_handle: bool,
     pub(crate) dispatch: Option<String>,
     pub(crate) skip: bool,
+    /// The alias `#[ffier(never_type = …)]` names as uninhabited at the FFI
+    /// boundary: the direct return or `Result` success type never occurs.
+    pub(crate) never_type: Option<syn::Path>,
     /// Absolute foreign ffier library crate path for the return type.
     pub(crate) foreign_return: Option<syn::Path>,
     /// C typedef name for the foreign return handle type.
@@ -171,6 +174,7 @@ pub(crate) fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<
         raw_handle: false,
         dispatch: None,
         skip: false,
+        never_type: None,
         foreign_return: None,
         foreign_return_c_name: None,
     };
@@ -200,6 +204,8 @@ pub(crate) fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<
                 result.dispatch = Some(mode.to_string());
             } else if meta.path.is_ident("skip") {
                 result.skip = true;
+            } else if meta.path.is_ident("never_type") {
+                result.never_type = Some(meta.value()?.parse()?);
             } else if meta.path.is_ident("foreign_return") {
                 result.foreign_return = Some(parse_foreign_crate_path(meta.value()?)?);
             } else if meta.path.is_ident("c_name") {
