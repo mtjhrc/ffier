@@ -1,6 +1,6 @@
 use ffier_schema::Cfg;
 use proc_macro2::TokenStream;
-use quote::quote;
+use quote::{ToTokens, quote};
 use syn::{Meta, Token, ext::IdentExt, parse::Parser, punctuated::Punctuated};
 
 pub fn from_meta(meta: &Meta) -> syn::Result<Cfg> {
@@ -101,10 +101,35 @@ pub fn normalize_tokens(tokens: &TokenStream) -> syn::Result<TokenStream> {
     Ok(predicate_tokens(&from_tokens(tokens)?))
 }
 
+/// Extract `#[cfg(...)]` predicates from a list of attributes.
+/// Only matches direct `#[cfg(...)]` attributes — does not unwrap
+/// `#[cfg_attr(PRED, ...)]`.
+/// Returns the predicates (e.g. `feature = "x"`) as `syn::Meta` values.
+pub(crate) fn extract_cfg_predicates(attrs: &[syn::Attribute]) -> syn::Result<Vec<syn::Meta>> {
+    attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("cfg"))
+        .map(|attr| {
+            let predicate = attr.parse_args_with(parse_meta)?;
+            from_meta(&predicate)?;
+            Ok(predicate)
+        })
+        .collect()
+}
+
+/// Combine cfg predicates into a single token stream.
+/// Multiple predicates are combined with `all(...)`.
+pub(crate) fn combine_cfg_predicates(predicates: &[syn::Meta]) -> Option<proc_macro2::TokenStream> {
+    match predicates {
+        [] => None,
+        [p] => Some(p.to_token_stream()),
+        preds => Some(quote! { all(#(#preds),*) }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quote::ToTokens;
     use serde_json::json;
 
     #[test]
@@ -201,10 +226,10 @@ mod tests {
     #[test]
     fn metadata_capture_accepts_root_trailing_comma() {
         let attrs: Vec<syn::Attribute> = vec![syn::parse_quote!(#[cfg(unix,)])];
-        let predicates = crate::extract_cfg_predicates(&attrs).unwrap();
+        let predicates = extract_cfg_predicates(&attrs).unwrap();
         assert_eq!(predicates.len(), 1);
         assert_eq!(
-            from_tokens(&crate::combine_cfg_predicates(&predicates).unwrap()).unwrap(),
+            from_tokens(&combine_cfg_predicates(&predicates).unwrap()).unwrap(),
             Cfg::Unix
         );
         assert_eq!(
