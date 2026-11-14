@@ -6,7 +6,7 @@ use ffier_schema::{Library, Method, ParamType, Receiver, Return};
 
 /// Check if a Return is a borrowed handle: `&HandleType` or `Result<&HandleType, E>`.
 /// Returns the bare type name (e.g. "Gadget") if so.
-pub(super) fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a str> {
+pub(crate) fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a str> {
     let tr = match ret {
         Return::Value(tr) => tr,
         Return::Result { ok: Some(tr), .. } => tr,
@@ -55,11 +55,22 @@ pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
         };
     }
 
-    match &m.ret {
+    plain_return_type(&m.ret, lib)
+}
+
+/// ` -> T` for a wrapper returning the schema's Rust type, or empty for void.
+pub(super) fn plain_return_type(ret: &Return, lib: &Library) -> String {
+    match ret {
         Return::Void => String::new(),
-        Return::Value(_) | Return::OptionalValue(_) | Return::Result { .. } => {
-            format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
-        }
+        _ => format!(" -> {}", ret.to_rust_type(&lib.type_registry)),
+    }
+}
+
+/// Emit `#[doc = "..."]` attributes, escaping each line for a string literal.
+pub(super) fn emit_doc_attrs(out: &mut String, doc: &[String], indent: &str) {
+    for line in doc {
+        let escaped = line.replace('\\', "\\\\").replace('"', "\\\"");
+        writeln!(out, "{indent}#[doc = \"{escaped}\"]").unwrap();
     }
 }
 
@@ -69,10 +80,7 @@ pub(super) fn build_trait_method_sig(m: &Method, lib: &Library) -> String {
     let params: Vec<String> = m.params.iter().map(format_param_sig).collect();
     let params_str = params.join(", ");
 
-    let ret = match &m.ret {
-        Return::Void => String::new(),
-        _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
-    };
+    let ret = plain_return_type(&m.ret, lib);
 
     let lifetimes = lifetime_generics(&m.method_lifetimes);
     let attr = if m.receiver_lifetime.is_some() {

@@ -271,6 +271,14 @@ pub enum RefKind {
 }
 
 impl TypeRef {
+    /// The same type reference with the `optional` marker cleared.
+    pub fn without_optional(&self) -> TypeRef {
+        TypeRef {
+            optional: false,
+            ..self.clone()
+        }
+    }
+
     /// Reconstruct the Rust type syntax from this reference.
     /// E.g. `TypeRef { type: "Widget", ref_kind: Shared, ref_lifetime: Some("a") }` → `&'a Widget`
     /// E.g. `TypeRef { type: "View", type_args: ["a"] }` → `View<'a>`
