@@ -13,7 +13,7 @@ mod tests {
     use super::api::{
         self, Config, Gadget, Mixer, OptionalFlags, OptionalMode, OptionalSample, OptionalWidget,
         OptionalWorker, View, Widget, optional_apply, optional_merge_flags, optional_mode_name,
-        optional_sample, sum_gadget_values,
+        optional_sample,
     };
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
@@ -225,28 +225,6 @@ mod tests {
         let w = make_widget();
         assert_eq!(w.sum_values(&[10, 20, 30]), 60);
         assert_eq!(w.sum_values(&[]), 0);
-    }
-
-    #[test]
-    fn test_handle_slice_param() {
-        let mut w = make_widget();
-        w.set_count(5);
-        let g1 = w.create_gadget();
-        let g2 = w.create_gadget();
-        w.set_count(7);
-        let g3 = w.create_gadget();
-        assert_eq!(w.sum_gadgets(&[&g1, &g2, &g3]), 17);
-        assert_eq!(w.sum_gadgets(&[]), 0);
-    }
-
-    #[test]
-    fn test_handle_slice_param_free_fn() {
-        let mut w = make_widget();
-        w.set_count(3);
-        let g1 = w.create_gadget();
-        w.set_count(4);
-        let g2 = w.create_gadget();
-        assert_eq!(sum_gadget_values(&[&g1, &g2]), 7);
     }
 
     #[test]
@@ -549,44 +527,5 @@ mod tests {
         let w = make_widget();
         let result = w.maybe_dup_fd(None);
         assert!(result.unwrap().is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // ForeignSlice / &[T] handle array returns
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_gadgets_slice_len() {
-        let w = make_widget();
-        let gadgets = w.gadgets();
-        assert_eq!(gadgets.len(), 2);
-        assert!(!gadgets.is_empty());
-    }
-
-    #[test]
-    fn test_gadgets_slice_index() {
-        let w = make_widget();
-        let gadgets = w.gadgets();
-        assert_eq!(gadgets[0].get(), 10);
-        assert_eq!(gadgets[1].get(), 20);
-    }
-
-    #[test]
-    fn test_gadgets_slice_iter() {
-        let w = make_widget();
-        let gadgets = w.gadgets();
-        let sum: i32 = gadgets.iter().map(|g| g.get()).sum();
-        assert_eq!(sum, 30);
-    }
-
-    #[test]
-    fn test_gadgets_slice_for_loop() {
-        let w = make_widget();
-        let gadgets = w.gadgets();
-        let mut values = Vec::new();
-        for g in gadgets.iter() {
-            values.push(g.get());
-        }
-        assert_eq!(values, vec![10, 20]);
     }
 }

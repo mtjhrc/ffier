@@ -6,7 +6,6 @@ pub use ffier_rt::*;
 // re-exports them so generated code keeps naming `ffier::`.
 pub use ffier_bridge::{
     ffier_handle_consume, ffier_handle_drop, ffier_handle_new, ffier_handle_new_borrowed,
-    ffier_object_array_free,
 };
 
 // Re-export built-in traits at the crate root so `ffier::Error`,

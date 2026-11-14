@@ -148,7 +148,6 @@ pub struct Widget {
     active: bool,
     tags: String,
     gadget: Gadget,
-    gadgets: Vec<Gadget>,
 }
 
 #[cfg_attr(feature = "ffi", ffier::export(send, sync))]
@@ -161,7 +160,6 @@ impl Widget {
             active: true,
             tags: String::new(),
             gadget: Gadget { value: 42 },
-            gadgets: vec![Gadget { value: 10 }, Gadget { value: 20 }],
         }
     }
 
@@ -170,7 +168,6 @@ impl Widget {
         Widget {
             count: 0,
             name: name.to_owned(),
-            gadgets: vec![Gadget { value: 10 }, Gadget { value: 20 }],
             active: true,
             tags: String::new(),
             gadget: Gadget { value: 42 },
@@ -382,11 +379,6 @@ impl Widget {
         &self.gadget
     }
 
-    /// Return a borrowed slice of the widget's gadgets (&[T] pattern).
-    pub fn gadgets(&self) -> &[Gadget] {
-        &self.gadgets
-    }
-
     /// Try to create a gadget; fails if ok is false.
     pub fn try_create_gadget(&self, ok: bool) -> Result<Gadget, TestError> {
         if ok {
@@ -419,11 +411,6 @@ impl Widget {
     /// Add a permission flag to the widget's permissions and return the result.
     pub fn add_permission(&self, base: Permissions, flag: Permissions) -> Permissions {
         base | flag
-    }
-
-    /// Sum the values of a slice of gadgets.
-    pub fn sum_gadgets(&self, gadgets: &[&Gadget]) -> i32 {
-        gadgets.iter().map(|g| g.value).sum()
     }
 
     /// Sum a slice of u32 values.
@@ -1556,12 +1543,6 @@ pub fn log_level_is_enabled(level: LogLevel) -> bool {
 }
 
 #[cfg_attr(feature = "ffi", ffier::export)]
-/// Count the number of gadgets in a slice and return the sum of their values.
-pub fn sum_gadget_values(gadgets: &[&Gadget]) -> i32 {
-    gadgets.iter().map(|g| g.value).sum()
-}
-
-#[cfg_attr(feature = "ffi", ffier::export)]
 /// Read a value struct passed inline.
 pub fn event_sequence(event: InputEvent) -> u32 {
     event.sequence
@@ -2119,7 +2100,6 @@ ffier::library_definition!("ft", library_tag = 1,
     fn categorizable_value,
     #[cfg(unix)]
     fn clone_fd,
-    fn sum_gadget_values,
     fn event_sequence,
     fn event_payload_code,
     fn event_bump_payload_code,
@@ -3614,61 +3594,6 @@ mod tests {
     }
 
     #[test]
-    fn manual_object_array_borrow_chain() {
-        unsafe {
-            // Create a widget that owns gadgets, get the array via FFI
-            let w = ft_widget_new();
-            let arr = ft_widget_gadgets(w);
-            assert_eq!(arr.len, 2);
-
-            // Get element handles from the array
-            let h0 = ffier::ffier_object_array_get(arr, 0);
-            let h1 = ffier::ffier_object_array_get(arr, 1);
-
-            // Verify the borrow chain: h0/h1 are FfierBorrowedHandle
-            // with METADATA_INDIRECT and no ffier allocation. Reading
-            // through them does ptr hop: FfierBorrowedHandle.ptr → &Gadget.
-            assert_eq!(ft_gadget_get(h0), 10);
-            assert_eq!(ft_gadget_get(h1), 20);
-
-            // Now manually construct a SECOND array reusing the same
-            // borrowed handle pointers but in reverse order — verifies
-            // the ptr hop works on manually constructed arrays too.
-            let tag = ffier::handle_type_tag(h0);
-            let meta = ffier::METADATA_INDIRECT;
-            let ptr0 = (*(h0 as *const ffier::FfierBorrowedHandle)).ptr;
-            let ptr1 = (*(h1 as *const ffier::FfierBorrowedHandle)).ptr;
-
-            let reversed: Box<[ffier::FfierBorrowedHandle]> = vec![
-                ffier::FfierBorrowedHandle {
-                    type_tag: tag,
-                    metadata: meta,
-                    ptr: ptr1,
-                },
-                ffier::FfierBorrowedHandle {
-                    type_tag: tag,
-                    metadata: meta,
-                    ptr: ptr0,
-                },
-            ]
-            .into_boxed_slice();
-            let len = reversed.len();
-            let raw = Box::into_raw(reversed) as *const ffier::FfierBorrowedHandle;
-            let arr2 = ffier::FfierObjectArray::from_raw(raw, len);
-
-            // Read reversed array — ptr hop should give 20, 10
-            let r0 = ffier::ffier_object_array_get(arr2, 0);
-            let r1 = ffier::ffier_object_array_get(arr2, 1);
-            assert_eq!(ft_gadget_get(r0), 20);
-            assert_eq!(ft_gadget_get(r1), 10);
-
-            ffier::ffier_object_array_free(arr2);
-            ffier::ffier_object_array_free(arr);
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
     fn self_dispatch_processor_process() {
         unsafe {
             let handle = make_processor_handle(ptr::null_mut());
@@ -3986,67 +3911,6 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Handle slice: &[&T] as param
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn handle_slice_param_method() {
-        unsafe {
-            let w = ft_widget_new();
-
-            // Create gadgets via widget (they have widget's count as initial value)
-            ft_widget_set_count(w, 5);
-            let g1 = ft_widget_create_gadget(w);
-            let g2 = ft_widget_create_gadget(w);
-
-            ft_widget_set_count(w, 7);
-            let g3 = ft_widget_create_gadget(w);
-
-            // sum_gadgets takes &[&Gadget]
-            let handles = [g1, g2, g3];
-            let sum = ft_widget_sum_gadgets(w, handles.as_ptr(), handles.len());
-            // g1.value=5, g2.value=5, g3.value=7 → sum=17
-            assert_eq!(sum, 17);
-
-            ft_gadget_destroy(g1);
-            ft_gadget_destroy(g2);
-            ft_gadget_destroy(g3);
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    fn handle_slice_param_free_function() {
-        unsafe {
-            let w = ft_widget_new();
-            ft_widget_set_count(w, 3);
-            let g1 = ft_widget_create_gadget(w);
-            ft_widget_set_count(w, 4);
-            let g2 = ft_widget_create_gadget(w);
-
-            let handles = [g1, g2];
-            let sum = ft_sum_gadget_values(handles.as_ptr(), handles.len());
-            // g1.value=3, g2.value=4 → sum=7
-            assert_eq!(sum, 7);
-
-            ft_gadget_destroy(g1);
-            ft_gadget_destroy(g2);
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    fn handle_slice_param_empty() {
-        unsafe {
-            let w = ft_widget_new();
-            // Empty slice
-            let sum = ft_widget_sum_gadgets(w, core::ptr::null(), 0);
-            assert_eq!(sum, 0);
-            ft_widget_destroy(w);
-        }
-    }
-
-    // -----------------------------------------------------------------------
     // Primitive slice: &[u32] as param
     // -----------------------------------------------------------------------
 
@@ -4067,29 +3931,6 @@ mod tests {
             let w = ft_widget_new();
             let sum = ft_widget_sum_values(w, core::ptr::null(), 0);
             assert_eq!(sum, 0);
-            ft_widget_destroy(w);
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // &[T] direct handle slice return
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn direct_handle_slice_return() {
-        unsafe {
-            let w = ft_widget_new();
-            let arr = ft_widget_gadgets(w);
-            assert_eq!(arr.len, 2);
-
-            // Access each element via object_array_get and read its value
-            let g0 = ffier::ffier_object_array_get(arr, 0);
-            let g1 = ffier::ffier_object_array_get(arr, 1);
-            assert_eq!(ft_gadget_get(g0), 10);
-            assert_eq!(ft_gadget_get(g1), 20);
-
-            // Free the array (does NOT destroy the gadgets — they're borrowed)
-            ffier::ffier_object_array_free(arr);
             ft_widget_destroy(w);
         }
     }
@@ -4140,34 +3981,6 @@ mod tests {
 
             // The real shell still has to be released.
             ffier::ffier_handle_drop::<Gadget>(shell);
-            ft_widget_destroy(w);
-        }
-    }
-
-    #[test]
-    fn object_array_element_is_not_individually_destroyable() {
-        // Array elements are indirect without a ffier allocation, which is what
-        // distinguishes them from an individually freeable borrowed handle.
-        unsafe {
-            let w = ft_widget_new();
-            let arr = ft_widget_gadgets(w);
-            assert_eq!(arr.len, 2);
-
-            let element = ffier::ffier_object_array_get(arr, 0);
-            let meta = ffier::handle_metadata(element);
-            assert_ne!(meta & ffier::METADATA_INDIRECT, 0);
-            assert_eq!(meta & ffier::METADATA_FFIER_ALLOCATED, 0);
-
-            // Call the runtime directly: the extern "C" wrapper cannot unwind,
-            // so a panic there would abort instead of being observable.
-            let destroyed =
-                std::panic::catch_unwind(|| ffier::ffier_handle_drop::<Gadget>(element));
-            assert!(
-                destroyed.is_err(),
-                "destroying an array element must be rejected"
-            );
-
-            ffier::ffier_object_array_free(arr);
             ft_widget_destroy(w);
         }
     }

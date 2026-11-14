@@ -26,7 +26,7 @@ mod signature;
 
 pub(super) use generate_bridge::generate_bridge;
 
-use builtins::{generate_free_object_array, generate_str_free};
+use builtins::generate_str_free;
 use dispatch::{ErrorInfo, ErrorMap, TraitMap, build_trait_map, generate_self_dispatch_bridge};
 use errors::{
     generate_error_bridge, generate_error_factory, generate_error_getters, generate_strerror_bridge,
@@ -678,9 +678,6 @@ pub(super) fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
     // Generate str_free function for dropping owned strings (Box<str>)
     let str_free_fn = generate_str_free(&first_prefix);
 
-    // Generate free_object_array function
-    let free_object_array_fn = generate_free_object_array(&first_prefix);
-
     // Emit JSON schema to the user-specified path.
     if let Err(error) = emit_json(
         &first_prefix,
@@ -714,7 +711,5 @@ pub(super) fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         #error_factory
 
         #str_free_fn
-
-        #free_object_array_fn
     }
 }

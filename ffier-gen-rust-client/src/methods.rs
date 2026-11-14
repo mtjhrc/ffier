@@ -137,14 +137,6 @@ fn emit_method_body(
         Return::Void => {
             writeln!(out, "        unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
-        Return::ObjectArray { .. } => {
-            // Object array: wrap raw FfierObjectArray in ForeignSlice.
-            writeln!(
-                out,
-                "        ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
-            )
-            .unwrap();
-        }
         Return::OptionalValue(tr) => {
             let ty_static = optional_value_out_type(tr);
             let ty = tr.to_rust_type();

@@ -16,7 +16,6 @@ pub(crate) fn push_return_and_out_params(
     match ret {
         Return::Void => String::new(),
         Return::Value(_) if is_builder => String::new(),
-        Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")
@@ -92,7 +91,6 @@ pub(crate) fn push_return_and_out_param_types(ret: &Return, out: &mut Vec<String
     use ffier_schema::CResultConvention;
     match ret {
         Return::Void => String::new(),
-        Return::ObjectArray { .. } => " -> ffier::FfierObjectArray".to_string(),
         Return::Value(tr) => {
             let ty = tr.to_rust_type_static();
             format!(" -> <{ty} as FfiType>::CRepr")

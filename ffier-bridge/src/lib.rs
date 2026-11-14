@@ -16,8 +16,8 @@
 use core::ffi::c_void;
 
 use ffier_rt::{
-    FfierBorrowedHandle, FfierHandle, FfierObjectArray, METADATA_DROP_VALUE,
-    METADATA_FFIER_ALLOCATED, METADATA_INDIRECT,
+    FfierBorrowedHandle, FfierHandle, METADATA_DROP_VALUE, METADATA_FFIER_ALLOCATED,
+    METADATA_INDIRECT,
 };
 
 /// Allocate a new owned handle on the heap and return a raw pointer.
@@ -96,8 +96,8 @@ pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
 /// Drop a handle and free its allocation.
 ///
 /// Requires [`METADATA_FFIER_ALLOCATED`]: only a handle ffier allocated may be
-/// destroyed. A caller-owned handle or an object-array element panics, because
-/// freeing either here would be unsound or would double free with the array.
+/// destroyed. A caller-owned handle panics, because freeing it here would be
+/// unsound.
 ///
 /// With the allocation bit set, [`METADATA_DROP_VALUE`] decides whether the
 /// value's destructor runs:
@@ -128,8 +128,7 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
     assert!(
         meta & METADATA_FFIER_ALLOCATED != 0,
         "cannot destroy a handle ffier did not allocate — a caller-owned \
-         handle must not be destroyed, and an object-array element is freed \
-         with the whole array"
+         handle must not be destroyed"
     );
     // Dropping an indirect handle while claiming its value must be dropped
     // would free the 16-byte handle and never reach the pointee. No producer
@@ -147,20 +146,5 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
     } else {
         // Borrowed: dealloc the 16-byte handle and leave the pointee alone.
         drop(unsafe { Box::from_raw(handle as *mut FfierBorrowedHandle) });
-    }
-}
-
-/// Free a contiguous object array allocated by this library.
-///
-/// # Safety
-/// - `arr` must have been created by this library's bridge (or be
-///   [`FfierObjectArray::EMPTY`]).
-/// - Must only be called once per array.
-#[inline]
-pub unsafe fn ffier_object_array_free(arr: FfierObjectArray) {
-    if !arr.is_empty() {
-        let raw_slice =
-            core::ptr::slice_from_raw_parts(arr.items(), arr.len()) as *mut [FfierBorrowedHandle];
-        drop(unsafe { Box::from_raw(raw_slice) });
     }
 }

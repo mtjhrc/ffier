@@ -9,8 +9,8 @@ use crate::cfg::{combine_cfg_predicates, extract_cfg_predicates};
 use crate::contracts::thread_safety_bound;
 use crate::meta::erase_lifetimes;
 use crate::types::{
-    extract_result_types, handle_slice_elem, is_handle_slice, is_self_return, is_str_slice,
-    is_unit_type, primitive_slice_elem, replace_self_type, type_ident_name,
+    extract_result_types, is_handle_slice, is_self_return, is_str_slice, is_unit_type,
+    primitive_slice_elem, replace_self_type, type_ident_name,
 };
 
 /// A bridge/rust type pair. Used for params and return types.
@@ -22,6 +22,34 @@ struct TypePair {
     foreign_crate: Option<proc_macro2::TokenStream>,
     /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
     foreign_c_name: Option<String>,
+}
+
+impl TypePair {
+    /// Metadata fields: `bridge_type = (..), rust_type = (..), [foreign_crate = (..),]
+    /// [foreign_c_name = (..),]`.
+    fn meta_tokens(&self) -> proc_macro2::TokenStream {
+        let bt = &self.bridge;
+        let rt = &self.rust;
+        let fc = self
+            .foreign_crate
+            .as_ref()
+            .map(|fc| quote! { foreign_crate = (#fc), });
+        let fcn = self
+            .foreign_c_name
+            .as_ref()
+            .map(|n| quote! { foreign_c_name = (#n), });
+        quote! { bridge_type = (#bt), rust_type = (#rt), #fc #fcn }
+    }
+}
+
+/// Handle slices (`&[&T]` / `&[T]` of non-primitive types) were removed in 0.4.0:
+/// borrowed handle-slice returns could not preserve source lifetimes.
+fn handle_slice_error(ty: &Type) -> syn::Error {
+    syn::Error::new_spanned(
+        ty,
+        "ffier does not support slices of handle or other non-primitive types \
+         (`&[&T]` / `&[T]`); only `&[&str]`, `&[u8]` and primitive slices are supported",
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,9 +69,6 @@ enum ParamKind {
     Regular,
     /// `&[&str]` — slice of string references, expands to two C params.
     StrSlice,
-    /// `&[T]` where T is an exported handle type — slice of struct references,
-    /// expands to two C params (pointer to handle array + length).
-    HandleSlice,
     /// `&[T]` where T is a primitive type (u32, i64, bool, etc.) —
     /// expands to two C params (pointer to element array + length).
     PrimitiveSlice,
@@ -68,12 +93,6 @@ enum ReturnKind {
     Result {
         ok: Option<TypePair>,
         err_ident: String,
-    },
-    /// `&[&T]` or `&[T]` where T is an exported handle type — returns a
-    /// contiguous array of borrowed handles. `direct` is true for `&[T]`.
-    HandleSlice {
-        types: TypePair,
-        direct: bool,
     },
 }
 
@@ -376,9 +395,11 @@ pub(crate) fn parse_method_sig(
                 None => (*pt.ty).clone(),
             };
 
-            if (is_str_slice(&param_ty_bridge)
-                || is_handle_slice(&param_ty_bridge)
-                || primitive_slice_elem(&param_ty_bridge).is_some())
+            if is_handle_slice(&param_ty_bridge) {
+                return Err(handle_slice_error(&pt.ty));
+            }
+
+            if (is_str_slice(&param_ty_bridge) || primitive_slice_elem(&param_ty_bridge).is_some())
                 && let Type::Reference(reference) = &param_ty_rust
                 && let Some(lifetime) = reference
                     .lifetime
@@ -420,40 +441,6 @@ pub(crate) fn parse_method_sig(
                 return Ok(ParamInfo {
                     name: pi.ident.clone(),
                     kind: ParamKind::PrimitiveSlice,
-                    types: Some(TypePair {
-                        bridge: elem_bridge,
-                        rust: elem_rust,
-                        foreign_crate: foreign_crate_tokens.clone(),
-                        foreign_c_name: param_attrs.foreign_c_name.clone(),
-                    }),
-                });
-            }
-
-            if is_handle_slice(&param_ty_bridge) {
-                // Extract the inner type T from &[&T] for bridge resolution
-                let Type::Reference(ref_ty) = &param_ty_bridge else {
-                    unreachable!()
-                };
-                let Type::Slice(sl) = &*ref_ty.elem else {
-                    unreachable!()
-                };
-                let Type::Reference(inner_ref) = &*sl.elem else {
-                    unreachable!()
-                };
-                let inner_ty = &*inner_ref.elem;
-                let elem_bridge = ctx.bridge_tokens(inner_ty);
-                let elem_rust = match self_ty {
-                    Some(sty) => {
-                        let replaced = replace_self_type(inner_ty, sty);
-                        quote! { #replaced }
-                    }
-                    None => {
-                        quote! { #inner_ty }
-                    }
-                };
-                return Ok(ParamInfo {
-                    name: pi.ident.clone(),
-                    kind: ParamKind::HandleSlice,
                     types: Some(TypePair {
                         bridge: elem_bridge,
                         rust: elem_rust,
@@ -515,29 +502,8 @@ pub(crate) fn parse_method_sig(
             if is_builder && extract_result_types(&ty_bridge).is_none() {
                 // Builder returning Self → void in C
                 ReturnKind::Void
-            } else if let Some(inner_ty) = handle_slice_elem(&ty_bridge) {
-                // &[&T] or &[T] where T is an exported handle
-                let elem_bridge = ctx.bridge_tokens(inner_ty);
-                let inner_ty_rust =
-                    handle_slice_elem(&ty_rust).expect("rust type should also be a handle slice");
-                // Detect &[T] (direct) vs &[&T] (indirect) by checking
-                // whether the slice element is a reference.
-                let Type::Reference(ref_ty) = &ty_bridge else {
-                    unreachable!()
-                };
-                let Type::Slice(sl) = &*ref_ty.elem else {
-                    unreachable!()
-                };
-                let direct = !matches!(&*sl.elem, Type::Reference(_));
-                ReturnKind::HandleSlice {
-                    types: TypePair {
-                        bridge: elem_bridge,
-                        rust: quote! { #inner_ty_rust },
-                        foreign_crate: foreign_return_tokens.clone(),
-                        foreign_c_name: foreign_ret_c_name.clone(),
-                    },
-                    direct,
-                }
+            } else if is_handle_slice(&ty_bridge) {
+                return Err(handle_slice_error(ty));
             } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
@@ -712,7 +678,6 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         let kind_tokens = match &p.kind {
             ParamKind::Regular => quote! { regular },
             ParamKind::StrSlice => quote! { str_slice },
-            ParamKind::HandleSlice => quote! { handle_slice },
             ParamKind::PrimitiveSlice => quote! { primitive_slice },
             ParamKind::ImplTrait { trait_name, dispatch, ref_kind, trait_lifetime_args, lifetime_bounds, ref_lifetime } => {
                 let dispatch_ident = format_ident!("{dispatch}");
@@ -731,13 +696,7 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
             quote! {}
         } else {
             match &p.types {
-                Some(tp) => {
-                    let bt = &tp.bridge;
-                    let rt = &tp.rust;
-                    let fc = tp.foreign_crate.as_ref().map(|fc| quote! { foreign_crate = (#fc), });
-                    let fcn = tp.foreign_c_name.as_ref().map(|n| quote! { foreign_c_name = (#n), });
-                    quote! { bridge_type = (#bt), rust_type = (#rt), #fc #fcn }
-                }
+                Some(tp) => tp.meta_tokens(),
                 None => quote! {},
             }
         };
@@ -747,53 +706,18 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
     let ret_tokens = match &m.ret {
         ReturnKind::Void => quote! { void },
         ReturnKind::Value(tp) => {
-            let bt = &tp.bridge;
-            let rt = &tp.rust;
-            let fc = tp
-                .foreign_crate
-                .as_ref()
-                .map(|fc| quote! { foreign_crate = (#fc), });
-            let fcn = tp
-                .foreign_c_name
-                .as_ref()
-                .map(|n| quote! { foreign_c_name = (#n), });
-            quote! { value(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
+            let fields = tp.meta_tokens();
+            quote! { value(#fields) }
         }
         ReturnKind::Result { ok, err_ident } => {
             let ok_tokens = match ok {
                 None => quote! { ok = void },
                 Some(tp) => {
-                    let bt = &tp.bridge;
-                    let rt = &tp.rust;
-                    let fc = tp
-                        .foreign_crate
-                        .as_ref()
-                        .map(|fc| quote! { foreign_crate = (#fc), });
-                    let fcn = tp
-                        .foreign_c_name
-                        .as_ref()
-                        .map(|n| quote! { foreign_c_name = (#n), });
-                    quote! { ok = some(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
+                    let fields = tp.meta_tokens();
+                    quote! { ok = some(#fields) }
                 }
             };
             quote! { result(#ok_tokens, err_ident = #err_ident,) }
-        }
-        ReturnKind::HandleSlice { types: tp, direct } => {
-            let bt = &tp.bridge;
-            let rt = &tp.rust;
-            let fc = tp
-                .foreign_crate
-                .as_ref()
-                .map(|fc| quote! { foreign_crate = (#fc), });
-            let fcn = tp
-                .foreign_c_name
-                .as_ref()
-                .map(|n| quote! { foreign_c_name = (#n), });
-            if *direct {
-                quote! { direct_handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
-            } else {
-                quote! { handle_slice(bridge_type = (#bt), rust_type = (#rt), #fc #fcn) }
-            }
         }
     };
 

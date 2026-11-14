@@ -98,13 +98,6 @@ pub(crate) fn emit_ffi_call_return(
         Return::Void => {
             writeln!(out, "{indent}unsafe {{ {ffi_name}({args_str}) }}").unwrap();
         }
-        Return::ObjectArray { .. } => {
-            writeln!(
-                out,
-                "{indent}ForeignSlice::from_raw(unsafe {{ {ffi_name}({args_str}) }})"
-            )
-            .unwrap();
-        }
         Return::OptionalValue(tr) => {
             let ty_static = optional_value_out_type(tr);
             let mut bare = tr.clone();
