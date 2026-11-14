@@ -439,11 +439,11 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                 }
             }
 
-            // Build the call expression
-            let raw_call = quote! { {
-                #(#vtable_pre)*
+            // Build the call expression. `vtable_pre` wraps every return
+            // branch below, so its bindings live through the call.
+            let raw_call = quote! {
                 unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
-            } };
+            };
 
             // Build vtable_branch (converting C result back to Rust)
             let vtable_branch = if has_impl_trait_params {
@@ -457,7 +457,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     )
                 }
             } else {
-                match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
+                let branch = match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
                     ReturnShape::Void => raw_call.clone(),
                     // A C callback must not return from a never-returning
                     // method; never hand back an uninhabited value.
@@ -470,7 +470,6 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     ReturnShape::ResultNeverOk { err_ident } => {
                         let err_ty = format_ident!("{err_ident}");
                         quote! {{
-                            #(#vtable_pre)*
                             let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
                             let __r = unsafe { __f(
                                 self.value.user_data as *mut core::ffi::c_void,
@@ -587,7 +586,11 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             }
                         }
                     }
-                }
+                };
+                quote! {{
+                    #(#vtable_pre)*
+                    #branch
+                }}
             };
 
             // None branch: fallback or panic

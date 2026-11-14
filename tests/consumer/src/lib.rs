@@ -90,6 +90,26 @@ mod tests {
         assert_eq!(retained.borrowed_value_dynamic(&known), 23);
     }
 
+    struct Checker;
+
+    impl api::TagChecker for Checker {
+        fn checked_count(&self, tags: &[&str]) -> Result<i32, api::TestError> {
+            Ok(tags.len() as i32)
+        }
+        fn tagged_sample(&self, tags: &[&str]) -> Option<api::InputEvent> {
+            let mut sample = api::SampleSource::next_sample(&mut api::FixedSource::new())
+                .unwrap()
+                .unwrap();
+            sample.sequence = tags.len() as u32;
+            Some(sample)
+        }
+    }
+
+    #[test]
+    fn callback_slices_reach_out_param_returns() {
+        assert_eq!(api::check_tags(&Checker).unwrap(), 302);
+    }
+
     struct BorrowedSource<'a>(&'a mut api::FixedSource);
 
     impl api::SampleSource for BorrowedSource<'_> {
