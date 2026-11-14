@@ -117,6 +117,26 @@ pub fn lent_gadget_value(lender: &impl GadgetLender) -> Result<i32, TestError> {
     lender.lend().map(|gadget| gadget.value)
 }
 
+/// A callback taking a string slice on methods whose returns use out-params.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait TagChecker {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn checked_count(&self, tags: &[&str]) -> Result<i32, TestError>;
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn tagged_sample(&self, tags: &[&str]) -> Option<InputEvent>;
+}
+
+/// Pass tag slices to both checker methods. Returns
+/// `count * 100 + sample sequence`, or the checker's error.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn check_tags(checker: &impl TagChecker) -> Result<i32, TestError> {
+    let count = checker.checked_count(&["a", "b", "c"])?;
+    let sequence = checker
+        .tagged_sample(&["x", "y"])
+        .map_or(0, |sample| sample.sequence as i32);
+    Ok(count * 100 + sequence)
+}
+
 /// Reconstruct a callback error as its native type, then return it to the client.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn roundtrip_callback_error(
@@ -2018,6 +2038,8 @@ ffier::library_definition!("ft", library_tag = 1,
     trait ErrorForwarder = 30,
     trait GadgetLender = 120,
     fn lent_gadget_value,
+    trait TagChecker = 121,
+    fn check_tags,
     fn test_error_drop_count,
     fn roundtrip_callback_error,
     Widget = 2, Gadget = 3, Config = 4,

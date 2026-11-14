@@ -424,11 +424,11 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                 }
             }
 
-            // Build the call expression
-            let raw_call = quote! { {
-                #(#vtable_pre)*
+            // Build the call expression. `vtable_pre` wraps every return
+            // branch below, so its bindings live through the call.
+            let raw_call = quote! {
                 unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
-            } };
+            };
 
             // Build vtable_branch (converting C result back to Rust)
             let vtable_branch = if has_impl_trait_params {
@@ -442,7 +442,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     )
                 }
             } else {
-                match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
+                let branch = match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
                     ReturnShape::Void => raw_call.clone(),
                     ReturnShape::OptionalValue { .. } => {
                         // Optional value return: the C side returns the
@@ -545,7 +545,11 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             }
                         }
                     }
-                }
+                };
+                quote! {{
+                    #(#vtable_pre)*
+                    #branch
+                }}
             };
 
             // None branch: fallback or panic
