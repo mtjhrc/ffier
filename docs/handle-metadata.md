@@ -41,11 +41,9 @@ Does ffier own the handle allocation?
 
 Set: ffier allocated it, so ffier may free it.
 
-Clear: the allocation belongs to someone else. Two shapes reach this state:
-
-- A caller-owned handle. C builds these with `PREFIX_TEMP_OBJ`
-  (`metadata == 0`), typically as a local, or allocates its own storage.
-- A `FfierObjectArray` element, where the array owns the allocation.
+Clear: the allocation belongs to someone else: a caller-owned handle. C
+builds these with `PREFIX_TEMP_OBJ` (`metadata == 0`), typically as a local,
+or allocates its own storage.
 
 This bit says nothing about the value inside the payload; the next two bits do.
 
@@ -59,10 +57,9 @@ is about the handle allocation, `DROP_VALUE` about whether a destructor runs.
 
 Where does the value live?
 
-Set: the payload field is a `*const c_void` to the real `T`. Both supported
-constructors pair this with a pointee owned by someone else:
-`ffier_handle_new_borrowed` stores a borrow for `&T` and `&mut T` returns, and
-object array elements borrow from the array's owner.
+Set: the payload field is a `*const c_void` to the real `T`. The only
+constructor, `ffier_handle_new_borrowed`, pairs this with a pointee owned by
+someone else: it stores a borrow for `&T` and `&mut T` returns.
 
 Clear: the payload is an inline `T`, which the handle owns whenever it is
 ffier-allocated.
@@ -84,8 +81,7 @@ wrapper's `Drop`, which calls the vtable `drop` slot so the caller can release
 `user_data`.
 
 Clear: the value belongs to someone else — a borrowed shell pointing into a
-parent, or an object-array element. The handle may still be freed; the value
-must not be dropped.
+parent. The handle may still be freed; the value must not be dropped.
 
 This bit is separate from layout on purpose. `INDIRECT` says where the value
 lives; this bit says whether it is ours to destroy. Keeping them apart is what
@@ -117,11 +113,7 @@ Each row is a combination the tree produces today.
 | --- | --- | --- | --- |
 | Inline owned handle | 1 | 0 | 1 |
 | Borrowed shell (`&T` return) | 1 | 1 | 0 |
-| `FfierObjectArray` element | 0 | 1 | 0 |
 | Caller-owned inline (`PREFIX_TEMP_OBJ`) | 0 | 0 | 0 |
-
-`INDIRECT` without `FFIER_ALLOCATED` is exactly an array element, which is how
-`ffier_handle_drop` recognizes one.
 
 `INDIRECT` with `DROP_VALUE` is deliberately absent: that pair would mean ffier
 owns a pointee reached through a pointer, which nothing constructs yet.
@@ -132,12 +124,12 @@ pointee.
 
 `ffier-rt` describes handles: the layouts, the metadata bits, and the
 read-only accessors (`handle_type_tag`, `handle_metadata`,
-`ffier_handle_borrow`, `ffier_handle_borrow_mut`, `ffier_object_array_get`).
+`ffier_handle_borrow`, `ffier_handle_borrow_mut`).
 It performs no allocation, so it cannot pick the wrong allocator.
 
 Allocation and destruction live in the `ffier-bridge` crate:
 `ffier_handle_new`, `ffier_handle_new_borrowed`, `ffier_handle_consume`,
-`ffier_handle_drop`, and `ffier_object_array_free`. These decide which
+and `ffier_handle_drop`. These decide which
 allocator is used, so only the library that allocates a handle may call them.
 The `ffier` facade re-exports them, so generated code keeps naming `ffier::`.
 
@@ -154,7 +146,7 @@ from caller code, where release builds are exactly when corruption would
 happen.
 
 `ffier_handle_drop` asserts the allocation bit: only a handle ffier allocated
-may be destroyed, and freeing a caller-owned one or a single array element is a
+may be destroyed, and freeing a caller-owned one is a
 contract violation. It then reads `DROP_VALUE` to decide whether the destructor
 runs, and the payload shape decides how the allocation itself is freed. The two
 steps are independent — that separation is the point of the bit.

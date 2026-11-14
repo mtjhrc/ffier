@@ -345,19 +345,6 @@ fn build_schema(
         proc_macro2::Span::call_site(),
     )?;
     registry.register(
-        "FfierObjectArray",
-        ffier_schema::TypeEntry {
-            kind: ffier_schema::TypeKind::Primitive {
-                c_type: format!("{prim_type_pfx}ObjectArray"),
-            },
-            type_tag: None,
-            bless: Some(ffier_schema::Blessing::ObjectArray),
-            lifetime_params: vec![],
-        },
-        RegistrySource::Declaration,
-        proc_macro2::Span::call_site(),
-    )?;
-    registry.register(
         "FfierObject",
         ffier_schema::TypeEntry {
             kind: ffier_schema::TypeKind::Primitive {

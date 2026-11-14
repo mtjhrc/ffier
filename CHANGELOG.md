@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Remove handle slices. Exported functions can no longer take or return
+  `&[&T]` / `&[T]` of handle (or other non-primitive) types. Borrowed
+  handle-slice returns could not preserve their source lifetimes. Such
+  signatures are now rejected with a compile error. This removes
+  `FfierObjectArray`, `ffier_object_array_get`, `ffier_object_array_free`, the
+  `{prefix}_free_object_array` symbol, the C `ObjectArray` /
+  `ObjectArrayEntry` typedefs and `*_OBJECT_ARRAY_GET` macro, the generated
+  Rust `ForeignSlice`, and the schema's `Return::ObjectArray` and
+  `Blessing::ObjectArray`. `&[&str]`, `&[u8]` and primitive slices are
+  unaffected.
+
 ## 0.3.1
 
 ### Added

@@ -309,6 +309,35 @@ fn convert_receiver(recv: MetaReceiver) -> ffier_schema::Receiver {
     }
 }
 
+/// A slice param expanded into `{name}: const elem_c*` + `{name}_len: size_t`.
+fn slice_param(
+    name: &str,
+    element: &str,
+    ref_kind: ffier_schema::RefKind,
+    elem_c: &str,
+) -> ffier_schema::ParamType {
+    ffier_schema::ParamType::Slice {
+        element: ffier_schema::TypeRef {
+            type_name: element.to_string(),
+            ref_kind,
+            ref_lifetime: None,
+            type_args: vec![],
+            optional: false,
+            owned: false,
+        },
+        c_params: vec![
+            ffier_schema::CParam {
+                name: name.to_string(),
+                c_type: format!("const {elem_c}*"),
+            },
+            ffier_schema::CParam {
+                name: format!("{name}_len"),
+                c_type: "size_t".to_string(),
+            },
+        ],
+    }
+}
+
 fn convert_param(
     p: &crate::meta::MetaParam,
     r: &CTypeResolver,
@@ -319,57 +348,17 @@ fn convert_param(
             ffier_schema::ParamType::Regular(r.type_ref_from_tokens(&tp.rust_type)?)
         }
         MetaParamKind::StrSlice => {
-            // &[&str] → two C params: pointer to FfierBytes array + length.
-            // The element type is &str (a reference to str).
+            // &[&str] → pointer to FfierBytes array + length.
             let str_c = format!("{}Str", r.prim_type_pfx);
-            ffier_schema::ParamType::Slice {
-                element: ffier_schema::TypeRef {
-                    type_name: "str".to_string(),
-                    ref_kind: ffier_schema::RefKind::Shared,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                },
-                c_params: vec![
-                    ffier_schema::CParam {
-                        name: p.name.to_string(),
-                        c_type: format!("const {str_c}*"),
-                    },
-                    ffier_schema::CParam {
-                        name: format!("{}_len", p.name),
-                        c_type: "size_t".to_string(),
-                    },
-                ],
-            }
-        }
-        MetaParamKind::HandleSlice(tp) => {
-            // &[&T] → two C params: pointer to handle array + length.
-            let elem_ref = r.type_ref_from_tokens(&tp.rust_type)?;
-            let handle_c = r.handle_c_name(&elem_ref.type_name);
-            ffier_schema::ParamType::Slice {
-                element: ffier_schema::TypeRef {
-                    type_name: elem_ref.type_name,
-                    ref_kind: ffier_schema::RefKind::Shared,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                },
-                c_params: vec![
-                    ffier_schema::CParam {
-                        name: p.name.to_string(),
-                        c_type: format!("const {handle_c}*"),
-                    },
-                    ffier_schema::CParam {
-                        name: format!("{}_len", p.name),
-                        c_type: "size_t".to_string(),
-                    },
-                ],
-            }
+            slice_param(
+                &p.name.to_string(),
+                "str",
+                ffier_schema::RefKind::Shared,
+                &str_c,
+            )
         }
         MetaParamKind::PrimitiveSlice(tp) => {
-            // &[T] where T is a primitive → two C params: pointer to T array + length.
+            // &[T] where T is a primitive → pointer to T array + length.
             let elem_ref = r.type_ref_from_tokens(&tp.rust_type)?;
             let entry = type_registry.get(&elem_ref.type_name).unwrap_or_else(|| {
                 panic!(
@@ -384,26 +373,12 @@ fn convert_param(
                     elem_ref.type_name, entry.kind
                 ),
             };
-            ffier_schema::ParamType::Slice {
-                element: ffier_schema::TypeRef {
-                    type_name: elem_ref.type_name,
-                    ref_kind: ffier_schema::RefKind::None,
-                    ref_lifetime: None,
-                    type_args: vec![],
-                    optional: false,
-                    owned: false,
-                },
-                c_params: vec![
-                    ffier_schema::CParam {
-                        name: p.name.to_string(),
-                        c_type: format!("const {elem_c}*"),
-                    },
-                    ffier_schema::CParam {
-                        name: format!("{}_len", p.name),
-                        c_type: "size_t".to_string(),
-                    },
-                ],
-            }
+            slice_param(
+                &p.name.to_string(),
+                &elem_ref.type_name,
+                ffier_schema::RefKind::None,
+                elem_c,
+            )
         }
         MetaParamKind::ImplTrait {
             trait_name,
@@ -465,12 +440,6 @@ fn convert_return(
                 ));
             }
             ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)?)
-        }
-        MetaReturn::HandleSlice { types, .. } => {
-            // &[&T] or &[T] → returns FfierObjectArray with element type info.
-            ffier_schema::Return::ObjectArray {
-                element: r.type_ref_from_tokens(&types.rust_type)?,
-            }
         }
         MetaReturn::Result { ok, err_ident } if is_builder => {
             // Builder `-> Result<Self, E>`: ok was suppressed to None by

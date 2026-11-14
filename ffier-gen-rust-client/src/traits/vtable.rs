@@ -217,10 +217,6 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait)
                 Return::Void => {
                     // Nothing to convert
                 }
-                Return::ObjectArray { .. } => {
-                    // ObjectArray returns from vtable methods: pass through raw
-                    writeln!(out, "                    __result.raw").unwrap();
-                }
                 Return::OptionalValue(tr) => {
                     let ty_static = optional_value_out_type(tr);
                     let mut bare = tr.clone();

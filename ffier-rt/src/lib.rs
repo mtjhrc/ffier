@@ -97,8 +97,7 @@ pub struct FfierBorrowedHandle {
 
 /// Metadata bit 0: ffier allocated this handle. When set, ffier may free the
 /// handle allocation. When clear, the allocation belongs to someone else — a
-/// caller-owned handle or a `FfierObjectArray` element — and ffier must not
-/// free it.
+/// caller-owned handle — and ffier must not free it.
 ///
 /// The bit covers the handle alone, never the value. Where the value lives is
 /// [`METADATA_INDIRECT`], and whether dropping the handle also destroys the
@@ -110,10 +109,6 @@ pub const METADATA_FFIER_ALLOCATED: u32 = 1;
 /// Metadata bit 1: the value is reached indirectly. The handle is an
 /// `FfierBorrowedHandle` whose payload field is a `*const c_void` to the real
 /// `T`, which is owned elsewhere. When clear, the payload is an inline `T`.
-///
-/// Element state falls out of the two bits: `INDIRECT` without
-/// [`METADATA_FFIER_ALLOCATED`] is a `FfierObjectArray` element, which is
-/// freed by freeing the whole array rather than the element.
 pub const METADATA_INDIRECT: u32 = 2;
 
 /// Metadata bit 2: the value's destructor is meaningful for this handle, so
@@ -126,8 +121,7 @@ pub const METADATA_INDIRECT: u32 = 2;
 /// produces yet; `ffier_handle_drop` asserts against that combination instead
 /// of silently leaking the pointee.
 ///
-/// Cleared for borrowed shells and object-array elements, whose pointees
-/// belong to someone else.
+/// Cleared for borrowed shells, whose pointees belong to someone else.
 pub const METADATA_DROP_VALUE: u32 = 4;
 
 /// Metadata bit 3: the handle carries default-dispatch re-entry metadata
@@ -296,77 +290,6 @@ impl VtableHandle {
             unsafe { *(self.vtable_ptr.byte_add(field_offset) as *const Option<F>) }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// FfierObjectArray --- contiguous array of borrowed handles
-// ---------------------------------------------------------------------------
-
-/// `#[repr(C)]` array of borrowed handles returned from methods that
-/// produce `&[&T]` or `&[T]`. The backing storage is a single contiguous
-/// `Box<[FfierBorrowedHandle]>` allocation, leaked to C as an opaque
-/// pointer plus length.
-///
-/// Individual elements must NOT be passed to `destroy` — the whole array
-/// is freed in one call via the array's destroy function, which
-/// reconstructs and drops the `Box<[FfierBorrowedHandle]>`.
-///
-/// Access elements via `ffier_object_array_get()`, not direct indexing.
-#[derive(Clone, Copy)]
-#[repr(C)]
-pub struct FfierObjectArray {
-    /// Opaque pointer to the first `FfierBorrowedHandle` element.
-    /// Null when `len == 0`. NOT directly indexable from C —
-    /// use `ffier_object_array_get()`.
-    _opaque: *const FfierBorrowedHandle,
-    pub len: usize,
-}
-
-impl FfierObjectArray {
-    pub const EMPTY: Self = Self {
-        _opaque: core::ptr::null(),
-        len: 0,
-    };
-
-    /// Create from a leaked `Box<[FfierBorrowedHandle]>`.
-    pub fn from_raw(ptr: *const FfierBorrowedHandle, len: usize) -> Self {
-        Self { _opaque: ptr, len }
-    }
-
-    /// Pointer to the first element, or null when the array is empty.
-    ///
-    /// Reading it is allocation-free; only the owner of the array may free it.
-    #[inline]
-    pub fn items(&self) -> *const FfierBorrowedHandle {
-        self._opaque
-    }
-
-    /// Number of elements in the array.
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.len
-    }
-
-    /// Whether the array holds no elements.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len == 0
-    }
-}
-
-/// Get a handle pointer to the i-th element of a `FfierObjectArray`.
-///
-/// Returns a `*mut c_void` pointing to the `FfierBorrowedHandle` at
-/// index `i`. The handle has valid RTTI headers and can be passed to
-/// methods that type-check the handle.
-///
-/// # Safety
-/// - `arr` must be a valid `FfierObjectArray`.
-/// - `i` must be `< arr.len`.
-#[inline]
-pub unsafe fn ffier_object_array_get(arr: FfierObjectArray, i: usize) -> *mut c_void {
-    debug_assert!(i < arr.len, "index out of bounds");
-    unsafe { arr._opaque.add(i) as *mut c_void }
 }
 
 // ---------------------------------------------------------------------------

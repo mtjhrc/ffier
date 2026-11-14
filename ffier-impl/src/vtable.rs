@@ -215,10 +215,6 @@ fn vtable_c_fn_sig(
                 param_types.push(quote! { *const ffier::FfierBytes });
                 param_types.push(quote! { usize });
             }
-            crate::meta::MetaParamKind::HandleSlice(_) => {
-                param_types.push(quote! { *const *mut core::ffi::c_void });
-                param_types.push(quote! { usize });
-            }
             crate::meta::MetaParamKind::PrimitiveSlice(tp) => {
                 let bt = &tp.bridge_type;
                 param_types.push(quote! { *const <#bt as FfiType>::CRepr });
@@ -258,9 +254,6 @@ fn vtable_c_fn_sig(
                 let bt = &tp.bridge_type;
                 quote! { -> <#bt as FfiType>::CRepr }
             }
-        }
-        crate::meta::MetaReturn::HandleSlice { .. } => {
-            quote! { -> ffier::FfierObjectArray }
         }
         crate::meta::MetaReturn::Result { ok, .. } => {
             if let Some(inner) = &optional_value {
@@ -433,16 +426,6 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #vec_id.as_ptr() });
                         vtable_args.push(quote! { #vec_id.len() });
                     }
-                    crate::meta::MetaParamKind::HandleSlice(_) => {
-                        let vec_id = format_ident!("__{id}_handles");
-                        vtable_pre.push(quote! {
-                            let #vec_id: Vec<*mut core::ffi::c_void> = #id.iter()
-                                .map(|item| FfiType::into_c(*item))
-                                .collect();
-                        });
-                        vtable_args.push(quote! { #vec_id.as_ptr() });
-                        vtable_args.push(quote! { #vec_id.len() });
-                    }
                     crate::meta::MetaParamKind::PrimitiveSlice(_) => {
                         // Primitives are layout-compatible with their CRepr,
                         // so just pass the slice pointer and length directly.
@@ -504,26 +487,6 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                         } else {
                             quote! { unsafe { FfiType::from_c(#raw_call) } }
                         }
-                    }
-                    crate::meta::MetaReturn::HandleSlice { types: tp, .. } => {
-                        // HandleSlice vtable dispatch: call __f which returns
-                        // FfierObjectArray, reconstruct Vec<&T> from the handle array.
-                        let bt = &tp.bridge_type;
-                        quote! {{
-                            let __arr = #raw_call;
-                            if __arr.len == 0 {
-                                Vec::new()
-                            } else {
-                                let __refs: Vec<&#bt> = (0..__arr.len)
-                                    .map(|i| unsafe {
-                                        let h = ffier::ffier_object_array_get(__arr, i);
-                                        ffier::ffier_handle_borrow::<#bt>(h)
-                                    })
-                                    .collect();
-                                unsafe { ffier::ffier_object_array_free(__arr) };
-                                __refs
-                            }
-                        }}
                     }
                     crate::meta::MetaReturn::Result { ok, err_ident, .. } => {
                         let err_ty = format_ident!("{err_ident}");

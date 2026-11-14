@@ -3,7 +3,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::meta::{MetaParam, MetaParamKind, MetaTypePair, cfg_predicate_attr};
+use crate::meta::{MetaParam, MetaParamKind, cfg_predicate_attr};
 
 use super::dispatch::TraitMap;
 use super::signature::{CExternSignature, resolve_trait_crate};
@@ -155,7 +155,7 @@ pub(super) fn convert_params(
             let id = &p.name;
             match &p.kind {
                 MetaParamKind::ImplTrait { .. } => quote! { #id },
-                MetaParamKind::StrSlice | MetaParamKind::HandleSlice(_) => {
+                MetaParamKind::StrSlice => {
                     let len_name = format!("{}_len", p.name);
                     let len_id = &c_sig
                         .params
@@ -439,19 +439,6 @@ fn meta_param_conversion(
                         core::slice::from_raw_parts(b.data, b.len))
                 }).collect();
                 __strs
-            } }
-        }
-        MetaParamKind::HandleSlice(MetaTypePair { bridge_type, .. }) => {
-            let len_id = len_ident.expect("HandleSlice conversion needs len_ident");
-            quote! { {
-                if #len_id == 0 {
-                    Vec::new()
-                } else {
-                    let __handles = unsafe { core::slice::from_raw_parts(#id, #len_id) };
-                    __handles.iter()
-                        .map(|h| unsafe { ffier::ffier_handle_borrow::<#bridge_type>(*h) })
-                        .collect()
-                }
             } }
         }
         MetaParamKind::PrimitiveSlice(_) => {

@@ -31,9 +31,6 @@ pub(crate) fn emit_free_function(
 
     let ret_type = match &f.ret {
         Return::Void => String::new(),
-        Return::ObjectArray { element } => {
-            format!(" -> ForeignSlice<{}>", element.type_name)
-        }
         Return::Value(tr) => format!(" -> {}", tr.to_rust_type()),
         Return::OptionalValue(tr) => format!(" -> Option<{}>", tr.to_rust_type()),
         Return::Result { ok, err_type, .. } => {
@@ -60,14 +57,6 @@ pub(crate) fn emit_free_function(
     match &f.ret {
         Return::Void => {
             writeln!(out, "    unsafe {{ {}({args_str}) }}", f.ffi_name).unwrap();
-        }
-        Return::ObjectArray { .. } => {
-            writeln!(
-                out,
-                "    ForeignSlice::from_raw(unsafe {{ {}({args_str}) }})",
-                f.ffi_name
-            )
-            .unwrap();
         }
         Return::OptionalValue(tr) => {
             let ty_static = optional_value_out_type(tr);

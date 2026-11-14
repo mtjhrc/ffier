@@ -63,9 +63,7 @@ pub(super) fn c_signature_for_method(
     for p in &method.params {
         if matches!(
             p.kind,
-            MetaParamKind::StrSlice
-                | MetaParamKind::HandleSlice(_)
-                | MetaParamKind::PrimitiveSlice(_)
+            MetaParamKind::StrSlice | MetaParamKind::PrimitiveSlice(_)
         ) {
             params.push(CExternParam {
                 name: p.name.clone(),
@@ -101,10 +99,6 @@ pub(super) fn c_signature_for_method(
                 let ty = c_return_type(vk, lib_crate);
                 quote! { -> #ty }
             }
-        }
-        MetaReturn::HandleSlice { .. } => {
-            // &[&T] or &[T] where T is a handle — return FfierObjectArray by value.
-            quote! { -> ffier::FfierObjectArray }
         }
         MetaReturn::Result { ok, .. } => {
             // `Result<Option<ValueStruct>, E>` writes presence and value through
@@ -199,7 +193,6 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
-        MetaParamKind::HandleSlice(_) => quote! { *const *mut core::ffi::c_void },
         MetaParamKind::PrimitiveSlice(tp) => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);

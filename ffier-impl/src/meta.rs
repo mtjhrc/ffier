@@ -333,10 +333,6 @@ pub enum ImplTraitRefKind {
 pub enum MetaParamKind {
     Regular(MetaTypePair),
     StrSlice,
-    /// `&[T]` where T is an exported handle type — slice of struct references,
-    /// expands to two C params (pointer to handle array + length).
-    /// The `MetaTypePair` contains the element type (T, not &[T]).
-    HandleSlice(MetaTypePair),
     /// `&[T]` where T is a primitive type (u32, i64, bool, etc.) —
     /// expands to two C params (pointer to element array + length).
     /// The `MetaTypePair` contains the element type (T, not &[T]).
@@ -361,14 +357,6 @@ pub enum MetaReturn {
     Result {
         ok: Option<MetaTypePair>,
         err_ident: String,
-    },
-    /// `&[&T]` or `&[T]` where T is an exported handle type — returns a
-    /// contiguous array of borrowed handles. The `MetaTypePair` contains
-    /// the element type T. `direct` is true for `&[T]` (elements are inline),
-    /// false for `&[&T]` (elements are references).
-    HandleSlice {
-        types: MetaTypePair,
-        direct: bool,
     },
 }
 
@@ -1018,11 +1006,6 @@ impl syn::parse::Parse for MetaParam {
                 parse_comma(input)?;
                 MetaParamKind::StrSlice
             }
-            "handle_slice" => {
-                parse_comma(input)?;
-                let types = parse_type_pair(input)?;
-                MetaParamKind::HandleSlice(types)
-            }
             "primitive_slice" => {
                 parse_comma(input)?;
                 let types = parse_type_pair(input)?;
@@ -1128,13 +1111,6 @@ impl syn::parse::Parse for MetaReturn {
                 parse_comma(&content)?;
 
                 Ok(MetaReturn::Result { ok, err_ident })
-            }
-            "handle_slice" | "direct_handle_slice" => {
-                let direct = kind == "direct_handle_slice";
-                let content;
-                syn::parenthesized!(content in input);
-                let tp = parse_type_pair(&content)?;
-                Ok(MetaReturn::HandleSlice { types: tp, direct })
             }
             other => Err(syn::Error::new(
                 kind.span(),

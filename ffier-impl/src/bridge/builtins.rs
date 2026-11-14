@@ -1,4 +1,4 @@
-//! Library-level helpers for freeing strings and object arrays.
+//! Library-level helper for freeing strings.
 
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -18,20 +18,6 @@ pub(super) fn generate_str_free(prefix: &str) -> TokenStream2 {
                     drop(Box::from_raw(core::str::from_utf8_unchecked_mut(slice)));
                 }
             }
-        }
-    }
-}
-
-/// Generate `{prefix}_free_object_array(FfierObjectArray a)` that frees
-/// the contiguous borrowed-handle array.
-pub(super) fn generate_free_object_array(prefix: &str) -> TokenStream2 {
-    let fn_pfx = format!("{prefix}_");
-    let free_fn = format_ident!("{fn_pfx}free_object_array");
-
-    quote! {
-        #[unsafe(no_mangle)]
-        pub unsafe extern "C" fn #free_fn(a: ffier::FfierObjectArray) {
-            unsafe { ffier::ffier_object_array_free(a) };
         }
     }
 }

@@ -88,8 +88,6 @@ pub enum Blessing {
     ReplacesSelf,
     /// Streaming string writer trait (PushStr).
     PushStr,
-    /// Object array (contiguous borrowed-handle array + len struct).
-    ObjectArray,
     /// Generic handle type (any concrete handle).
     Object,
 }
@@ -594,12 +592,6 @@ pub enum Return {
         /// Determined by the bridge at schema-emission time.
         c_convention: CResultConvention,
     },
-    /// Returns `&[T]` or `&[&T]` where T is a handle type.
-    /// Encoded as `FfierObjectArray` at the C level.
-    ObjectArray {
-        /// The element type (the `T` in `&[T]` or `&[&T]`).
-        element: TypeRef,
-    },
 }
 
 /// C-level calling convention for a `Result<T, E>` return.
@@ -670,9 +662,6 @@ impl Return {
                     None => "()".to_string(),
                 };
                 format!("Result<{ok_str}, {err_type}>")
-            }
-            Return::ObjectArray { element } => {
-                format!("ForeignSlice<{}>", element.to_rust_type())
             }
         }
     }
@@ -1012,9 +1001,6 @@ impl Library {
                     }
                     refs.insert(err_type);
                 }
-                Return::ObjectArray { element } => {
-                    refs.insert(&element.type_name);
-                }
             }
         }
 
@@ -1141,9 +1127,7 @@ impl Library {
             .map(|s| s.to_string())
             .collect();
         self.type_registry.retain(|name, entry| {
-            refs.contains(name.as_str())
-                || entry.bless == Some(Blessing::Object)
-                || entry.bless == Some(Blessing::ObjectArray)
+            refs.contains(name.as_str()) || entry.bless == Some(Blessing::Object)
         });
     }
 

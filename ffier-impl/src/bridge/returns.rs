@@ -117,37 +117,6 @@ pub(super) fn wrap_return(
                 }
             }
         }
-        MetaReturn::HandleSlice { types: tp, direct } => {
-            let bridge_type = &tp.bridge_type;
-            let tc = resolve_trait_crate(tp, lib_crate);
-            // &[&T] or &[T] → build a contiguous Box<[FfierBorrowedHandle]>
-            // from the iterator, leak it, return as FfierObjectArray.
-            // For &[&T], item is &&T so we deref once; for &[T], item is &T directly.
-            let ptr_expr = if *direct {
-                quote! { item as *const #bridge_type as *const core::ffi::c_void }
-            } else {
-                quote! { *item as *const #bridge_type as *const core::ffi::c_void }
-            };
-            quote! {
-                let __slice = #call_expr;
-                if __slice.is_empty() {
-                    ffier::FfierObjectArray::EMPTY
-                } else {
-                    let __tag = <#bridge_type as #tc::FfiHandle>::TYPE_TAG;
-                    let __meta = ffier::METADATA_INDIRECT;
-                    let __boxed: Box<[ffier::FfierBorrowedHandle]> = __slice.iter()
-                        .map(|item| ffier::FfierBorrowedHandle {
-                            type_tag: __tag,
-                            metadata: __meta,
-                            ptr: #ptr_expr,
-                        })
-                        .collect();
-                    let __len = __boxed.len();
-                    let __raw = Box::into_raw(__boxed) as *const ffier::FfierBorrowedHandle;
-                    ffier::FfierObjectArray::from_raw(__raw, __len)
-                }
-            }
-        }
         MetaReturn::Result { ok, err_ident } => {
             // A foreign ok type is always a handle.
             let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());

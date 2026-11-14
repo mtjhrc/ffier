@@ -57,9 +57,6 @@ pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
 
     match &m.ret {
         Return::Void => String::new(),
-        Return::ObjectArray { element } => {
-            format!(" -> ForeignSlice<{}>", element.type_name)
-        }
         Return::Value(_) | Return::OptionalValue(_) | Return::Result { .. } => {
             format!(" -> {}", m.ret.to_rust_type(&lib.type_registry))
         }
