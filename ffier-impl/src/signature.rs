@@ -114,8 +114,8 @@ pub(crate) struct MethodInfo {
     // --- exported-impl-specific (defaults for trait methods) ---
     /// FFI function name suffix (e.g. `"widget_new"`). Empty for trait methods.
     pub(crate) ffi_name: String,
-    /// True if this method returns Self (builder pattern).
-    is_builder: bool,
+    /// The method returns `Self` on a receiver, replacing it.
+    replaces_self: bool,
     /// Method-level lifetime params.
     method_lifetimes: Vec<syn::Ident>,
     doc_lines: Vec<String>,
@@ -245,7 +245,7 @@ pub(crate) fn sized_self_where(sig: &syn::Signature) -> bool {
 ///
 /// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
 /// - `self_ty`: if `Some`, `Self` in param/return types is replaced with this type
-///   and builder pattern is detected. Typically `Some` for exported struct impls, `None`
+///   and a returned `Self` replacing the receiver is detected. Typically `Some` for exported struct impls, `None`
 ///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
@@ -469,9 +469,9 @@ pub(crate) fn parse_method_sig(
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
     let foreign_ret_c_name = foreign_return_c_name.map(|s| s.to_string());
 
-    // Builder detection: method returns Self (only for exported impls, requires a receiver)
+    // A returned Self replaces the receiver (only for exported impls, requires a receiver)
     let has_receiver = receiver != Receiver::None;
-    let is_builder = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
+    let replaces_self = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
         match &sig.output {
             ReturnType::Default => false,
             ReturnType::Type(_, ty) => {
@@ -499,8 +499,8 @@ pub(crate) fn parse_method_sig(
                 None => (**ty).clone(),
             };
 
-            if is_builder && extract_result_types(&ty_bridge).is_none() {
-                // Builder returning Self → void in C
+            if replaces_self && extract_result_types(&ty_bridge).is_none() {
+                // A returned Self replacing the receiver → void in C
                 ReturnKind::Void
             } else if is_handle_slice(&ty_bridge) {
                 return Err(handle_slice_error(ty));
@@ -508,7 +508,7 @@ pub(crate) fn parse_method_sig(
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
                 let ok_pair = if is_unit_type(&ok_bridge)
-                    || (is_builder
+                    || (replaces_self
                         && self_ty_static
                             .as_ref()
                             .is_some_and(|sty| is_self_return(&ok_bridge, sty)))
@@ -620,7 +620,7 @@ pub(crate) fn parse_method_sig(
         params,
         ret,
         ffi_name: String::new(),
-        is_builder,
+        replaces_self,
         method_lifetimes: sig
             .generics
             .lifetimes()
@@ -640,7 +640,7 @@ pub(crate) fn parse_method_sig(
 pub(crate) enum MethodMetaKind {
     /// Trait definition method — carries index/has_default/raw_handle.
     Definition,
-    /// Concrete method (exported struct impl or trait impl) — carries ffi_name/is_builder.
+    /// Concrete method (exported struct impl or trait impl) — carries ffi_name/replaces_self.
     Impl,
 }
 
@@ -740,11 +740,11 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         }
         MethodMetaKind::Impl => {
             let ffi_name = &m.ffi_name;
-            let is_builder = m.is_builder;
+            let replaces_self = m.replaces_self;
             quote! {
                 method_kind = r#impl,
                 ffi_name = #ffi_name,
-                is_builder = #is_builder,
+                replaces_self = #replaces_self,
             }
         }
     };

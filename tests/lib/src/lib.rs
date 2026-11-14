@@ -104,6 +104,19 @@ pub trait ErrorForwarder {
     fn forward_unit(&self) -> Result<(), TestError>;
 }
 
+/// A callback lending a borrowed handle through a `Result`.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait GadgetLender {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn lend(&self) -> Result<&Gadget, TestError>;
+}
+
+/// Read the value of the gadget a lender lends, or forward its error.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn lent_gadget_value(lender: &impl GadgetLender) -> Result<i32, TestError> {
+    lender.lend().map(|gadget| gadget.value)
+}
+
 /// Reconstruct a callback error as its native type, then return it to the client.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn roundtrip_callback_error(
@@ -2003,6 +2016,8 @@ mod receiver_default_tests {
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
     trait ErrorForwarder = 30,
+    trait GadgetLender = 120,
+    fn lent_gadget_value,
     fn test_error_drop_count,
     fn roundtrip_callback_error,
     Widget = 2, Gadget = 3, Config = 4,
@@ -3340,6 +3355,49 @@ mod tests {
             ft_pipeline_run(p, proc, 1);
             assert!(DROP_CALLED.load(Ordering::SeqCst));
             ft_pipeline_destroy(p);
+        }
+    }
+
+    #[test]
+    fn vtable_result_borrowed_handle_return() {
+        // `Result<&Gadget, E>` from a vtable callback uses the handle-or-null
+        // convention the schema and C header describe: the callback returns
+        // a borrowed gadget handle, NULL on error.
+        use core::ffi::c_void;
+        unsafe extern "C" fn lend(data: *mut c_void, _err_out: *mut *mut c_void) -> *mut c_void {
+            data
+        }
+        static VTABLE: GadgetLenderVtable = GadgetLenderVtable {
+            _num_slots: 1,
+            _reserved1: 0,
+            _reserved2: 0,
+            drop: None,
+            lend: Some(lend),
+        };
+        unsafe {
+            let w = ft_widget_new();
+            ft_widget_set_count(w, 37);
+            let gadget = ft_widget_create_gadget(w);
+            let mut lender = ffier::FfierHandle {
+                type_tag: VtableGadgetLender::TYPE_TAG,
+                metadata: 0,
+                value: ffier::VtableHandle {
+                    vtable_ptr: &VTABLE as *const _ as *const c_void,
+                    user_data: gadget as *const c_void,
+                },
+            };
+            let mut value: i32 = -1;
+            let mut err: *mut c_void = ptr::null_mut();
+            let r = ft_lent_gadget_value(
+                &mut lender as *mut _ as *mut c_void,
+                &mut value,
+                &mut err as *mut *mut c_void,
+            );
+            assert_eq!(r, 0);
+            assert!(err.is_null());
+            assert_eq!(value, 37);
+            ft_gadget_destroy(gadget);
+            ft_widget_destroy(w);
         }
     }
 

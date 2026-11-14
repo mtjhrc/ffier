@@ -6,6 +6,8 @@ use proc_macro::TokenStream;
 use quote::{ToTokens, format_ident, quote};
 use syn::{Token, parse::Parse, parse_macro_input};
 
+use crate::return_shape::{ResultConv, ReturnShape, classify_return};
+
 /// Input format:
 /// ```ignore
 /// vtable_struct = Ident;
@@ -194,17 +196,13 @@ impl Parse for GenerateVtableInput {
 
 /// Build the C function pointer signature for a vtable method:
 /// `(param_types, return_type)`. Used for both vtable struct fields
-/// and the trait impl's function pointer casts.
-/// Returns `(param_types, return_type, ok_is_handle)`.
+/// and the trait impl's function pointer casts. The return follows the
+/// shared [`classify_return`], so it matches the bridge and the schema.
 fn vtable_c_fn_sig(
     m: &crate::meta::MetaMethod,
     handle_names: &std::collections::HashSet<String>,
     value_names: &std::collections::HashSet<String>,
-) -> (
-    Vec<proc_macro2::TokenStream>,
-    proc_macro2::TokenStream,
-    bool,
-) {
+) -> (Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream) {
     let mut param_types = vec![quote! { *mut core::ffi::c_void }];
     for p in &m.params {
         match &p.kind {
@@ -227,55 +225,40 @@ fn vtable_c_fn_sig(
         }
     }
 
-    let ok_is_handle = matches!(&m.ret, crate::meta::MetaReturn::Result { ok: Some(_), .. })
-        && crate::meta::is_result_ok_handle(&m.rust_ret, handle_names);
-
-    // `Result<Option<ValueStruct>, E>` writes presence and value separately.
-    // Classification reads the Rust type; the emitted type comes from the
-    // definition-site-resolved bridge type.
-    let optional_value = match &m.ret {
-        crate::meta::MetaReturn::Result { ok: Some(tp), .. }
-            if crate::meta::option_value_struct_inner(&tp.rust_type, value_names).is_some() =>
-        {
-            crate::meta::option_inner_tokens(&tp.bridge_type)
+    let err_out = quote! { *mut *mut core::ffi::c_void };
+    let fn_ret = match classify_return(&m.ret, &m.rust_ret, handle_names, value_names) {
+        ReturnShape::Void => quote! {},
+        ReturnShape::OptionalValue { inner, .. } => {
+            param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+            quote! { -> bool }
         }
-        _ => None,
-    };
-
-    let fn_ret = match &m.ret {
-        crate::meta::MetaReturn::Void => quote! {},
-        crate::meta::MetaReturn::Value(tp) => {
-            if crate::meta::option_value_struct_inner(&tp.rust_type, value_names).is_some()
-                && let Some(inner) = crate::meta::option_inner_tokens(&tp.bridge_type)
-            {
-                param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
-                quote! { -> bool }
-            } else {
-                let bt = &tp.bridge_type;
-                quote! { -> <#bt as FfiType>::CRepr }
-            }
+        ReturnShape::Value { tp, .. } => {
+            let bt = &tp.bridge_type;
+            quote! { -> <#bt as FfiType>::CRepr }
         }
-        crate::meta::MetaReturn::Result { ok, .. } => {
-            if let Some(inner) = &optional_value {
+        ReturnShape::Result { ok, conv, .. } => match conv {
+            ResultConv::OptionalValueOutParam { inner } => {
                 param_types.push(quote! { *mut bool });
                 param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
-                param_types.push(quote! { *mut *mut core::ffi::c_void });
-                quote! { -> ffier::FfierResult }
-            } else if ok_is_handle {
-                param_types.push(quote! { *mut *mut core::ffi::c_void });
-                quote! { -> *mut core::ffi::c_void }
-            } else {
-                if let Some(ok_tp) = ok {
-                    let bt = &ok_tp.bridge_type;
-                    param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
-                }
-                param_types.push(quote! { *mut *mut core::ffi::c_void });
+                param_types.push(err_out);
                 quote! { -> ffier::FfierResult }
             }
-        }
+            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                param_types.push(err_out);
+                quote! { -> *mut core::ffi::c_void }
+            }
+            ResultConv::OutParam => {
+                if let Some(tp) = ok {
+                    let bt = &tp.bridge_type;
+                    param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
+                }
+                param_types.push(err_out);
+                quote! { -> ffier::FfierResult }
+            }
+        },
     };
 
-    (param_types, fn_ret, ok_is_handle)
+    (param_types, fn_ret)
 }
 
 pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
@@ -338,7 +321,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
         let mut slot_always_filled = false;
         for m in variants {
             let method_name = &m.name;
-            let (param_types, fn_ret, _) = vtable_c_fn_sig(m, &handle_names, &value_names);
+            let (param_types, fn_ret) = vtable_c_fn_sig(m, &handle_names, &value_names);
             let field = quote! {
                 pub #method_name: Option<unsafe extern "C" fn(#(#param_types),*) #fn_ret>
             };
@@ -400,7 +383,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
 
-            let (fn_ptr_param_types, fn_ptr_ret, ok_is_handle) = vtable_c_fn_sig(m, &handle_names, &value_names);
+            let (fn_ptr_param_types, fn_ptr_ret) = vtable_c_fn_sig(m, &handle_names, &value_names);
             let fn_ptr_type = quote! {
                 unsafe extern "C" fn(#(#fn_ptr_param_types),*) #fn_ptr_ret
             };
@@ -456,48 +439,36 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     )
                 }
             } else {
-                match &m.ret {
-                    crate::meta::MetaReturn::Void => raw_call.clone(),
-                    crate::meta::MetaReturn::Value(tp) => {
-                        if crate::meta::option_value_struct_inner(&tp.rust_type, &value_names)
-                            .is_some()
-                            && let Some(_inner) =
-                                crate::meta::option_inner_tokens(&tp.bridge_type)
-                        {
-                            // Optional value return: the C side returns the
-                            // presence flag and writes the value only when set.
-                            let args = quote! { #(#vtable_args),* };
-                            let sep = if vtable_args.is_empty() {
-                                quote! {}
-                            } else {
-                                quote! {, }
-                            };
-                            quote! {{
-                                let mut __out = core::mem::MaybeUninit::uninit();
-                                let __is_some = unsafe { __f(
-                                    self.value.user_data as *mut core::ffi::c_void,
-                                    #args #sep __out.as_mut_ptr(),
-                                ) };
-                                if __is_some {
-                                    Some(unsafe { FfiType::from_c(__out.assume_init()) })
-                                } else {
-                                    None
-                                }
-                            }}
+                match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
+                    ReturnShape::Void => raw_call.clone(),
+                    ReturnShape::OptionalValue { .. } => {
+                        // Optional value return: the C side returns the
+                        // presence flag and writes the value only when set.
+                        let args = quote! { #(#vtable_args),* };
+                        let sep = if vtable_args.is_empty() {
+                            quote! {}
                         } else {
-                            quote! { unsafe { FfiType::from_c(#raw_call) } }
-                        }
+                            quote! {, }
+                        };
+                        quote! {{
+                            let mut __out = core::mem::MaybeUninit::uninit();
+                            let __is_some = unsafe { __f(
+                                self.value.user_data as *mut core::ffi::c_void,
+                                #args #sep __out.as_mut_ptr(),
+                            ) };
+                            if __is_some {
+                                Some(unsafe { FfiType::from_c(__out.assume_init()) })
+                            } else {
+                                None
+                            }
+                        }}
                     }
-                    crate::meta::MetaReturn::Result { ok, err_ident, .. } => {
+                    ReturnShape::Value { .. } => quote! { unsafe { FfiType::from_c(#raw_call) } },
+                    ReturnShape::Result { ok, err_ident, conv } => {
                         let err_ty = format_ident!("{err_ident}");
-                        let optional_value = ok.as_ref().and_then(|tp| {
-                            crate::meta::option_value_struct_inner(&tp.rust_type, &value_names)
-                                .and_then(|_| crate::meta::option_inner_tokens(&tp.bridge_type))
-                        });
-                        if let Some(inner) = optional_value {
-                            // Result<Option<ValueStruct>, E>: presence flag plus
-                            // a separate value out-param.
-                            quote! {{
+                        match conv {
+                            // Presence flag plus a separate value out-param.
+                            ResultConv::OptionalValueOutParam { inner } => quote! {{
                                 let mut __is_some = false;
                                 let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
                                 let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
@@ -519,54 +490,56 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 } else {
                                     Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
                                 }
-                            }}
-                        } else if ok_is_handle {
-                            // GLib-style: __f returns handle or null, err through out-param
-                            let ok_conversion = match ok {
-                                Some(_) => quote! { Ok(unsafe { FfiType::from_c(__raw) }) },
-                                None => quote! { Ok(()) },
-                            };
-                            quote! {{
-                                let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-                                let __raw = unsafe { __f(
-                                    self.value.user_data as *mut core::ffi::c_void,
-                                    #(#vtable_args,)*
-                                    &mut __err as *mut *mut core::ffi::c_void,
-                                ) };
-                                if !__raw.is_null() {
-                                    #ok_conversion
-                                } else {
-                                    Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
-                                }
-                            }}
-                        } else {
-                            // OutParam: __f returns FfierResult, ok value through out-param
-                            let (ok_decl, ok_conversion) = match ok {
-                                Some(_) => (
-                                    quote! { let mut __out = core::mem::MaybeUninit::uninit(); },
-                                    quote! { Ok(unsafe { FfiType::from_c(__out.assume_init()) }) },
-                                ),
-                                None => (quote! {}, quote! { Ok(()) }),
-                            };
-                            let out_param = match ok {
-                                Some(_) => quote! { __out.as_mut_ptr(), },
-                                None => quote! {},
-                            };
-                            quote! {{
-                                #ok_decl
-                                let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
-                                let __r = unsafe { __f(
-                                    self.value.user_data as *mut core::ffi::c_void,
-                                    #(#vtable_args,)*
-                                    #out_param
-                                    &mut __err as *mut *mut core::ffi::c_void,
-                                ) };
-                                if __r == ffier::FFIER_RESULT_SUCCESS {
-                                    #ok_conversion
-                                } else {
-                                    Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
-                                }
-                            }}
+                            }},
+                            // GLib-style: __f returns the handle or null, the
+                            // error through an out-param. A borrowed handle is
+                            // converted like a plain `&Handle` return.
+                            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                                let ok_conversion = match ok {
+                                    Some(_) => quote! { Ok(unsafe { FfiType::from_c(__raw) }) },
+                                    None => quote! { Ok(()) },
+                                };
+                                quote! {{
+                                    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                                    let __raw = unsafe { __f(
+                                        self.value.user_data as *mut core::ffi::c_void,
+                                        #(#vtable_args,)*
+                                        &mut __err as *mut *mut core::ffi::c_void,
+                                    ) };
+                                    if !__raw.is_null() {
+                                        #ok_conversion
+                                    } else {
+                                        Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                    }
+                                }}
+                            }
+                            // __f returns FfierResult, the ok value through an
+                            // out-param.
+                            ResultConv::OutParam => {
+                                let (ok_decl, ok_conversion, out_param) = match ok {
+                                    Some(_) => (
+                                        quote! { let mut __out = core::mem::MaybeUninit::uninit(); },
+                                        quote! { Ok(unsafe { FfiType::from_c(__out.assume_init()) }) },
+                                        quote! { __out.as_mut_ptr(), },
+                                    ),
+                                    None => (quote! {}, quote! { Ok(()) }, quote! {}),
+                                };
+                                quote! {{
+                                    #ok_decl
+                                    let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                                    let __r = unsafe { __f(
+                                        self.value.user_data as *mut core::ffi::c_void,
+                                        #(#vtable_args,)*
+                                        #out_param
+                                        &mut __err as *mut *mut core::ffi::c_void,
+                                    ) };
+                                    if __r == ffier::FFIER_RESULT_SUCCESS {
+                                        #ok_conversion
+                                    } else {
+                                        Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                    }
+                                }}
+                            }
                         }
                     }
                 }
@@ -620,13 +593,16 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
     let handle_assertions: Vec<proc_macro2::TokenStream> = own_non_raw
         .iter()
         .filter_map(|m| {
-            if let crate::meta::MetaReturn::Result { ok: Some(tp), .. } = &m.ret {
+            if let ReturnShape::Result {
+                ok: Some(tp), conv, ..
+            } = classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names)
+            {
                 // Optional value returns carry an out-param pair, not a handle.
-                if crate::meta::option_value_struct_inner(&tp.rust_type, &value_names).is_some() {
+                if matches!(conv, ResultConv::OptionalValueOutParam { .. }) {
                     return None;
                 }
                 let bt = &tp.bridge_type;
-                let ok_is_handle = crate::meta::is_result_ok_handle(&m.rust_ret, &handle_names);
+                let ok_is_handle = conv.is_handle_or_null();
                 let method_name = m.name.to_string();
                 // The assertion names the ok type, which may only exist in the
                 // configurations where the method itself exists.

@@ -12,7 +12,7 @@ use crate::meta::{
 
 use super::dispatch::{ErrorMap, TraitMap, wrap_concrete_dispatch};
 use super::params::{borrow_from_handle, convert_params};
-use super::returns::{BuilderCtx, wrap_return};
+use super::returns::wrap_return;
 use super::signature::c_signature_for_method;
 
 pub(super) fn generate_exportable_bridge(
@@ -29,13 +29,10 @@ pub(super) fn generate_exportable_bridge(
 
     let struct_lower = camel_to_snake(struct_name);
 
-    // Whether this type has any builder methods with by-value self.
-    // When true, ALL by-value self methods receive a pointer-to-handle
-    // (void**) in the C ABI, not just the builder methods themselves.
-    let is_builder_type = meta
-        .methods
-        .iter()
-        .any(|m| m.is_builder() && m.receiver == MetaReceiver::Value);
+    // Whether some by-value self method returns a Self that replaces the
+    // receiver. When true, ALL by-value self methods receive a
+    // pointer-to-handle (void**) in the C ABI, not just those methods.
+    let replaces_self_by_value = meta.replaces_self_by_value();
 
     let mut ffi_fns = Vec::new();
 
@@ -48,14 +45,13 @@ pub(super) fn generate_exportable_bridge(
         let has_receiver = m.receiver != MetaReceiver::None;
         let is_mut = m.receiver == MetaReceiver::Mut;
         let is_by_value = m.receiver == MetaReceiver::Value;
-        let is_builder = m.is_builder();
 
         // Single source of truth: the extern "C" fn signature.
         let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
-        // For builder by-value methods, the C param is a pointer-to-pointer
+        // For by-value methods on such types, the C param is a pointer-to-pointer
         // (FtConfig* = void**). We dereference it first, storing the slot
         // address for write-back later.
         let obj_binding = if has_receiver {
@@ -71,10 +67,10 @@ pub(super) fn generate_exportable_bridge(
                     );
                 }
             };
-            let deref_slot = if is_builder_type && is_by_value {
+            let deref_slot = if replaces_self_by_value && is_by_value {
                 // `handle` param is *mut c_void but actually void**.
-                // All by-value self methods on builder types use pointer-to-handle
-                // in the C ABI (so the caller can pass &builder consistently).
+                // All by-value self methods on such types use pointer-to-handle
+                // in the C ABI (so the caller can pass &handle consistently).
                 quote! {
                     let __handle_slot = handle as *mut *mut core::ffi::c_void;
                     let handle = unsafe { *__handle_slot };
@@ -128,14 +124,8 @@ pub(super) fn generate_exportable_bridge(
         let sig_types: Vec<_> = c_sig.params.iter().map(|p| &p.c_type).collect();
         let sig_ret = &c_sig.ret;
 
-        let builder_ctx = if is_builder {
-            Some(BuilderCtx {
-                struct_path,
-                is_by_value,
-            })
-        } else {
-            None
-        };
+        // A returned Self replacing a by-value receiver is written back.
+        let replaced_self = (m.replaces_self() && is_by_value).then_some(struct_path);
         let return_body = wrap_return(
             method_call,
             &m.ret,
@@ -143,7 +133,7 @@ pub(super) fn generate_exportable_bridge(
             handle_types,
             value_types,
             error_map,
-            builder_ctx.as_ref(),
+            replaced_self,
             lib_crate,
         );
 

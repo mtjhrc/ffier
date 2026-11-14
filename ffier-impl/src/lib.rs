@@ -15,6 +15,7 @@ mod export;
 mod library;
 mod meta;
 mod reexport;
+mod return_shape;
 mod signature;
 mod types;
 mod vtable;
