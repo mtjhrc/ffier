@@ -320,6 +320,11 @@ mod tests {
         let mut w = Widget::new();
         w.set_tags(&["alpha", "beta", "gamma"]);
         assert_eq!(w.tags_joined(), "alpha,beta,gamma");
+
+        let apple = Apple::new(42);
+        let count_tags = __ffier_vtable_Fruit::<Apple>().count_tags.unwrap();
+        let user_data = core::ptr::from_ref(&apple).cast_mut().cast();
+        assert_eq!(unsafe { count_tags(user_data, core::ptr::null(), 0) }, 42);
     }
 
     // ================================================================

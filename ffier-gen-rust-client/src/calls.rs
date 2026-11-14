@@ -2,96 +2,11 @@
 
 use std::fmt::Write;
 
-use ffier_schema::{CResultConvention, Library, ParamType, Return, TypeRef};
+use ffier_schema::{CResultConvention, Library, Return, TypeRef};
 
 use crate::abi::optional_value_out_type;
 use crate::error::find_error_dispatch_fns;
 use crate::ffi_traits::{self, TypeRefExt};
-
-/// Build FFI call arguments from method params. Each param is converted
-/// via `IntoC::into_c`, `ClientHandle::as_handle`, `__into_raw_handle()`, or
-/// a pre-bound slice reference. Borrowed handle params (`&Handle`) use
-/// `as_handle` so the pointer keeps the borrow's lifetime.
-fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
-    let mut args = Vec::new();
-    for p in params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                // For borrowed references to handle types, use as_handle()
-                // to avoid lifetime escape from into_c().
-                let is_borrowed_handle = tr.ref_kind != ffier_schema::RefKind::None
-                    && lib
-                        .type_entry(&tr.type_name)
-                        .is_some_and(|e| e.kind.is_handle());
-                if is_borrowed_handle {
-                    let tok = ffi_traits::token(tr, lib);
-                    args.push(format!(
-                        "ffier::ClientHandle::<{tok}>::as_handle({})",
-                        p.name
-                    ));
-                } else {
-                    args.push(tr.convert_into_c(lib, &p.name));
-                }
-            }
-            ParamType::Slice { element, .. } => {
-                if element.ref_kind != ffier_schema::RefKind::None {
-                    // Ref elements (str, handles) were converted into a Vec
-                    // by emit_param_pre_bindings — use the converted Vec.
-                    args.push(format!("__ffi_{}.as_ptr()", p.name));
-                    args.push(format!("__ffi_{}.len()", p.name));
-                } else {
-                    // Non-ref elements (primitives) are layout-compatible,
-                    // pass the slice data directly.
-                    args.push(format!("{}.as_ptr()", p.name));
-                    args.push(format!("{}.len()", p.name));
-                }
-            }
-            ParamType::ImplTrait { ref_kind, .. } => {
-                args.push(match ref_kind {
-                    ffier_schema::RefKind::None => {
-                        format!("{}.__into_callback_handle().into_raw()", p.name)
-                    }
-                    _ => format!("__ffi_{}.as_raw()", p.name),
-                });
-            }
-        }
-    }
-    args
-}
-
-/// Emit borrowed callback guards and ref-element slice conversions.
-fn emit_param_pre_bindings(
-    out: &mut String,
-    params: &[ffier_schema::Param],
-    indent: &str,
-    lib: &Library,
-) {
-    for p in params {
-        if let ParamType::ImplTrait { ref_kind, .. } = &p.param_type {
-            let method = match ref_kind {
-                ffier_schema::RefKind::None => continue,
-                ffier_schema::RefKind::Shared => "__borrow_callback_handle",
-                ffier_schema::RefKind::Mut => "__borrow_callback_handle_mut",
-            };
-            writeln!(out, "{indent}let __ffi_{} = {}.{method}();", p.name, p.name).unwrap();
-        }
-        if let ParamType::Slice { element, .. } = &p.param_type
-            && element.ref_kind != ffier_schema::RefKind::None
-        {
-            let tok = ffi_traits::token(element, lib);
-            let elem_ty = element.to_rust_type();
-            writeln!(
-                out,
-                "{indent}let __ffi_{}: Vec<{}> = {}.iter().map(|s| {}).collect();",
-                p.name,
-                ffi_traits::c_repr(&elem_ty, &tok),
-                p.name,
-                ffi_traits::into_c(&elem_ty, &tok, "*s"),
-            )
-            .unwrap();
-        }
-    }
-}
 
 /// How a safe wrapper turns the FFI result into its Rust return value.
 #[derive(Clone, Copy, Default)]
@@ -144,12 +59,14 @@ pub(crate) fn emit_call_body(
     lib: &Library,
     policy: ReturnPolicy,
 ) {
-    emit_param_pre_bindings(out, params, indent, lib);
-    let args: Vec<String> = self_arg
-        .map(str::to_string)
-        .into_iter()
-        .chain(build_ffi_param_args(params, lib))
-        .collect();
+    let mut args: Vec<String> = self_arg.map(str::to_string).into_iter().collect();
+    for p in params {
+        let converted = crate::conv::lower_arg(p, lib);
+        for pre in converted.pre {
+            writeln!(out, "{indent}{pre}").unwrap();
+        }
+        args.extend(converted.exprs);
+    }
     emit_ffi_call_return(out, ffi_name, &args.join(", "), ret, indent, lib, policy);
 }
 

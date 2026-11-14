@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
-use ffier_schema::{ImplementableTrait, Library, Method, ParamType, Receiver, Return};
+use ffier_schema::{ImplementableTrait, Library, Method, Receiver, Return};
 
 use crate::abi::{ParamNames, push_extern_params, push_return_and_out_params};
 use crate::cfg::{emit_cfg_attr, uncovered_guard};
+use crate::ffi_traits::TypeRefExt;
 
 pub(super) fn emit_vtable_struct(
     out: &mut String,
@@ -164,43 +165,11 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
             // Build call args
             let mut call_args = Vec::new();
             for p in &m.params {
-                match &p.param_type {
-                    ParamType::Regular(tr) => {
-                        let ty = tr.to_rust_type();
-                        let tok = crate::ffi_traits::token(tr, lib);
-                        call_args.push(format!(
-                            "unsafe {{ <{ty} as ffier::FromC<{tok}>>::from_c({}) }}",
-                            p.name
-                        ));
-                    }
-                    ParamType::ImplTrait { .. } => {
-                        call_args.push(p.name.clone());
-                    }
-                    ParamType::Slice { element, c_params } => {
-                        // The trampoline params are named after the schema's
-                        // C params (see `abi::push_extern_params`).
-                        let [ptr, len] = c_params.as_slice() else {
-                            panic!("slice param `{}` must expand to pointer + length", p.name);
-                        };
-                        let (ptr, len) = (&ptr.name, &len.name);
-                        let slice_name = format!("__slice_{}", p.name);
-                        let elem_ty = element.to_rust_type();
-                        let elem_tok = crate::ffi_traits::token(element, lib);
-                        if element.ref_kind != ffier_schema::RefKind::None {
-                            // Ref elements: reconstruct Vec<&T> from C repr array.
-                            writeln!(out,
-                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }}.iter().map(|v| unsafe {{ <{elem_ty} as ffier::FromC<{elem_tok}>>::from_c(*v) }}).collect();",
-                            ).unwrap();
-                            call_args.push(format!("&{slice_name}"));
-                        } else {
-                            // Non-ref elements (primitives): from_raw_parts gives &[T] directly.
-                            writeln!(out,
-                                "                    let {slice_name} = if {len} == 0 {{ &[] as &[{elem_ty}] }} else {{ unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }} }};",
-                            ).unwrap();
-                            call_args.push(slice_name);
-                        }
-                    }
+                let converted = crate::conv::lift_param(p, lib);
+                for pre in converted.pre {
+                    writeln!(out, "                    {pre}").unwrap();
                 }
+                call_args.extend(converted.exprs);
             }
             let call_str = call_args.join(", ");
             let call = format!("__val.{}({call_str})", m.name);
@@ -225,22 +194,25 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                     writeln!(out, "                    }}").unwrap();
                 }
                 Return::OptionalValue(tr) => {
-                    let ty = tr.without_optional().to_rust_type();
-                    let tok = crate::ffi_traits::token(tr, lib);
+                    let ty_ref = tr.without_optional();
                     writeln!(out, "                    match __result {{").unwrap();
                     writeln!(out, "                        Some(__value) => {{").unwrap();
-                    writeln!(out, "                            unsafe {{ result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__value)) }};").unwrap();
+                    writeln!(
+                        out,
+                        "                            unsafe {{ result.write({}) }};",
+                        ty_ref.convert_into_c(lib, "__value")
+                    )
+                    .unwrap();
                     writeln!(out, "                            true").unwrap();
                     writeln!(out, "                        }}").unwrap();
                     writeln!(out, "                        None => false,").unwrap();
                     writeln!(out, "                    }}").unwrap();
                 }
                 Return::Value(tr) => {
-                    let ty = tr.to_rust_type();
-                    let tok = crate::ffi_traits::token(tr, lib);
                     writeln!(
                         out,
-                        "                    <{ty} as ffier::IntoC<{tok}>>::into_c(__result)"
+                        "                    {}",
+                        tr.convert_into_c(lib, "__result")
                     )
                     .unwrap();
                 }
@@ -253,9 +225,12 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                         CResultConvention::HandleOrNull => {
                             match ok {
                                 Some(ok_tr) => {
-                                    let ty = ok_tr.to_rust_type();
-                                    let tok = crate::ffi_traits::token(ok_tr, lib);
-                                    writeln!(out, "                        Ok(__ok) => <{ty} as ffier::IntoC<{tok}>>::into_c(__ok),").unwrap();
+                                    writeln!(
+                                        out,
+                                        "                        Ok(__ok) => {},",
+                                        ok_tr.convert_into_c(lib, "__ok")
+                                    )
+                                    .unwrap();
                                 }
                                 None => {
                                     writeln!(
@@ -286,11 +261,9 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                         CResultConvention::OutParam => {
                             match ok {
                                 Some(ok_tr) => {
-                                    let ty = ok_tr.to_rust_type();
-                                    let tok = crate::ffi_traits::token(ok_tr, lib);
                                     writeln!(out, "                        Ok(__ok) => {{")
                                         .unwrap();
-                                    writeln!(out, "                            unsafe {{ result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__ok)) }};").unwrap();
+                                    writeln!(out, "                            unsafe {{ result.write({}) }};", ok_tr.convert_into_c(lib, "__ok")).unwrap();
                                     writeln!(
                                         out,
                                         "                            0 // FFIER_RESULT_SUCCESS"
@@ -308,8 +281,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                             let ok_tr = ok
                                 .as_ref()
                                 .expect("OptionalValueOutParam requires an ok type");
-                            let ty = ok_tr.without_optional().to_rust_type();
-                            let tok = crate::ffi_traits::token(ok_tr, lib);
+                            let ty_ref = ok_tr.without_optional();
                             writeln!(out, "                        Ok(Some(__ok)) => {{").unwrap();
                             writeln!(out, "                            unsafe {{").unwrap();
                             writeln!(
@@ -317,7 +289,12 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                                 "                                result_is_some.write(true);"
                             )
                             .unwrap();
-                            writeln!(out, "                                result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__ok));").unwrap();
+                            writeln!(
+                                out,
+                                "                                result.write({});",
+                                ty_ref.convert_into_c(lib, "__ok")
+                            )
+                            .unwrap();
                             writeln!(out, "                            }}").unwrap();
                             writeln!(out, "                            0 // FFIER_RESULT_SUCCESS")
                                 .unwrap();
