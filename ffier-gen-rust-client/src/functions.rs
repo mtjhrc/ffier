@@ -16,7 +16,7 @@ pub(crate) fn emit_free_function(
     symbols: &mut Vec<SymbolInfo>,
 ) {
     // Extern declaration
-    emit_extern_fns(out, &[extern_fn_from_free(f)], None, symbols);
+    emit_extern_fns(out, &[extern_fn_from_free(f, lib)], None, symbols);
 
     emit_cfg_attr(out, f.cfg.as_ref());
     emit_doc_attrs(out, &f.doc, "");

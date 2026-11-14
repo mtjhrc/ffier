@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ffier_schema::{Library, Method, Receiver};
 
-use crate::calls::{BuilderReceiver, ReturnPolicy, emit_call_body};
+use crate::calls::{ReturnPolicy, SelfReceiver, emit_call_body};
 use crate::cfg::emit_cfg_attr;
 use crate::signature::{
     build_wrapper_return_type, emit_doc_attrs, format_param_sig, format_receiver, lifetime_generics,
@@ -14,7 +14,7 @@ pub(super) fn emit_method_wrapper(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    is_builder_type: bool,
+    replaces_self_by_value: bool,
     has_lifetimes: bool,
     lib: &Library,
 ) {
@@ -44,7 +44,7 @@ pub(super) fn emit_method_wrapper(
     .unwrap();
 
     // Method body
-    emit_method_body(out, m, ffi_name, is_builder_type, has_lifetimes, lib);
+    emit_method_body(out, m, ffi_name, replaces_self_by_value, has_lifetimes, lib);
 
     writeln!(out, "    }}").unwrap();
 }
@@ -53,14 +53,14 @@ fn emit_method_body(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    is_builder_type: bool,
+    replaces_self_by_value: bool,
     has_lifetimes: bool,
     lib: &Library,
 ) {
     let by_value_self = m.receiver == Receiver::Value;
 
     // Handle extraction for by-value self
-    if by_value_self && is_builder_type {
+    if by_value_self && replaces_self_by_value {
         writeln!(
             out,
             "        let mut __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};"
@@ -76,19 +76,19 @@ fn emit_method_body(
 
     let self_arg = match m.receiver {
         Receiver::None => None,
-        Receiver::Value if is_builder_type => {
+        Receiver::Value if replaces_self_by_value => {
             Some("&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void")
         }
         Receiver::Value => Some("__handle"),
         Receiver::Ref | Receiver::Mut => Some("self.0"),
     };
-    let builder = match m.receiver {
-        Receiver::Mut => Some(BuilderReceiver::Mut),
-        Receiver::Value => Some(BuilderReceiver::Value { has_lifetimes }),
+    let replaces_self = match m.receiver {
+        Receiver::Mut => Some(SelfReceiver::Mut),
+        Receiver::Value => Some(SelfReceiver::Value { has_lifetimes }),
         Receiver::None | Receiver::Ref => None,
     };
     let policy = ReturnPolicy {
-        builder,
+        replaces_self,
         own_borrowed_handles: true,
     };
     emit_call_body(

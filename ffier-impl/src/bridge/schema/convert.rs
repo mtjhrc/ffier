@@ -128,7 +128,7 @@ pub(super) fn convert_exportable(
     Ok(ffier_schema::ExportedType {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
-        is_builder_type,
+        replaces_self_by_value: is_builder_type,
         thread_safety: meta.thread_safety,
         methods: meta
             .methods

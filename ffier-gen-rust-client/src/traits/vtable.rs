@@ -5,16 +5,13 @@ use std::fmt::Write;
 
 use ffier_schema::{ImplementableTrait, Library, Method, ParamType, Receiver, Return};
 
-use crate::abi::{
-    push_extern_param_types, push_extern_params, push_return_and_out_param_types,
-    push_return_and_out_params,
-};
+use crate::abi::{ParamNames, push_extern_params, push_return_and_out_params};
 use crate::cfg::{emit_cfg_attr, uncovered_guard};
 
 pub(super) fn emit_vtable_struct(
     out: &mut String,
     tr: &ImplementableTrait,
-    _lib: &Library,
+    lib: &Library,
     vtable_name: &str,
 ) {
     emit_cfg_attr(out, tr.cfg.as_ref());
@@ -55,8 +52,8 @@ pub(super) fn emit_vtable_struct(
         for m in variants {
             emit_cfg_attr(out, m.cfg.as_ref());
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
-            push_extern_param_types(&m.params, &mut params);
-            let ret = push_return_and_out_param_types(&m.ret, &mut params);
+            push_extern_params(&m.params, &mut params, ParamNames::TypesOnly);
+            let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::TypesOnly);
             let params_str = params.join(", ");
             writeln!(
                 out,
@@ -80,7 +77,7 @@ pub(super) fn emit_vtable_struct(
     writeln!(out).unwrap();
 }
 
-pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait) {
+pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait, lib: &Library) {
     let vtable_name = &tr.vtable_struct_name;
     let num_slots = u16::try_from(tr.num_slots).expect("num_slots exceeds u16::MAX");
 
@@ -120,8 +117,8 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait)
 
             // Build trampoline params — same convention as vtable struct field
             let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
-            push_extern_params(&m.params, &mut tramp_params);
-            let ret = push_return_and_out_params(&m.ret, &mut tramp_params, false);
+            push_extern_params(&m.params, &mut tramp_params, ParamNames::Named);
+            let ret = push_return_and_out_params(&m.ret, &mut tramp_params, lib, ParamNames::Named);
             let tramp_params_str = tramp_params.join(", ");
             let method_lifetimes = m
                 .method_lifetimes
