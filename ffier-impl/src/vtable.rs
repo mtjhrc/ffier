@@ -215,12 +215,13 @@ fn vtable_c_fn_sig(
             }
             crate::meta::MetaParamKind::PrimitiveSlice(tp) => {
                 let bt = &tp.bridge_type;
-                param_types.push(quote! { *const <#bt as FfiType>::CRepr });
+                param_types
+                    .push(quote! { *const <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
                 param_types.push(quote! { usize });
             }
             crate::meta::MetaParamKind::Regular(tp) => {
                 let bt = &tp.bridge_type;
-                param_types.push(quote! { <#bt as FfiType>::CRepr });
+                param_types.push(quote! { <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
             }
         }
     }
@@ -229,17 +230,18 @@ fn vtable_c_fn_sig(
     let fn_ret = match classify_return(&m.ret, &m.rust_ret, handle_names, value_names) {
         ReturnShape::Void => quote! {},
         ReturnShape::OptionalValue { inner, .. } => {
-            param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+            param_types.push(quote! { *mut <#inner as ffier::FfiType<__FfierLocalToken>>::CRepr });
             quote! { -> bool }
         }
         ReturnShape::Value { tp, .. } => {
             let bt = &tp.bridge_type;
-            quote! { -> <#bt as FfiType>::CRepr }
+            quote! { -> <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr }
         }
         ReturnShape::Result { ok, conv, .. } => match conv {
             ResultConv::OptionalValueOutParam { inner } => {
                 param_types.push(quote! { *mut bool });
-                param_types.push(quote! { *mut <#inner as FfiType>::CRepr });
+                param_types
+                    .push(quote! { *mut <#inner as ffier::FfiType<__FfierLocalToken>>::CRepr });
                 param_types.push(err_out);
                 quote! { -> ffier::FfierResult }
             }
@@ -250,7 +252,8 @@ fn vtable_c_fn_sig(
             ResultConv::OutParam => {
                 if let Some(tp) = ok {
                     let bt = &tp.bridge_type;
-                    param_types.push(quote! { *mut <#bt as FfiType>::CRepr });
+                    param_types
+                        .push(quote! { *mut <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
                 }
                 param_types.push(err_out);
                 quote! { -> ffier::FfierResult }
@@ -416,7 +419,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                         vtable_args.push(quote! { #id.len() });
                     }
                     crate::meta::MetaParamKind::Regular(_) => {
-                        vtable_args.push(quote! { FfiType::into_c(#id) });
+                        vtable_args.push(quote! { ffier::IntoC::<__FfierLocalToken>::into_c(#id) });
                     }
                 }
             }
@@ -457,20 +460,20 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 #args #sep __out.as_mut_ptr(),
                             ) };
                             if __is_some {
-                                Some(unsafe { FfiType::from_c(__out.assume_init()) })
+                                Some(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__out.assume_init()) })
                             } else {
                                 None
                             }
                         }}
                     }
-                    ReturnShape::Value { .. } => quote! { unsafe { FfiType::from_c(#raw_call) } },
+                    ReturnShape::Value { .. } => quote! { unsafe { ffier::FromC::<__FfierLocalToken>::from_c(#raw_call) } },
                     ReturnShape::Result { ok, err_ident, conv } => {
                         let err_ty = format_ident!("{err_ident}");
                         match conv {
                             // Presence flag plus a separate value out-param.
                             ResultConv::OptionalValueOutParam { inner } => quote! {{
                                 let mut __is_some = false;
-                                let mut __out = core::mem::MaybeUninit::<<#inner as FfiType>::CRepr>::uninit();
+                                let mut __out = core::mem::MaybeUninit::<<#inner as ffier::FfiType<__FfierLocalToken>>::CRepr>::uninit();
                                 let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
                                 let __r = unsafe { __f(
                                     self.value.user_data as *mut core::ffi::c_void,
@@ -482,13 +485,13 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 if __r == ffier::FFIER_RESULT_SUCCESS {
                                     if __is_some {
                                         Ok(Some(unsafe {
-                                            <#inner as FfiType>::from_c(__out.assume_init())
+                                            <#inner as ffier::FromC<__FfierLocalToken>>::from_c(__out.assume_init())
                                         }))
                                     } else {
                                         Ok(None)
                                     }
                                 } else {
-                                    Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                    Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
                                 }
                             }},
                             // GLib-style: __f returns the handle or null, the
@@ -496,7 +499,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             // converted like a plain `&Handle` return.
                             ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
                                 let ok_conversion = match ok {
-                                    Some(_) => quote! { Ok(unsafe { FfiType::from_c(__raw) }) },
+                                    Some(_) => quote! { Ok(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__raw) }) },
                                     None => quote! { Ok(()) },
                                 };
                                 quote! {{
@@ -509,7 +512,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     if !__raw.is_null() {
                                         #ok_conversion
                                     } else {
-                                        Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                        Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
                                     }
                                 }}
                             }
@@ -519,7 +522,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 let (ok_decl, ok_conversion, out_param) = match ok {
                                     Some(_) => (
                                         quote! { let mut __out = core::mem::MaybeUninit::uninit(); },
-                                        quote! { Ok(unsafe { FfiType::from_c(__out.assume_init()) }) },
+                                        quote! { Ok(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__out.assume_init()) }) },
                                         quote! { __out.as_mut_ptr(), },
                                     ),
                                     None => (quote! {}, quote! { Ok(()) }, quote! {}),
@@ -536,7 +539,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     if __r == ffier::FFIER_RESULT_SUCCESS {
                                         #ok_conversion
                                     } else {
-                                        Err(unsafe { <#err_ty as FfiType>::from_c(__err) })
+                                        Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
                                     }
                                 }}
                             }
@@ -610,7 +613,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                 Some(quote! {
                     #cfg_attr
                     assert!(
-                        <#bt as FfiType>::IS_HANDLE == #ok_is_handle,
+                        <#bt as ffier::FfiType<__FfierLocalToken>>::IS_HANDLE == #ok_is_handle,
                         concat!(
                             "handle detection mismatch for method `",
                             #method_name,

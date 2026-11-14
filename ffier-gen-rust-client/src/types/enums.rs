@@ -5,6 +5,7 @@ use std::fmt::Write;
 use ffier_schema::{EnumType, Library, TypeKind};
 
 use crate::cfg::emit_cfg_attr;
+use crate::ffi_traits::emit_conversions;
 
 pub(crate) fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     let entry = lib.type_entry(&en.name).unwrap();
@@ -24,32 +25,24 @@ pub(crate) fn emit_enum_type(out: &mut String, en: &EnumType, lib: &Library) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // FfiType impl
-    emit_cfg_attr(out, en.cfg.as_ref());
-    writeln!(out, "impl FfiType for {} {{", en.name).unwrap();
-    writeln!(out, "    type CRepr = {repr};").unwrap();
-    writeln!(
-        out,
-        "    const C_TYPE_NAME: &'static str = \"{}\";",
-        en.name
-    )
-    .unwrap();
-    writeln!(out, "    fn into_c(self) -> {repr} {{ self as {repr} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: {repr}) -> Self {{").unwrap();
-    writeln!(out, "        match repr {{").unwrap();
+    let mut from_c = String::from("match repr { ");
     for v in &en.variants {
-        writeln!(out, "            {} => Self::{},", v.value, v.name).unwrap();
+        write!(from_c, "{} => Self::{}, ", v.value, v.name).unwrap();
     }
-    writeln!(
-        out,
-        "            unknown => panic!(\"invalid {} discriminant: {{}}\", unknown),",
+    write!(
+        from_c,
+        "unknown => panic!(\"invalid {} discriminant: {{}}\", unknown) }}",
         en.name
     )
     .unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    emit_conversions(
+        out,
+        en.cfg.as_ref(),
+        &en.name,
+        repr,
+        &format!("self as {repr}"),
+        &from_c,
+    );
 }
 
 // ===========================================================================
@@ -76,22 +69,12 @@ pub(crate) fn emit_bitflags_type(out: &mut String, bf: &EnumType, lib: &Library)
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // FfiType impl
-    emit_cfg_attr(out, bf.cfg.as_ref());
-    writeln!(out, "impl FfiType for {} {{", bf.name).unwrap();
-    writeln!(out, "    type CRepr = {repr};").unwrap();
-    writeln!(
+    emit_conversions(
         out,
-        "    const C_TYPE_NAME: &'static str = \"{}\";",
-        bf.name
-    )
-    .unwrap();
-    writeln!(out, "    fn into_c(self) -> {repr} {{ self.bits() }}").unwrap();
-    writeln!(
-        out,
-        "    unsafe fn from_c(repr: {repr}) -> Self {{ Self::from_bits_retain(repr) }}"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+        bf.cfg.as_ref(),
+        &bf.name,
+        repr,
+        "self.bits()",
+        "Self::from_bits_retain(repr)",
+    );
 }

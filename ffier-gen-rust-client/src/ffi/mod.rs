@@ -74,7 +74,7 @@ pub(crate) fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -
             params.push("handle: *mut core::ffi::c_void".to_string());
         }
     }
-    push_extern_params(&m.params, &mut params, ParamNames::Named);
+    push_extern_params(&m.params, &mut params, lib, ParamNames::Named);
     let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
@@ -82,7 +82,7 @@ pub(crate) fn extern_fn_from_method(ffi_name: &str, m: &Method, lib: &Library) -
 /// Build an `ExternFn` from a dispatch method signature.
 pub(crate) fn extern_fn_from_dispatch(ffi_name: &str, m: &Method, lib: &Library) -> ExternFn {
     let mut params = vec!["handle: *mut core::ffi::c_void".to_string()];
-    push_extern_params(&m.params, &mut params, ParamNames::Named);
+    push_extern_params(&m.params, &mut params, lib, ParamNames::Named);
     let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(ffi_name, params, ret, m.cfg.clone())
 }
@@ -90,7 +90,7 @@ pub(crate) fn extern_fn_from_dispatch(ffi_name: &str, m: &Method, lib: &Library)
 /// Build an `ExternFn` from a free function.
 pub(crate) fn extern_fn_from_free(f: &FreeFunction, lib: &Library) -> ExternFn {
     let mut params = Vec::new();
-    push_extern_params(&f.params, &mut params, ParamNames::Named);
+    push_extern_params(&f.params, &mut params, lib, ParamNames::Named);
     let ret = push_return_and_out_params(&f.ret, &mut params, lib, ParamNames::Named);
     extern_fn_cfg(&f.ffi_name, params, ret, f.cfg.clone())
 }

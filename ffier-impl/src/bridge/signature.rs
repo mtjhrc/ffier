@@ -91,7 +91,7 @@ pub(super) fn c_signature_for_method(
         ReturnShape::OptionalValue { inner, .. } => {
             out_param(
                 "result",
-                quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+                quote! { *mut <#inner as ffier::FfiType<#lib_crate::__FfierLocalToken>>::CRepr },
             );
             quote! { -> bool }
         }
@@ -105,7 +105,7 @@ pub(super) fn c_signature_for_method(
                 out_param("result_is_some", quote! { *mut bool });
                 out_param(
                     "result",
-                    quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+                    quote! { *mut <#inner as ffier::FfiType<#lib_crate::__FfierLocalToken>>::CRepr },
                 );
                 out_param("err_out", err_out);
                 quote! { -> ffier::FfierResult }
@@ -134,7 +134,7 @@ pub(super) fn c_signature_for_method(
     }
 }
 
-/// Resolve the crate whose `FfiType`/`FfiHandle` traits to use for a type pair.
+/// Resolve the crate whose `__FfierLocalToken` a type pair's conversions use.
 /// Returns `foreign_crate` if set, otherwise falls back to `lib_crate`.
 pub(super) fn resolve_trait_crate<'a>(
     tp: &'a MetaTypePair,
@@ -149,14 +149,14 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
         MetaParamKind::Regular(tp) => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
-            quote! { <#bridge_type as #tc::FfiType>::CRepr }
+            quote! { <#bridge_type as ffier::FfiType<#tc::__FfierLocalToken>>::CRepr }
         }
         MetaParamKind::ImplTrait { .. } => quote! { *mut core::ffi::c_void },
         MetaParamKind::StrSlice => quote! { *const ffier::FfierBytes },
         MetaParamKind::PrimitiveSlice(tp) => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
-            quote! { *const <#bridge_type as #tc::FfiType>::CRepr }
+            quote! { *const <#bridge_type as ffier::FfiType<#tc::__FfierLocalToken>>::CRepr }
         }
     }
 }
@@ -165,7 +165,7 @@ fn c_param_type(kind: &MetaParamKind, lib_crate: &TokenStream2) -> TokenStream2 
 fn c_return_type(kind: &MetaTypePair, lib_crate: &TokenStream2) -> TokenStream2 {
     let bridge_type = &kind.bridge_type;
     let tc = resolve_trait_crate(kind, lib_crate);
-    quote! { <#bridge_type as #tc::FfiType>::CRepr }
+    quote! { <#bridge_type as ffier::FfiType<#tc::__FfierLocalToken>>::CRepr }
 }
 
 /// Produce the C type for a Result ok-value out-parameter.

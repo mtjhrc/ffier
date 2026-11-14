@@ -2161,17 +2161,17 @@ pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
     handle: *mut core::ffi::c_void,
 ) -> ffier::FfierBytes {
     unsafe {
-        use FfiHandle;
-        use FfiType;
+        use ffier::{FfiHandle, FromC};
+        type Tok = __FfierLocalToken;
         let tag = ffier::handle_type_tag(handle);
-        let name = if tag == VtableFruit::TYPE_TAG {
-            drop(<VtableFruit as FfiType>::from_c(handle));
+        let name = if tag == <VtableFruit as FfiHandle<Tok>>::TYPE_TAG {
+            drop(<VtableFruit as FromC<Tok>>::from_c(handle));
             "VtableFruit"
-        } else if tag == Apple::TYPE_TAG {
-            drop(<Apple as FfiType>::from_c(handle));
+        } else if tag == <Apple as FfiHandle<Tok>>::TYPE_TAG {
+            drop(<Apple as FromC<Tok>>::from_c(handle));
             "Apple"
-        } else if tag == Orange::TYPE_TAG {
-            drop(<Orange as FfiType>::from_c(handle));
+        } else if tag == <Orange as FfiHandle<Tok>>::TYPE_TAG {
+            drop(<Orange as FromC<Tok>>::from_c(handle));
             "Orange"
         } else {
             "unknown"
@@ -2184,7 +2184,7 @@ pub unsafe extern "C" fn ft_debug_fruit_dispatch_kind(
 #[cfg(all(test, feature = "ffi"))]
 mod tests {
     use super::*;
-    use FfiHandle;
+    use ffier::FfiHandle;
     use std::ffi::{CStr, c_void};
     use std::ptr;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -2590,7 +2590,7 @@ mod tests {
     fn error_payload_indices_preserve_opaque_slots() {
         unsafe {
             let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
-            let handle = error.into_c();
+            let handle = ffier::IntoC::<__FfierLocalToken>::into_c(error);
             let mut first = 0i32;
             let mut last = 0u64;
             ft_error_payload(
@@ -2616,7 +2616,7 @@ mod tests {
         let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 1,
                 (&mut output as *mut u64).cast(),
@@ -2631,7 +2631,7 @@ mod tests {
         let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 3,
                 (&mut output as *mut u64).cast(),
@@ -2646,7 +2646,7 @@ mod tests {
         let error = TestError::MixedError(17, anyhow::anyhow!("hidden detail"), 900);
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 usize::MAX,
                 (&mut output as *mut u64).cast(),
@@ -2661,7 +2661,7 @@ mod tests {
         let error = TestError::CustomMessage;
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 0,
                 (&mut output as *mut u64).cast(),
@@ -2676,7 +2676,7 @@ mod tests {
         let error = TestError::InvalidInput();
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 0,
                 (&mut output as *mut u64).cast(),
@@ -2691,7 +2691,7 @@ mod tests {
         let error = TestError::OpaqueUnit(());
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 0,
                 (&mut output as *mut u64).cast(),
@@ -2706,7 +2706,7 @@ mod tests {
         let error = TestError::Fatal(anyhow::anyhow!("hidden detail"));
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
                 &error,
                 0,
                 (&mut output as *mut u64).cast(),
@@ -2721,7 +2721,12 @@ mod tests {
         let error = TestError::NumericError(17);
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(&error, 0, (&mut output as *mut u64).cast(), 0);
+            ffier::FfiErrorPayload::<__FfierLocalToken>::payload(
+                &error,
+                0,
+                (&mut output as *mut u64).cast(),
+                0,
+            );
         }
     }
 
@@ -3053,7 +3058,7 @@ mod tests {
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_widget_fail_always(w, &mut err as *mut *mut core::ffi::c_void);
             // TestError has type_tag=1, library_tag=1 → composed tag
-            let expected_tag = <TestError as FfiHandle>::TYPE_TAG;
+            let expected_tag = <TestError as FfiHandle<__FfierLocalToken>>::TYPE_TAG;
             assert_eq!(ffier::ffier_result_type_tag(r), expected_tag);
             assert_eq!(ffier::ffier_result_code(r), 2);
             ft_error_destroy(err);
@@ -3093,7 +3098,7 @@ mod tests {
             unsafe {
                 assert_eq!(ffier::handle_type_tag(handle), TestError::TYPE_TAG);
                 assert_eq!(error_message_to_string(handle), message);
-                let error = TestError::from_c(handle);
+                let error = <TestError as ffier::FromC<__FfierLocalToken>>::from_c(handle);
                 assert_eq!(ffier::FfiError::code(&error), code);
                 match code {
                     2 => assert!(matches!(error, TestError::CustomMessage)),
@@ -3137,7 +3142,7 @@ mod tests {
             // The error handle is a proper FfierHandleBox — type tag is readable
             let tag = ffier::handle_type_tag(err as *const core::ffi::c_void);
             // TestError has type_tag=1, library_tag=1 → composed tag
-            let expected_tag = <TestError as FfiHandle>::TYPE_TAG;
+            let expected_tag = <TestError as FfiHandle<__FfierLocalToken>>::TYPE_TAG;
             assert_eq!(tag, expected_tag);
             ft_error_destroy(err);
             ft_widget_destroy(w);

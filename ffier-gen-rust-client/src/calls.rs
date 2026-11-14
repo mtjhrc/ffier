@@ -6,12 +6,13 @@ use ffier_schema::{CResultConvention, Library, ParamType, Return, TypeRef};
 
 use crate::abi::optional_value_out_type;
 use crate::error::find_error_dispatch_fns;
+use crate::ffi_traits::{self, TypeRefExt};
 use crate::signature::borrowed_handle_return_type;
 
 /// Build FFI call arguments from method params. Each param is converted
-/// via `FfiType::into_c`, `as_handle()`, `__into_raw_handle()`, or pre-bound
-/// slice reference. For borrowed handle params (`&Handle`), uses `as_handle()`
-/// instead of `into_c()` to avoid lifetime escape.
+/// via `IntoC::into_c`, `ClientHandle::as_handle`, `__into_raw_handle()`, or
+/// a pre-bound slice reference. Borrowed handle params (`&Handle`) use
+/// `as_handle` so the pointer keeps the borrow's lifetime.
 fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
     let mut args = Vec::new();
     for p in params {
@@ -24,10 +25,13 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
                         .type_entry(&tr.type_name)
                         .is_some_and(|e| e.kind.is_handle());
                 if is_borrowed_handle {
-                    args.push(format!("FfiHandle::as_handle({})", p.name));
+                    let tok = ffi_traits::token(tr, lib);
+                    args.push(format!(
+                        "ffier::ClientHandle::<{tok}>::as_handle({})",
+                        p.name
+                    ));
                 } else {
-                    let ty = tr.to_rust_type();
-                    args.push(format!("<{ty} as FfiType>::into_c({})", p.name));
+                    args.push(tr.convert_into_c(lib, &p.name));
                 }
             }
             ParamType::Slice { element, .. } => {
@@ -57,7 +61,12 @@ fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<St
 }
 
 /// Emit borrowed callback guards and ref-element slice conversions.
-fn emit_param_pre_bindings(out: &mut String, params: &[ffier_schema::Param], indent: &str) {
+fn emit_param_pre_bindings(
+    out: &mut String,
+    params: &[ffier_schema::Param],
+    indent: &str,
+    lib: &Library,
+) {
     for p in params {
         if let ParamType::ImplTrait { ref_kind, .. } = &p.param_type {
             let method = match ref_kind {
@@ -70,11 +79,15 @@ fn emit_param_pre_bindings(out: &mut String, params: &[ffier_schema::Param], ind
         if let ParamType::Slice { element, .. } = &p.param_type
             && element.ref_kind != ffier_schema::RefKind::None
         {
+            let tok = ffi_traits::token(element, lib);
             let elem_ty = element.to_rust_type();
             writeln!(
                 out,
-                "{indent}let __ffi_{}: Vec<<{elem_ty} as FfiType>::CRepr> = {}.iter().map(|s| <{elem_ty} as FfiType>::into_c(*s)).collect();",
-                p.name, p.name,
+                "{indent}let __ffi_{}: Vec<{}> = {}.iter().map(|s| {}).collect();",
+                p.name,
+                ffi_traits::c_repr(&elem_ty, &tok),
+                p.name,
+                ffi_traits::into_c(&elem_ty, &tok, "*s"),
             )
             .unwrap();
         }
@@ -90,7 +103,7 @@ pub(crate) struct ReturnPolicy {
     /// returning a value. `None` where no receiver can be replaced.
     pub(crate) replaces_self: Option<SelfReceiver>,
     /// Surface `&Handle` returns as the owned wrapper via
-    /// `FfiHandle::__from_raw`. Only inherent methods set this, because
+    /// `ClientHandle::from_raw`. Only inherent methods set this, because
     /// `build_wrapper_return_type` rewrites their signature to the owned
     /// wrapper; trait signatures keep `&T`.
     pub(crate) own_borrowed_handles: bool,
@@ -137,7 +150,7 @@ pub(crate) fn emit_call_body(
     lib: &Library,
     policy: ReturnPolicy,
 ) {
-    emit_param_pre_bindings(out, params, indent);
+    emit_param_pre_bindings(out, params, indent, lib);
     let args: Vec<String> = self_arg
         .map(str::to_string)
         .into_iter()
@@ -172,16 +185,21 @@ fn emit_ffi_call_return(
     let err = |err_type: &str| format!("Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})");
     // Convert a raw C value into the Rust ok type.
     let from_c = |tr: &TypeRef, raw: &str| -> String {
-        if policy.own_borrowed_handles && borrowed_handle_return_type(ret, lib).is_some() {
+        if borrowed_handle_return_type(ret, lib).is_none() {
+            format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw))
+        } else if policy.own_borrowed_handles {
             // Borrowed handle: wrap the shell in the owned wrapper.
+            let tok = ffi_traits::token(tr, lib);
             format!(
-                "unsafe {{ <{} as FfiHandle>::__from_raw({raw}) }}",
+                "unsafe {{ <{} as ffier::ClientHandle<{tok}>>::from_raw({raw}) }}",
                 tr.type_name
             )
         } else {
+            // A client wrapper is not stored where a `&Handle` could point;
+            // producing one needs a borrow type that keeps the lifetime.
             format!(
-                "unsafe {{ <{} as FfiType>::from_c({raw}) }}",
-                tr.to_rust_type()
+                "{{ let _ = {raw}; unimplemented!(\"ffier: Rust clients cannot yet return `&{}` from a trait method\") }}",
+                tr.type_name
             )
         }
     };
@@ -216,7 +234,8 @@ fn emit_ffi_call_return(
             let ty_static = optional_value_out_type(tr);
             writeln!(
                 out,
-                "{i}let mut __out = std::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();"
+                "{i}let mut __out = std::mem::MaybeUninit::<{}>::uninit();",
+                ffi_traits::c_repr(&ty_static, &ffi_traits::token(tr, lib))
             )
             .unwrap();
             writeln!(
@@ -274,8 +293,12 @@ fn emit_ffi_call_return(
                     writeln!(out, "{i}}}").unwrap();
                 }
                 CResultConvention::OutParam => {
-                    let ty_static = ok_tr.to_rust_type_static();
-                    writeln!(out, "{i}let mut __result = core::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();").unwrap();
+                    writeln!(
+                        out,
+                        "{i}let mut __result = core::mem::MaybeUninit::<{}>::uninit();",
+                        ok_tr.c_repr_static(lib)
+                    )
+                    .unwrap();
                     writeln!(
                         out,
                         "{i}let __r = unsafe {{ {} }};",
@@ -295,7 +318,12 @@ fn emit_ffi_call_return(
                     // `err_out`.
                     let ty_static = optional_value_out_type(ok_tr);
                     writeln!(out, "{i}let mut __result_is_some = false;").unwrap();
-                    writeln!(out, "{i}let mut __result = core::mem::MaybeUninit::<<{ty_static} as FfiType>::CRepr>::uninit();").unwrap();
+                    writeln!(
+                        out,
+                        "{i}let mut __result = core::mem::MaybeUninit::<{}>::uninit();",
+                        ffi_traits::c_repr(&ty_static, &ffi_traits::token(ok_tr, lib))
+                    )
+                    .unwrap();
                     writeln!(
                         out,
                         "{i}let __r = unsafe {{ {} }};",

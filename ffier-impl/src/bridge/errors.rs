@@ -19,7 +19,7 @@ pub(super) fn generate_error_factory(
         let path = &meta.path;
         dispatch_arms.push(quote! {
             #type_tag => <#path as ffier::FfiError>::from_code(code)
-                .map(<#path as #lib_crate::FfiType>::into_c)
+                .map(<#path as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c)
                 .unwrap_or(core::ptr::null_mut()),
         });
     }
@@ -47,8 +47,9 @@ pub(super) fn generate_error_factory(
 pub(super) fn generate_error_getters(
     prefix: &str,
     errors: &[TokenStream2],
-    _lib_crate: &TokenStream2,
+    lib_crate: &TokenStream2,
 ) -> TokenStream2 {
+    let token = crate::ffi_traits::token_of(lib_crate);
     let fn_pfx = format!("{prefix}_");
     let payload_fn = format_ident!("{fn_pfx}error_payload");
 
@@ -64,7 +65,9 @@ pub(super) fn generate_error_getters(
         dispatch_arms.push(quote! {
             #type_tag => {
                 let err: &#path = unsafe { ffier::ffier_handle_borrow(handle) };
-                unsafe { ffier::FfiError::payload(err, index, out_buf, buf_size) };
+                unsafe {
+                    <#path as ffier::FfiErrorPayload<#token>>::payload(err, index, out_buf, buf_size)
+                };
             }
         });
     }

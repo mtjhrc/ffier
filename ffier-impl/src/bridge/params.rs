@@ -280,7 +280,7 @@ pub(super) fn convert_params(
                     let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
                         #vcfg
-                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                        if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                             let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
                             break 'dispatch (Box::new(__val) as Box<dyn #trait_ident + #object_lifetime>);
                         }
@@ -302,7 +302,7 @@ pub(super) fn convert_params(
                     let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
                         #vcfg
-                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                        if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                             break 'dispatch (unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id) as &mut dyn #trait_ident });
                         }
                     });
@@ -325,7 +325,7 @@ pub(super) fn convert_params(
                     let vcfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                     branches.push(quote! {
                         #vcfg
-                        if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                        if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                             break 'dispatch (unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id) as &dyn #trait_ident });
                         }
                     });
@@ -392,7 +392,7 @@ fn meta_param_conversion(
                 quote! {
                     const _: () = assert!(
                         ffier::const_str_eq(
-                            <#inner as #tc::FfiHandle>::C_HANDLE_NAME,
+                            <#inner as ffier::FfiHandle<#tc::__FfierLocalToken>>::C_HANDLE_NAME,
                             #c_name,
                         ),
                         #msg,
@@ -408,27 +408,27 @@ fn meta_param_conversion(
                     quote! {
                         #c_name_assert
                         let mut #foreign_id = core::mem::ManuallyDrop::new(
-                            <#inner as #tc::FfiHandle>::__from_raw(#id));
+                            <#inner as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id));
                     }
                 } else {
                     quote! {
                         #c_name_assert
                         let #foreign_id = core::mem::ManuallyDrop::new(
-                            <#inner as #tc::FfiHandle>::__from_raw(#id));
+                            <#inner as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id));
                     }
                 }
             } else {
                 // By-value foreign handle — ownership transfers, Drop is caller's intent.
                 quote! {
                     #c_name_assert
-                    let #foreign_id = <#bridge_type as #tc::FfiHandle>::__from_raw(#id);
+                    let #foreign_id = <#bridge_type as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id);
                 }
             }
         }
         MetaParamKind::Regular(tp) => {
             let bridge_type = &tp.bridge_type;
             let tc = resolve_trait_crate(tp, lib_crate);
-            quote! { unsafe { <#bridge_type as #tc::FfiType>::from_c(#id) } }
+            quote! { unsafe { <#bridge_type as ffier::FromC<#tc::__FfierLocalToken>>::from_c(#id) } }
         }
         MetaParamKind::StrSlice => {
             let len_id = len_ident.expect("StrSlice conversion needs len_ident");

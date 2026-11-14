@@ -10,17 +10,21 @@ ffier::generate_bridge!(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ffier::{FfiHandle, FromC, IntoC};
+
+    /// The submodule library's token for the `ffier` conversion traits.
+    type Tok = ffier_test_submodule_lib::__FfierLocalToken;
 
     #[test]
     fn external_bridge_separates_result_names_and_messages() {
-        use ffier_test_submodule_lib::{FfiHandle, SubError};
+        use ffier_test_submodule_lib::SubError;
 
         for (code, name, message) in [
             (1, "Oops", "Oops"),
             (2, "BadThing", "something went wrong"),
             (3, "Mixed", "Mixed"),
         ] {
-            let result = ffier::ffier_result(SubError::TYPE_TAG, code);
+            let result = ffier::ffier_result(<SubError as FfiHandle<Tok>>::TYPE_TAG, code);
             unsafe {
                 assert_eq!(subtest_result_name(result).as_str_unchecked(), name);
                 assert_eq!(subtest_result_message(result).as_str_unchecked(), message);
@@ -30,12 +34,15 @@ mod tests {
 
     #[test]
     fn fieldless_error_factory_uses_defining_crate_constructor() {
-        use ffier_test_submodule_lib::{FfiHandle, FfiType, SubError};
+        use ffier_test_submodule_lib::SubError;
 
         for code in [1, 2] {
-            let handle = subtest_error_new(ffier::ffier_result(SubError::TYPE_TAG, code));
+            let handle = subtest_error_new(ffier::ffier_result(
+                <SubError as FfiHandle<Tok>>::TYPE_TAG,
+                code,
+            ));
             assert!(!handle.is_null());
-            let error = unsafe { SubError::from_c(handle) };
+            let error = unsafe { <SubError as FromC<Tok>>::from_c(handle) };
             match code {
                 1 => assert!(matches!(error, SubError::Oops)),
                 2 => assert!(matches!(error, SubError::BadThing())),
@@ -46,16 +53,16 @@ mod tests {
 
     #[test]
     fn external_bridge_preserves_payload_field_indices() {
-        use ffier_test_submodule_lib::{FfiType, SubError};
+        use ffier_test_submodule_lib::SubError;
 
-        let handle = SubError::Mixed(17, (), 900).into_c();
+        let handle = IntoC::<Tok>::into_c(SubError::Mixed(17, (), 900));
         let mut first = 0i32;
         let mut last = 0u64;
         unsafe {
             subtest_error_payload(handle, 0, (&mut first as *mut i32).cast(), size_of::<i32>());
             subtest_error_payload(handle, 2, (&mut last as *mut u64).cast(), size_of::<u64>());
             assert_eq!((first, last), (17, 900));
-            let error = SubError::from_c(handle);
+            let error = <SubError as FromC<Tok>>::from_c(handle);
             assert!(matches!(error, SubError::Mixed(17, (), 900)));
         }
     }
@@ -68,7 +75,7 @@ mod tests {
         let error = SubError::Mixed(17, (), 900);
         let mut output = 0u64;
         unsafe {
-            ffier::FfiError::payload(
+            ffier::FfiErrorPayload::<Tok>::payload(
                 &error,
                 1,
                 (&mut output as *mut u64).cast(),
@@ -133,14 +140,19 @@ mod tests {
 
     #[test]
     fn native_identity_round_trips_through_the_external_bridge() {
-        use ffier_test_submodule_lib::{Counter, FfiHandle, FfiType};
+        use ffier_test_submodule_lib::Counter;
 
         // into_c/from_c use the definition-site native alias; the value
         // must survive a round trip through the external bridge crate.
         let counter = Counter::new();
-        let raw = counter.into_c();
-        unsafe { assert_eq!(ffier::handle_type_tag(raw), Counter::TYPE_TAG) };
-        let _restored: Counter = unsafe { FfiType::from_c(raw) };
+        let raw = IntoC::<Tok>::into_c(counter);
+        unsafe {
+            assert_eq!(
+                ffier::handle_type_tag(raw),
+                <Counter as FfiHandle<Tok>>::TYPE_TAG
+            )
+        };
+        let _restored: Counter = unsafe { FromC::<Tok>::from_c(raw) };
 
         let handle = unsafe { subtest_counter_new() };
         unsafe {

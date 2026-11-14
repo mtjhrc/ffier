@@ -36,7 +36,7 @@ pub(super) fn wrap_return(
                 // The method returns the new Self: write its handle back.
                 Some(struct_path) => quote! {
                     let result = #call_expr;
-                    let __new_ptr = <#struct_path as #lib_crate::FfiType>::into_c(result);
+                    let __new_ptr = <#struct_path as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(result);
                     unsafe { *__handle_slot = __new_ptr };
                 },
                 None => quote! { #call_expr; },
@@ -49,7 +49,7 @@ pub(super) fn wrap_return(
                 match #call_expr {
                     Some(__value) => {
                         unsafe {
-                            result.write(<#inner as #lib_crate::FfiType>::into_c(__value));
+                            result.write(<#inner as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(__value));
                         }
                         true
                     }
@@ -69,7 +69,7 @@ pub(super) fn wrap_return(
                     let result = #call_expr;
                     unsafe {
                         ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as #tc::FfiHandle>::TYPE_TAG,
+                            <#target as ffier::FfiHandle<#tc::__FfierLocalToken>>::TYPE_TAG,
                             result as *const #target,
                         )
                     }
@@ -78,7 +78,7 @@ pub(super) fn wrap_return(
             let bridge_type = &tp.bridge_type;
             return quote! {
                 let result = #call_expr;
-                <#bridge_type as #tc::FfiType>::into_c(result)
+                <#bridge_type as ffier::IntoC<#tc::__FfierLocalToken>>::into_c(result)
             };
         }
         ReturnShape::Result {
@@ -99,7 +99,7 @@ pub(super) fn wrap_return(
     let err_type_tag = err_info.type_tag;
     let box_expr = quote! {
         if !err_out.is_null() {
-            unsafe { *err_out = <_ as #lib_crate::FfiType>::into_c(e); }
+            unsafe { *err_out = <_ as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(e); }
         }
     };
     let ok_tc = ok
@@ -115,7 +115,7 @@ pub(super) fn wrap_return(
                 Ok(Some(__value)) => {
                     unsafe {
                         result_is_some.write(true);
-                        result.write(<#inner as #lib_crate::FfiType>::into_c(__value));
+                        result.write(<#inner as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(__value));
                     }
                     ffier::FFIER_RESULT_SUCCESS
                 }
@@ -136,7 +136,7 @@ pub(super) fn wrap_return(
         // Return the owned handle directly, NULL on error.
         ResultConv::OwnedHandleOrNull => quote! {
             match #call_expr {
-                Ok(ok_val) => <_ as #ok_tc::FfiType>::into_c(ok_val),
+                Ok(ok_val) => <_ as ffier::IntoC<#ok_tc::__FfierLocalToken>>::into_c(ok_val),
                 Err(e) => { #box_expr core::ptr::null_mut() }
             }
         },
@@ -147,7 +147,7 @@ pub(super) fn wrap_return(
                 match #call_expr {
                     Ok(ok_val) => unsafe {
                         ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as #ok_tc::FfiHandle>::TYPE_TAG,
+                            <#target as ffier::FfiHandle<#ok_tc::__FfierLocalToken>>::TYPE_TAG,
                             ok_val as *const #target,
                         )
                     },
@@ -161,14 +161,14 @@ pub(super) fn wrap_return(
                     let bridge_type = &tp.bridge_type;
                     quote! {
                         Ok(ok_val) => {
-                            unsafe { result.write(<#bridge_type as #ok_tc::FfiType>::into_c(ok_val)) };
+                            unsafe { result.write(<#bridge_type as ffier::IntoC<#ok_tc::__FfierLocalToken>>::into_c(ok_val)) };
                             ffier::FFIER_RESULT_SUCCESS
                         }
                     }
                 }
                 (None, Some(struct_path)) => quote! {
                     Ok(new_self) => {
-                        let __new_ptr = <#struct_path as #lib_crate::FfiType>::into_c(new_self);
+                        let __new_ptr = <#struct_path as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(new_self);
                         unsafe { *__handle_slot = __new_ptr };
                         ffier::FFIER_RESULT_SUCCESS
                     }

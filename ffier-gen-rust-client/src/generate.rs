@@ -7,13 +7,11 @@ use ffier_schema::{Library, Method, TypeKind};
 
 use crate::error::{emit_error, emit_error_trait_externs};
 use crate::ffi::{emit_extern_fns, emit_symbol_api, extern_fn_private};
+use crate::ffi_traits::{C_REPR_ALIAS, TOKEN};
 use crate::formatting::rustfmt;
 use crate::functions::emit_free_function;
 use crate::traits::{emit_implementable_trait, emit_trait_impl};
-use crate::types::{
-    emit_bitflags_type, emit_blessed_fd_impls, emit_enum_type, emit_exported_type,
-    emit_value_structs,
-};
+use crate::types::{emit_bitflags_type, emit_enum_type, emit_exported_type, emit_value_structs};
 
 /// Generate one Rust client source supporting both Unix and Windows linking modes.
 /// The consuming crate selects the implementation with its `ffier-dynlookup` or
@@ -33,14 +31,14 @@ pub fn generate(lib: &Library) -> String {
     // emitted as a single `use` statement to avoid duplicates.
     {
         use ffier_schema::Blessing;
-        // Generated signatures spell paths as bare `Path`, and the `&Path`
-        // FfiType impl below is emitted for every library, so import it
-        // unconditionally.
-        writeln!(out, "use std::path::Path;").unwrap();
+        // Generated signatures spell paths as bare `Path`.
+        if lib.blessed(Blessing::Path).is_some() {
+            writeln!(out, "use std::path::Path;").unwrap();
+        }
         let fd_blessing_symbols: &[(Blessing, &[&str])] = &[
             (Blessing::RawFd, &["RawFd"]),
-            (Blessing::BorrowedFd, &["AsRawFd", "BorrowedFd", "RawFd"]),
-            (Blessing::OwnedFd, &["FromRawFd", "OwnedFd", "RawFd"]),
+            (Blessing::BorrowedFd, &["BorrowedFd"]),
+            (Blessing::OwnedFd, &["OwnedFd"]),
         ];
         let mut symbols: Vec<&str> = Vec::new();
         for (blessing, syms) in fd_blessing_symbols {
@@ -56,20 +54,17 @@ pub fn generate(lib: &Library) -> String {
             symbols.sort();
             let list = symbols.join(", ");
             writeln!(out, "#[cfg(unix)]").unwrap();
+            // The raw type is registered as the alias target of the owned
+            // and borrowed types even when no signature names it.
+            writeln!(out, "#[allow(unused_imports)]").unwrap();
             writeln!(out, "use std::os::unix::io::{{{list}}};").unwrap();
             writeln!(out).unwrap();
         }
 
         let handle_blessing_symbols: &[(Blessing, &[&str])] = &[
             (Blessing::RawHandle, &["RawHandle"]),
-            (
-                Blessing::BorrowedHandle,
-                &["AsRawHandle", "BorrowedHandle", "RawHandle"],
-            ),
-            (
-                Blessing::OwnedHandle,
-                &["FromRawHandle", "OwnedHandle", "RawHandle"],
-            ),
+            (Blessing::BorrowedHandle, &["BorrowedHandle"]),
+            (Blessing::OwnedHandle, &["OwnedHandle"]),
         ];
         let mut symbols: Vec<&str> = Vec::new();
         for (blessing, syms) in handle_blessing_symbols {
@@ -85,6 +80,9 @@ pub fn generate(lib: &Library) -> String {
             symbols.sort();
             let list = symbols.join(", ");
             writeln!(out, "#[cfg(windows)]").unwrap();
+            // The raw type is registered as the alias target of the owned
+            // and borrowed types even when no signature names it.
+            writeln!(out, "#[allow(unused_imports)]").unwrap();
             writeln!(out, "use std::os::windows::io::{{{list}}};").unwrap();
             writeln!(out).unwrap();
         }
@@ -114,213 +112,23 @@ pub fn generate(lib: &Library) -> String {
         }
     }
 
-    // Emit local FfiHandle and FfiType traits (standalone, no ffier dependency for traits)
+    // The token for the shared `ffier` conversion traits; see `ffi_traits`.
     writeln!(
         out,
-        "/// Marker trait for types exported as opaque C handles."
+        "/// This client's token for the `ffier` conversion traits."
     )
     .unwrap();
-    writeln!(out, "pub trait FfiHandle {{").unwrap();
-    writeln!(out, "    const C_HANDLE_NAME: &'static str;").unwrap();
-    writeln!(out, "    const TYPE_TAG: u32;").unwrap();
+    writeln!(out, "#[doc(hidden)]").unwrap();
+    writeln!(out, "pub struct {TOKEN};").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "/// The C representation of `T`.").unwrap();
+    writeln!(out, "#[doc(hidden)]").unwrap();
     writeln!(
         out,
-        "    /// # Safety\n    /// The caller must ensure the handle is not used after the object is dropped."
+        "pub type {C_REPR_ALIAS}<T> = <T as ffier::FfiType<{TOKEN}>>::CRepr;"
     )
     .unwrap();
-    writeln!(
-        out,
-        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    /// # Safety\n    /// Handle must be valid, uniquely owned, and valid for every lifetime of Self.\n    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self;"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "/// Maps Rust types to C-compatible representations.").unwrap();
-    writeln!(out, "pub trait FfiType {{").unwrap();
-    writeln!(out, "    type CRepr;").unwrap();
-    writeln!(out, "    const C_TYPE_NAME: &'static str;").unwrap();
-    writeln!(out, "    const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> Self::CRepr;").unwrap();
-    writeln!(
-        out,
-        "    /// # Safety\n    /// The C representation must be valid for this type."
-    )
-    .unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: Self::CRepr) -> Self;").unwrap();
-
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Primitive FfiType impls
-    writeln!(out, "macro_rules! impl_ffi_identity {{").unwrap();
-    writeln!(out, "    ($($t:ty => $n:expr),* $(,)?) => {{ $(").unwrap();
-    writeln!(out, "        impl FfiType for $t {{").unwrap();
-    writeln!(out, "            type CRepr = $t; const C_TYPE_NAME: &'static str = $n; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(
-        out,
-        "            fn into_c(self) -> Self {{ self }} unsafe fn from_c(r: Self) -> Self {{ r }}"
-    )
-    .unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    )* }};").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out, "impl_ffi_identity! {{").unwrap();
-    writeln!(
-        out,
-        "    i8 => \"int8_t\", i16 => \"int16_t\", i32 => \"int32_t\", i64 => \"int64_t\","
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    u8 => \"uint8_t\", u16 => \"uint16_t\", u32 => \"uint32_t\", u64 => \"uint64_t\","
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    isize => \"ssize_t\", usize => \"size_t\", bool => \"bool\", f32 => \"float\", f64 => \"double\","
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    *mut core::ffi::c_void => \"void*\", *const core::ffi::c_void => \"const void*\","
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // &str FfiType impl
-    writeln!(out, "impl FfiType for &str {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_str(self) }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let b = core::slice::from_raw_parts(repr.data, repr.len); core::str::from_utf8_unchecked(b) }} }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Option<&str> FfiType impl
-    writeln!(out, "impl FfiType for Option<&str> {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(s) => unsafe {{ ffier::FfierBytes::from_str(s) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(core::str::from_utf8_unchecked(core::slice::from_raw_parts(repr.data, repr.len))) }} }} }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Box<str> FfiType impl
-    writeln!(out, "impl FfiType for Box<str> {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierStr\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ let leaked: &mut str = Box::leak(self); ffier::FfierBytes {{ data: leaked.as_mut_ptr() as *const u8, len: leaked.len() }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ let slice = core::slice::from_raw_parts_mut(repr.data as *mut u8, repr.len); Box::from_raw(core::str::from_utf8_unchecked_mut(slice)) }} }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // &[u8] FfiType impl
-    writeln!(out, "impl FfiType for &[u8] {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierBytes\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_bytes(self) }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ if repr.data.is_null() {{ &[] }} else {{ core::slice::from_raw_parts(repr.data, repr.len) }} }} }}").unwrap();
-
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Mutable byte buffers use a writable pointer and preserve exclusivity.
-    writeln!(out, "impl FfiType for &mut [u8] {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierMutBytes; const C_TYPE_NAME: &'static str = \"FfierBytesMut\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierMutBytes {{ unsafe {{ ffier::FfierMutBytes::from_bytes(self) }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierMutBytes) -> Self {{ unsafe {{ repr.into_bytes() }} }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // OS paths reuse the byte-slice repr but keep OsStr's internal
-    // representation rather than going through a platform string type.
-    writeln!(out, "impl FfiType for &Path {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierPath\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ unsafe {{ ffier::FfierBytes::from_path(self) }} }}").unwrap();
-    writeln!(
-        out,
-        "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ unsafe {{ repr.as_path() }} }}"
-    )
-    .unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    writeln!(out, "impl FfiType for Option<&Path> {{").unwrap();
-    writeln!(out, "    type CRepr = ffier::FfierBytes; const C_TYPE_NAME: &'static str = \"FfierPath\"; const IS_HANDLE: bool = false;").unwrap();
-    writeln!(out, "    fn into_c(self) -> ffier::FfierBytes {{ match self {{ Some(p) => unsafe {{ ffier::FfierBytes::from_path(p) }}, None => ffier::FfierBytes::EMPTY }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(repr: ffier::FfierBytes) -> Self {{ if repr.data.is_null() {{ None }} else {{ unsafe {{ Some(repr.as_path()) }} }} }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // Blessed fd type FfiType impls
-    emit_blessed_fd_impls(&mut out, lib);
-
-    // Blanket FfiType for &T / &mut T — resolves CRepr to *mut c_void for
-    // extern declarations. from_c is unused (bridge calls ffier_handle_borrow
-    // directly). into_c is unused (wrapper calls as_handle directly).
-    writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &T {{").unwrap();
-    writeln!(out, "    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;").unwrap();
-    writeln!(out, "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ FfiHandle::as_handle(self) }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"&T from_c\") }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out, "impl<T: FfiHandle + 'static> FfiType for &mut T {{").unwrap();
-    writeln!(out, "    type CRepr = *mut core::ffi::c_void; const C_TYPE_NAME: &'static str = T::C_HANDLE_NAME; const IS_HANDLE: bool = true;").unwrap();
-    writeln!(out, "    fn into_c(self) -> *mut core::ffi::c_void {{ unsafe {{ FfiHandle::as_handle(self) }} }}").unwrap();
-    writeln!(out, "    unsafe fn from_c(_: *mut core::ffi::c_void) -> Self {{ unimplemented!(\"&mut T from_c\") }}").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // FfiHandle + FfiType impls for foreign handle types — delegate to the
-    // foreign crate's traits so foreign types are used identically to local
-    // types throughout the generated code.
-    for (name, entry) in &lib.type_registry {
-        if let TypeKind::ForeignHandle { foreign_crate, .. } = &entry.kind {
-            let fc = foreign_crate;
-            let lifetime_args = entry
-                .lifetime_params
-                .iter()
-                .map(|lt| format!("'{}", lt.name))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let impl_generics = if lifetime_args.is_empty() {
-                String::new()
-            } else {
-                format!("<{lifetime_args}>")
-            };
-            let type_name = if lifetime_args.is_empty() {
-                name.clone()
-            } else {
-                format!("{name}<{lifetime_args}>")
-            };
-            writeln!(out, "impl{impl_generics} FfiHandle for {type_name} {{").unwrap();
-            writeln!(out, "    const C_HANDLE_NAME: &'static str = <{type_name} as {fc}::FfiHandle>::C_HANDLE_NAME;").unwrap();
-            writeln!(
-                out,
-                "    const TYPE_TAG: u32 = <{type_name} as {fc}::FfiHandle>::TYPE_TAG;"
-            )
-            .unwrap();
-            writeln!(out, "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ unsafe {{ {fc}::FfiHandle::as_handle(self) }} }}").unwrap();
-            writeln!(out, "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ unsafe {{ <{type_name} as {fc}::FfiHandle>::__from_raw(handle) }} }}").unwrap();
-            writeln!(out, "}}").unwrap();
-            writeln!(out, "impl{impl_generics} FfiType for {type_name} {{").unwrap();
-            writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
-            writeln!(
-                out,
-                "    const C_TYPE_NAME: &'static str = <{type_name} as {fc}::FfiHandle>::C_HANDLE_NAME;"
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "    fn into_c(self) -> *mut core::ffi::c_void {{ {fc}::FfiType::into_c(self) }}"
-            )
-            .unwrap();
-            writeln!(out, "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ unsafe {{ <{type_name} as {fc}::FfiHandle>::__from_raw(repr) }} }}").unwrap();
-            writeln!(out, "}}").unwrap();
-            writeln!(out).unwrap();
-        }
-    }
 
     let mut symbols = Vec::new();
 

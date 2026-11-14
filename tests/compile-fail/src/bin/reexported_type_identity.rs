@@ -1,4 +1,4 @@
-//! expected-error: `FfiType` is not implemented for `Foo
+//! expected-error: `FfiType<__FfierLocalToken>` is not implemented for `Foo
 
 #![allow(dead_code)]
 

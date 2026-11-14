@@ -53,7 +53,10 @@ mod tests {
         // The v2 library sees the empty slot and uses "fruit" (len 5).
         let m = Mixer::new();
         let label_len = unsafe {
-            ft_mixer_fruit_label_len(m.as_handle(), Pear { weight: 42 }.__into_raw_handle())
+            ft_mixer_fruit_label_len(
+                ffier::ClientHandle::<__FfierLocalToken>::as_handle(&m),
+                Pear { weight: 42 }.__into_raw_handle(),
+            )
         };
         assert_eq!(label_len, 5);
     }

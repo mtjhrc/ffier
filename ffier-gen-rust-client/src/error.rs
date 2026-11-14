@@ -67,20 +67,26 @@ pub(crate) fn emit_error(out: &mut String, err: &ErrorType, lib: &Library) {
             let borrow_ref = type_ref.as_borrowed();
             let borrow_ty = borrow_ref.to_rust_type();
             let borrow_ty_static = borrow_ref.to_rust_type_static();
+            let c_repr = crate::ffi_traits::c_repr(&borrow_ty_static, crate::ffi_traits::TOKEN);
             writeln!(out, "    pub fn {getter_name}(&self) -> {borrow_ty} {{").unwrap();
             writeln!(
                 out,
-                "        let mut __buf = std::mem::MaybeUninit::<<{borrow_ty_static} as FfiType>::CRepr>::uninit();"
+                "        let mut __buf = std::mem::MaybeUninit::<{c_repr}>::uninit();"
             )
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, {i}, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<<{borrow_ty_static} as FfiType>::CRepr>()) }};"
+                "        unsafe {{ {payload_fn}(self.0.handle() as *const core::ffi::c_void, {i}, __buf.as_mut_ptr() as *mut core::ffi::c_void, core::mem::size_of::<{c_repr}>()) }};"
             )
             .unwrap();
             writeln!(
                 out,
-                "        unsafe {{ <{borrow_ty} as FfiType>::from_c(__buf.assume_init()) }}"
+                "        unsafe {{ {} }}",
+                crate::ffi_traits::from_c(
+                    &borrow_ty,
+                    crate::ffi_traits::TOKEN,
+                    "__buf.assume_init()"
+                )
             )
             .unwrap();
             writeln!(out, "    }}").unwrap();

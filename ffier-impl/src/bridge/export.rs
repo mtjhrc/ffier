@@ -57,11 +57,11 @@ pub(super) fn generate_exportable_bridge(
         let obj_binding = if has_receiver {
             let type_assert = quote! {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
-                let __expected = <#struct_path as #lib_crate::FfiHandle>::TYPE_TAG;
+                let __expected = <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
                         #ffi_name_str,
-                        <#struct_path as #lib_crate::FfiHandle>::C_HANDLE_NAME,
+                        <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::C_HANDLE_NAME,
                         "",
                         __actual,
                     );
@@ -161,11 +161,11 @@ pub(super) fn generate_exportable_bridge(
         pub unsafe extern "C" fn #destroy_name(handle: *mut core::ffi::c_void) {
             if !handle.is_null() {
                 let __actual = unsafe { ffier::handle_type_tag(handle) };
-                let __expected = <#struct_path as #lib_crate::FfiHandle>::TYPE_TAG;
+                let __expected = <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
                         #destroy_str,
-                        <#struct_path as #lib_crate::FfiHandle>::C_HANDLE_NAME,
+                        <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::C_HANDLE_NAME,
                         "",
                         __actual,
                     );
