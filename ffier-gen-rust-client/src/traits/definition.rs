@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ffier_schema::{ImplementableTrait, Library, Method};
 
-use crate::calls::{build_ffi_param_args, emit_ffi_call_return, emit_param_pre_bindings};
+use crate::calls::{ReturnPolicy, emit_call_body};
 use crate::cfg::emit_cfg_attr;
 use crate::ffi::{ExternFn, SymbolInfo, emit_extern_fns, extern_fn, extern_fn_from_dispatch};
 use crate::signature::build_trait_method_sig;
@@ -255,14 +255,16 @@ pub(super) fn emit_default_dispatch_body(
     writeln!(out, "            }},").unwrap();
     writeln!(out, "        }};").unwrap();
 
-    emit_param_pre_bindings(out, &m.params, "        ");
-
-    let mut call_args = vec![
-        "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void"
-            .to_string(),
-    ];
-    call_args.extend(build_ffi_param_args(&m.params, lib));
-    let args_str = call_args.join(", ");
-
-    emit_ffi_call_return(out, dispatch_fn, &args_str, &m.ret, "        ", lib);
+    emit_call_body(
+        out,
+        dispatch_fn,
+        Some(
+            "&mut __temp as *mut ffier::FfierHandle<ffier::VtableHandle> as *mut core::ffi::c_void",
+        ),
+        &m.params,
+        &m.ret,
+        "        ",
+        lib,
+        ReturnPolicy::default(),
+    );
 }

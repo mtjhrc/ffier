@@ -6,8 +6,8 @@ use std::fmt::Write;
 use ffier_schema::{ImplementableTrait, Library, Method, ParamType, Receiver, Return};
 
 use crate::abi::{
-    optional_value_out_type, push_extern_param_types, push_extern_params,
-    push_return_and_out_param_types, push_return_and_out_params,
+    push_extern_param_types, push_extern_params, push_return_and_out_param_types,
+    push_return_and_out_params,
 };
 use crate::cfg::{emit_cfg_attr, uncovered_guard};
 
@@ -218,10 +218,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait)
                     // Nothing to convert
                 }
                 Return::OptionalValue(tr) => {
-                    let ty_static = optional_value_out_type(tr);
-                    let mut bare = tr.clone();
-                    bare.optional = false;
-                    let ty = bare.to_rust_type();
+                    let ty = tr.without_optional().to_rust_type();
                     writeln!(out, "                    match __result {{").unwrap();
                     writeln!(out, "                        Some(__value) => {{").unwrap();
                     writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__value)) }};").unwrap();
@@ -229,7 +226,6 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait)
                     writeln!(out, "                        }}").unwrap();
                     writeln!(out, "                        None => false,").unwrap();
                     writeln!(out, "                    }}").unwrap();
-                    let _ = ty_static;
                 }
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type();
@@ -315,9 +311,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait)
                             let ok_tr = ok
                                 .as_ref()
                                 .expect("OptionalValueOutParam requires an ok type");
-                            let mut bare = ok_tr.clone();
-                            bare.optional = false;
-                            let ty = bare.to_rust_type();
+                            let ty = ok_tr.without_optional().to_rust_type();
                             writeln!(out, "                        Ok(Some(__ok)) => {{").unwrap();
                             writeln!(out, "                            unsafe {{").unwrap();
                             writeln!(

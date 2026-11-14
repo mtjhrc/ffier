@@ -59,9 +59,7 @@ pub(crate) fn push_return_and_out_params(
 /// The schema marks the ok type `optional` so generated wrapper signatures can
 /// say `Option<T>`, but the C out-param is a bare `T`.
 pub(crate) fn optional_value_out_type(tr: &ffier_schema::TypeRef) -> String {
-    let mut bare = tr.clone();
-    bare.optional = false;
-    bare.to_rust_type_static()
+    tr.without_optional().to_rust_type_static()
 }
 
 /// Append C extern param strings (`"name: <Type as FfiType>::CRepr"` etc.)

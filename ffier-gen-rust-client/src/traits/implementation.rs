@@ -5,7 +5,7 @@ use std::fmt::Write;
 
 use ffier_schema::{Cfg, Library, Method, TraitImpl};
 
-use crate::calls::{build_ffi_param_args, emit_ffi_call_return, emit_param_pre_bindings};
+use crate::calls::{ReturnPolicy, emit_call_body};
 use crate::cfg::{self, emit_cfg_attr};
 use crate::ffi::{ExternFn, SymbolInfo, emit_extern_fns, extern_fn_from_dispatch};
 use crate::signature::build_trait_method_sig;
@@ -143,12 +143,7 @@ pub(crate) fn emit_trait_impl(
         let sig = build_trait_method_sig(m, lib);
         writeln!(out, "    {sig} {{").unwrap();
 
-        emit_param_pre_bindings(out, &m.params, "        ");
-        let mut ffi_args = vec!["self.0".to_string()];
-        ffi_args.extend(build_ffi_param_args(&m.params, lib));
-        let args_str = ffi_args.join(", ");
-
-        emit_ffi_call_return(out, &m.ffi_name, &args_str, &m.ret, "        ", lib);
+        emit_trait_forwarder_body(out, m, lib);
         writeln!(out, "    }}").unwrap();
     }
 
@@ -162,12 +157,7 @@ pub(crate) fn emit_trait_impl(
             let sig = build_trait_method_sig(dm, lib);
             writeln!(out, "    {sig} {{").unwrap();
 
-            emit_param_pre_bindings(out, &dm.params, "        ");
-            let mut ffi_args = vec!["self.0".to_string()];
-            ffi_args.extend(build_ffi_param_args(&dm.params, lib));
-            let args_str = ffi_args.join(", ");
-
-            emit_ffi_call_return(out, &dm.ffi_name, &args_str, &dm.ret, "        ", lib);
+            emit_trait_forwarder_body(out, dm, lib);
             writeln!(out, "    }}").unwrap();
         }
     }
@@ -291,4 +281,18 @@ fn emit_simple_trait_def(out: &mut String, ti: &TraitImpl, lib: &Library) {
     emit_callback_handle_methods(out, None, &lib.prefix, "");
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
+}
+
+/// Forward a trait method on a known exported type to its bridge function.
+fn emit_trait_forwarder_body(out: &mut String, m: &Method, lib: &Library) {
+    emit_call_body(
+        out,
+        &m.ffi_name,
+        Some("self.0"),
+        &m.params,
+        &m.ret,
+        "        ",
+        lib,
+        ReturnPolicy::default(),
+    );
 }
