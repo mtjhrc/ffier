@@ -12,6 +12,7 @@ mod calls;
 mod cfg;
 mod error;
 mod ffi;
+mod ffi_traits;
 mod formatting;
 mod functions;
 mod generate;

@@ -159,7 +159,7 @@ pub(super) fn wrap_concrete_dispatch(
                     };
                     quote! {
                         #vcfg_attr
-                        if __type_tag == <#ty_tokens as #lib_crate::FfiHandle>::TYPE_TAG {
+                        if __type_tag == <#ty_tokens as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                             #binding
                             break #label { #inner };
                         }
@@ -355,7 +355,7 @@ pub(super) fn generate_self_dispatch_bridge(
                 let variant_cfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
                 quote! {
                     #variant_cfg
-                    if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                    if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                         #metadata_guard
                         #pre_binding
                         return { #ret_body };
@@ -391,7 +391,7 @@ pub(super) fn generate_self_dispatch_bridge(
             let variant_cfg = cfg_predicate_attr(v.cfg_predicate.as_ref());
             quote! {
                 #variant_cfg
-                if __type_tag == <#ty as #lib_crate::FfiHandle>::TYPE_TAG {
+                if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
                     unsafe { ffier::ffier_handle_drop::<#ty>(handle) };
                     return;
                 }

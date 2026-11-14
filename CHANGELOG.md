@@ -17,6 +17,11 @@
 - Rename the schema's `ExportedType::is_builder_type` to
   `replaces_self_by_value` and `Return::is_builder_self` to
   `Return::replaces_self`.
+- `library_definition!` no longer defines `FfiType`, `FfiHandle` and
+  `FfiBorrow` at the library crate root; the conversion traits now live in
+  `ffier`. Remove imports such as `use crate::{FfiBorrow, FfiType};` from
+  modules that define errors with typed payload fields; they are no longer
+  needed.
 
 ### Fixed
 

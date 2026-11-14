@@ -3,6 +3,11 @@ use std::ffi::CStr;
 use core::ffi::c_void;
 use core::marker::PhantomData;
 
+mod ffi_type;
+pub use ffi_type::{
+    ClientHandle, FfiBorrow, FfiErrorPayload, FfiHandle, FfiType, FromC, IntoC, NativeHandle,
+};
+
 /// Callback handle retaining its owned value (`Box<T>`) or borrow type.
 pub struct CallbackHandle<T> {
     raw: *mut c_void,
@@ -482,22 +487,6 @@ pub trait FfiError: std::error::Error + Sized {
     /// including opaque payloads.
     fn from_code(_code: u32) -> Option<Self> {
         None
-    }
-
-    /// Shallow-copy the indexed payload field's CRepr into `out_buf`.
-    /// The written CRepr borrows from `&self` — the caller must not
-    /// outlive the error value. `buf_size` is checked for safety.
-    /// Indices refer to native tuple positions, including opaque fields.
-    ///
-    /// # Panics
-    /// Panics if the index is out of bounds, the field is opaque, or the buffer
-    /// is too small. Fieldless variants have no valid field indices.
-    ///
-    /// # Safety
-    /// `out_buf` must be valid and aligned for the selected field's CRepr,
-    /// with at least `buf_size` bytes. Returned data must not outlive `self`.
-    unsafe fn payload(&self, index: usize, _out_buf: *mut core::ffi::c_void, _buf_size: usize) {
-        panic!("error payload field index {index} out of bounds for 0 fields");
     }
 }
 

@@ -182,6 +182,12 @@ pub(super) fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) ->
         thread_safety_assertion(self_ty, &input.generics, export_cfg.thread_safety);
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+    let handle_impls = crate::ffi_traits::native_handle_impls(
+        &quote! { #impl_generics },
+        &quote! { #native_type },
+        &quote! { stringify!(#struct_ident) },
+        &quote! { $type_tag },
+    );
 
     let output = quote! {
         #reexport_bundle
@@ -214,21 +220,7 @@ pub(super) fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) ->
         macro_rules! #internal_macro_name {
             #reexport_helpers
             (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
-                impl #impl_generics FfiHandle for #native_type {
-                    const C_HANDLE_NAME: &'static str = stringify!(#struct_ident);
-                    const TYPE_TAG: u32 = $type_tag;
-                }
-                impl #impl_generics FfiType for #native_type {
-                    type CRepr = *mut core::ffi::c_void;
-                    const C_TYPE_NAME: &'static str = stringify!(#struct_ident);
-                    const IS_HANDLE: bool = true;
-                    fn into_c(self) -> *mut core::ffi::c_void {
-                        ffier::ffier_handle_new($type_tag, self)
-                    }
-                    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                        unsafe { ffier::ffier_handle_consume::<Self>(repr) }
-                    }
-                }
+                #handle_impls
             };
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {

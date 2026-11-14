@@ -215,8 +215,9 @@ pub struct MetaTypePair {
     pub bridge_type: TokenStream,
     pub rust_type: TokenStream,
     /// When set, the type comes from a foreign ffier library.
-    /// The tokens are the absolute crate path (e.g. `::other_lib`) whose `FfiType`
-    /// and `FfiHandle` traits should be used instead of the local library's.
+    /// The tokens are the absolute crate path (e.g. `::other_lib`) whose
+    /// `__FfierLocalToken` the type's conversion impls use, instead of the
+    /// local library's.
     pub foreign_crate: Option<TokenStream>,
     /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
     pub foreign_c_name: Option<String>,

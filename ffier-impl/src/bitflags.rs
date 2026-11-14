@@ -46,6 +46,13 @@ pub(crate) fn export_bitflags(input: TokenStream) -> TokenStream {
     let cfg_attr = export_cfg.cfg_attr();
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+    let conversions = crate::ffi_traits::local_conversions(
+        &quote! {},
+        &quote! { #name },
+        &quote! { #repr_ident },
+        quote! { self.bits() },
+        quote! { Self::from_bits_retain(repr) },
+    );
 
     let output = quote! {
         #reexport_bundle
@@ -62,14 +69,8 @@ pub(crate) fn export_bitflags(input: TokenStream) -> TokenStream {
         macro_rules! #internal_macro_name {
             #reexport_helpers
             (@on_library_export, $__type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
-                impl FfiType for #name {
-                    type CRepr = #repr_ident;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> #repr_ident { self.bits() }
-                    unsafe fn from_c(repr: #repr_ident) -> Self { Self::from_bits_retain(repr) }
-                }
-                impl FfiBorrow for #name {
+                #conversions
+                impl ffier::FfiBorrow<__FfierLocalToken> for #name {
                     fn borrow_as_c(&self) -> #repr_ident { self.bits() }
                 }
             };

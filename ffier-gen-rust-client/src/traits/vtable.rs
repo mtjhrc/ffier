@@ -52,7 +52,7 @@ pub(super) fn emit_vtable_struct(
         for m in variants {
             emit_cfg_attr(out, m.cfg.as_ref());
             let mut params = vec!["*mut core::ffi::c_void".to_string()];
-            push_extern_params(&m.params, &mut params, ParamNames::TypesOnly);
+            push_extern_params(&m.params, &mut params, lib, ParamNames::TypesOnly);
             let ret = push_return_and_out_params(&m.ret, &mut params, lib, ParamNames::TypesOnly);
             let params_str = params.join(", ");
             writeln!(
@@ -117,7 +117,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
 
             // Build trampoline params — same convention as vtable struct field
             let mut tramp_params = vec!["__ud: *mut core::ffi::c_void".to_string()];
-            push_extern_params(&m.params, &mut tramp_params, ParamNames::Named);
+            push_extern_params(&m.params, &mut tramp_params, lib, ParamNames::Named);
             let ret = push_return_and_out_params(&m.ret, &mut tramp_params, lib, ParamNames::Named);
             let tramp_params_str = tramp_params.join(", ");
             let method_lifetimes = m
@@ -167,8 +167,9 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                 match &p.param_type {
                     ParamType::Regular(tr) => {
                         let ty = tr.to_rust_type();
+                        let tok = crate::ffi_traits::token(tr, lib);
                         call_args.push(format!(
-                            "unsafe {{ <{ty} as FfiType>::from_c({}) }}",
+                            "unsafe {{ <{ty} as ffier::FromC<{tok}>>::from_c({}) }}",
                             p.name
                         ));
                     }
@@ -184,10 +185,11 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                         let (ptr, len) = (&ptr.name, &len.name);
                         let slice_name = format!("__slice_{}", p.name);
                         let elem_ty = element.to_rust_type();
+                        let elem_tok = crate::ffi_traits::token(element, lib);
                         if element.ref_kind != ffier_schema::RefKind::None {
                             // Ref elements: reconstruct Vec<&T> from C repr array.
                             writeln!(out,
-                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }}.iter().map(|v| unsafe {{ <{elem_ty} as FfiType>::from_c(*v) }}).collect();",
+                                "                    let {slice_name}: Vec<{elem_ty}> = unsafe {{ core::slice::from_raw_parts({ptr}, {len}) }}.iter().map(|v| unsafe {{ <{elem_ty} as ffier::FromC<{elem_tok}>>::from_c(*v) }}).collect();",
                             ).unwrap();
                             call_args.push(format!("&{slice_name}"));
                         } else {
@@ -220,9 +222,10 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                 }
                 Return::OptionalValue(tr) => {
                     let ty = tr.without_optional().to_rust_type();
+                    let tok = crate::ffi_traits::token(tr, lib);
                     writeln!(out, "                    match __result {{").unwrap();
                     writeln!(out, "                        Some(__value) => {{").unwrap();
-                    writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__value)) }};").unwrap();
+                    writeln!(out, "                            unsafe {{ result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__value)) }};").unwrap();
                     writeln!(out, "                            true").unwrap();
                     writeln!(out, "                        }}").unwrap();
                     writeln!(out, "                        None => false,").unwrap();
@@ -230,9 +233,10 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                 }
                 Return::Value(tr) => {
                     let ty = tr.to_rust_type();
+                    let tok = crate::ffi_traits::token(tr, lib);
                     writeln!(
                         out,
-                        "                    <{ty} as FfiType>::into_c(__result)"
+                        "                    <{ty} as ffier::IntoC<{tok}>>::into_c(__result)"
                     )
                     .unwrap();
                 }
@@ -246,7 +250,8 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                             match ok {
                                 Some(ok_tr) => {
                                     let ty = ok_tr.to_rust_type();
-                                    writeln!(out, "                        Ok(__ok) => <{ty} as FfiType>::into_c(__ok),").unwrap();
+                                    let tok = crate::ffi_traits::token(ok_tr, lib);
+                                    writeln!(out, "                        Ok(__ok) => <{ty} as ffier::IntoC<{tok}>>::into_c(__ok),").unwrap();
                                 }
                                 None => {
                                     writeln!(
@@ -278,9 +283,10 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                             match ok {
                                 Some(ok_tr) => {
                                     let ty = ok_tr.to_rust_type();
+                                    let tok = crate::ffi_traits::token(ok_tr, lib);
                                     writeln!(out, "                        Ok(__ok) => {{")
                                         .unwrap();
-                                    writeln!(out, "                            unsafe {{ result.write(<{ty} as FfiType>::into_c(__ok)) }};").unwrap();
+                                    writeln!(out, "                            unsafe {{ result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__ok)) }};").unwrap();
                                     writeln!(
                                         out,
                                         "                            0 // FFIER_RESULT_SUCCESS"
@@ -313,6 +319,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                                 .as_ref()
                                 .expect("OptionalValueOutParam requires an ok type");
                             let ty = ok_tr.without_optional().to_rust_type();
+                            let tok = crate::ffi_traits::token(ok_tr, lib);
                             writeln!(out, "                        Ok(Some(__ok)) => {{").unwrap();
                             writeln!(out, "                            unsafe {{").unwrap();
                             writeln!(
@@ -320,7 +327,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                                 "                                result_is_some.write(true);"
                             )
                             .unwrap();
-                            writeln!(out, "                                result.write(<{ty} as FfiType>::into_c(__ok));").unwrap();
+                            writeln!(out, "                                result.write(<{ty} as ffier::IntoC<{tok}>>::into_c(__ok));").unwrap();
                             writeln!(out, "                            }}").unwrap();
                             writeln!(out, "                            0 // FFIER_RESULT_SUCCESS")
                                 .unwrap();

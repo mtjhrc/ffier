@@ -18,7 +18,7 @@ struct TypePair {
     bridge: proc_macro2::TokenStream,
     rust: proc_macro2::TokenStream,
     /// When set, the type comes from a foreign ffier library and this
-    /// is the crate path whose `FfiType`/`FfiHandle` traits should be used.
+    /// is the crate path whose `__FfierLocalToken` its conversions use.
     foreign_crate: Option<proc_macro2::TokenStream>,
     /// C typedef name for the foreign handle type (e.g. `"FlForeignConfig"`).
     foreign_c_name: Option<String>,

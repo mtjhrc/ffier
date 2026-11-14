@@ -98,6 +98,18 @@ pub(super) fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> Tok
     let cfg_attr = export_cfg.cfg_attr();
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
+    let conversions = crate::ffi_traits::local_conversions(
+        &quote! {},
+        &quote! { #name },
+        &quote! { #repr_ident },
+        quote! { self as #repr_ident },
+        quote! {
+            match repr {
+                #(#from_c_arms)*
+                unknown => panic!("invalid {} discriminant: {}", #name_str, unknown),
+            }
+        },
+    );
 
     let output = quote! {
         #reexport_bundle
@@ -114,22 +126,8 @@ pub(super) fn exportable_enum(input: DeriveInput, export_cfg: &ExportCfg) -> Tok
         macro_rules! #internal_macro_name {
             #reexport_helpers
             (@on_library_export, $__type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
-                impl FfiType for #name {
-                    type CRepr = #repr_ident;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> #repr_ident { self as #repr_ident }
-                    unsafe fn from_c(repr: #repr_ident) -> Self {
-                        match repr {
-                            #(#from_c_arms)*
-                            unknown => panic!(
-                                "invalid {} discriminant: {}",
-                                #name_str, unknown
-                            ),
-                        }
-                    }
-                }
-                impl FfiBorrow for #name {
+                #conversions
+                impl ffier::FfiBorrow<__FfierLocalToken> for #name {
                     fn borrow_as_c(&self) -> #repr_ident { *self as #repr_ident }
                 }
             };

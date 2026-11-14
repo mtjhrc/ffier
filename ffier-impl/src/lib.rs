@@ -12,6 +12,7 @@ mod cfg;
 mod contracts;
 mod error;
 mod export;
+mod ffi_traits;
 mod library;
 mod meta;
 mod reexport;

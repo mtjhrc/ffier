@@ -49,6 +49,7 @@ pub(crate) fn derive_ffi_error(input: TokenStream) -> TokenStream {
     let mut codes_entries = Vec::new();
     let mut variant_meta_tokens = Vec::new();
     let mut payload_arms = Vec::new();
+    let mut payload_bounds = Vec::new();
     let mut from_code_arms = Vec::new();
 
     for variant in &data_enum.variants {
@@ -116,20 +117,27 @@ pub(crate) fn derive_ffi_error(input: TokenStream) -> TokenStream {
                         });
                     }
                     MetaErrorField::Typed(field_ty) => {
+                        let bound = quote! { #field_ty: ffier::FfiBorrow<__Tok> };
+                        if !payload_bounds
+                            .iter()
+                            .any(|b: &proc_macro2::TokenStream| b.to_string() == bound.to_string())
+                        {
+                            payload_bounds.push(bound);
+                        }
                         let binding = format_ident!("__field_{index}");
                         bindings.push(quote! { #binding });
                         field_arms.push(quote! {
                             #index => {
-                                let expected = core::mem::size_of::<<#field_ty as FfiType>::CRepr>();
+                                let expected = core::mem::size_of::<<#field_ty as ffier::FfiType<__Tok>>::CRepr>();
                                 assert!(
                                     buf_size >= expected,
                                     "error payload buffer too small: got {} bytes, need {}",
                                     buf_size, expected,
                                 );
-                                let c_val = <#field_ty as FfiBorrow>::borrow_as_c(#binding);
+                                let c_val = <#field_ty as ffier::FfiBorrow<__Tok>>::borrow_as_c(#binding);
                                 unsafe {
                                     core::ptr::write(
-                                        out_buf as *mut <#field_ty as FfiType>::CRepr,
+                                        out_buf as *mut <#field_ty as ffier::FfiType<__Tok>>::CRepr,
                                         c_val,
                                     );
                                 }
@@ -177,6 +185,13 @@ pub(crate) fn derive_ffi_error(input: TokenStream) -> TokenStream {
         &quote! {},
     );
 
+    let handle_impls = crate::ffi_traits::native_handle_impls(
+        &quote! {},
+        &quote! { #name },
+        &quote! { stringify!(#name) },
+        &quote! { $type_tag },
+    );
+
     let output = quote! {
         #reexport_bundle
 
@@ -209,7 +224,14 @@ pub(crate) fn derive_ffi_error(input: TokenStream) -> TokenStream {
                     _ => None,
                 }
             }
+        }
 
+        // Generic over the token: the payload's field conversions resolve
+        // with whichever library exports this error.
+        impl<__Tok> ffier::FfiErrorPayload<__Tok> for #name
+        where
+            #(#payload_bounds,)*
+        {
             unsafe fn payload(&self, index: usize, out_buf: *mut core::ffi::c_void, buf_size: usize) {
                 match self {
                     #(#payload_arms)*
@@ -234,21 +256,7 @@ pub(crate) fn derive_ffi_error(input: TokenStream) -> TokenStream {
         macro_rules! #internal_macro_name {
             #reexport_helpers
             (@on_library_export, $type_tag:expr, [$($__handle:ident),*], [$($__value:ident),*]) => {
-                impl FfiHandle for #name {
-                    const C_HANDLE_NAME: &'static str = stringify!(#name);
-                    const TYPE_TAG: u32 = $type_tag;
-                }
-                impl FfiType for #name {
-                    type CRepr = *mut core::ffi::c_void;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = true;
-                    fn into_c(self) -> *mut core::ffi::c_void {
-                        ffier::ffier_handle_new($type_tag, self)
-                    }
-                    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                        unsafe { ffier::ffier_handle_consume::<Self>(repr) }
-                    }
-                }
+                #handle_impls
             };
             // Tagged invocation (from library_definition! shim): includes type_tag
             ($prefix:literal, $type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {

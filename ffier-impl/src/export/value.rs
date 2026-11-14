@@ -147,6 +147,48 @@ pub(super) fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg)
 
     let (reexport_helpers, reexport_bundle) = reexport_helpers(&[&helper_mod_name], &cfg_attr);
 
+    let none = quote! {};
+    let conversions = [
+        crate::ffi_traits::local_conversions(
+            &none,
+            &quote! { #value_type },
+            &quote! { #value_type },
+            quote! { self },
+            quote! { repr },
+        ),
+        crate::ffi_traits::local_conversions(
+            &none,
+            &quote! { &#value_type },
+            &quote! { *const #value_type },
+            quote! { self },
+            quote! { unsafe { &*repr } },
+        ),
+        crate::ffi_traits::local_conversions(
+            &none,
+            &quote! { &mut #value_type },
+            &quote! { *mut #value_type },
+            quote! { self },
+            quote! { unsafe { &mut *repr } },
+        ),
+        // Optional borrowed values are nullable pointers. The null check is
+        // explicit rather than relying on the null pointer optimization;
+        // both compile to the same code.
+        crate::ffi_traits::local_conversions(
+            &none,
+            &quote! { Option<&#value_type> },
+            &quote! { *const #value_type },
+            quote! { self.map_or(core::ptr::null(), |value| value) },
+            quote! { if repr.is_null() { None } else { Some(unsafe { &*repr }) } },
+        ),
+        crate::ffi_traits::local_conversions(
+            &none,
+            &quote! { Option<&mut #value_type> },
+            &quote! { *mut #value_type },
+            quote! { self.map_or(core::ptr::null_mut(), |value| value) },
+            quote! { if repr.is_null() { None } else { Some(unsafe { &mut *repr }) } },
+        ),
+    ];
+
     quote! {
         #reexport_bundle
 
@@ -170,74 +212,7 @@ pub(super) fn exportable_value_struct(input: ItemStruct, export_cfg: &ExportCfg)
                 // The Rust definition is the C layout: value structs are
                 // `#[repr(C)]` and all field types already have a C
                 // representation, so no conversion is needed.
-                impl FfiType for #value_type {
-                    type CRepr = Self;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> Self { self }
-                    unsafe fn from_c(repr: Self) -> Self { repr }
-                }
-
-                impl FfiType for &#value_type {
-                    type CRepr = *const #value_type;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> *const #value_type { self }
-                    unsafe fn from_c(repr: *const #value_type) -> Self {
-                        unsafe { &*repr }
-                    }
-                }
-
-                impl FfiType for &mut #value_type {
-                    type CRepr = *mut #value_type;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> *mut #value_type { self }
-                    unsafe fn from_c(repr: *mut #value_type) -> Self {
-                        unsafe { &mut *repr }
-                    }
-                }
-
-                // Optional borrowed values are nullable pointers. The null
-                // check is explicit rather than relying on the null pointer
-                // optimization; both compile to the same code.
-                impl FfiType for Option<&#value_type> {
-                    type CRepr = *const #value_type;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> *const #value_type {
-                        match self {
-                            Some(value) => value,
-                            None => core::ptr::null(),
-                        }
-                    }
-                    unsafe fn from_c(repr: *const #value_type) -> Self {
-                        if repr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { &*repr })
-                        }
-                    }
-                }
-
-                impl FfiType for Option<&mut #value_type> {
-                    type CRepr = *mut #value_type;
-                    const C_TYPE_NAME: &'static str = stringify!(#name);
-                    const IS_HANDLE: bool = false;
-                    fn into_c(self) -> *mut #value_type {
-                        match self {
-                            Some(value) => value,
-                            None => core::ptr::null_mut(),
-                        }
-                    }
-                    unsafe fn from_c(repr: *mut #value_type) -> Self {
-                        if repr.is_null() {
-                            None
-                        } else {
-                            Some(unsafe { &mut *repr })
-                        }
-                    }
-                }
+                #(#conversions)*
             };
             ($prefix:literal, $__type_tag:expr, $callback:path $(, $($rest:tt)*)?) => {
                 $callback! { {

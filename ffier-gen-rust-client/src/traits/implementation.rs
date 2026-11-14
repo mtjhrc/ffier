@@ -3,6 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+use crate::ffi_traits::TOKEN;
+
 use ffier_schema::{Cfg, Library, Method, TraitImpl};
 
 use crate::calls::{ReturnPolicy, emit_call_body};
@@ -184,7 +186,7 @@ pub(crate) fn emit_trait_impl(
     .unwrap();
     writeln!(
         out,
-        "            unsafe {{ drop(<{}{} as FfiType>::from_c(raw)) }};",
+        "            unsafe {{ drop(<{}{} as ffier::FromC<{TOKEN}>>::from_c(raw)) }};",
         ti.struct_name,
         if ti.struct_lifetime_args.is_empty() {
             String::new()

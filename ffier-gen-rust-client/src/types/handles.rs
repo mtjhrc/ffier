@@ -6,6 +6,7 @@ use ffier_schema::{ExportedType, Library, LifetimeVariance, Receiver, Return};
 
 use crate::cfg::emit_cfg_attr;
 use crate::ffi::{SymbolInfo, emit_extern_fns, extern_fn, extern_fn_from_method};
+use crate::ffi_traits::TOKEN;
 use crate::methods::emit_method_wrapper;
 use crate::thread_safety::emit_thread_safety_impls;
 
@@ -79,11 +80,43 @@ pub(crate) fn emit_exported_type(
     }
     writeln!(out).unwrap();
 
-    // __from_raw, __into_raw
     emit_thread_safety_impls(out, &ty.name, &lt_params, ty.thread_safety, ty.cfg.as_ref());
-    emit_cfg_attr(out, ty.cfg.as_ref());
-    writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
-    writeln!(out, "    #[doc(hidden)]").unwrap();
+
+    // The handle traits: the wrapper owns the handle pointer it holds.
+    let cfg = ty.cfg.as_ref();
+    let self_ty = format!("{}{lt_params}", ty.name);
+    let c_handle_name = lib.c_type_of(&ty.name);
+    emit_cfg_attr(out, cfg);
+    writeln!(
+        out,
+        "impl{lt_params} ffier::FfiHandle<{TOKEN}> for {self_ty} {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    const C_HANDLE_NAME: &'static str = \"{c_handle_name}\";"
+    )
+    .unwrap();
+    writeln!(out, "    const TYPE_TAG: u32 = {type_tag}u32;").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    emit_cfg_attr(out, cfg);
+    writeln!(
+        out,
+        "impl{lt_params} ffier::ClientHandle<{TOKEN}> for {self_ty} {{"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "    fn into_raw(self) -> *mut core::ffi::c_void {{ std::mem::ManuallyDrop::new(self).0 }}"
+    )
+    .unwrap();
     writeln!(out, "    /// # Safety").unwrap();
     writeln!(
         out,
@@ -104,70 +137,50 @@ pub(crate) fn emit_exported_type(
         )
         .unwrap();
     }
-    if has_lifetimes {
-        writeln!(out, "    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr, std::marker::PhantomData) }}").unwrap();
+    let from_raw = if has_lifetimes {
+        "Self(handle, std::marker::PhantomData)"
     } else {
-        writeln!(
-            out,
-            "    pub unsafe fn __from_raw(ptr: *mut core::ffi::c_void) -> Self {{ Self(ptr) }}"
-        )
-        .unwrap();
-    }
-    writeln!(out, "    #[doc(hidden)]").unwrap();
-    writeln!(out, "    pub fn __into_raw(self) -> *mut core::ffi::c_void {{ let this = std::mem::ManuallyDrop::new(self); this.0 }}").unwrap();
+        "Self(handle)"
+    };
+    writeln!(
+        out,
+        "    unsafe fn from_raw(handle: *mut core::ffi::c_void) -> Self {{ {from_raw} }}"
+    )
+    .unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
-    // FfiHandle
-    emit_cfg_attr(out, ty.cfg.as_ref());
+    // By value, the wrapper hands its handle over (and takes one back).
+    emit_cfg_attr(out, cfg);
     writeln!(
         out,
-        "impl{lt_params} FfiHandle for {}{lt_params} {{",
-        ty.name
+        "impl{lt_params} ffier::FfiType<{TOKEN}> for {self_ty} {{"
     )
     .unwrap();
-    let c_handle_name = lib.c_type_of(&ty.name);
-    writeln!(
-        out,
-        "    const C_HANDLE_NAME: &'static str = \"{c_handle_name}\";",
-    )
-    .unwrap();
-    writeln!(out, "    const TYPE_TAG: u32 = {type_tag}u32;").unwrap();
-    writeln!(
-        out,
-        "    unsafe fn as_handle(&self) -> *mut core::ffi::c_void {{ self.0 }}"
-    )
-    .unwrap();
-    if has_lifetimes {
-        writeln!(out, "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle, std::marker::PhantomData) }}").unwrap();
-    } else {
-        writeln!(
-            out,
-            "    unsafe fn __from_raw(handle: *mut core::ffi::c_void) -> Self {{ Self(handle) }}"
-        )
-        .unwrap();
-    }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
-
-    // FfiType
-    emit_cfg_attr(out, ty.cfg.as_ref());
-    writeln!(out, "impl{lt_params} FfiType for {}{lt_params} {{", ty.name).unwrap();
     writeln!(out, "    type CRepr = *mut core::ffi::c_void;").unwrap();
+    writeln!(out, "    const IS_HANDLE: bool = true;").unwrap();
+    writeln!(out, "}}").unwrap();
+    emit_cfg_attr(out, cfg);
     writeln!(
         out,
-        "    const C_TYPE_NAME: &'static str = \"{}\";",
-        ty.name
+        "impl{lt_params} ffier::IntoC<{TOKEN}> for {self_ty} {{"
     )
     .unwrap();
     writeln!(
         out,
-        "    fn into_c(self) -> *mut core::ffi::c_void {{ self.__into_raw() }}"
+        "    fn into_c(self) -> *mut core::ffi::c_void {{ ffier::ClientHandle::<{TOKEN}>::into_raw(self) }}"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    emit_cfg_attr(out, cfg);
+    writeln!(
+        out,
+        "impl{lt_params} ffier::FromC<{TOKEN}> for {self_ty} {{"
     )
     .unwrap();
     writeln!(
         out,
-        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ unsafe {{ Self::__from_raw(repr) }} }}"
+        "    unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {{ unsafe {{ <Self as ffier::ClientHandle<{TOKEN}>>::from_raw(repr) }} }}"
     )
     .unwrap();
     writeln!(out, "}}").unwrap();

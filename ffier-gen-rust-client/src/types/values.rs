@@ -6,6 +6,7 @@ use std::fmt::Write;
 use ffier_schema::Library;
 
 use crate::cfg::emit_cfg_attr;
+use crate::ffi_traits::emit_conversions;
 
 /// Emit fixed-layout value structs, dependencies first so nested structs are
 /// already declared when used as inline fields.
@@ -55,86 +56,42 @@ pub(crate) fn emit_value_structs(out: &mut String, lib: &Library) {
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
 
-        emit_cfg_attr(out, value.cfg.as_ref());
-        writeln!(out, "impl FfiType for {} {{", value.name).unwrap();
-        writeln!(out, "    type CRepr = Self;").unwrap();
-        writeln!(
+        let cfg = value.cfg.as_ref();
+        let name = &value.name;
+        emit_conversions(out, cfg, name, name, "self", "repr");
+        emit_conversions(
             out,
-            "    const C_TYPE_NAME: &'static str = \"{}\";",
-            value.name
-        )
-        .unwrap();
-        writeln!(out, "    fn into_c(self) -> Self {{ self }}").unwrap();
-        writeln!(out, "    unsafe fn from_c(repr: Self) -> Self {{ repr }}").unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
-
-        for (ptr, name) in [
-            ("*const", format!("&{}", value.name)),
-            ("*mut", format!("&mut {}", value.name)),
-        ] {
-            emit_cfg_attr(out, value.cfg.as_ref());
-            writeln!(out, "impl FfiType for {name} {{").unwrap();
-            writeln!(out, "    type CRepr = {ptr} {};", value.name).unwrap();
-            writeln!(
-                out,
-                "    const C_TYPE_NAME: &'static str = \"{}\";",
-                value.name
-            )
-            .unwrap();
-            writeln!(out, "    fn into_c(self) -> Self::CRepr {{ self }}").unwrap();
-            if ptr == "*const" {
-                writeln!(
-                    out,
-                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ unsafe {{ &*repr }} }}"
-                )
-                .unwrap();
-            } else {
-                writeln!(
-                    out,
-                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ unsafe {{ &mut *repr }} }}"
-                )
-                .unwrap();
-            }
-            writeln!(out, "}}").unwrap();
-            writeln!(out).unwrap();
-        }
-
+            cfg,
+            &format!("&{name}"),
+            &format!("*const {name}"),
+            "self",
+            "unsafe { &*repr }",
+        );
+        emit_conversions(
+            out,
+            cfg,
+            &format!("&mut {name}"),
+            &format!("*mut {name}"),
+            "self",
+            "unsafe { &mut *repr }",
+        );
         // Optional borrowed values are nullable pointers. Check for null
         // explicitly instead of relying on the null pointer optimization.
-        for (ptr, name, null) in [
-            ("*const", format!("Option<&{}>", value.name), "null"),
-            ("*mut", format!("Option<&mut {}>", value.name), "null_mut"),
-        ] {
-            emit_cfg_attr(out, value.cfg.as_ref());
-            writeln!(out, "impl FfiType for {name} {{").unwrap();
-            writeln!(out, "    type CRepr = {ptr} {};", value.name).unwrap();
-            writeln!(
-                out,
-                "    const C_TYPE_NAME: &'static str = \"{}\";",
-                value.name
-            )
-            .unwrap();
-            writeln!(
-                out,
-                "    fn into_c(self) -> Self::CRepr {{ self.map_or(core::ptr::{null}(), |value| value) }}"
-            )
-            .unwrap();
-            if ptr == "*const" {
-                writeln!(
-                    out,
-                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ if repr.is_null() {{ None }} else {{ Some(unsafe {{ &*repr }}) }} }}"
-                )
-                .unwrap();
-            } else {
-                writeln!(
-                    out,
-                    "    unsafe fn from_c(repr: Self::CRepr) -> Self {{ if repr.is_null() {{ None }} else {{ Some(unsafe {{ &mut *repr }}) }} }}"
-                )
-                .unwrap();
-            }
-            writeln!(out, "}}").unwrap();
-            writeln!(out).unwrap();
-        }
+        emit_conversions(
+            out,
+            cfg,
+            &format!("Option<&{name}>"),
+            &format!("*const {name}"),
+            "self.map_or(core::ptr::null(), |value| value)",
+            "if repr.is_null() { None } else { Some(unsafe { &*repr }) }",
+        );
+        emit_conversions(
+            out,
+            cfg,
+            &format!("Option<&mut {name}>"),
+            &format!("*mut {name}"),
+            "self.map_or(core::ptr::null_mut(), |value| value)",
+            "if repr.is_null() { None } else { Some(unsafe { &mut *repr }) }",
+        );
     }
 }
