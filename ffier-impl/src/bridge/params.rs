@@ -6,7 +6,7 @@ use quote::{format_ident, quote};
 use crate::meta::{MetaParam, MetaParamKind, cfg_predicate_attr};
 
 use super::dispatch::TraitMap;
-use super::signature::{CExternSignature, resolve_trait_crate};
+use super::signature::CExternSignature;
 
 /// Info about a single `impl Trait` param, used for dispatch codegen.
 pub(super) struct ImplTraitParam {
@@ -44,6 +44,7 @@ pub(super) fn convert_params(
     c_sig: &CExternSignature,
     ffi_name_str: &str,
     trait_map: &TraitMap,
+    handle_types: &std::collections::HashSet<String>,
     lib_crate: &TokenStream2,
 ) -> Result<ConvertedParams, TokenStream2> {
     for p in params {
@@ -148,60 +149,20 @@ pub(super) fn convert_params(
     }
 
     // Convert params
+    let local_token = crate::ffi_traits::token_of(lib_crate);
     let mut pre_bindings = Vec::new();
-    let converted_args: Vec<_> = params
-        .iter()
-        .map(|p| {
-            let id = &p.name;
-            match &p.kind {
-                MetaParamKind::ImplTrait { .. } => quote! { #id },
-                MetaParamKind::StrSlice => {
-                    let len_name = format!("{}_len", p.name);
-                    let len_id = &c_sig
-                        .params
-                        .iter()
-                        .find(|cp| cp.name == len_name)
-                        .expect("Slice param must have _len param in c_sig")
-                        .name;
-                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
-                    let vec_id = format_ident!("__{id}_vec");
-                    pre_bindings.push(quote! { let #vec_id = #binding; });
-                    quote! { &#vec_id }
-                }
-                MetaParamKind::PrimitiveSlice(_) => {
-                    let len_name = format!("{}_len", p.name);
-                    let len_id = &c_sig
-                        .params
-                        .iter()
-                        .find(|cp| cp.name == len_name)
-                        .expect("Slice param must have _len param in c_sig")
-                        .name;
-                    let binding = meta_param_conversion(id, &p.kind, Some(len_id), lib_crate);
-                    let slice_id = format_ident!("__{id}_slice");
-                    pre_bindings.push(quote! { let #slice_id = #binding; });
-                    // Already &[T] from from_raw_parts, pass directly.
-                    quote! { #slice_id }
-                }
-                MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
-                    let binding = meta_param_conversion(id, &p.kind, None, lib_crate);
-                    let foreign_id = format_ident!("__{id}_foreign");
-                    pre_bindings.push(binding);
-                    // Check if the bridge_type is a reference — if so, borrow the
-                    // ManuallyDrop binding. If by-value, pass the binding directly.
-                    match syn::parse2::<syn::Type>(tp.bridge_type.clone()).ok() {
-                        Some(syn::Type::Reference(r)) if r.mutability.is_some() => {
-                            quote! { &mut *#foreign_id }
-                        }
-                        Some(syn::Type::Reference(_)) => {
-                            quote! { &*#foreign_id }
-                        }
-                        _ => quote! { #foreign_id },
-                    }
-                }
-                other => meta_param_conversion(id, other, None, lib_crate),
-            }
-        })
-        .collect();
+    let mut converted_args = Vec::new();
+    for p in params {
+        let len_name = format!("{}_len", p.name);
+        let len = c_sig
+            .params
+            .iter()
+            .find(|cp| cp.name == len_name)
+            .map(|cp| &cp.name);
+        let converted = crate::conv::lift_param(p, len, handle_types, &local_token);
+        pre_bindings.extend(converted.pre);
+        converted_args.extend(converted.exprs);
+    }
 
     // Determine effective dispatch mode for each param.
     // When total_branches == 0 (no concrete implementors), force vtable
@@ -356,105 +317,6 @@ pub(super) fn convert_params(
         converted_args,
         concrete_dispatch_params,
     })
-}
-
-fn meta_param_conversion(
-    id: &syn::Ident,
-    kind: &MetaParamKind,
-    len_ident: Option<&syn::Ident>,
-    lib_crate: &TokenStream2,
-) -> TokenStream2 {
-    match kind {
-        MetaParamKind::Regular(tp) if tp.foreign_crate.is_some() => {
-            // Foreign handle type from another ffier library's generated client.
-            // We can't use FfiType::from_c because the handle's inner value is the
-            // real Rust type from the foreign library, not the client wrapper.
-            // Instead, wrap the raw pointer in the client handle type directly.
-            let tc = tp.foreign_crate.as_ref().unwrap();
-            let bridge_type = &tp.bridge_type;
-            let foreign_id = format_ident!("__{id}_foreign");
-
-            // Compile-time assert: verify user-provided c_name matches the
-            // foreign crate's C_HANDLE_NAME const.
-            let c_name_assert = tp.foreign_c_name.as_ref().map(|c_name| {
-                let inner = if let Ok(syn::Type::Reference(r)) =
-                    syn::parse2::<syn::Type>(bridge_type.clone())
-                {
-                    let elem = &r.elem;
-                    quote! { #elem }
-                } else {
-                    bridge_type.clone()
-                };
-                let msg = format!(
-                    "foreign c_name mismatch for `{}`: expected \"{}\"",
-                    inner, c_name,
-                );
-                quote! {
-                    const _: () = assert!(
-                        ffier::const_str_eq(
-                            <#inner as ffier::FfiHandle<#tc::__FfierLocalToken>>::C_HANDLE_NAME,
-                            #c_name,
-                        ),
-                        #msg,
-                    );
-                }
-            });
-
-            // Strip the reference (if any) to get the inner handle type.
-            if let Ok(syn::Type::Reference(ref_ty)) = syn::parse2::<syn::Type>(bridge_type.clone())
-            {
-                let inner = &ref_ty.elem;
-                if ref_ty.mutability.is_some() {
-                    quote! {
-                        #c_name_assert
-                        let mut #foreign_id = core::mem::ManuallyDrop::new(
-                            <#inner as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id));
-                    }
-                } else {
-                    quote! {
-                        #c_name_assert
-                        let #foreign_id = core::mem::ManuallyDrop::new(
-                            <#inner as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id));
-                    }
-                }
-            } else {
-                // By-value foreign handle — ownership transfers, Drop is caller's intent.
-                quote! {
-                    #c_name_assert
-                    let #foreign_id = <#bridge_type as ffier::ClientHandle<#tc::__FfierLocalToken>>::from_raw(#id);
-                }
-            }
-        }
-        MetaParamKind::Regular(tp) => {
-            let bridge_type = &tp.bridge_type;
-            let tc = resolve_trait_crate(tp, lib_crate);
-            quote! { unsafe { <#bridge_type as ffier::FromC<#tc::__FfierLocalToken>>::from_c(#id) } }
-        }
-        MetaParamKind::StrSlice => {
-            let len_id = len_ident.expect("StrSlice conversion needs len_ident");
-            quote! { {
-                let __slice = unsafe { core::slice::from_raw_parts(#id, #len_id) };
-                let __strs: Vec<&str> = __slice.iter().map(|b| unsafe {
-                    core::str::from_utf8_unchecked(
-                        core::slice::from_raw_parts(b.data, b.len))
-                }).collect();
-                __strs
-            } }
-        }
-        MetaParamKind::PrimitiveSlice(_) => {
-            let len_id = len_ident.expect("PrimitiveSlice conversion needs len_ident");
-            quote! { {
-                if #len_id == 0 {
-                    &[]
-                } else {
-                    unsafe { core::slice::from_raw_parts(#id, #len_id) }
-                }
-            } }
-        }
-        MetaParamKind::ImplTrait { .. } => {
-            quote! { compile_error!("ImplTrait should not use param_conversion") }
-        }
-    }
 }
 
 /// Emit a `let obj = ...` binding that borrows a value from a handle.
