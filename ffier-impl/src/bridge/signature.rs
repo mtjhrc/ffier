@@ -5,12 +5,8 @@ use std::collections::HashSet;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 
-use crate::meta::{
-    MetaMethod, MetaParamKind, MetaReceiver, MetaReturn, MetaTypePair, extract_result_ok_type,
-    is_result_ok_handle, option_value_struct_inner,
-};
-
-use super::returns::is_borrowed_handle;
+use crate::meta::{MetaMethod, MetaParamKind, MetaReceiver, MetaTypePair};
+use crate::return_shape::{ResultConv, ReturnShape, classify_return};
 
 /// A single parameter in a C extern signature.
 pub(super) struct CExternParam {
@@ -51,7 +47,7 @@ pub(super) fn c_signature_for_method(
 
     if has_receiver {
         // All handles are heap-allocated, passed as *mut c_void.
-        // Builder by-value methods take *mut *mut c_void (pointer to the
+        // By-value methods of a type whose returned Self replaces the receiver take *mut *mut c_void (pointer to the
         // caller's handle variable) so the bridge can swap the pointer.
         params.push(CExternParam {
             name: format_ident!("handle"),
@@ -81,90 +77,54 @@ pub(super) fn c_signature_for_method(
         }
     }
 
-    // Return type + out-param for handle returns or Result
-    let ret = match &method.ret {
-        MetaReturn::Void => quote! {},
-        MetaReturn::Value(vk) => {
-            if option_value_struct_inner(&vk.rust_type, value_types).is_some()
-                && let Some(inner) = crate::meta::option_inner_tokens(&vk.bridge_type)
-            {
-                params.push(CExternParam {
-                    name: format_ident!("result"),
-                    c_type: quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
-                });
-                // All values (handles and primitives) returned directly.
-                // Handles return *mut c_void, primitives return their CRepr.
-                quote! { -> bool }
-            } else {
-                let ty = c_return_type(vk, lib_crate);
-                quote! { -> #ty }
-            }
+    // Return type + out-params, from the shared return classification.
+    let mut out_param = |name: &str, c_type: TokenStream2| {
+        params.push(CExternParam {
+            name: format_ident!("{name}"),
+            c_type,
+        })
+    };
+    let err_out = quote! { *mut *mut core::ffi::c_void };
+    let shape = classify_return(&method.ret, &method.rust_ret, handle_types, value_types);
+    let ret = match shape {
+        ReturnShape::Void => quote! {},
+        ReturnShape::OptionalValue { inner, .. } => {
+            out_param(
+                "result",
+                quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+            );
+            quote! { -> bool }
         }
-        MetaReturn::Result { ok, .. } => {
-            // `Result<Option<ValueStruct>, E>` writes presence and value through
-            // separate out-params, so neither can be part of the value branch.
-            let optional_value = ok.as_ref().and_then(|tp| {
-                option_value_struct_inner(&tp.rust_type, value_types)
-                    .and_then(|_| crate::meta::option_inner_tokens(&tp.bridge_type))
-            });
-
-            // Foreign ok types are always handles (handle-or-null).
-            let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
-            let ok_is_handle = ok_is_foreign
-                || (ok.is_some() && is_result_ok_handle(&method.rust_ret, handle_types));
-            let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
-                let ok_tokens = extract_result_ok_type(&method.rust_ret);
-                syn::parse2::<syn::Type>(ok_tokens)
-                    .ok()
-                    .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
-            };
-
-            // Builder by-value Result<Self, E>: the ok value is written back
-            // through the double-pointer handle param, not returned. Use
-            // FtResult style, not handle-or-null.
-            let is_builder_self_result =
-                method.is_builder() && method.receiver == MetaReceiver::Value;
-
-            if let Some(inner) = optional_value {
-                params.push(CExternParam {
-                    name: format_ident!("result_is_some"),
-                    c_type: quote! { *mut bool },
-                });
-                params.push(CExternParam {
-                    name: format_ident!("result"),
-                    c_type: quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
-                });
-                params.push(CExternParam {
-                    name: format_ident!("err_out"),
-                    c_type: quote! { *mut *mut core::ffi::c_void },
-                });
+        // Handles return *mut c_void, everything else its CRepr.
+        ReturnShape::Value { tp, .. } => {
+            let ty = c_return_type(tp, lib_crate);
+            quote! { -> #ty }
+        }
+        ReturnShape::Result { ok, conv, .. } => match conv {
+            ResultConv::OptionalValueOutParam { inner } => {
+                out_param("result_is_some", quote! { *mut bool });
+                out_param(
+                    "result",
+                    quote! { *mut <#inner as #lib_crate::FfiType>::CRepr },
+                );
+                out_param("err_out", err_out);
                 quote! { -> ffier::FfierResult }
-            } else if (ok_is_handle || ok_is_borrowed_handle) && !is_builder_self_result {
-                // Handle-or-null: return handle directly (NULL on error).
-                // err_out is *mut *mut c_void (pointer to caller's FtError variable).
-                params.push(CExternParam {
-                    name: format_ident!("err_out"),
-                    c_type: quote! { *mut *mut core::ffi::c_void },
-                });
+            }
+            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                // Return the handle directly, NULL on error.
+                out_param("err_out", err_out);
                 quote! { -> *mut core::ffi::c_void }
-            } else {
-                // FtResult style: return packed error code.
-                // Builder-self-result writes ok back through the handle
-                // double-pointer, so no separate result out-param.
-                if !is_builder_self_result && let Some(vk) = ok {
-                    params.push(CExternParam {
-                        name: format_ident!("result"),
-                        c_type: c_out_param_type(vk, lib_crate),
-                    });
+            }
+            ResultConv::OutParam => {
+                // A returned Self that replaces the receiver has no ok here:
+                // it is written back through the handle param.
+                if let Some(tp) = ok {
+                    out_param("result", c_out_param_type(tp, lib_crate));
                 }
-                // err_out is *mut *mut c_void (pointer to caller's FtError variable).
-                params.push(CExternParam {
-                    name: format_ident!("err_out"),
-                    c_type: quote! { *mut *mut core::ffi::c_void },
-                });
+                out_param("err_out", err_out);
                 quote! { -> ffier::FfierResult }
             }
-        }
+        },
     };
 
     CExternSignature {

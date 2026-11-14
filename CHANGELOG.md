@@ -14,6 +14,16 @@
   Rust `ForeignSlice`, and the schema's `Return::ObjectArray` and
   `Blessing::ObjectArray`. `&[&str]`, `&[u8]` and primitive slices are
   unaffected.
+- Rename the schema's `ExportedType::is_builder_type` to
+  `replaces_self_by_value` and `Return::is_builder_self` to
+  `Return::replaces_self`.
+
+### Fixed
+
+- Accept `Result<&Handle, E>` in vtable-implementable traits. The vtable
+  caller now uses the handle-or-null convention that the schema and C header
+  already declared; previously the crate failed to compile with a "handle
+  detection mismatch" assertion.
 
 ## 0.3.1
 

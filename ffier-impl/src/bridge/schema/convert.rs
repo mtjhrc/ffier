@@ -4,15 +4,14 @@ use std::collections::{BTreeMap, HashSet};
 
 use proc_macro2::TokenStream as TokenStream2;
 
+use super::types::CTypeResolver;
 use crate::meta::{
     MetaBitflags, MetaEnum, MetaError, MetaErrorField, MetaErrorVariantData, MetaExportable,
     MetaFreeFunction, MetaImplementable, MetaMethod, MetaMethodContext, MetaParamKind,
-    MetaReceiver, MetaReturn, MetaTraitImpl, MetaValueStruct, camel_to_snake, camel_to_upper_snake,
-    extract_result_ok_type, is_result_ok_handle, option_value_struct_inner,
+    MetaReceiver, MetaReturn, MetaTraitImpl, MetaTypePair, MetaValueStruct, camel_to_snake,
+    camel_to_upper_snake, option_inner_tokens,
 };
-
-use super::super::returns::is_borrowed_handle;
-use super::types::CTypeResolver;
+use crate::return_shape::{ResultConv, ReturnShape, classify_return};
 
 /// Convert parsed Rust metadata into a language-independent predicate tree.
 fn cfg_to_schema(cfg: Option<&TokenStream2>) -> Option<ffier_schema::Cfg> {
@@ -121,14 +120,10 @@ pub(super) fn convert_exportable(
 ) -> syn::Result<ffier_schema::ExportedType> {
     let name = meta.struct_name.to_string();
     let name_snake = camel_to_snake(&name);
-    let is_builder_type = meta
-        .methods
-        .iter()
-        .any(|m| m.is_builder() && m.receiver == MetaReceiver::Value);
     Ok(ffier_schema::ExportedType {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
-        replaces_self_by_value: is_builder_type,
+        replaces_self_by_value: meta.replaces_self_by_value(),
         thread_safety: meta.thread_safety,
         methods: meta
             .methods
@@ -273,7 +268,7 @@ fn convert_method(
         &meta.ret,
         &meta.rust_ret,
         r,
-        meta.is_builder(),
+        meta.replaces_self(),
         handle_types,
         value_types,
     )?;
@@ -408,7 +403,7 @@ fn convert_param(
     })
 }
 
-fn builder_self_type_ref() -> ffier_schema::TypeRef {
+fn replaced_self_type_ref() -> ffier_schema::TypeRef {
     ffier_schema::TypeRef {
         type_name: ffier_schema::SELF_TYPE.to_string(),
         ref_kind: ffier_schema::RefKind::None,
@@ -423,78 +418,53 @@ fn convert_return(
     ret: &MetaReturn,
     rust_ret: &TokenStream2,
     r: &CTypeResolver,
-    is_builder: bool,
+    replaces_self: bool,
     handle_types: &HashSet<String>,
     value_types: &HashSet<String>,
 ) -> syn::Result<ffier_schema::Return> {
-    Ok(match ret {
-        MetaReturn::Void if is_builder => {
-            // `-> Self`: encode as Value(Self).
-            ffier_schema::Return::Value(builder_self_type_ref())
-        }
-        MetaReturn::Void => ffier_schema::Return::Void,
-        MetaReturn::Value(tp) => {
-            if let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types) {
-                return Ok(ffier_schema::Return::OptionalValue(
-                    r.type_ref_from_tokens(&inner)?,
-                ));
+    // Schema type refs come from the Rust types, not the bridge types.
+    let type_ref = |tp: &MetaTypePair| r.type_ref_from_tokens(&tp.rust_type);
+    let optional_inner_ref = |tp: &MetaTypePair| {
+        let inner = option_inner_tokens(&tp.rust_type).expect("optional value is an Option");
+        r.type_ref_from_tokens(&inner)
+    };
+    Ok(
+        match classify_return(ret, rust_ret, handle_types, value_types) {
+            // `-> Self` replacing the receiver: encode as Value(Self).
+            ReturnShape::Void if replaces_self => {
+                ffier_schema::Return::Value(replaced_self_type_ref())
             }
-            ffier_schema::Return::Value(r.type_ref_from_tokens(&tp.rust_type)?)
-        }
-        MetaReturn::Result { ok, err_ident } if is_builder => {
-            // Builder `-> Result<Self, E>`: ok was suppressed to None by
-            // annotations; restore it as Self.
-            let ok_ref = match ok {
-                None => Some(builder_self_type_ref()),
-                Some(tp) => Some(r.type_ref_from_tokens(&tp.rust_type)?),
-            };
-            let ok_is_handle = ok.is_some() && is_result_ok_handle(rust_ret, handle_types);
-            ffier_schema::Return::Result {
-                ok: ok_ref,
-                err_type: err_ident.clone(),
-                c_convention: if ok_is_handle {
-                    ffier_schema::CResultConvention::HandleOrNull
-                } else {
-                    ffier_schema::CResultConvention::OutParam
-                },
+            ReturnShape::Void => ffier_schema::Return::Void,
+            ReturnShape::OptionalValue { tp, .. } => {
+                ffier_schema::Return::OptionalValue(optional_inner_ref(tp)?)
             }
-        }
-        MetaReturn::Result { ok, err_ident } => {
-            // `Result<Option<ValueStruct>, E>` keeps the value type and marks it
-            // optional; the presence out-param is implied by the convention.
-            if let Some(tp) = ok
-                && let Some(inner) = option_value_struct_inner(&tp.rust_type, value_types)
-            {
-                let mut ok_ref = r.type_ref_from_tokens(&inner)?;
-                ok_ref.optional = true;
-                return Ok(ffier_schema::Return::Result {
-                    ok: Some(ok_ref),
-                    err_type: err_ident.clone(),
-                    c_convention: ffier_schema::CResultConvention::OptionalValueOutParam,
-                });
+            ReturnShape::Value { tp, .. } => ffier_schema::Return::Value(type_ref(tp)?),
+            ReturnShape::Result {
+                ok,
+                err_ident,
+                conv,
+            } => {
+                let ok_ref = match (ok, &conv) {
+                    // `Result<Option<ValueStruct>, E>` keeps the value type and
+                    // marks it optional; the presence out-param is implied by the
+                    // convention.
+                    (Some(tp), ResultConv::OptionalValueOutParam { .. }) => {
+                        let mut ok_ref = optional_inner_ref(tp)?;
+                        ok_ref.optional = true;
+                        Some(ok_ref)
+                    }
+                    (Some(tp), _) => Some(type_ref(tp)?),
+                    // `-> Result<Self, E>`: the metadata suppresses ok; restore
+                    // it as Self.
+                    (None, _) if replaces_self => Some(replaced_self_type_ref()),
+                    (None, _) => None,
+                };
+                ffier_schema::Return::Result {
+                    ok: ok_ref,
+                    err_type: err_ident.to_string(),
+                    c_convention: conv.c_convention(),
+                }
             }
-            let ok_ref = ok
-                .as_ref()
-                .map(|tp| r.type_ref_from_tokens(&tp.rust_type))
-                .transpose()?;
-            let ok_is_foreign = ok.as_ref().is_some_and(|tp| tp.foreign_crate.is_some());
-            let ok_is_handle =
-                ok_is_foreign || (ok.is_some() && is_result_ok_handle(rust_ret, handle_types));
-            let ok_is_borrowed_handle = !ok_is_foreign && ok.is_some() && {
-                let ok_tokens = extract_result_ok_type(rust_ret);
-                syn::parse2::<syn::Type>(ok_tokens)
-                    .ok()
-                    .is_some_and(|ty| is_borrowed_handle(&ty, handle_types))
-            };
-            ffier_schema::Return::Result {
-                ok: ok_ref,
-                err_type: err_ident.clone(),
-                c_convention: if ok_is_handle || ok_is_borrowed_handle {
-                    ffier_schema::CResultConvention::HandleOrNull
-                } else {
-                    ffier_schema::CResultConvention::OutParam
-                },
-            }
-        }
-    })
+        },
+    )
 }
