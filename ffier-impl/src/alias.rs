@@ -1,7 +1,7 @@
 //! Definition-site type aliases and lifetime-preserving signature rewriting.
 
 use quote::{format_ident, quote};
-use syn::{GenericArgument, PathArguments, Type, visit_mut::VisitMut};
+use syn::{GenericArgument, PathArguments, Type, spanned::Spanned, visit_mut::VisitMut};
 
 use crate::cfg::{combine_cfg_predicates, extract_cfg_predicates};
 use crate::meta::{self, erase_lifetimes};
@@ -193,6 +193,7 @@ pub(crate) struct AliasContext {
     pub(crate) helper_mod: proc_macro2::TokenStream,
     pub(crate) current_cfg: Option<proc_macro2::TokenStream>,
     alias_cfgs: Vec<Option<proc_macro2::TokenStream>>,
+    never_checks: Vec<proc_macro2::TokenStream>,
 }
 
 impl AliasContext {
@@ -204,7 +205,22 @@ impl AliasContext {
             helper_mod: quote! { #helper_mod },
             current_cfg: None,
             alias_cfgs: Vec::new(),
+            never_checks: Vec::new(),
         }
+    }
+
+    /// Check the alias in the definition's scope, under the method's cfg.
+    pub(crate) fn require_never(&mut self, ty: &Type) {
+        let span = ty.span();
+        let ty = normalize_omitted_lifetimes(ty);
+        let alias = self.alias_ident(&ty);
+        let lifetimes = alias_lifetime_slots(&erase_lifetimes(&ty));
+        let args = (!lifetimes.is_empty()).then(|| quote! { <#(#lifetimes),*> });
+        let cfg = meta::cfg_predicate_attr(self.current_cfg.as_ref());
+        self.never_checks.push(quote::quote_spanned! {span=>
+            #cfg
+            const _: () = ffier::__assert_never::<fn() -> #alias #args>();
+        });
     }
 
     /// Produce bridge_type tokens for any Rust type, including references.
@@ -385,6 +401,7 @@ impl AliasContext {
                 }
             })
             .collect();
+        aliases.extend(self.never_checks.iter().cloned());
         // Relative module paths and external crate paths have identical syntax.
         // Import the definition's scope so both resolve inside this helper.
         if !aliases.is_empty() {

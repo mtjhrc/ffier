@@ -208,6 +208,10 @@ has to stay distinguishable from an output the callee never wrote.
 See [value struct returns](docs/value-struct-returns.md) for all four
 signatures, the write order, and the caller contract.
 
+Export a diverging operation with `-> !` or `-> Never`. An operation that
+returns only on error can use `Result<Never, E>`. Define `Never` as an alias
+for `()` or `!`. See [never returns](docs/never-returns.md).
+
 **Caller contract.** The bridge does not validate incoming values. An enum
 field is the plain integer on the wire; Rust assumes it holds a declared
 variant. A C caller writing any other value constructs an invalid Rust enum,

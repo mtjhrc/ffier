@@ -203,22 +203,26 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                 }
             }
             let call_str = call_args.join(", ");
-
-            let binding = if matches!(m.ret, Return::Void) {
-                ""
-            } else {
-                "let __result = "
-            };
-            writeln!(
-                out,
-                "                    {binding}__val.{}({call_str});",
-                m.name
-            )
-            .unwrap();
+            let call = format!("__val.{}({call_str})", m.name);
+            match m.ret {
+                Return::Void | Return::Never => {
+                    writeln!(out, "                    {call};").unwrap()
+                }
+                _ => writeln!(out, "                    let __result = {call};").unwrap(),
+            }
 
             match &m.ret {
-                Return::Void => {
-                    // Nothing to convert
+                Return::Void | Return::Never => {}
+                // Only the error is marshalled. A success would violate the contract.
+                Return::ResultNeverOk { .. } => {
+                    writeln!(out, "                    match __result.err() {{").unwrap();
+                    writeln!(
+                        out,
+                        "                        None => std::process::abort(),"
+                    )
+                    .unwrap();
+                    emit_packed_error_arm(out, "Some(__e)");
+                    writeln!(out, "                    }}").unwrap();
                 }
                 Return::OptionalValue(tr) => {
                     let ty = tr.without_optional().to_rust_type();
@@ -298,21 +302,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                                     writeln!(out, "                        Ok(()) => 0, // FFIER_RESULT_SUCCESS").unwrap();
                                 }
                             }
-                            writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            if err_out.is_null() {{")
-                                .unwrap();
-                            writeln!(out, "                                __e.ffi_result_of()")
-                                .unwrap();
-                            writeln!(out, "                            }} else {{").unwrap();
-                            writeln!(out, "                                let (__code, __handle) = __e.into_ffi();").unwrap();
-                            writeln!(
-                                out,
-                                "                                unsafe {{ *err_out = __handle }};"
-                            )
-                            .unwrap();
-                            writeln!(out, "                                __code").unwrap();
-                            writeln!(out, "                            }}").unwrap();
-                            writeln!(out, "                        }}").unwrap();
+                            emit_packed_error_arm(out, "Err(__e)");
                         }
                         CResultConvention::OptionalValueOutParam => {
                             let ok_tr = ok
@@ -337,21 +327,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
                             writeln!(out, "                            0 // FFIER_RESULT_SUCCESS")
                                 .unwrap();
                             writeln!(out, "                        }}").unwrap();
-                            writeln!(out, "                        Err(__e) => {{").unwrap();
-                            writeln!(out, "                            if err_out.is_null() {{")
-                                .unwrap();
-                            writeln!(out, "                                __e.ffi_result_of()")
-                                .unwrap();
-                            writeln!(out, "                            }} else {{").unwrap();
-                            writeln!(out, "                                let (__code, __handle) = __e.into_ffi();").unwrap();
-                            writeln!(
-                                out,
-                                "                                unsafe {{ *err_out = __handle }};"
-                            )
-                            .unwrap();
-                            writeln!(out, "                                __code").unwrap();
-                            writeln!(out, "                            }}").unwrap();
-                            writeln!(out, "                        }}").unwrap();
+                            emit_packed_error_arm(out, "Err(__e)");
                         }
                     }
                     writeln!(out, "                    }}").unwrap();
@@ -371,4 +347,24 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
     }
 
     writeln!(out, "        }}").unwrap();
+}
+
+fn emit_packed_error_arm(out: &mut String, pattern: &str) {
+    writeln!(out, "                        {pattern} => {{").unwrap();
+    writeln!(out, "                            if err_out.is_null() {{").unwrap();
+    writeln!(out, "                                __e.ffi_result_of()").unwrap();
+    writeln!(out, "                            }} else {{").unwrap();
+    writeln!(
+        out,
+        "                                let (__code, __handle) = __e.into_ffi();"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "                                unsafe {{ *err_out = __handle }};"
+    )
+    .unwrap();
+    writeln!(out, "                                __code").unwrap();
+    writeln!(out, "                            }}").unwrap();
+    writeln!(out, "                        }}").unwrap();
 }

@@ -228,7 +228,11 @@ fn vtable_c_fn_sig(
 
     let err_out = quote! { *mut *mut core::ffi::c_void };
     let fn_ret = match classify_return(&m.ret, &m.rust_ret, handle_names, value_names) {
-        ReturnShape::Void => quote! {},
+        ReturnShape::Void | ReturnShape::Never => quote! {},
+        ReturnShape::ResultNeverOk { .. } => {
+            param_types.push(err_out);
+            quote! { -> ffier::FfierResult }
+        }
         ReturnShape::OptionalValue { inner, .. } => {
             param_types.push(quote! { *mut <#inner as ffier::FfiType<__FfierLocalToken>>::CRepr });
             quote! { -> bool }
@@ -444,6 +448,30 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
             } else {
                 match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
                     ReturnShape::Void => raw_call.clone(),
+                    // A C callback must not return from a never-returning
+                    // method; never hand back an uninhabited value.
+                    ReturnShape::Never => quote! {{
+                        #raw_call;
+                        std::process::abort()
+                    }},
+                    // Only an error may come back; a success result breaks
+                    // the contract.
+                    ReturnShape::ResultNeverOk { err_ident } => {
+                        let err_ty = format_ident!("{err_ident}");
+                        quote! {{
+                            #(#vtable_pre)*
+                            let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
+                            let __r = unsafe { __f(
+                                self.value.user_data as *mut core::ffi::c_void,
+                                #(#vtable_args,)*
+                                &mut __err as *mut *mut core::ffi::c_void,
+                            ) };
+                            if __r == ffier::FFIER_RESULT_SUCCESS {
+                                std::process::abort()
+                            }
+                            Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
+                        }}
+                    }
                     ReturnShape::OptionalValue { .. } => {
                         // Optional value return: the C side returns the
                         // presence flag and writes the value only when set.

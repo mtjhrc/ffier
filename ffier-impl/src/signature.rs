@@ -89,11 +89,41 @@ enum ParamKind {
 
 enum ReturnKind {
     Void,
+    /// Never returns normally: `-> !` or `-> Never`.
+    Never,
+    /// Returns only on error: `Result<Never, E>`.
+    ResultNeverOk {
+        err_ident: String,
+    },
     Value(TypePair),
     Result {
         ok: Option<TypePair>,
         err_ident: String,
     },
+}
+
+fn never_return(ty: &Type, ctx: &mut AliasContext) -> Option<ReturnKind> {
+    let result = extract_result_types(ty);
+    let success = result.as_ref().map_or(ty, |(ok, _)| ok);
+    match success {
+        Type::Never(_) => {}
+        Type::Path(path)
+            if path
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident.unraw() == "Never") =>
+        {
+            ctx.require_never(success);
+        }
+        _ => return None,
+    }
+    Some(match result {
+        Some((_, err)) => ReturnKind::ResultNeverOk {
+            err_ident: type_ident_name(&err),
+        },
+        None => ReturnKind::Never,
+    })
 }
 
 pub(crate) struct ParamInfo {
@@ -499,7 +529,9 @@ pub(crate) fn parse_method_sig(
                 None => (**ty).clone(),
             };
 
-            if replaces_self && extract_result_types(&ty_bridge).is_none() {
+            if let Some(never) = never_return(ty, ctx) {
+                never
+            } else if replaces_self && extract_result_types(&ty_bridge).is_none() {
                 // A returned Self replacing the receiver → void in C
                 ReturnKind::Void
             } else if is_handle_slice(&ty_bridge) {
@@ -705,6 +737,10 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
 
     let ret_tokens = match &m.ret {
         ReturnKind::Void => quote! { void },
+        ReturnKind::Never => quote! { never },
+        ReturnKind::ResultNeverOk { err_ident } => {
+            quote! { result_never_ok(err_ident = #err_ident,) }
+        }
         ReturnKind::Value(tp) => {
             let fields = tp.meta_tokens();
             quote! { value(#fields) }
