@@ -534,6 +534,16 @@ pub const fn extract_type_tag(tag: u32) -> u32 {
 // FfierResult --- packed u64 error code (upper 32 = type tag, lower 32 = code)
 // ---------------------------------------------------------------------------
 
+/// Rust 1.99 rejects `impl IsFfierNever for !`. Checking a synthetic
+/// `fn() -> T` pointer lets Rust verify that `T` is exactly `()` or `!`.
+#[doc(hidden)]
+pub trait IsFfierNever {}
+impl IsFfierNever for fn() {}
+impl IsFfierNever for fn() -> ! {}
+
+#[doc(hidden)]
+pub const fn __assert_never<T: IsFfierNever>() {}
+
 /// Packed error result: `0` = success, nonzero = `(type_tag << 32) | code`.
 ///
 /// Users compare against generated constants (`FT_ERROR_CALC_OVERFLOW` etc.).

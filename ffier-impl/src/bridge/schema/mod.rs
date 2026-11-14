@@ -50,8 +50,7 @@ pub(super) fn emit_json(
         value_structs,
         free_fns,
     )?;
-    // Standard Option/Box/Result syntax has already been converted. Any remaining
-    // use of these names would collide with that syntax in generated bindings.
+    // These names have special meanings in exported signatures.
     let payload_types = library
         .errors
         .iter()
@@ -65,7 +64,7 @@ pub(super) fn emit_json(
         .chain(library.referenced_types())
         .chain(payload_types)
     {
-        if matches!(name, "Option" | "Box" | "Result") {
+        if matches!(name, "Option" | "Box" | "Result" | "Never") {
             return Err(syn::Error::new(
                 proc_macro2::Span::call_site(),
                 format!("FFI type name `{name}` is reserved; rename the exported type"),

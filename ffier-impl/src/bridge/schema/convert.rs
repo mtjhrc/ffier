@@ -435,6 +435,10 @@ fn convert_return(
                 ffier_schema::Return::Value(replaced_self_type_ref())
             }
             ReturnShape::Void => ffier_schema::Return::Void,
+            ReturnShape::Never => ffier_schema::Return::Never,
+            ReturnShape::ResultNeverOk { err_ident } => ffier_schema::Return::ResultNeverOk {
+                err_type: err_ident.to_string(),
+            },
             ReturnShape::OptionalValue { tp, .. } => {
                 ffier_schema::Return::OptionalValue(optional_inner_ref(tp)?)
             }

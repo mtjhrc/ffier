@@ -87,7 +87,12 @@ pub(super) fn c_signature_for_method(
     let err_out = quote! { *mut *mut core::ffi::c_void };
     let shape = classify_return(&method.ret, &method.rust_ret, handle_types, value_types);
     let ret = match shape {
-        ReturnShape::Void => quote! {},
+        ReturnShape::Void | ReturnShape::Never => quote! {},
+        // Only the error path: packed result plus the error handle.
+        ReturnShape::ResultNeverOk { .. } => {
+            out_param("err_out", err_out);
+            quote! { -> ffier::FfierResult }
+        }
         ReturnShape::OptionalValue { inner, .. } => {
             out_param(
                 "result",

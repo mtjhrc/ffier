@@ -18,6 +18,13 @@ use crate::meta::{
 /// How a method's return crosses the C ABI.
 pub(crate) enum ReturnShape<'a> {
     Void,
+    /// Never returns normally. C sees a void return; a normal return aborts.
+    Never,
+    /// `Result<Never, E>`: only the error path exists. C sees the packed
+    /// result and an `err_out` out-param; a success result aborts.
+    ResultNeverOk {
+        err_ident: &'a str,
+    },
     /// `Option<ValueStruct>`: the presence flag is the C return value; the
     /// value goes through a `result` out-param. `inner` is the bridge-side
     /// value type without the `Option`.
@@ -92,6 +99,8 @@ pub(crate) fn classify_return<'a>(
     };
     match ret {
         MetaReturn::Void => ReturnShape::Void,
+        MetaReturn::Never => ReturnShape::Never,
+        MetaReturn::ResultNeverOk { err_ident } => ReturnShape::ResultNeverOk { err_ident },
         MetaReturn::Value(tp) => match optional_value_inner(tp) {
             Some(inner) => ReturnShape::OptionalValue { tp, inner },
             None => ReturnShape::Value {

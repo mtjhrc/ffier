@@ -226,6 +226,11 @@ fn emit_ffi_call_return(
         (Return::Void, _) => {
             writeln!(out, "{i}unsafe {{ {} }}", call(&[])).unwrap();
         }
+        // The callee must not return; never manufacture an uninhabited value.
+        (Return::Never, _) => {
+            writeln!(out, "{i}unsafe {{ {} }};", call(&[])).unwrap();
+            writeln!(out, "{i}std::process::abort()").unwrap();
+        }
         (Return::Value(tr), None) => {
             writeln!(out, "{i}let __raw = unsafe {{ {} }};", call(&[])).unwrap();
             writeln!(out, "{i}{}", from_c(tr, "__raw")).unwrap();
@@ -256,12 +261,18 @@ fn emit_ffi_call_return(
                 ok: None, err_type, ..
             },
             None,
-        ) => {
+        )
+        | (Return::ResultNeverOk { err_type }, _) => {
+            let success = if matches!(ret, Return::ResultNeverOk { .. }) {
+                "std::process::abort()"
+            } else {
+                "Ok(())"
+            };
             writeln!(out, "{i}{ERR_DECL}").unwrap();
             writeln!(out, "{i}let __r = unsafe {{ {} }};", call(&[ERR_ARG])).unwrap();
             writeln!(
                 out,
-                "{i}if __r == 0 {{ Ok(()) }} else {{ {} }}",
+                "{i}if __r == 0 {{ {success} }} else {{ {} }}",
                 err(err_type)
             )
             .unwrap();
