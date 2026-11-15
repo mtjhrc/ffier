@@ -87,10 +87,7 @@ fn emit_method_body(
         Receiver::Value => Some(SelfReceiver::Value { has_lifetimes }),
         Receiver::None | Receiver::Ref => None,
     };
-    let policy = ReturnPolicy {
-        replaces_self,
-        own_borrowed_handles: true,
-    };
+    let policy = ReturnPolicy { replaces_self };
     emit_call_body(
         out, ffi_name, self_arg, &m.params, &m.ret, "        ", lib, policy,
     );

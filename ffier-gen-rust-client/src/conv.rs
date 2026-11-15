@@ -131,32 +131,11 @@ pub(crate) fn lift_param(p: &Param, lib: &Library) -> Converted {
 
 /// Lower a value a trampoline returns to C.
 pub(crate) fn lower_returned(tr: &TypeRef, lib: &Library, value: &str) -> String {
-    match borrowed_handle(tr, lib) {
-        Some(tok) => format!("ffier::ClientHandle::<{tok}>::as_handle({value})"),
-        None => tr.convert_into_c(lib, value),
-    }
+    tr.convert_into_c(lib, value)
 }
 
-/// Lift a value a library call returned. A `&Handle` becomes the owned
-/// wrapper when `own_borrowed_handles` (inherent methods, whose signature
-/// returns the wrapper); trait methods cannot produce one yet.
-pub(crate) fn lift_returned(
-    tr: &TypeRef,
-    lib: &Library,
-    raw: &str,
-    own_borrowed_handles: bool,
-) -> String {
-    match borrowed_handle(tr, lib) {
-        None => format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw)),
-        Some(tok) if own_borrowed_handles => format!(
-            "unsafe {{ <{} as ffier::ClientHandle<{tok}>>::from_raw({raw}) }}",
-            tr.type_name
-        ),
-        // A client wrapper is not stored where a `&Handle` could point;
-        // producing one needs a borrow type that keeps the lifetime.
-        Some(_) => format!(
-            "{{ let _ = {raw}; unimplemented!(\"ffier: Rust clients cannot yet return `&{}` from a trait method\") }}",
-            tr.type_name
-        ),
-    }
+/// Lift a value a library call returned. Borrowed handle returns are
+/// rejected when the library is built, so none reach a client.
+pub(crate) fn lift_returned(tr: &TypeRef, lib: &Library, raw: &str) -> String {
+    format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw))
 }

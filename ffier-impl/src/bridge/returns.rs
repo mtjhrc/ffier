@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
-use crate::conv::{Leaf, Scope};
+use crate::conv::Leaf;
 use crate::meta::MetaReturn;
 use crate::return_shape::{ResultConv, ReturnShape, classify_return};
 
@@ -33,7 +33,7 @@ pub(super) fn wrap_return(
     let local_token = crate::ffi_traits::token_of(lib_crate);
     // Convert a returned value; it outlives the call.
     let lower_ok = |tp: &crate::meta::MetaTypePair, value: TokenStream2| {
-        Leaf::of(tp, handle_types, &local_token).lower(&value, Scope::Returned)
+        Leaf::of(tp, handle_types, &local_token).lower(&value)
     };
     let (ok, err_ident, conv) = match classify_return(ret, rust_ret, handle_types, value_types) {
         ReturnShape::Void => {
@@ -119,8 +119,7 @@ pub(super) fn wrap_return(
             }
         },
         // Return the owned handle directly, NULL on error.
-        // Owned or borrowed (`&Handle`, as a borrowed shell) ok handle.
-        ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+        ResultConv::OwnedHandleOrNull => {
             let value = lower_ok(ok.expect("handle-or-null ok type"), quote! { ok_val });
             quote! {
                 match #call_expr {
