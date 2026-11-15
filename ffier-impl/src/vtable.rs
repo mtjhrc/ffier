@@ -563,6 +563,8 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     return None;
                 }
                 let bt = &tp.bridge_type;
+                // A foreign ok type's impls live under its own library's token.
+                let tok = crate::c_abi::token_for(tp, &quote! { __FfierLocalToken });
                 let ok_is_handle = conv.is_handle_or_null();
                 let method_name = m.name.to_string();
                 // The assertion names the ok type, which may only exist in the
@@ -571,7 +573,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                 Some(quote! {
                     #cfg_attr
                     assert!(
-                        <#bt as ffier::FfiType<__FfierLocalToken>>::IS_HANDLE == #ok_is_handle,
+                        <#bt as ffier::FfiType<#tok>>::IS_HANDLE == #ok_is_handle,
                         concat!(
                             "handle detection mismatch for method `",
                             #method_name,

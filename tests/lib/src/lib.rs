@@ -1938,6 +1938,14 @@ pub fn consume_foreign_item(
     item.score()
 }
 
+/// A callback producing another library's handle.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ForeignConfigSource {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    #[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
+    fn config(&self) -> Result<ffier_test_foreign_lib_via_cdylib::ForeignConfig, TestError>;
+}
+
 /// Create a foreign config, returning Result with foreign ok type.
 #[cfg_attr(feature = "ffi", ffier::export)]
 #[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
@@ -2157,6 +2165,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn consume_foreign_item,
     fn create_foreign_item,
     fn create_foreign_config_checked,
+    trait ForeignConfigSource = 55,
 );
 
 #[cfg(feature = "ffi")]
