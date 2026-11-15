@@ -117,6 +117,26 @@ pub fn lent_gadget_value(lender: &impl GadgetLender) -> Result<i32, TestError> {
     lender.lend().map(|gadget| gadget.value)
 }
 
+/// A callback taking a string slice on methods whose returns use out-params.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait TagChecker {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    fn checked_count(&self, tags: &[&str]) -> Result<i32, TestError>;
+    #[cfg_attr(feature = "ffi", ffier(index = 1))]
+    fn tagged_sample(&self, tags: &[&str]) -> Option<InputEvent>;
+}
+
+/// Pass tag slices to both checker methods. Returns
+/// `count * 100 + sample sequence`, or the checker's error.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub fn check_tags(checker: &impl TagChecker) -> Result<i32, TestError> {
+    let count = checker.checked_count(&["a", "b", "c"])?;
+    let sequence = checker
+        .tagged_sample(&["x", "y"])
+        .map_or(0, |sample| sample.sequence as i32);
+    Ok(count * 100 + sequence)
+}
+
 /// Reconstruct a callback error as its native type, then return it to the client.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub fn roundtrip_callback_error(
@@ -1918,6 +1938,14 @@ pub fn consume_foreign_item(
     item.score()
 }
 
+/// A callback producing another library's handle.
+#[cfg_attr(feature = "ffi", ffier::export)]
+pub trait ForeignConfigSource {
+    #[cfg_attr(feature = "ffi", ffier(index = 0))]
+    #[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
+    fn config(&self) -> Result<ffier_test_foreign_lib_via_cdylib::ForeignConfig, TestError>;
+}
+
 /// Create a foreign config, returning Result with foreign ok type.
 #[cfg_attr(feature = "ffi", ffier::export)]
 #[cfg_attr(feature = "ffi", ffier(foreign_return = ::ffier_test_foreign_lib_via_cdylib, c_name = "FlForeignConfig"))]
@@ -2018,6 +2046,8 @@ ffier::library_definition!("ft", library_tag = 1,
     trait ErrorForwarder = 30,
     trait GadgetLender = 120,
     fn lent_gadget_value,
+    trait TagChecker = 121,
+    fn check_tags,
     fn test_error_drop_count,
     fn roundtrip_callback_error,
     Widget = 2, Gadget = 3, Config = 4,
@@ -2135,6 +2165,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn consume_foreign_item,
     fn create_foreign_item,
     fn create_foreign_config_checked,
+    trait ForeignConfigSource = 55,
 );
 
 #[cfg(feature = "ffi")]

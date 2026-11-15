@@ -25,11 +25,10 @@ pub(crate) enum ReturnShape<'a> {
         tp: &'a MetaTypePair,
         inner: TokenStream,
     },
-    /// A value returned as its C representation.
+    /// A value returned as its C representation (a `&Handle` as a
+    /// borrowed handle shell; see `conv::Leaf`).
     Value {
         tp: &'a MetaTypePair,
-        /// `&Handle`: returned as a borrowed handle shell.
-        borrowed_handle: bool,
     },
     /// `Result<T, E>`.
     Result {
@@ -94,13 +93,7 @@ pub(crate) fn classify_return<'a>(
         MetaReturn::Void => ReturnShape::Void,
         MetaReturn::Value(tp) => match optional_value_inner(tp) {
             Some(inner) => ReturnShape::OptionalValue { tp, inner },
-            None => ReturnShape::Value {
-                tp,
-                // Foreign types are owned handles of another library.
-                borrowed_handle: tp.foreign_crate.is_none()
-                    && syn::parse2::<syn::Type>(rust_ret.clone())
-                        .is_ok_and(|ty| is_borrowed_handle(&ty, handle_types)),
-            },
+            None => ReturnShape::Value { tp },
         },
         MetaReturn::Result { ok, err_ident } => {
             let conv = match ok {
@@ -132,7 +125,7 @@ pub(crate) fn classify_return<'a>(
 }
 
 /// Check if a type is `&T` or `&mut T` where `T` is a handle type.
-fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
+pub(crate) fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {
         type_last_name(&ref_ty.elem)
             .is_some_and(|name| name == "Self" || handle_types.contains(&name))

@@ -97,7 +97,14 @@ pub(super) fn generate_exportable_bridge(
         };
 
         // Shared param conversion + impl Trait dispatch.
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            handle_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };
@@ -202,7 +209,14 @@ pub(super) fn generate_free_fn_bridge(
                 c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
             // Shared param conversion + impl Trait dispatch.
-            let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+            let cp = match convert_params(
+                &m.params,
+                &c_sig,
+                &ffi_name_str,
+                trait_map,
+                handle_types,
+                lib_crate,
+            ) {
                 Ok(cp) => cp,
                 Err(err) => return err,
             };
@@ -295,7 +309,14 @@ pub(super) fn generate_trait_impl_bridge(
         let sig_ret = &c_sig.ret;
 
         // Shared param conversion
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            handle_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };

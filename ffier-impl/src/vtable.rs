@@ -203,65 +203,16 @@ fn vtable_c_fn_sig(
     handle_names: &std::collections::HashSet<String>,
     value_names: &std::collections::HashSet<String>,
 ) -> (Vec<proc_macro2::TokenStream>, proc_macro2::TokenStream) {
+    let sig = crate::c_abi::c_signature(
+        m,
+        handle_names,
+        value_names,
+        &crate::ffi_traits::local_token(),
+    );
+    // The callback's first argument is its user-data pointer.
     let mut param_types = vec![quote! { *mut core::ffi::c_void }];
-    for p in &m.params {
-        match &p.kind {
-            crate::meta::MetaParamKind::ImplTrait { .. } => {
-                param_types.push(quote! { *mut core::ffi::c_void });
-            }
-            crate::meta::MetaParamKind::StrSlice => {
-                param_types.push(quote! { *const ffier::FfierBytes });
-                param_types.push(quote! { usize });
-            }
-            crate::meta::MetaParamKind::PrimitiveSlice(tp) => {
-                let bt = &tp.bridge_type;
-                param_types
-                    .push(quote! { *const <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
-                param_types.push(quote! { usize });
-            }
-            crate::meta::MetaParamKind::Regular(tp) => {
-                let bt = &tp.bridge_type;
-                param_types.push(quote! { <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
-            }
-        }
-    }
-
-    let err_out = quote! { *mut *mut core::ffi::c_void };
-    let fn_ret = match classify_return(&m.ret, &m.rust_ret, handle_names, value_names) {
-        ReturnShape::Void => quote! {},
-        ReturnShape::OptionalValue { inner, .. } => {
-            param_types.push(quote! { *mut <#inner as ffier::FfiType<__FfierLocalToken>>::CRepr });
-            quote! { -> bool }
-        }
-        ReturnShape::Value { tp, .. } => {
-            let bt = &tp.bridge_type;
-            quote! { -> <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr }
-        }
-        ReturnShape::Result { ok, conv, .. } => match conv {
-            ResultConv::OptionalValueOutParam { inner } => {
-                param_types.push(quote! { *mut bool });
-                param_types
-                    .push(quote! { *mut <#inner as ffier::FfiType<__FfierLocalToken>>::CRepr });
-                param_types.push(err_out);
-                quote! { -> ffier::FfierResult }
-            }
-            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
-                param_types.push(err_out);
-                quote! { -> *mut core::ffi::c_void }
-            }
-            ResultConv::OutParam => {
-                if let Some(tp) = ok {
-                    let bt = &tp.bridge_type;
-                    param_types
-                        .push(quote! { *mut <#bt as ffier::FfiType<__FfierLocalToken>>::CRepr });
-                }
-                param_types.push(err_out);
-                quote! { -> ffier::FfierResult }
-            }
-        },
-    };
-
-    (param_types, fn_ret)
+    param_types.extend(sig.params.into_iter().map(|p| p.c_type));
+    (param_types, sig.ret)
 }
 
 pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
@@ -396,39 +347,28 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
 
             let mut vtable_pre = Vec::<proc_macro2::TokenStream>::new();
             let mut vtable_args = Vec::<proc_macro2::TokenStream>::new();
+            let local_token = crate::ffi_traits::local_token();
             for p in &m.params {
-                let id = &p.name;
-                match &p.kind {
-                    crate::meta::MetaParamKind::ImplTrait { .. } => {
-                        vtable_args.push(quote! { core::ptr::null_mut() });
-                    }
-                    crate::meta::MetaParamKind::StrSlice => {
-                        let vec_id = format_ident!("__{id}_ffierbytes");
-                        vtable_pre.push(quote! {
-                            let #vec_id: Vec<ffier::FfierBytes> = #id.iter()
-                                .map(|s| unsafe { ffier::FfierBytes::from_str(s) })
-                                .collect();
-                        });
-                        vtable_args.push(quote! { #vec_id.as_ptr() });
-                        vtable_args.push(quote! { #vec_id.len() });
-                    }
-                    crate::meta::MetaParamKind::PrimitiveSlice(_) => {
-                        // Primitives are layout-compatible with their CRepr,
-                        // so just pass the slice pointer and length directly.
-                        vtable_args.push(quote! { #id.as_ptr() });
-                        vtable_args.push(quote! { #id.len() });
-                    }
-                    crate::meta::MetaParamKind::Regular(_) => {
-                        vtable_args.push(quote! { ffier::IntoC::<__FfierLocalToken>::into_c(#id) });
-                    }
-                }
+                let converted = crate::conv::lower_arg(p, &handle_names, &local_token);
+                vtable_pre.extend(converted.pre);
+                vtable_args.extend(converted.exprs);
             }
+            // Convert a value the callback returned.
+            let lift_returned = |leaf: crate::conv::Leaf, raw: proc_macro2::TokenStream| {
+                let ret = format_ident!("__ret");
+                let mut lifted = leaf.lift(&raw, crate::conv::Scope::Returned, &ret);
+                debug_assert!(lifted.pre.is_empty(), "a returned value needs no bindings");
+                lifted.exprs.remove(0)
+            };
+            let lift_ok = |tp: &crate::meta::MetaTypePair, raw| {
+                lift_returned(crate::conv::Leaf::of(tp, &handle_names, &local_token), raw)
+            };
 
-            // Build the call expression
-            let raw_call = quote! { {
-                #(#vtable_pre)*
+            // Build the call expression. `vtable_pre` wraps every return
+            // branch below, so its bindings live through the call.
+            let raw_call = quote! {
                 unsafe { __f(self.value.user_data as *mut core::ffi::c_void, #(#vtable_args),*) }
-            } };
+            };
 
             // Build vtable_branch (converting C result back to Rust)
             let vtable_branch = if has_impl_trait_params {
@@ -442,9 +382,13 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     )
                 }
             } else {
-                match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
+                let branch = match classify_return(&m.ret, &m.rust_ret, &handle_names, &value_names) {
                     ReturnShape::Void => raw_call.clone(),
                     ReturnShape::OptionalValue { .. } => {
+                        let value = lift_returned(
+                            crate::conv::Leaf::token(local_token.clone()),
+                            quote! { __out.assume_init() },
+                        );
                         // Optional value return: the C side returns the
                         // presence flag and writes the value only when set.
                         let args = quote! { #(#vtable_args),* };
@@ -460,18 +404,23 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 #args #sep __out.as_mut_ptr(),
                             ) };
                             if __is_some {
-                                Some(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__out.assume_init()) })
+                                Some(#value)
                             } else {
                                 None
                             }
                         }}
                     }
-                    ReturnShape::Value { .. } => quote! { unsafe { ffier::FromC::<__FfierLocalToken>::from_c(#raw_call) } },
+                    ReturnShape::Value { tp, .. } => lift_ok(tp, raw_call.clone()),
                     ReturnShape::Result { ok, err_ident, conv } => {
                         let err_ty = format_ident!("{err_ident}");
                         match conv {
                             // Presence flag plus a separate value out-param.
-                            ResultConv::OptionalValueOutParam { inner } => quote! {{
+                            ResultConv::OptionalValueOutParam { inner } => {
+                                let value = lift_returned(
+                                    crate::conv::Leaf::token(local_token.clone()),
+                                    quote! { __out.assume_init() },
+                                );
+                                quote! {{
                                 let mut __is_some = false;
                                 let mut __out = core::mem::MaybeUninit::<<#inner as ffier::FfiType<__FfierLocalToken>>::CRepr>::uninit();
                                 let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();
@@ -484,22 +433,24 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 ) };
                                 if __r == ffier::FFIER_RESULT_SUCCESS {
                                     if __is_some {
-                                        Ok(Some(unsafe {
-                                            <#inner as ffier::FromC<__FfierLocalToken>>::from_c(__out.assume_init())
-                                        }))
+                                        Ok(Some(#value))
                                     } else {
                                         Ok(None)
                                     }
                                 } else {
                                     Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
                                 }
-                            }},
+                            }}
+                            }
                             // GLib-style: __f returns the handle or null, the
                             // error through an out-param. A borrowed handle is
                             // converted like a plain `&Handle` return.
                             ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
                                 let ok_conversion = match ok {
-                                    Some(_) => quote! { Ok(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__raw) }) },
+                                    Some(tp) => {
+                                        let value = lift_ok(tp, quote! { __raw });
+                                        quote! { Ok(#value) }
+                                    }
                                     None => quote! { Ok(()) },
                                 };
                                 quote! {{
@@ -520,9 +471,12 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             // out-param.
                             ResultConv::OutParam => {
                                 let (ok_decl, ok_conversion, out_param) = match ok {
-                                    Some(_) => (
+                                    Some(tp) => (
                                         quote! { let mut __out = core::mem::MaybeUninit::uninit(); },
-                                        quote! { Ok(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__out.assume_init()) }) },
+                                        {
+                                            let value = lift_ok(tp, quote! { __out.assume_init() });
+                                            quote! { Ok(#value) }
+                                        },
                                         quote! { __out.as_mut_ptr(), },
                                     ),
                                     None => (quote! {}, quote! { Ok(()) }, quote! {}),
@@ -545,7 +499,11 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             }
                         }
                     }
-                }
+                };
+                quote! {{
+                    #(#vtable_pre)*
+                    #branch
+                }}
             };
 
             // None branch: fallback or panic
@@ -605,6 +563,8 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                     return None;
                 }
                 let bt = &tp.bridge_type;
+                // A foreign ok type's impls live under its own library's token.
+                let tok = crate::c_abi::token_for(tp, &quote! { __FfierLocalToken });
                 let ok_is_handle = conv.is_handle_or_null();
                 let method_name = m.name.to_string();
                 // The assertion names the ok type, which may only exist in the
@@ -613,7 +573,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                 Some(quote! {
                     #cfg_attr
                     assert!(
-                        <#bt as ffier::FfiType<__FfierLocalToken>>::IS_HANDLE == #ok_is_handle,
+                        <#bt as ffier::FfiType<#tok>>::IS_HANDLE == #ok_is_handle,
                         concat!(
                             "handle detection mismatch for method `",
                             #method_name,
