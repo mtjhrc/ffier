@@ -141,9 +141,10 @@ pub(crate) fn reject_borrowed_handle_return(
         None => method.name.to_string(),
     };
     let shown = quote!(#ty).to_string().replace("& ", "&");
+    let hint = returns_self_hint(owner, method, &ty);
     let msg = format!(
         "ffier: `{name}` returns the borrowed handle `{shown}`, which is not supported; \
-         return an owned handle or a value instead"
+         return an owned handle or a value instead{hint}"
     );
     Some(syn::Error::new_spanned(&tp.rust_type, msg).to_compile_error())
 }
@@ -175,14 +176,40 @@ pub(crate) fn assert_no_borrowed_handle_return(
         Some(owner) => format!("{owner}::{}", method.name),
         None => method.name.to_string(),
     };
+    let hint = syn::parse2::<syn::Type>(tp.rust_type.clone())
+        .map_or("", |ty| returns_self_hint(owner, method, &ty));
     let msg = format!(
         "ffier: `{name}` returns a borrowed handle, which is not supported; \
-         return an owned handle or a value instead"
+         return an owned handle or a value instead{hint}"
     );
     Some(quote! {
         #cfg
         const _: () = assert!(!<#bt as ffier::FfiType<#tok>>::IS_BORROWED_HANDLE, #msg);
     })
+}
+
+/// For a `&self` / `&mut self` method returning a reference to its own type,
+/// point at `#[ffier(returns_self)]`, which supports chaining.
+fn returns_self_hint(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    ty: &syn::Type,
+) -> &'static str {
+    let syn::Type::Reference(r) = ty else {
+        return "";
+    };
+    let returns_owner = owner.is_some_and(|owner| {
+        crate::meta::type_last_name(&r.elem).is_some_and(|name| name == owner.to_string())
+    });
+    let by_reference = matches!(
+        method.receiver,
+        crate::meta::MetaReceiver::Ref | crate::meta::MetaReceiver::Mut
+    );
+    if returns_owner && by_reference {
+        "; if it returns its receiver for chaining, mark it #[ffier(returns_self)]"
+    } else {
+        ""
+    }
 }
 
 /// A reference into `std`, `core` or `alloc` (`&std::path::Path`), which no

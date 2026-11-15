@@ -22,8 +22,9 @@ pub(crate) struct ReturnPolicy {
 /// `Self` is produced.
 #[derive(Clone, Copy)]
 pub(crate) enum SelfReceiver {
-    /// `&mut self` — the handle is updated in place; return `self`.
-    Mut,
+    /// `&self` / `&mut self` — a `#[ffier(returns_self)]` method returned
+    /// its receiver; return `self`.
+    Borrowed,
     /// `self` — the bridge wrote the new handle into `__handle`.
     Value { has_lifetimes: bool },
 }
@@ -31,7 +32,7 @@ pub(crate) enum SelfReceiver {
 impl SelfReceiver {
     fn self_expr(self) -> &'static str {
         match self {
-            SelfReceiver::Mut => "self",
+            SelfReceiver::Borrowed => "self",
             SelfReceiver::Value {
                 has_lifetimes: true,
             } => "Self(__handle, std::marker::PhantomData)",

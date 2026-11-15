@@ -157,6 +157,9 @@ pub(crate) struct FfierMethodAttrs {
     pub(crate) raw_handle: bool,
     pub(crate) dispatch: Option<String>,
     pub(crate) skip: bool,
+    /// `returns_self`: a `&self -> &Self` / `&mut self -> &mut Self` method
+    /// returns its receiver, so C gets `void` and callers keep the handle.
+    pub(crate) returns_self: bool,
     /// Absolute foreign ffier library crate path for the return type.
     pub(crate) foreign_return: Option<syn::Path>,
     /// C typedef name for the foreign return handle type.
@@ -171,6 +174,7 @@ pub(crate) fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<
         raw_handle: false,
         dispatch: None,
         skip: false,
+        returns_self: false,
         foreign_return: None,
         foreign_return_c_name: None,
     };
@@ -200,6 +204,8 @@ pub(crate) fn parse_ffier_method_attrs(attrs: &[syn::Attribute]) -> syn::Result<
                 result.dispatch = Some(mode.to_string());
             } else if meta.path.is_ident("skip") {
                 result.skip = true;
+            } else if meta.path.is_ident("returns_self") {
+                result.returns_self = true;
             } else if meta.path.is_ident("foreign_return") {
                 result.foreign_return = Some(parse_foreign_crate_path(meta.value()?)?);
             } else if meta.path.is_ident("c_name") {

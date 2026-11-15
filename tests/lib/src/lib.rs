@@ -33,6 +33,10 @@ pub use native_attachment::{AttachContext, Describable, Requirements};
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use native_attachment::{AttachDevice, AttachItem, attach_device};
 
+mod returns_self;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use returns_self::Counter;
+
 mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
@@ -229,6 +233,7 @@ impl Widget {
     }
 
     /// Set count and return `&mut Self` for method chaining.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn with_count(&mut self, n: i32) -> &mut Self {
         self.count = n;
         self
@@ -1243,6 +1248,16 @@ impl Mixer {
         fruit.label().len() as i32
     }
 
+    /// Add a fruit's value and return the receiver (concrete dispatch).
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
+    pub fn add_fruit(
+        &mut self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] fruit: impl Fruit,
+    ) -> &mut Self {
+        self.total += fruit.value();
+        self
+    }
+
     /// Both concrete (9^2=81 > 64, override with annotation).
     pub fn blend_concrete(
         &mut self,
@@ -2149,6 +2164,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn create_foreign_item,
     fn create_foreign_config_checked,
     trait ForeignConfigSource = 55,
+    Counter = 56,
 );
 
 #[cfg(feature = "ffi")]
@@ -3437,6 +3453,17 @@ mod tests {
             let orange = ft_orange_new(20);
             assert_eq!(ft_mixer_blend_concrete(m, apple, orange,), 30);
             assert_eq!(ft_mixer_total(m), 30);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_add_fruit_returns_self_through_concrete_dispatch() {
+        unsafe {
+            let m = ft_mixer_new();
+            ft_mixer_add_fruit(m, ft_apple_new(10));
+            ft_mixer_add_fruit(m, ft_orange_new(5));
+            assert_eq!(ft_mixer_total(m), 15);
             ft_mixer_destroy(m);
         }
     }

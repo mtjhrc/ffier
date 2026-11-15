@@ -246,8 +246,10 @@ pub enum MetaMethodContext {
     /// Method from an exported struct impl or trait impl block.
     Exportable {
         ffi_name: String,
-        /// The method returns `Self` (`-> Self` / `-> Result<Self, E>`) on a
-        /// receiver, and the new value replaces that receiver.
+        /// The method's return stands for its receiver, so C gets no value:
+        /// a by-value `self -> Self` (or `Result<Self, E>`) whose new value
+        /// replaces the receiver, or a `#[ffier(returns_self)]` method that
+        /// returns `&Self` / `&mut Self`.
         replaces_self: bool,
     },
     /// Method from an exported trait definition.

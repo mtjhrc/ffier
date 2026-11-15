@@ -17,6 +17,12 @@ impl<'a> text::CovariantText<'a> {
     pub fn value(&self) -> &str {
         self.value
     }
+
+    /// Chaining spelled with the type's name and lifetime.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
+    pub fn same(&self) -> &CovariantText<'a> {
+        self
+    }
 }
 
 pub struct MixedVariance<'a, 'b, 'c, 'd> {

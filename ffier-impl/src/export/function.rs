@@ -48,6 +48,7 @@ pub(super) fn exportable_free_fn(input: syn::ItemFn, export_cfg: &ExportCfg) -> 
         false,
         foreign_ret,
         foreign_ret_c,
+        method_ffier.returns_self,
     ) {
         Ok(Some(m)) => m,
         Err(e) => return e.to_compile_error().into(),
