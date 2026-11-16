@@ -1099,6 +1099,16 @@ static void abort_case(const char* name) {
         roundtrip_reported_error(1);
     } else if (strcmp(name, "consume-wrong-type") == 0) {
         ft_gadget_value((FtGadget)ft_widget_new());
+    } else if (strcmp(name, "borrow-wrong-type") == 0) {
+        FtWidget widget = ft_widget_new();
+        ft_widget_read_gadget(widget, (FtGadget)widget);
+    } else if (strcmp(name, "borrow-mut-wrong-type") == 0) {
+        FtWidget widget = ft_widget_new();
+        ft_widget_update_gadget(widget, (FtGadget)widget, 1);
+    } else if (strcmp(name, "trait-impl-wrong-receiver") == 0) {
+        ft_apple_value((FtApple)ft_widget_new());
+    } else if (strcmp(name, "null-borrow") == 0) {
+        ft_widget_read_gadget(ft_widget_new(), NULL);
     } else {
         assert(!"unknown abort case");
     }
@@ -1107,7 +1117,8 @@ static void abort_case(const char* name) {
 static const char* const g_abort_cases[] = {
     "consume-wrong-type", "payload-code-only", "code-mismatch", "wrong-error-type",
     "other-tag-code-only", "unknown-code-only", "null-handle-without-error",
-    "success-with-error",
+    "success-with-error", "borrow-wrong-type", "borrow-mut-wrong-type",
+    "trait-impl-wrong-receiver", "null-borrow",
 };
 
 #ifndef _WIN32

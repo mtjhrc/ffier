@@ -135,8 +135,9 @@ The `ffier` facade re-exports them, so generated code keeps naming `ffier::`.
 
 ## How the runtime uses the bits
 
-`ffier_handle_borrow` / `ffier_handle_borrow_mut` read `INDIRECT` only. They
-either follow the stored pointer or read the inline value. They never free.
+`ffier_handle_borrow` / `ffier_handle_borrow_mut` assert the expected type tag
+in all builds, then read `INDIRECT` only. They either follow the stored pointer
+or read the inline value. They never free.
 
 `ffier_handle_consume` requires inline, ffier-allocated, and the expected
 type tag. It asserts on the tag first (reading another type's value would be

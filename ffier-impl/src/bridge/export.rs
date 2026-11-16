@@ -84,11 +84,11 @@ pub(super) fn generate_exportable_bridge(
                 }
             } else if is_mut {
                 quote! {
-                    ffier::ffier_handle_borrow_mut::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow_mut::<#struct_path>(handle, __expected)
                 }
             } else {
                 quote! {
-                    ffier::ffier_handle_borrow::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow::<#struct_path>(handle, __expected)
                 }
             };
             Some(quote! { #deref_slot #type_assert let obj = unsafe { #cast }; })
@@ -307,7 +307,7 @@ pub(super) fn generate_trait_impl_bridge(
                     handle as *const ffier::FfierHandle<#struct_path> #(, #converted_args)*)
             }
         } else {
-            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut());
+            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut(), lib_crate);
             quote! { { #borrow <#struct_path as #trait_path>::#method_name(obj, #(#converted_args),*) } }
         };
         let call_expr = wrap_concrete_dispatch(
