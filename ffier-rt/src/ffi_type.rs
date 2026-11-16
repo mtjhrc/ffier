@@ -108,13 +108,13 @@ impl<Tok, T: FfiHandle<Tok> + 'static> FfiType<Tok> for &mut T {
 
 impl<Tok, T: NativeHandle<Tok> + 'static> FromC<Tok> for &T {
     unsafe fn from_c(repr: *mut c_void) -> Self {
-        unsafe { ffier_handle_borrow::<T>(repr) }
+        unsafe { ffier_handle_borrow::<T>(repr, <T as FfiHandle<Tok>>::TYPE_TAG) }
     }
 }
 
 impl<Tok, T: NativeHandle<Tok> + 'static> FromC<Tok> for &mut T {
     unsafe fn from_c(repr: *mut c_void) -> Self {
-        unsafe { ffier_handle_borrow_mut::<T>(repr) }
+        unsafe { ffier_handle_borrow_mut::<T>(repr, <T as FfiHandle<Tok>>::TYPE_TAG) }
     }
 }
 

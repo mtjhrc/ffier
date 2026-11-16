@@ -508,6 +508,22 @@ pub(super) fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
                 }
             }
 
+            /// Read the type tag of a handle C passed to `fn_name`, which
+            /// must not be null.
+            #[inline]
+            unsafe fn __ffier_handle_tag(fn_name: &str, handle: *const core::ffi::c_void) -> u32 {
+                if handle.is_null() {
+                    __ffier_null_handle_panic(fn_name);
+                }
+                unsafe { ffier::handle_type_tag(handle) }
+            }
+
+            #[cold]
+            #[inline(never)]
+            fn __ffier_null_handle_panic(fn_name: &str) -> ! {
+                panic!("{}(): null handle", fn_name);
+            }
+
             /// Panic with a clear message when a handle's type tag doesn't match
             /// any expected type.
             ///

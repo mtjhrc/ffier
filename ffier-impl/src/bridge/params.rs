@@ -288,7 +288,7 @@ pub(super) fn convert_params(
                 }
                 vtable_pre_bindings.push(quote! {
                     let #dyn_id: Box<dyn #trait_ident + #object_lifetime> = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
@@ -303,13 +303,13 @@ pub(super) fn convert_params(
                     branches.push(quote! {
                         #vcfg
                         if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
-                            break 'dispatch (unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id) as &mut dyn #trait_ident });
+                            break 'dispatch (unsafe { ffier::ffier_handle_borrow_mut::<#ty>(#dyn_id, <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) as &mut dyn #trait_ident });
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
                     let #borrow_id: &mut dyn #trait_ident = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
@@ -326,13 +326,13 @@ pub(super) fn convert_params(
                     branches.push(quote! {
                         #vcfg
                         if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
-                            break 'dispatch (unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id) as &dyn #trait_ident });
+                            break 'dispatch (unsafe { ffier::ffier_handle_borrow::<#ty>(#dyn_id, <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) as &dyn #trait_ident });
                         }
                     });
                 }
                 vtable_pre_bindings.push(quote! {
                     let #borrow_id: &dyn #trait_ident = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
@@ -459,16 +459,21 @@ fn meta_param_conversion(
 
 /// Emit a `let obj = ...` binding that borrows a value from a handle.
 ///
-/// - `mutable = false`: `let obj = ffier::ffier_handle_borrow::<T>(handle);`
-/// - `mutable = true`:  `let obj = ffier::ffier_handle_borrow_mut::<T>(handle);`
-pub(super) fn borrow_from_handle(ty: &TokenStream2, mutable: bool) -> TokenStream2 {
+/// - `mutable = false`: `let obj = ffier::ffier_handle_borrow::<T>(handle, tag);`
+/// - `mutable = true`:  `let obj = ffier::ffier_handle_borrow_mut::<T>(handle, tag);`
+pub(super) fn borrow_from_handle(
+    ty: &TokenStream2,
+    mutable: bool,
+    lib_crate: &TokenStream2,
+) -> TokenStream2 {
+    let tag = quote! { <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG };
     if mutable {
         quote! {
-            let obj = unsafe { ffier::ffier_handle_borrow_mut::<#ty>(handle) };
+            let obj = unsafe { ffier::ffier_handle_borrow_mut::<#ty>(handle, #tag) };
         }
     } else {
         quote! {
-            let obj = unsafe { ffier::ffier_handle_borrow::<#ty>(handle) };
+            let obj = unsafe { ffier::ffier_handle_borrow::<#ty>(handle, #tag) };
         }
     }
 }

@@ -56,7 +56,7 @@ pub(super) fn generate_exportable_bridge(
         // address for write-back later.
         let obj_binding = if has_receiver {
             let type_assert = quote! {
-                let __actual = unsafe { ffier::handle_type_tag(handle) };
+                let __actual = unsafe { __ffier_handle_tag(#ffi_name_str, handle) };
                 let __expected = <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
@@ -84,11 +84,11 @@ pub(super) fn generate_exportable_bridge(
                 }
             } else if is_mut {
                 quote! {
-                    ffier::ffier_handle_borrow_mut::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow_mut::<#struct_path>(handle, __expected)
                 }
             } else {
                 quote! {
-                    ffier::ffier_handle_borrow::<#struct_path>(handle)
+                    ffier::ffier_handle_borrow::<#struct_path>(handle, __expected)
                 }
             };
             Some(quote! { #deref_slot #type_assert let obj = unsafe { #cast }; })
@@ -307,7 +307,7 @@ pub(super) fn generate_trait_impl_bridge(
                     handle as *const ffier::FfierHandle<#struct_path> #(, #converted_args)*)
             }
         } else {
-            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut());
+            let borrow = borrow_from_handle(&quote! { #struct_path }, m.is_mut(), lib_crate);
             quote! { { #borrow <#struct_path as #trait_path>::#method_name(obj, #(#converted_args),*) } }
         };
         let call_expr = wrap_concrete_dispatch(
