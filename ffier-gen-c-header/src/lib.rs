@@ -16,8 +16,9 @@ mod cfg;
 pub use cfg::UnspecifiedFeatures;
 
 use ffier_schema::{
-    AbiOutParam, AbiReturn, Cfg, EnumType, ErrorType, ExportedType, FreeFunction,
-    ImplementableTrait, Library, Method, Param, ParamType, Receiver, Return, TraitImpl,
+    AbiOutParam, AbiReturn, CResultConvention, Cfg, EnumType, ErrorType, ExportedType,
+    FreeFunction, ImplementableTrait, Library, Method, Param, ParamType, Receiver, RefKind, Return,
+    TraitImpl,
 };
 
 /// Options controlling C header generation.
@@ -557,6 +558,7 @@ fn emit_vtable_section(
 
                     let params_str = params.join(", ");
                     emit_doc_comment(out, &[], &m.ret, "    ");
+                    emit_callback_error_contract(out, &m.ret, lib);
                     out.push_str(&format!("    {ret_type} (*{})({params_str});\n", m.name));
                 });
             }
@@ -953,6 +955,65 @@ fn emit_doc_comment(out: &mut String, doc: &[String], ret: &Return, indent: &str
         }
         out.push_str(&format!("{indent} */\n"));
     }
+}
+
+/// The result contract of a fallible callback slot.
+fn emit_callback_error_contract(out: &mut String, ret: &Return, lib: &Library) {
+    let error_lines = |err_type: &str| {
+        let err = lib.c_type_of(err_type);
+        [
+            format!("On error, return one of the {err} result constants and either"),
+            format!("store an owned {err} for that result in *err_out or, for a"),
+            "payload-free error, leave *err_out NULL.".to_string(),
+        ]
+    };
+    let lines: Vec<String> = match ret {
+        Return::Result {
+            err_type,
+            c_convention,
+            ok,
+        } => {
+            let success = match c_convention {
+                // A NULL handle carries no result constant.
+                CResultConvention::HandleOrNull => {
+                    let err = lib.c_type_of(err_type);
+                    // A borrowed ok handle stays owned by the callback.
+                    let handle = if ok.as_ref().is_some_and(|tr| tr.ref_kind != RefKind::None) {
+                        "a handle the callback keeps owning"
+                    } else {
+                        "an owned handle"
+                    };
+                    vec![
+                        format!("On success, return {handle} and leave *err_out NULL."),
+                        format!("On error, return NULL and store an owned {err} in *err_out."),
+                    ]
+                }
+                CResultConvention::OptionalValueOutParam => vec![
+                    "On success, return 0, set *result_is_some, write *result when".to_string(),
+                    "present, and leave *err_out NULL.".to_string(),
+                ],
+                CResultConvention::OutParam if ok.is_some() => vec![
+                    "On success, return 0, write *result, and leave *err_out NULL.".to_string(),
+                ],
+                CResultConvention::OutParam => {
+                    vec!["On success, return 0 and leave *err_out NULL.".to_string()]
+                }
+            };
+            if matches!(c_convention, CResultConvention::HandleOrNull) {
+                success
+            } else {
+                success.into_iter().chain(error_lines(err_type)).collect()
+            }
+        }
+        Return::ResultNeverOk { err_type } => Vec::from(error_lines(err_type)),
+        _ => return,
+    };
+    let (first, rest) = lines.split_first().expect("contract has lines");
+    out.push_str(&format!("    /* {first}"));
+    for line in rest {
+        out.push_str(&format!("\n     * {line}"));
+    }
+    out.push_str(" */\n");
 }
 
 fn find_type_c_name(lib: &Library, name: &str) -> String {
