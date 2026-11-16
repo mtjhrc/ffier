@@ -203,3 +203,11 @@ where
     }
     error
 }
+
+/// Debug-check that a C callback reporting success left `err_out` null.
+pub fn ffier_callback_success(callback: &str, err: *mut c_void) {
+    debug_assert!(
+        err.is_null(),
+        "callback `{callback}` returned success but stored an error in err_out"
+    );
+}
