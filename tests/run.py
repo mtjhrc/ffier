@@ -116,7 +116,9 @@ def c():
                                     env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             assert result.returncode & 0xffffffff == 0xc0000409, (kind, index, size, result.returncode)
         print('All 6 invalid C payload accesses aborted as expected.', flush=True)
-        contract_cases = ['consume-wrong-type']
+        contract_cases = ['consume-wrong-type', 'payload-code-only', 'code-mismatch',
+                          'wrong-error-type', 'other-tag-code-only', 'unknown-code-only',
+                          'null-handle-without-error']
         for case in contract_cases:
             result = subprocess.run([str(exe), '--abort-case', case], cwd=ROOT,
                                     env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -273,6 +273,15 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
     let vtable_struct = &inp.vtable_struct;
     let wrapper = &inp.wrapper;
     let trait_path = &inp.trait_path;
+    let trait_name = trait_path
+        .clone()
+        .into_iter()
+        .filter_map(|t| match t {
+            proc_macro2::TokenTree::Ident(id) => Some(id.to_string()),
+            _ => None,
+        })
+        .last()
+        .unwrap_or_default();
     let trait_generics = &inp.trait_generics;
     let crate_path = &inp.crate_path;
     let handle_names: std::collections::HashSet<String> =
@@ -386,6 +395,8 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
         .map(|(i, m)| {
             let method_name = &m.name;
             let slot = m.index() + 1;
+            // Names the callback in contract-violation panics.
+            let callback_name = format!("{trait_name}::{method_name}");
 
             // Use the pre-baked trait method signature (preserves &mut impl PushStr etc.)
             let sig = &inp.method_sigs[i];
@@ -469,7 +480,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                             if __r == ffier::FFIER_RESULT_SUCCESS {
                                 std::process::abort()
                             }
-                            Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
+                            Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, Some(__r), __err) })
                         }}
                     }
                     ReturnShape::OptionalValue { .. } => {
@@ -519,7 +530,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                         Ok(None)
                                     }
                                 } else {
-                                    Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
+                                    Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, Some(__r), __err) })
                                 }
                             }},
                             // GLib-style: __f returns the handle or null, the
@@ -540,7 +551,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     if !__raw.is_null() {
                                         #ok_conversion
                                     } else {
-                                        Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
+                                        Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, None, __err) })
                                     }
                                 }}
                             }
@@ -567,7 +578,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     if __r == ffier::FFIER_RESULT_SUCCESS {
                                         #ok_conversion
                                     } else {
-                                        Err(unsafe { <#err_ty as ffier::FromC<__FfierLocalToken>>::from_c(__err) })
+                                        Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, Some(__r), __err) })
                                     }
                                 }}
                             }
