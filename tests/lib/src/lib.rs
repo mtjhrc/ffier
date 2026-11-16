@@ -33,6 +33,10 @@ pub use native_attachment::{AttachContext, Describable, Requirements};
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use native_attachment::{AttachDevice, AttachItem, attach_device};
 
+mod returns_self;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use returns_self::Counter;
+
 mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
@@ -104,19 +108,6 @@ pub trait ErrorForwarder {
     fn forward_unit(&self) -> Result<(), TestError>;
 }
 
-/// A callback lending a borrowed handle through a `Result`.
-#[cfg_attr(feature = "ffi", ffier::export)]
-pub trait GadgetLender {
-    #[cfg_attr(feature = "ffi", ffier(index = 0))]
-    fn lend(&self) -> Result<&Gadget, TestError>;
-}
-
-/// Read the value of the gadget a lender lends, or forward its error.
-#[cfg_attr(feature = "ffi", ffier::export)]
-pub fn lent_gadget_value(lender: &impl GadgetLender) -> Result<i32, TestError> {
-    lender.lend().map(|gadget| gadget.value)
-}
-
 /// A callback taking a string slice on methods whose returns use out-params.
 #[cfg_attr(feature = "ffi", ffier::export)]
 pub trait TagChecker {
@@ -180,7 +171,6 @@ pub struct Widget {
     name: String,
     active: bool,
     tags: String,
-    gadget: Gadget,
 }
 
 #[cfg_attr(feature = "ffi", ffier::export(send, sync))]
@@ -192,7 +182,6 @@ impl Widget {
             name: String::from("widget"),
             active: true,
             tags: String::new(),
-            gadget: Gadget { value: 42 },
         }
     }
 
@@ -203,7 +192,6 @@ impl Widget {
             name: name.to_owned(),
             active: true,
             tags: String::new(),
-            gadget: Gadget { value: 42 },
         }
     }
 
@@ -245,6 +233,7 @@ impl Widget {
     }
 
     /// Set count and return `&mut Self` for method chaining.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn with_count(&mut self, n: i32) -> &mut Self {
         self.count = n;
         self
@@ -407,9 +396,10 @@ impl Widget {
         Gadget { value: self.count }
     }
 
-    /// Return a borrowed reference to the widget's internal gadget.
-    pub fn gadget(&self) -> &Gadget {
-        &self.gadget
+    /// Never compiled: a disabled borrowed return must not reject the library.
+    #[cfg(any())]
+    pub fn disabled_gadget(&self) -> &Gadget {
+        unreachable!()
     }
 
     /// Try to create a gadget; fails if ok is false.
@@ -1258,6 +1248,16 @@ impl Mixer {
         fruit.label().len() as i32
     }
 
+    /// Add a fruit's value and return the receiver (concrete dispatch).
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
+    pub fn add_fruit(
+        &mut self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] fruit: impl Fruit,
+    ) -> &mut Self {
+        self.total += fruit.value();
+        self
+    }
+
     /// Both concrete (9^2=81 > 64, override with annotation).
     pub fn blend_concrete(
         &mut self,
@@ -2044,8 +2044,6 @@ mod receiver_default_tests {
 ffier::library_definition!("ft", library_tag = 1,
     TestError = 1,
     trait ErrorForwarder = 30,
-    trait GadgetLender = 120,
-    fn lent_gadget_value,
     trait TagChecker = 121,
     fn check_tags,
     fn test_error_drop_count,
@@ -2166,6 +2164,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn create_foreign_item,
     fn create_foreign_config_checked,
     trait ForeignConfigSource = 55,
+    Counter = 56,
 );
 
 #[cfg(feature = "ffi")]
@@ -2888,33 +2887,6 @@ mod tests {
     }
 
     #[test]
-    fn method_returning_borrowed_handle() {
-        unsafe {
-            let w = ft_widget_new();
-            // The widget has an internal gadget with value 42.
-            let g = ft_widget_gadget(w);
-            assert!(!g.is_null());
-
-            // The returned handle has a valid type tag — we can call methods on it.
-            assert_eq!(ft_gadget_get(g), 42);
-
-            // Destroying a borrowed handle is safe (deallocates the shell,
-            // does NOT drop the inner Gadget which still lives in Widget).
-            ft_gadget_destroy(g);
-
-            // The widget is still fully alive after destroying the borrowed handle.
-            ft_widget_set_count(w, 7);
-            assert_eq!(ft_widget_get_count(w), 7);
-
-            ft_widget_destroy(w);
-        }
-    }
-
-    // ================================================================
-    // Builder pattern (by-value self -> Self)
-    // ================================================================
-
-    #[test]
     fn builder_method_returning_self() {
         unsafe {
             let mut c = ft_config_new();
@@ -3394,49 +3366,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn vtable_result_borrowed_handle_return() {
-        // `Result<&Gadget, E>` from a vtable callback uses the handle-or-null
-        // convention the schema and C header describe: the callback returns
-        // a borrowed gadget handle, NULL on error.
-        use core::ffi::c_void;
-        unsafe extern "C" fn lend(data: *mut c_void, _err_out: *mut *mut c_void) -> *mut c_void {
-            data
-        }
-        static VTABLE: GadgetLenderVtable = GadgetLenderVtable {
-            _num_slots: 1,
-            _reserved1: 0,
-            _reserved2: 0,
-            drop: None,
-            lend: Some(lend),
-        };
-        unsafe {
-            let w = ft_widget_new();
-            ft_widget_set_count(w, 37);
-            let gadget = ft_widget_create_gadget(w);
-            let mut lender = ffier::FfierHandle {
-                type_tag: VtableGadgetLender::TYPE_TAG,
-                metadata: 0,
-                value: ffier::VtableHandle {
-                    vtable_ptr: &VTABLE as *const _ as *const c_void,
-                    user_data: gadget as *const c_void,
-                },
-            };
-            let mut value: i32 = -1;
-            let mut err: *mut c_void = ptr::null_mut();
-            let r = ft_lent_gadget_value(
-                &mut lender as *mut _ as *mut c_void,
-                &mut value,
-                &mut err as *mut *mut c_void,
-            );
-            assert_eq!(r, 0);
-            assert!(err.is_null());
-            assert_eq!(value, 37);
-            ft_gadget_destroy(gadget);
-            ft_widget_destroy(w);
-        }
-    }
-
     // ================================================================
     // Mixer with vtable fruit
     // ================================================================
@@ -3524,6 +3453,17 @@ mod tests {
             let orange = ft_orange_new(20);
             assert_eq!(ft_mixer_blend_concrete(m, apple, orange,), 30);
             assert_eq!(ft_mixer_total(m), 30);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_add_fruit_returns_self_through_concrete_dispatch() {
+        unsafe {
+            let m = ft_mixer_new();
+            ft_mixer_add_fruit(m, ft_apple_new(10));
+            ft_mixer_add_fruit(m, ft_orange_new(5));
+            assert_eq!(ft_mixer_total(m), 15);
             ft_mixer_destroy(m);
         }
     }
@@ -4029,37 +3969,48 @@ mod tests {
         }
     }
 
+    /// A borrowed shell lending `gadget`. No generated code returns these
+    /// any more; the runtime still supports them.
+    fn borrowed_gadget_shell(gadget: &Gadget) -> *mut core::ffi::c_void {
+        unsafe {
+            ffier::ffier_handle_new_borrowed::<Gadget>(
+                <Gadget as ffier::FfiHandle<crate::__FfierLocalToken>>::TYPE_TAG,
+                gadget,
+            )
+        }
+    }
+
     #[test]
     fn borrowed_shell_is_destroyable_but_does_not_drop_its_value() {
         // A borrowed shell sets FFIER_ALLOCATED|INDIRECT and clears
         // DROP_VALUE: the handle may be freed, the pointee must not be
         // dropped.
+        let gadget = Gadget { value: 42 };
         unsafe {
-            let w = ft_widget_new();
-            let shell = ft_widget_gadget(w);
+            let shell = borrowed_gadget_shell(&gadget);
             let meta = ffier::handle_metadata(shell);
             assert_ne!(meta & ffier::METADATA_FFIER_ALLOCATED, 0);
             assert_ne!(meta & ffier::METADATA_INDIRECT, 0);
             assert_eq!(meta & ffier::METADATA_DROP_VALUE, 0);
 
-            // Freeing the shell is legitimate and must not touch the widget:
+            // Freeing the shell is legitimate and must not touch the gadget:
             // reading through a fresh shell still sees the original value.
-            let expected = ft_gadget_get(shell);
+            assert_eq!(ft_gadget_get(shell), 42);
             ffier::ffier_handle_drop::<Gadget>(shell);
-            let again = ft_widget_gadget(w);
-            assert_eq!(ft_gadget_get(again), expected);
+            let again = borrowed_gadget_shell(&gadget);
+            assert_eq!(ft_gadget_get(again), 42);
             ffier::ffier_handle_drop::<Gadget>(again);
-            ft_widget_destroy(w);
         }
+        assert_eq!(gadget.value, 42);
     }
 
     #[test]
     fn indirect_handle_with_drop_value_is_rejected() {
         // Owning a pointee behind a pointer is not implemented: dropping such a
         // handle would free it and leak the pointee, so it must assert instead.
+        let gadget = Gadget { value: 42 };
         unsafe {
-            let w = ft_widget_new();
-            let shell = ft_widget_gadget(w);
+            let shell = borrowed_gadget_shell(&gadget);
             let meta = ffier::handle_metadata(shell) | ffier::METADATA_DROP_VALUE;
             // Rebuild the header with the impossible pair, keeping the payload.
             let borrowed = &*(shell as *const ffier::FfierBorrowedHandle);
@@ -4075,7 +4026,6 @@ mod tests {
 
             // The real shell still has to be released.
             ffier::ffier_handle_drop::<Gadget>(shell);
-            ft_widget_destroy(w);
         }
     }
 

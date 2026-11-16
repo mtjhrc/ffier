@@ -114,7 +114,7 @@ pub(crate) struct MethodInfo {
     // --- exported-impl-specific (defaults for trait methods) ---
     /// FFI function name suffix (e.g. `"widget_new"`). Empty for trait methods.
     pub(crate) ffi_name: String,
-    /// The method returns `Self` on a receiver, replacing it.
+    /// The return stands for the receiver; see [`receiver_return`].
     replaces_self: bool,
     /// Method-level lifetime params.
     method_lifetimes: Vec<syn::Ident>,
@@ -241,6 +241,91 @@ pub(crate) fn sized_self_where(sig: &syn::Signature) -> bool {
     })
 }
 
+/// Whether two types end in the same path segment, generic arguments
+/// included, after erasing lifetimes (`text::Item<'a>` and `Item<'static>`).
+fn same_last_segment(a: &Type, b: &Type) -> bool {
+    let last = |ty: &Type| match erase_lifetimes(ty) {
+        Type::Path(p) if p.qself.is_none() => {
+            p.path.segments.last().map(|seg| quote!(#seg).to_string())
+        }
+        _ => None,
+    };
+    last(a).is_some_and(|a| Some(a) == last(b))
+}
+
+/// Whether a method's return stands for its receiver, so C gets no value
+/// back:
+/// - `self -> Self` / `self -> Result<Self, E>`: the new value replaces the
+///   consumed receiver's handle.
+/// - `#[ffier(returns_self)] &self -> &Self` / `&mut self -> &mut Self`
+///   (optionally in a `Result`): the method returns its receiver.
+///
+/// Any other return of `Self` (`&self -> Self`, say) is an ordinary owned
+/// return, and an unmarked `&Self` / `&mut Self` return an ordinary borrowed
+/// handle return, which bridge generation rejects.
+fn receiver_return(
+    sig: &syn::Signature,
+    name: &str,
+    receiver: Receiver,
+    self_ty: Option<&Type>,
+    returns_self: bool,
+) -> syn::Result<bool> {
+    let error = |msg: String| Err(syn::Error::new_spanned(&sig.ident, msg));
+    let Some(self_ty) = self_ty else {
+        if returns_self {
+            return error(format!(
+                "#[ffier(returns_self)] on `{name}` is only supported on methods \
+                 of an exported inherent impl"
+            ));
+        }
+        return Ok(false);
+    };
+    // The type a successful call returns, with `Self` resolved.
+    let ok = match &sig.output {
+        ReturnType::Default => None,
+        ReturnType::Type(_, ty) => {
+            let ty = replace_self_type(ty, self_ty);
+            Some(extract_result_types(&ty).map_or(ty, |(ok, _)| ok))
+        }
+    };
+    // `Some(mutable)` for a `&Self` / `&mut Self` return, also when spelled
+    // with the type's name, lifetimes or a different path.
+    let self_ref = match &ok {
+        Some(Type::Reference(r)) if same_last_segment(&r.elem, self_ty) => {
+            Some(r.mutability.is_some())
+        }
+        _ => None,
+    };
+    let receiver_ref = match receiver {
+        Receiver::Ref => false,
+        Receiver::Mut => true,
+        Receiver::Value | Receiver::None => {
+            if returns_self {
+                return error(format!(
+                    "#[ffier(returns_self)] on `{name}` needs a `&self` or `&mut self` \
+                     receiver; a by-value `self -> Self` already replaces the receiver"
+                ));
+            }
+            return Ok(receiver == Receiver::Value
+                && self_ref.is_none()
+                && ok.as_ref().is_some_and(|ok| is_self_return(ok, self_ty)));
+        }
+    };
+    match (returns_self, self_ref) {
+        (true, Some(mutable)) if mutable == receiver_ref => Ok(true),
+        (true, _) => {
+            let expected = if receiver_ref { "&mut Self" } else { "&Self" };
+            error(format!(
+                "#[ffier(returns_self)] on `{name}` needs the return type \
+                 `{expected}` (or `Result<{expected}, E>`), matching its receiver"
+            ))
+        }
+        // An unmarked `&Self` return is an ordinary borrowed handle return,
+        // which bridge generation rejects (respecting cfg) with a hint.
+        (false, _) => Ok(false),
+    }
+}
+
 /// Parse a single method signature into a unified `MethodInfo`.
 ///
 /// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
@@ -249,6 +334,7 @@ pub(crate) fn sized_self_where(sig: &syn::Signature) -> bool {
 ///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
+/// - `returns_self`: the method carries `#[ffier(returns_self)]`
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_method_sig(
     sig: &syn::Signature,
@@ -259,6 +345,7 @@ pub(crate) fn parse_method_sig(
     raw_handle: bool,
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
+    returns_self: bool,
 ) -> syn::Result<Option<MethodInfo>> {
     ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
@@ -469,21 +556,8 @@ pub(crate) fn parse_method_sig(
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
     let foreign_ret_c_name = foreign_return_c_name.map(|s| s.to_string());
 
-    // A returned Self replaces the receiver (only for exported impls, requires a receiver)
-    let has_receiver = receiver != Receiver::None;
-    let replaces_self = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
-        match &sig.output {
-            ReturnType::Default => false,
-            ReturnType::Type(_, ty) => {
-                let ty = &replace_self_type(ty, sty_static);
-                is_self_return(ty, sty_static)
-                    || extract_result_types(ty)
-                        .is_some_and(|(ok, _)| is_self_return(&ok, sty_static))
-            }
-        }
-    } else {
-        false
-    };
+    let replaces_self =
+        receiver_return(sig, &name, receiver, self_ty_static.as_ref(), returns_self)?;
 
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
@@ -507,12 +581,7 @@ pub(crate) fn parse_method_sig(
             } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
-                let ok_pair = if is_unit_type(&ok_bridge)
-                    || (replaces_self
-                        && self_ty_static
-                            .as_ref()
-                            .is_some_and(|sty| is_self_return(&ok_bridge, sty)))
-                {
+                let ok_pair = if is_unit_type(&ok_bridge) || replaces_self {
                     None
                 } else if raw_handle {
                     let erased = erase_lifetimes(&ok_bridge);
@@ -784,6 +853,7 @@ mod tests {
             false,
             None,
             None,
+            false,
         )
     }
 

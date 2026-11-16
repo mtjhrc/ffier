@@ -4,22 +4,6 @@ use std::fmt::Write;
 
 use ffier_schema::{Library, Method, ParamType, Receiver, Return};
 
-/// Check if a Return is a borrowed handle: `&HandleType` or `Result<&HandleType, E>`.
-/// Returns the bare type name (e.g. "Gadget") if so.
-pub(crate) fn borrowed_handle_return_type<'a>(ret: &'a Return, lib: &Library) -> Option<&'a str> {
-    let tr = match ret {
-        Return::Value(tr) => tr,
-        Return::Result { ok: Some(tr), .. } => tr,
-        _ => return None,
-    };
-    if tr.ref_kind != ffier_schema::RefKind::Shared && tr.ref_kind != ffier_schema::RefKind::Mut {
-        return None;
-    }
-    lib.type_entry(&tr.type_name)
-        .filter(|e| e.kind.is_handle())
-        .map(|_| tr.type_name.as_str())
-}
-
 pub(super) fn format_receiver(m: &Method) -> String {
     let lifetime = m
         .receiver_lifetime
@@ -36,21 +20,17 @@ pub(super) fn format_receiver(m: &Method) -> String {
 
 pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
     if m.ret.replaces_self(&lib.type_registry) {
-        return match m.receiver {
-            Receiver::Mut => " -> &mut Self".to_string(),
-            Receiver::Value => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
-            _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
+        // `#[ffier(returns_self)]` returns the receiver itself.
+        let self_ref = match m.receiver {
+            Receiver::Mut => "&mut Self",
+            Receiver::Ref => "&Self",
+            Receiver::Value | Receiver::None => {
+                return format!(" -> {}", m.ret.to_rust_type(&lib.type_registry));
+            }
         };
-    }
-
-    // Borrowed handle returns (&HandleType) → return owned wrapper in client.
-    // The wrapper's Drop calls destroy, which deallocates the borrowed shell
-    // without dropping the inner value.
-    if let Some(bare_name) = borrowed_handle_return_type(&m.ret, lib) {
         return match &m.ret {
-            Return::Value(_) => format!(" -> {bare_name}"),
-            Return::Result { err_type, .. } => format!(" -> Result<{bare_name}, {err_type}>"),
-            _ => unreachable!(),
+            Return::Result { err_type, .. } => format!(" -> Result<{self_ref}, {err_type}>"),
+            _ => format!(" -> {self_ref}"),
         };
     }
 

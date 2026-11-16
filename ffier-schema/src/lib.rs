@@ -736,9 +736,10 @@ impl Return {
     }
 
     /// True if this returns `Self` (`-> Self` or `-> Result<Self, E>`) that
-    /// replaces the receiver, detected via `Blessing::ReplacesSelf` in the
-    /// type registry. The new value is written back through the receiver's
-    /// handle rather than returned at the C level.
+    /// stands for the receiver, detected via `Blessing::ReplacesSelf` in the
+    /// type registry. C gets no value: a by-value receiver's new value is
+    /// written back through its handle, and a `#[ffier(returns_self)]`
+    /// method on `&self` / `&mut self` returned the receiver itself.
     pub fn replaces_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
         match self {
             Return::Value(tr) => is_replaces_self(&tr.type_name, registry),

@@ -16,19 +16,15 @@ pub(crate) struct ReturnPolicy {
     /// `-> Result<Self, E>`): the bridge writes the new handle back instead of
     /// returning a value. `None` where no receiver can be replaced.
     pub(crate) replaces_self: Option<SelfReceiver>,
-    /// Surface `&Handle` returns as the owned wrapper via
-    /// `ClientHandle::from_raw`. Only inherent methods set this, because
-    /// `build_wrapper_return_type` rewrites their signature to the owned
-    /// wrapper; trait signatures keep `&T`.
-    pub(crate) own_borrowed_handles: bool,
 }
 
 /// Receiver of a method whose return replaces `self`, which decides how
 /// `Self` is produced.
 #[derive(Clone, Copy)]
 pub(crate) enum SelfReceiver {
-    /// `&mut self` — the handle is updated in place; return `self`.
-    Mut,
+    /// `&self` / `&mut self` — a `#[ffier(returns_self)]` method returned
+    /// its receiver; return `self`.
+    Borrowed,
     /// `self` — the bridge wrote the new handle into `__handle`.
     Value { has_lifetimes: bool },
 }
@@ -36,7 +32,7 @@ pub(crate) enum SelfReceiver {
 impl SelfReceiver {
     fn self_expr(self) -> &'static str {
         match self {
-            SelfReceiver::Mut => "self",
+            SelfReceiver::Borrowed => "self",
             SelfReceiver::Value {
                 has_lifetimes: true,
             } => "Self(__handle, std::marker::PhantomData)",
@@ -100,9 +96,7 @@ fn emit_ffi_call_return(
     };
     let err = |err_type: &str| format!("Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})");
     // Convert a raw C value into the Rust ok type.
-    let from_c = |tr: &TypeRef, raw: &str| -> String {
-        crate::conv::lift_returned(tr, lib, raw, policy.own_borrowed_handles)
-    };
+    let from_c = |tr: &TypeRef, raw: &str| -> String { crate::conv::lift_returned(tr, lib, raw) };
     let replaced_self = policy
         .replaces_self
         .filter(|_| ret.replaces_self(&lib.type_registry));

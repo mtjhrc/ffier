@@ -356,6 +356,71 @@ pub(super) fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         .map(|meta| meta.name.to_string())
         .collect();
 
+    // Borrowed handles cannot be returned. A method that always exists gets
+    // the syntactic error with the clearer message; every method also gets a
+    // type-level assertion, gated by its cfg, that no type alias can hide.
+    let mut borrowed_return_asserts = Vec::new();
+    {
+        let local_token = crate::ffi_traits::token_of(&lib_crate);
+        let mut check = |owner: Option<&dyn std::fmt::Display>,
+                         owner_cfg: Option<&TokenStream2>,
+                         methods: &[MetaMethod]|
+         -> Option<TokenStream2> {
+            for m in methods {
+                if owner_cfg.is_none()
+                    && m.cfg.is_none()
+                    && let Some(error) =
+                        crate::return_shape::reject_borrowed_handle_return(owner, m, &handle_types)
+                {
+                    return Some(error);
+                }
+                if let Some(assert) = crate::return_shape::assert_no_borrowed_handle_return(
+                    owner,
+                    m,
+                    &handle_types,
+                    &value_types,
+                    &local_token,
+                ) {
+                    let owner_cfg = cfg_predicate_attr(owner_cfg);
+                    borrowed_return_asserts.push(quote! { #owner_cfg #assert });
+                }
+            }
+            None
+        };
+        for item in &exportables {
+            let meta: MetaExportable =
+                syn::parse2(item.clone()).expect("validated export metadata");
+            if let Some(error) = check(
+                Some(&meta.struct_name),
+                meta.cfg_predicate.as_ref(),
+                &meta.methods,
+            ) {
+                return error;
+            }
+        }
+        for item in &implementables {
+            let meta: MetaImplementable =
+                syn::parse2(item.clone()).expect("validated trait metadata");
+            if let Some(error) = check(Some(&meta.trait_name), None, &meta.methods) {
+                return error;
+            }
+        }
+        for item in &trait_impls {
+            let meta: MetaTraitImpl =
+                syn::parse2(item.clone()).expect("validated trait impl metadata");
+            if let Some(error) = check(Some(&meta.struct_name), None, &meta.methods) {
+                return error;
+            }
+        }
+        for item in &free_fns {
+            let meta: MetaFreeFunction =
+                syn::parse2(item.clone()).expect("validated function metadata");
+            if let Some(error) = check(None, meta.cfg_predicate.as_ref(), &meta.methods) {
+                return error;
+            }
+        }
+    }
+
     // Pass 1.5: Validate value-struct fields. Field types must already have a
     // stable C representation: scalars, exported enums, exported bitflags, or
     // other exported value structs. Anything else is a compile error, since the
@@ -711,5 +776,7 @@ pub(super) fn generate_batch_impl(input: TokenStream2) -> TokenStream2 {
         #error_factory
 
         #str_free_fn
+
+        #(#borrowed_return_asserts)*
     }
 }

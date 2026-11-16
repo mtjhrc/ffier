@@ -137,6 +137,7 @@ fn extract_vtable_methods(
             mattrs.raw_handle,
             mattrs.foreign_return.as_ref(),
             mattrs.foreign_return_c_name.as_deref(),
+            mattrs.returns_self,
         )? {
             let index = mattrs.index.ok_or_else(|| {
                 syn::Error::new_spanned(

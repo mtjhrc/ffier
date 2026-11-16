@@ -243,6 +243,36 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // Also checked by the bridge; a library crate without one gets it here.
+    let trait_name = trait_path
+        .clone()
+        .into_iter()
+        .filter_map(|t| match t {
+            proc_macro2::TokenTree::Ident(id) => Some(id),
+            _ => None,
+        })
+        .last();
+    let owner = trait_name.as_ref().map(|n| n as &dyn std::fmt::Display);
+    if let Some(error) = parsed_methods
+        .iter()
+        .filter(|m| m.cfg.is_none())
+        .find_map(|m| crate::return_shape::reject_borrowed_handle_return(owner, m, &handle_names))
+    {
+        return error.into();
+    }
+    let borrowed_return_asserts: Vec<_> = parsed_methods[..inp.own_method_count]
+        .iter()
+        .filter_map(|m| {
+            crate::return_shape::assert_no_borrowed_handle_return(
+                owner,
+                m,
+                &handle_names,
+                &value_names,
+                &quote! { __FfierLocalToken },
+            )
+        })
+        .collect();
+
     // --- Vtable struct fields ---
     let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut next_slot = 0usize;
@@ -442,10 +472,9 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 }
                             }}
                             }
-                            // GLib-style: __f returns the handle or null, the
-                            // error through an out-param. A borrowed handle is
-                            // converted like a plain `&Handle` return.
-                            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                            // GLib-style: __f returns the owned handle or
+                            // null, the error through an out-param.
+                            ResultConv::OwnedHandleOrNull => {
                                 let ok_conversion = match ok {
                                     Some(tp) => {
                                         let value = lift_ok(tp, quote! { __raw });
@@ -604,6 +633,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
             use #crate_path::*;
 
             #(#handle_assertions)*
+            #(#borrowed_return_asserts)*
 
             impl #trait_path #trait_generics for #wrapper<'_> {
                 #(#own_method_impls)*

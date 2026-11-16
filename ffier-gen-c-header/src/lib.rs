@@ -605,7 +605,18 @@ fn emit_type_section(
 
     for m in &ty.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
-            emit_doc_comment(out, &m.doc);
+            let mut doc = m.doc.clone();
+            if m.ret.replaces_self(&lib.type_registry)
+                && matches!(m.receiver, Receiver::Ref | Receiver::Mut)
+            {
+                // `#[ffier(returns_self)]`: the Rust return is the receiver.
+                doc.push(
+                    " Returns nothing: the Rust method returns its receiver, so keep \
+                     using `handle`."
+                        .to_string(),
+                );
+            }
+            emit_doc_comment(out, &doc);
             let (ret_type, params_str) =
                 build_c_declaration_parts(c_name, m, ty.replaces_self_by_value, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
