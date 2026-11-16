@@ -472,10 +472,9 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                 }
                             }}
                             }
-                            // GLib-style: __f returns the handle or null, the
-                            // error through an out-param. A borrowed handle is
-                            // converted like a plain `&Handle` return.
-                            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                            // GLib-style: __f returns the owned handle or
+                            // null, the error through an out-param.
+                            ResultConv::OwnedHandleOrNull => {
                                 let ok_conversion = match ok {
                                     Some(tp) => {
                                         let value = lift_ok(tp, quote! { __raw });

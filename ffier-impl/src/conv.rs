@@ -51,7 +51,7 @@ enum LeafKind {
     /// Converted by its `IntoC`/`FromC` impls.
     Token,
     /// `&Handle` / `&mut Handle` of one of this library's handles.
-    NativeRef { target: TokenStream, mutable: bool },
+    NativeRef,
     /// A reference to another library's client wrapper.
     ForeignRef { target: TokenStream, mutable: bool },
 }
@@ -83,15 +83,12 @@ impl Leaf {
                 target: borrowed_handle_target(tp),
                 mutable,
             },
-            Some(mutable)
+            Some(_)
                 if parsed
                     .as_ref()
                     .is_some_and(|ty| is_borrowed_handle(ty, handle_types)) =>
             {
-                LeafKind::NativeRef {
-                    target: borrowed_handle_target(tp),
-                    mutable,
-                }
+                LeafKind::NativeRef
             }
             _ => LeafKind::Token,
         };
@@ -107,7 +104,7 @@ impl Leaf {
     pub(crate) fn lift(&self, raw: &TokenStream, scope: Scope, name: &syn::Ident) -> Converted {
         let tok = &self.tok;
         match &self.kind {
-            LeafKind::Token | LeafKind::NativeRef { .. } => Converted {
+            LeafKind::Token | LeafKind::NativeRef => Converted {
                 pre: Vec::new(),
                 exprs: vec![quote! { unsafe { ffier::FromC::<#tok>::from_c(#raw) } }],
             },
@@ -141,30 +138,14 @@ impl Leaf {
     ///
     /// The value's type is inferred rather than spelled: bridge types erase
     /// lifetimes to `'static`, which a borrowed argument does not satisfy.
-    pub(crate) fn lower(&self, value: &TokenStream, scope: Scope) -> TokenStream {
+    pub(crate) fn lower(&self, value: &TokenStream) -> TokenStream {
         let tok = &self.tok;
         match &self.kind {
             LeafKind::Token => quote! { ffier::IntoC::<#tok>::into_c(#value) },
-            // A returned borrow outlives the call: lend it through a heap
-            // shell the caller destroys.
-            LeafKind::NativeRef { target, mutable } if scope == Scope::Returned => {
-                // Keep write provenance for a mutable borrow.
-                let ptr = if *mutable {
-                    quote! { #value as *mut #target as *const #target }
-                } else {
-                    quote! { #value as *const #target }
-                };
-                quote! {
-                    unsafe {
-                        ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as ffier::FfiHandle<#tok>>::TYPE_TAG,
-                            #ptr,
-                        )
-                    }
-                }
-            }
-            LeafKind::NativeRef { .. } => quote! {
-                compile_error!("ffier: vtable callbacks cannot take a borrowed handle argument yet")
+            // Returns are rejected separately (`reject_borrowed_handle_return`);
+            // vtable arguments are not supported yet.
+            LeafKind::NativeRef => quote! {
+                compile_error!("ffier: a borrowed handle can be neither returned nor passed to a vtable callback")
             },
             // The client wrapper holds the foreign handle pointer.
             LeafKind::ForeignRef { target, .. } => quote! {
@@ -237,9 +218,7 @@ pub(crate) fn lower_arg(
     match &p.kind {
         MetaParamKind::Regular(tp) => Converted {
             pre: Vec::new(),
-            exprs: vec![
-                Leaf::of(tp, handle_types, local_token).lower(&quote! { #id }, Scope::Call),
-            ],
+            exprs: vec![Leaf::of(tp, handle_types, local_token).lower(&quote! { #id })],
         },
         MetaParamKind::StrSlice => {
             let binding = format_ident!("__{id}_ffierbytes");
