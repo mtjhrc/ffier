@@ -993,6 +993,39 @@ void destroy_handle(void) {
     /* No crash means success */
 }
 
+/* Contract violations that must abort rather than return. */
+static void abort_case(const char* name) {
+    if (strcmp(name, "consume-wrong-type") == 0) {
+        ft_gadget_value((FtGadget)ft_widget_new());
+    } else {
+        assert(!"unknown abort case");
+    }
+}
+
+static const char* const g_abort_cases[] = {
+    "consume-wrong-type",
+};
+
+#ifndef _WIN32
+void contract_violations_abort(void) {
+    for (size_t i = 0; i < sizeof(g_abort_cases) / sizeof(g_abort_cases[0]); i++) {
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            struct rlimit limit = { 0, 0 };
+            assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+            assert(freopen("/dev/null", "w", stderr) != NULL);
+            abort_case(g_abort_cases[i]);
+            _exit(0);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFSIGNALED(status));
+        assert(WTERMSIG(status) == SIGABRT);
+    }
+}
+#endif
+
 void destroy_null_handle(void) {
     /* destroy(NULL) should be safe */
     ft_widget_destroy(NULL);
@@ -1023,9 +1056,14 @@ int main(int argc, char** argv) {
         if (widget != NULL) ft_widget_destroy(widget);
         return 0; /* The parent requires an abort, so returning is a failure. */
     }
+    if (argc == 3 && strcmp(argv[1], "--abort-case") == 0) {
+        abort_case(argv[2]);
+        return 0; /* The parent requires an abort, so returning is a failure. */
+    }
 #ifndef _WIN32
     if (argc == 2 && strcmp(argv[1], "--payload-abort-tests") == 0) {
         RUN_TEST(error_payload_invalid_access_aborts);
+        RUN_TEST(contract_violations_abort);
         return 0;
     }
 #endif

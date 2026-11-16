@@ -61,10 +61,12 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
 
 /// Consume a handle: move the value out and free the allocation.
 ///
-/// Only valid for inline handles that ffier allocated. Panics in all builds
-/// when the handle is indirect, foreign, null, or uninitialized: an indirect
-/// value is owned elsewhere, and a foreign handle may have been allocated
-/// anywhere, so freeing either through Rust's allocator would be unsound.
+/// Only valid for inline handles that ffier allocated with `type_tag`, the
+/// tag of `T`. Panics in all builds when the handle is null, uninitialized,
+/// of another type, indirect, or foreign: reading another type's value as
+/// `T` is type confusion, an indirect value is owned elsewhere, and a foreign
+/// handle may have been allocated anywhere, so freeing either through Rust's
+/// allocator would be unsound.
 ///
 /// # Safety
 /// - `handle` must point to a valid, heap-allocated `FfierHandle<T>` created
@@ -72,11 +74,13 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
 ///   is clear, and the allocation came from Rust's allocator).
 /// - After this call the handle pointer is dangling.
 #[inline]
-pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
+pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void, type_tag: u32) -> T {
     assert!(!handle.is_null(), "consuming null handle");
+    let actual = unsafe { ffier_rt::handle_type_tag(handle) };
+    assert!(actual != 0, "consuming uninitialized handle");
     assert!(
-        unsafe { ffier_rt::handle_type_tag(handle) } != 0,
-        "consuming uninitialized handle"
+        actual == type_tag,
+        "consuming a handle of type tag {actual:#x} as type tag {type_tag:#x}"
     );
     let meta = unsafe { ffier_rt::handle_metadata(handle) };
     assert!(

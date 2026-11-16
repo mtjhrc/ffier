@@ -138,9 +138,10 @@ The `ffier` facade re-exports them, so generated code keeps naming `ffier::`.
 `ffier_handle_borrow` / `ffier_handle_borrow_mut` read `INDIRECT` only. They
 either follow the stored pointer or read the inline value. They never free.
 
-`ffier_handle_consume` requires inline and ffier-allocated. It asserts on
-`INDIRECT` first (the value is owned elsewhere), then on the allocation bit
-(ffier cannot free foreign memory). Consuming anything else would be unsound,
+`ffier_handle_consume` requires inline, ffier-allocated, and the expected
+type tag. It asserts on the tag first (reading another type's value would be
+type confusion), then on `INDIRECT` (the value is owned elsewhere), then on
+the allocation bit (ffier cannot free foreign memory). Consuming anything else would be unsound,
 so these are `assert`, not `debug_assert`: the input crosses the FFI boundary
 from caller code, where release builds are exactly when corruption would
 happen.
