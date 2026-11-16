@@ -124,6 +124,96 @@ pub(crate) fn classify_return<'a>(
     }
 }
 
+/// Reject a method that returns a borrowed handle: `&H`, `&mut H` or
+/// `Result<&H, E>` of a local or foreign handle, including `&Self`. A
+/// receiver-replacing `&mut self -> &mut Self` is not a returned value and
+/// stays allowed.
+///
+/// Neither C nor a generated client can keep such a handle tied to its
+/// owner's lifetime, so these returns are not supported. `owner` names the
+/// type or trait in the error.
+pub(crate) fn reject_borrowed_handle_return(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    handle_types: &HashSet<String>,
+) -> Option<TokenStream> {
+    let tp = match &method.ret {
+        MetaReturn::Value(tp) | MetaReturn::Result { ok: Some(tp), .. } => tp,
+        _ => return None,
+    };
+    let ty = syn::parse2::<syn::Type>(tp.rust_type.clone()).ok()?;
+    if !matches!(ty, syn::Type::Reference(_))
+        || !(tp.foreign_crate.is_some() || is_borrowed_handle(&ty, handle_types))
+        || is_std_reference(&ty)
+    {
+        return None;
+    }
+    let name = match owner {
+        Some(owner) => format!("{owner}::{}", method.name),
+        None => method.name.to_string(),
+    };
+    let shown = quote!(#ty).to_string().replace("& ", "&");
+    let msg = format!(
+        "ffier: `{name}` returns the borrowed handle `{shown}`, which is not supported; \
+         return an owned handle or a value instead"
+    );
+    Some(syn::Error::new_spanned(&tp.rust_type, msg).to_compile_error())
+}
+
+/// The type-level form of [`reject_borrowed_handle_return`], which a type
+/// alias cannot hide: a compile-time assertion that the method's return is
+/// not a borrowed handle, gated by the method's cfg. `local_token` names
+/// this library's token where the assertion is emitted.
+pub(crate) fn assert_no_borrowed_handle_return(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
+    local_token: &TokenStream,
+) -> Option<TokenStream> {
+    let tp = match classify_return(&method.ret, &method.rust_ret, handle_types, value_types) {
+        ReturnShape::Value { tp } => tp,
+        ReturnShape::Result {
+            ok: Some(tp),
+            conv:
+                ResultConv::OutParam | ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull,
+            ..
+        } => tp,
+        _ => return None,
+    };
+    let bt = &tp.bridge_type;
+    let tok = crate::c_abi::token_for(tp, local_token);
+    let cfg = method.cfg_attr();
+    let name = match owner {
+        Some(owner) => format!("{owner}::{}", method.name),
+        None => method.name.to_string(),
+    };
+    let msg = format!(
+        "ffier: `{name}` returns a borrowed handle, which is not supported; \
+         return an owned handle or a value instead"
+    );
+    Some(quote! {
+        #cfg
+        const _: () = assert!(!<#bt as ffier::FfiType<#tok>>::IS_BORROWED_HANDLE, #msg);
+    })
+}
+
+/// A reference into `std`, `core` or `alloc` (`&std::path::Path`), which no
+/// handle name can shadow.
+fn is_std_reference(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(r) = ty else {
+        return false;
+    };
+    let syn::Type::Path(p) = &*r.elem else {
+        return false;
+    };
+    p.path
+        .segments
+        .first()
+        .is_some_and(|s| matches!(s.ident.to_string().as_str(), "std" | "core" | "alloc"))
+        && p.path.segments.len() > 1
+}
+
 /// Check if a type is `&T` or `&mut T` where `T` is a handle type.
 pub(crate) fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {

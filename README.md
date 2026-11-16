@@ -228,7 +228,9 @@ anything else. Validation may be added in a later version.
   stable type tags and a shared library prefix
 - Strings as `ptr + len` (no null-terminator copies)
 - Builder pattern support (by-value self methods)
-- Lifetime-preserving borrowed handles
+- Lifetime-bearing handles (e.g. a `View<'a>` returned by value); handles
+  themselves are returned owned, and borrowed handle returns (`&H`,
+  `Result<&H, E>`) are rejected at compile time
 - Explicit receiver lifetimes preserved in generated clients:
   `fn apply<'a>(&'a self, overlay: &mut Overlay<'a>)` keeps the receiver
   alive while the overlay retains its data. Opaque client handles preserve
