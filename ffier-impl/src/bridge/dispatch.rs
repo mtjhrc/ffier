@@ -171,7 +171,7 @@ pub(super) fn wrap_concrete_dispatch(
             let accepted_const = format_ident!("__FFIER_ACCEPTED_{}", p.trait_name);
 
             quote! { #label: {
-                let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                 #(#if_branches)*
                 __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
             }}
@@ -372,7 +372,7 @@ pub(super) fn generate_self_dispatch_bridge(
             pub unsafe extern "C" fn #ffi_name(#(#sig_names: #sig_types),*) #sig_ret {
                 #(#vtable_pre_bindings)*
                 #(#pre_bindings)*
-                let __type_tag = unsafe { ffier::handle_type_tag(handle) };
+                let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, handle) };
                 #(#dispatch_branches)*
                 __ffier_dispatch_panic(#ffi_name_str, #expected_str, #accepted_const, __type_tag);
             }

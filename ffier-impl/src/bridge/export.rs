@@ -56,7 +56,7 @@ pub(super) fn generate_exportable_bridge(
         // address for write-back later.
         let obj_binding = if has_receiver {
             let type_assert = quote! {
-                let __actual = unsafe { ffier::handle_type_tag(handle) };
+                let __actual = unsafe { __ffier_handle_tag(#ffi_name_str, handle) };
                 let __expected = <#struct_path as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG;
                 if __actual != __expected {
                     __ffier_dispatch_panic(
