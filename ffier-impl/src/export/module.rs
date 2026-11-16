@@ -91,6 +91,7 @@ fn export_group(functions: &[ItemFn]) -> syn::Result<TokenStream> {
             false,
             attrs.foreign_return.as_ref(),
             attrs.foreign_return_c_name.as_deref(),
+            attrs.returns_self,
         )?
         .ok_or_else(|| {
             syn::Error::new_spanned(

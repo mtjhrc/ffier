@@ -257,14 +257,28 @@ fn same_last_segment(a: &Type, b: &Type) -> bool {
 /// back:
 /// - `self -> Self` / `self -> Result<Self, E>`: the new value replaces the
 ///   consumed receiver's handle.
-/// - `&self -> &Self` / `&mut self -> &mut Self` (optionally in a `Result`):
-///   chaining, the method returns its receiver.
+/// - `#[ffier(returns_self)] &self -> &Self` / `&mut self -> &mut Self`
+///   (optionally in a `Result`): the method returns its receiver.
 ///
 /// Any other return of `Self` (`&self -> Self`, say) is an ordinary owned
-/// return.
-fn receiver_return(sig: &syn::Signature, receiver: Receiver, self_ty: Option<&Type>) -> bool {
+/// return, and an unmarked `&Self` / `&mut Self` return an ordinary borrowed
+/// handle return, which bridge generation rejects.
+fn receiver_return(
+    sig: &syn::Signature,
+    name: &str,
+    receiver: Receiver,
+    self_ty: Option<&Type>,
+    returns_self: bool,
+) -> syn::Result<bool> {
+    let error = |msg: String| Err(syn::Error::new_spanned(&sig.ident, msg));
     let Some(self_ty) = self_ty else {
-        return false;
+        if returns_self {
+            return error(format!(
+                "#[ffier(returns_self)] on `{name}` is only supported on methods \
+                 of an exported inherent impl"
+            ));
+        }
+        return Ok(false);
     };
     // The type a successful call returns, with `Self` resolved.
     let ok = match &sig.output {
@@ -274,13 +288,41 @@ fn receiver_return(sig: &syn::Signature, receiver: Receiver, self_ty: Option<&Ty
             Some(extract_result_types(&ty).map_or(ty, |(ok, _)| ok))
         }
     };
-    // A `&Self` / `&mut Self` return, also when spelled with the type's
-    // name, lifetimes or a different path.
-    let self_ref = matches!(&ok, Some(Type::Reference(r)) if same_last_segment(&r.elem, self_ty));
-    match receiver {
-        Receiver::Ref | Receiver::Mut => self_ref,
-        Receiver::Value => !self_ref && ok.as_ref().is_some_and(|ok| is_self_return(ok, self_ty)),
-        Receiver::None => false,
+    // `Some(mutable)` for a `&Self` / `&mut Self` return, also when spelled
+    // with the type's name, lifetimes or a different path.
+    let self_ref = match &ok {
+        Some(Type::Reference(r)) if same_last_segment(&r.elem, self_ty) => {
+            Some(r.mutability.is_some())
+        }
+        _ => None,
+    };
+    let receiver_ref = match receiver {
+        Receiver::Ref => false,
+        Receiver::Mut => true,
+        Receiver::Value | Receiver::None => {
+            if returns_self {
+                return error(format!(
+                    "#[ffier(returns_self)] on `{name}` needs a `&self` or `&mut self` \
+                     receiver; a by-value `self -> Self` already replaces the receiver"
+                ));
+            }
+            return Ok(receiver == Receiver::Value
+                && self_ref.is_none()
+                && ok.as_ref().is_some_and(|ok| is_self_return(ok, self_ty)));
+        }
+    };
+    match (returns_self, self_ref) {
+        (true, Some(mutable)) if mutable == receiver_ref => Ok(true),
+        (true, _) => {
+            let expected = if receiver_ref { "&mut Self" } else { "&Self" };
+            error(format!(
+                "#[ffier(returns_self)] on `{name}` needs the return type \
+                 `{expected}` (or `Result<{expected}, E>`), matching its receiver"
+            ))
+        }
+        // An unmarked `&Self` return is an ordinary borrowed handle return,
+        // which bridge generation rejects (respecting cfg) with a hint.
+        (false, _) => Ok(false),
     }
 }
 
@@ -292,6 +334,7 @@ fn receiver_return(sig: &syn::Signature, receiver: Receiver, self_ty: Option<&Ty
 ///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
+/// - `returns_self`: the method carries `#[ffier(returns_self)]`
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_method_sig(
     sig: &syn::Signature,
@@ -302,6 +345,7 @@ pub(crate) fn parse_method_sig(
     raw_handle: bool,
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
+    returns_self: bool,
 ) -> syn::Result<Option<MethodInfo>> {
     ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
@@ -512,7 +556,8 @@ pub(crate) fn parse_method_sig(
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
     let foreign_ret_c_name = foreign_return_c_name.map(|s| s.to_string());
 
-    let replaces_self = receiver_return(sig, receiver, self_ty_static.as_ref());
+    let replaces_self =
+        receiver_return(sig, &name, receiver, self_ty_static.as_ref(), returns_self)?;
 
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
@@ -808,6 +853,7 @@ mod tests {
             false,
             None,
             None,
+            false,
         )
     }
 

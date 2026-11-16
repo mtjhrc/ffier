@@ -228,6 +228,11 @@ anything else. Validation may be added in a later version.
   stable type tags and a shared library prefix
 - Strings as `ptr + len` (no null-terminator copies)
 - Builder pattern support (by-value self methods)
+- Chaining with `#[ffier(returns_self)]` on `&self -> &Self` /
+  `&mut self -> &mut Self` methods: C gets `void` and keeps using the handle,
+  and generated clients return the receiver. The method must return its
+  receiver; ffier does not check this. Other `Self` returns from a reference
+  receiver (`fn duplicate(&self) -> Self`) return a new handle.
 - Lifetime-bearing handles (e.g. a `View<'a>` returned by value); handles
   themselves are returned owned, and borrowed handle returns (`&H`,
   `Result<&H, E>`) are rejected at compile time

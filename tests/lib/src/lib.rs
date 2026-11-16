@@ -233,6 +233,7 @@ impl Widget {
     }
 
     /// Set count and return `&mut Self` for method chaining.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn with_count(&mut self, n: i32) -> &mut Self {
         self.count = n;
         self
@@ -1248,6 +1249,7 @@ impl Mixer {
     }
 
     /// Add a fruit's value and return the receiver (concrete dispatch).
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn add_fruit(
         &mut self,
         #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] fruit: impl Fruit,

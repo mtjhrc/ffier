@@ -954,7 +954,7 @@ void method_returning_result_optional_fd_err(void) {
 #endif
 
 /* ===================================================================== */
-/* Chaining and Self copies                                              */
+/* returns_self chaining and Self copies                                 */
 /* ===================================================================== */
 
 void returns_self_keeps_receiver(void) {

@@ -22,7 +22,7 @@ pub(crate) struct ReturnPolicy {
 /// `Self` is produced.
 #[derive(Clone, Copy)]
 pub(crate) enum SelfReceiver {
-    /// `&self` / `&mut self` — a chaining method returned
+    /// `&self` / `&mut self` — a `#[ffier(returns_self)]` method returned
     /// its receiver; return `self`.
     Borrowed,
     /// `self` — the bridge wrote the new handle into `__handle`.

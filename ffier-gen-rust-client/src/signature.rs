@@ -20,7 +20,7 @@ pub(super) fn format_receiver(m: &Method) -> String {
 
 pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
     if m.ret.replaces_self(&lib.type_registry) {
-        // Chaining returns the receiver itself.
+        // `#[ffier(returns_self)]` returns the receiver itself.
         let self_ref = match m.receiver {
             Receiver::Mut => "&mut Self",
             Receiver::Ref => "&Self",

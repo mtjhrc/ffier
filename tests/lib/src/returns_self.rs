@@ -1,4 +1,4 @@
-//! Chaining, and `Self` returns that are new objects.
+//! `#[ffier(returns_self)]` chaining, and `Self` returns that are new objects.
 
 use crate::TestError;
 
@@ -18,12 +18,14 @@ impl Counter {
     }
 
     /// Add to the value and return the receiver for chaining.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn add(&mut self, n: i32) -> &mut Self {
         self.value += n;
         self
     }
 
     /// Add a non-negative amount, or fail without changing the value.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn try_add(&mut self, n: i32) -> Result<&mut Self, TestError> {
         if n < 0 {
             return Err(TestError::InvalidInput());
@@ -33,6 +35,7 @@ impl Counter {
     }
 
     /// Return the receiver through a shared borrow.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn peek(&self) -> &Self {
         self
     }
@@ -53,6 +56,12 @@ impl Counter {
             return Err(TestError::InvalidInput());
         }
         Ok(self.duplicate())
+    }
+
+    /// Compiled out: an unmarked chaining method is not checked.
+    #[cfg(any())]
+    pub fn disabled_chain(&mut self) -> &mut Self {
+        self
     }
 }
 

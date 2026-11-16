@@ -125,6 +125,7 @@ pub(super) fn exportable_struct_impl(input: ItemImpl, export_cfg: &ExportCfg) ->
             false,
             foreign_ret,
             foreign_ret_c,
+            method_ffier.returns_self,
         ) {
             Ok(Some(mut m)) => {
                 m.ffi_name = format!("{}_{}", struct_lower, method.sig.ident);

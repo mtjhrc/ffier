@@ -19,6 +19,7 @@ impl<'a> text::CovariantText<'a> {
     }
 
     /// Chaining spelled with the type's name and lifetime.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn same(&self) -> &CovariantText<'a> {
         self
     }
