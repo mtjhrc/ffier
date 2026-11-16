@@ -119,7 +119,8 @@ def c():
         contract_cases = ['consume-wrong-type', 'payload-code-only', 'code-mismatch',
                           'wrong-error-type', 'other-tag-code-only', 'unknown-code-only',
                           'null-handle-without-error', 'success-with-error', 'borrow-wrong-type',
-                          'borrow-mut-wrong-type', 'trait-impl-wrong-receiver', 'null-borrow']
+                          'borrow-mut-wrong-type', 'trait-impl-wrong-receiver', 'null-receiver',
+                          'null-borrow']
         for case in contract_cases:
             result = subprocess.run([str(exe), '--abort-case', case], cwd=ROOT,
                                     env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

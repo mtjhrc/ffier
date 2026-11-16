@@ -288,7 +288,7 @@ pub(super) fn convert_params(
                 }
                 vtable_pre_bindings.push(quote! {
                     let #dyn_id: Box<dyn #trait_ident + #object_lifetime> = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
@@ -309,7 +309,7 @@ pub(super) fn convert_params(
                 }
                 vtable_pre_bindings.push(quote! {
                     let #borrow_id: &mut dyn #trait_ident = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
@@ -332,7 +332,7 @@ pub(super) fn convert_params(
                 }
                 vtable_pre_bindings.push(quote! {
                     let #borrow_id: &dyn #trait_ident = 'dispatch: {
-                        let __type_tag = unsafe { ffier::handle_type_tag(#dyn_id) };
+                        let __type_tag = unsafe { __ffier_handle_tag(#ffi_name_str, #dyn_id) };
                         #(#branches)*
                         __ffier_dispatch_panic(#ffi_name_str, #expected_msg, #accepted_const, __type_tag);
                     };
