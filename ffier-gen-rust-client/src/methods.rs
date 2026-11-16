@@ -83,9 +83,9 @@ fn emit_method_body(
         Receiver::Ref | Receiver::Mut => Some("self.0"),
     };
     let replaces_self = match m.receiver {
-        Receiver::Mut => Some(SelfReceiver::Mut),
+        Receiver::Ref | Receiver::Mut => Some(SelfReceiver::Borrowed),
         Receiver::Value => Some(SelfReceiver::Value { has_lifetimes }),
-        Receiver::None | Receiver::Ref => None,
+        Receiver::None => None,
     };
     let policy = ReturnPolicy { replaces_self };
     emit_call_body(

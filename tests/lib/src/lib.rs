@@ -1247,6 +1247,15 @@ impl Mixer {
         fruit.label().len() as i32
     }
 
+    /// Add a fruit's value and return the receiver (concrete dispatch).
+    pub fn add_fruit(
+        &mut self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] fruit: impl Fruit,
+    ) -> &mut Self {
+        self.total += fruit.value();
+        self
+    }
+
     /// Both concrete (9^2=81 > 64, override with annotation).
     pub fn blend_concrete(
         &mut self,
@@ -3442,6 +3451,17 @@ mod tests {
             let orange = ft_orange_new(20);
             assert_eq!(ft_mixer_blend_concrete(m, apple, orange,), 30);
             assert_eq!(ft_mixer_total(m), 30);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_add_fruit_returns_self_through_concrete_dispatch() {
+        unsafe {
+            let m = ft_mixer_new();
+            ft_mixer_add_fruit(m, ft_apple_new(10));
+            ft_mixer_add_fruit(m, ft_orange_new(5));
+            assert_eq!(ft_mixer_total(m), 15);
             ft_mixer_destroy(m);
         }
     }

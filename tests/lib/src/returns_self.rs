@@ -1,8 +1,8 @@
-//! `Self` returns from a reference receiver, which are new objects.
+//! Chaining, and `Self` returns that are new objects.
 
 use crate::TestError;
 
-/// A counter that can be copied.
+/// A counter with chaining methods.
 pub struct Counter {
     value: i32,
 }
@@ -15,6 +15,26 @@ impl Counter {
 
     pub fn value(&self) -> i32 {
         self.value
+    }
+
+    /// Add to the value and return the receiver for chaining.
+    pub fn add(&mut self, n: i32) -> &mut Self {
+        self.value += n;
+        self
+    }
+
+    /// Add a non-negative amount, or fail without changing the value.
+    pub fn try_add(&mut self, n: i32) -> Result<&mut Self, TestError> {
+        if n < 0 {
+            return Err(TestError::InvalidInput());
+        }
+        self.value += n;
+        Ok(self)
+    }
+
+    /// Return the receiver through a shared borrow.
+    pub fn peek(&self) -> &Self {
+        self
     }
 
     /// A new counter with the same value: an ordinary owned return.

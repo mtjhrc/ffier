@@ -17,6 +17,11 @@ impl<'a> text::CovariantText<'a> {
     pub fn value(&self) -> &str {
         self.value
     }
+
+    /// Chaining spelled with the type's name and lifetime.
+    pub fn same(&self) -> &CovariantText<'a> {
+        self
+    }
 }
 
 pub struct MixedVariance<'a, 'b, 'c, 'd> {
