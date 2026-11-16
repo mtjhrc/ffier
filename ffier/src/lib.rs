@@ -5,7 +5,8 @@ pub use ffier_rt::*;
 // only inspects or borrows handles does not pull in the allocator; the facade
 // re-exports them so generated code keeps naming `ffier::`.
 pub use ffier_bridge::{
-    ffier_handle_consume, ffier_handle_drop, ffier_handle_new, ffier_handle_new_borrowed,
+    ffier_callback_error, ffier_handle_consume, ffier_handle_drop, ffier_handle_new,
+    ffier_handle_new_borrowed,
 };
 
 // Re-export built-in traits at the crate root so `ffier::Error`,
