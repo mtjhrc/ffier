@@ -202,22 +202,37 @@ pub unsafe fn handle_metadata(handle: *const c_void) -> u32 {
 // Handle borrow
 // ---------------------------------------------------------------------------
 
+/// Assert that `handle` is a live handle of `type_tag`.
+///
+/// # Safety
+/// `handle` must be null or point to readable handle memory.
+#[inline]
+unsafe fn check_handle_type(handle: *const c_void, type_tag: u32) {
+    assert!(!handle.is_null(), "borrowing null handle");
+    let actual = unsafe { handle_type_tag(handle) };
+    assert!(actual != 0, "borrowing uninitialized handle");
+    assert!(
+        actual == type_tag,
+        "borrowing a handle of type tag {actual:#x} as type tag {type_tag:#x}"
+    );
+}
+
 /// Borrow a shared reference to the value inside a handle.
 ///
 /// When [`METADATA_INDIRECT`] is clear the value is inline in the
 /// `FfierHandle<T>`. When it is set the value field is a pointer in a
 /// `FfierBorrowedHandle` that is followed to reach the real `T`.
 ///
+/// Panics in all builds when the handle is null, uninitialized, or not of
+/// `type_tag`, the tag of `T`: reading another type's value as `T` is type
+/// confusion.
+///
 /// # Safety
 /// - `handle` must point to a valid `FfierHandle<T>` or `FfierBorrowedHandle`.
 /// - The handle must be alive for the lifetime of the returned reference.
 #[inline]
-pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void) -> &'static T {
-    debug_assert!(!handle.is_null(), "null handle");
-    debug_assert!(
-        unsafe { handle_type_tag(handle) } != 0,
-        "uninitialized handle"
-    );
+pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void, type_tag: u32) -> &'static T {
+    unsafe { check_handle_type(handle, type_tag) };
     if unsafe { handle_metadata(handle) } & METADATA_INDIRECT != 0 {
         let bh = unsafe { &*(handle as *const FfierBorrowedHandle) };
         unsafe { &*(bh.ptr as *const T) }
@@ -231,16 +246,14 @@ pub unsafe fn ffier_handle_borrow<T>(handle: *const c_void) -> &'static T {
 /// Returns a reference to the inline value, or follows the stored pointer
 /// when [`METADATA_INDIRECT`] is set.
 ///
+/// Panics like [`ffier_handle_borrow`].
+///
 /// # Safety
 /// - `handle` must point to a valid `FfierHandle<T>` or `FfierBorrowedHandle`.
 /// - The caller must have exclusive access.
 #[inline]
-pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void) -> &'static mut T {
-    debug_assert!(!handle.is_null(), "null handle");
-    debug_assert!(
-        unsafe { handle_type_tag(handle) } != 0,
-        "uninitialized handle"
-    );
+pub unsafe fn ffier_handle_borrow_mut<T>(handle: *mut c_void, type_tag: u32) -> &'static mut T {
+    unsafe { check_handle_type(handle, type_tag) };
     if unsafe { handle_metadata(handle) } & METADATA_INDIRECT != 0 {
         let bh = unsafe { &*(handle as *const FfierBorrowedHandle) };
         unsafe { &mut *(bh.ptr as *mut T) }

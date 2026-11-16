@@ -64,7 +64,7 @@ pub(super) fn generate_error_getters(
 
         dispatch_arms.push(quote! {
             #type_tag => {
-                let err: &#path = unsafe { ffier::ffier_handle_borrow(handle) };
+                let err: &#path = unsafe { ffier::ffier_handle_borrow(handle, #type_tag) };
                 unsafe {
                     <#path as ffier::FfiErrorPayload<#token>>::payload(err, index, out_buf, buf_size)
                 };
