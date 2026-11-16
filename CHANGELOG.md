@@ -34,6 +34,13 @@
   modules that define errors with typed payload fields; they are no longer
   needed.
 
+### Fixed
+
+- `&self -> Self`, `&mut self -> Self` and `&self -> Result<Self, E>` are
+  ordinary owned returns: C gets a new handle. They used to be taken for
+  chaining, so the C function returned `void` and dropped the new object, and
+  the generated Rust client did not compile.
+
 ## 0.3.1
 
 ### Added

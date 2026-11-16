@@ -33,6 +33,10 @@ pub use native_attachment::{AttachContext, Describable, Requirements};
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use native_attachment::{AttachDevice, AttachItem, attach_device};
 
+mod returns_self;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use returns_self::Counter;
+
 mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
@@ -2149,6 +2153,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn create_foreign_item,
     fn create_foreign_config_checked,
     trait ForeignConfigSource = 55,
+    Counter = 56,
 );
 
 #[cfg(feature = "ffi")]

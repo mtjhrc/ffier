@@ -954,6 +954,35 @@ void method_returning_result_optional_fd_err(void) {
 #endif
 
 /* ===================================================================== */
+/* Self returned from a reference receiver                               */
+/* ===================================================================== */
+
+void self_from_ref_receiver_is_new_handle(void) {
+    FtCounter c = ft_counter_new(5);
+    FtCounter copy = ft_counter_duplicate(c);
+    assert(copy != NULL && copy != c);
+    assert(ft_counter_value(c) == 5 && ft_counter_value(copy) == 5);
+
+    FtCounter taken = ft_counter_take(c);
+    assert(taken != NULL && taken != c);
+    assert(ft_counter_value(taken) == 5 && ft_counter_value(c) == 0);
+
+    FtCounter negative = ft_counter_new(-1);
+    FtError err = NULL;
+    assert(ft_counter_try_duplicate(negative, &err) == NULL);
+    assert(err != NULL);
+    ft_error_destroy(err);
+    FtCounter again = ft_counter_try_duplicate(copy, NULL);
+    assert(again != NULL && ft_counter_value(again) == 5);
+
+    ft_counter_destroy(again);
+    ft_counter_destroy(negative);
+    ft_counter_destroy(taken);
+    ft_counter_destroy(copy);
+    ft_counter_destroy(c);
+}
+
+/* ===================================================================== */
 /* Destroy                                                               */
 /* ===================================================================== */
 
@@ -1010,6 +1039,7 @@ int main(int argc, char** argv) {
     RUN_TEST(immutable_ref_method_returning_primitive);
     RUN_TEST(mutable_ref_method_void_return);
     RUN_TEST(by_value_method_void_return);
+    RUN_TEST(self_from_ref_receiver_is_new_handle);
 
     printf("\n[primitive types]\n");
     RUN_TEST(method_returning_bool);
