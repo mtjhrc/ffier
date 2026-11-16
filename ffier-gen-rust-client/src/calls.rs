@@ -7,7 +7,6 @@ use ffier_schema::{CResultConvention, Library, ParamType, Return, TypeRef};
 use crate::abi::optional_value_out_type;
 use crate::error::find_error_dispatch_fns;
 use crate::ffi_traits::{self, TypeRefExt};
-use crate::signature::borrowed_handle_return_type;
 
 /// Build FFI call arguments from method params. Each param is converted
 /// via `IntoC::into_c`, `ClientHandle::as_handle`, `__into_raw_handle()`, or
@@ -102,11 +101,6 @@ pub(crate) struct ReturnPolicy {
     /// `-> Result<Self, E>`): the bridge writes the new handle back instead of
     /// returning a value. `None` where no receiver can be replaced.
     pub(crate) replaces_self: Option<SelfReceiver>,
-    /// Surface `&Handle` returns as the owned wrapper via
-    /// `ClientHandle::from_raw`. Only inherent methods set this, because
-    /// `build_wrapper_return_type` rewrites their signature to the owned
-    /// wrapper; trait signatures keep `&T`.
-    pub(crate) own_borrowed_handles: bool,
 }
 
 /// Receiver of a method whose return replaces `self`, which decides how
@@ -184,25 +178,7 @@ fn emit_ffi_call_return(
     };
     let err = |err_type: &str| format!("Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})");
     // Convert a raw C value into the Rust ok type.
-    let from_c = |tr: &TypeRef, raw: &str| -> String {
-        if borrowed_handle_return_type(ret, lib).is_none() {
-            format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw))
-        } else if policy.own_borrowed_handles {
-            // Borrowed handle: wrap the shell in the owned wrapper.
-            let tok = ffi_traits::token(tr, lib);
-            format!(
-                "unsafe {{ <{} as ffier::ClientHandle<{tok}>>::from_raw({raw}) }}",
-                tr.type_name
-            )
-        } else {
-            // A client wrapper is not stored where a `&Handle` could point;
-            // producing one needs a borrow type that keeps the lifetime.
-            format!(
-                "{{ let _ = {raw}; unimplemented!(\"ffier: Rust clients cannot yet return `&{}` from a trait method\") }}",
-                tr.type_name
-            )
-        }
-    };
+    let from_c = |tr: &TypeRef, raw: &str| format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw));
     let replaced_self = policy
         .replaces_self
         .filter(|_| ret.replaces_self(&lib.type_registry));

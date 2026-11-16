@@ -100,7 +100,7 @@ pub(crate) fn c_signature(
                 quote! { -> ffier::FfierResult }
             }
             // The handle is the return value, NULL on error.
-            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+            ResultConv::OwnedHandleOrNull => {
                 push(out_param("err_out"), err_out);
                 quote! { -> *mut core::ffi::c_void }
             }

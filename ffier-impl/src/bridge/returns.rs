@@ -6,7 +6,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
 use crate::meta::MetaReturn;
-use crate::return_shape::{ResultConv, ReturnShape, borrowed_handle_target, classify_return};
+use crate::return_shape::{ResultConv, ReturnShape, classify_return};
 
 use super::dispatch::ErrorMap;
 use super::signature::resolve_trait_crate;
@@ -82,24 +82,8 @@ pub(super) fn wrap_return(
                 }
             };
         }
-        ReturnShape::Value {
-            tp,
-            borrowed_handle,
-        } => {
+        ReturnShape::Value { tp } => {
             let tc = resolve_trait_crate(tp, lib_crate);
-            if borrowed_handle {
-                // &T where T is a handle — shallow-copy into a borrowed handle.
-                let target = borrowed_handle_target(tp);
-                return quote! {
-                    let result = #call_expr;
-                    unsafe {
-                        ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as ffier::FfiHandle<#tc::__FfierLocalToken>>::TYPE_TAG,
-                            result as *const #target,
-                        )
-                    }
-                };
-            }
             let bridge_type = &tp.bridge_type;
             return quote! {
                 let result = #call_expr;
@@ -165,21 +149,6 @@ pub(super) fn wrap_return(
                 Err(e) => { #box_expr core::ptr::null_mut() }
             }
         },
-        // Result<&Handle, E> → borrowed shell, NULL on error.
-        ResultConv::BorrowedHandleOrNull => {
-            let target = borrowed_handle_target(ok.expect("borrowed handle ok type"));
-            quote! {
-                match #call_expr {
-                    Ok(ok_val) => unsafe {
-                        ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as ffier::FfiHandle<#ok_tc::__FfierLocalToken>>::TYPE_TAG,
-                            ok_val as *const #target,
-                        )
-                    },
-                    Err(e) => { #box_expr core::ptr::null_mut() }
-                }
-            }
-        }
         ResultConv::OutParam => {
             let ok_branch = match (ok, replaced_self) {
                 (Some(tp), _) => {

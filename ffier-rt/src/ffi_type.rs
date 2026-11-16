@@ -22,6 +22,8 @@ pub trait FfiType<Tok> {
     type CRepr;
     /// Crosses the ABI as an opaque handle pointer.
     const IS_HANDLE: bool = false;
+    /// A borrowed handle (`&H` / `&mut H`), which cannot be returned.
+    const IS_BORROWED_HANDLE: bool = false;
 }
 
 /// Convert a Rust value into its C representation.
@@ -99,11 +101,13 @@ pub trait FfiErrorPayload<Tok> {
 impl<Tok, T: FfiHandle<Tok> + 'static> FfiType<Tok> for &T {
     type CRepr = *mut c_void;
     const IS_HANDLE: bool = true;
+    const IS_BORROWED_HANDLE: bool = true;
 }
 
 impl<Tok, T: FfiHandle<Tok> + 'static> FfiType<Tok> for &mut T {
     type CRepr = *mut c_void;
     const IS_HANDLE: bool = true;
+    const IS_BORROWED_HANDLE: bool = true;
 }
 
 impl<Tok, T: NativeHandle<Tok> + 'static> FromC<Tok> for &T {

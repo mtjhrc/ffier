@@ -14,6 +14,17 @@
   Rust `ForeignSlice`, and the schema's `Return::ObjectArray` and
   `Blessing::ObjectArray`. `&[&str]`, `&[u8]` and primitive slices are
   unaffected.
+- Reject borrowed handle returns: `&H`, `&mut H` and `Result<&H, E>` of a
+  local or foreign handle (including `&Self`), from methods, free functions
+  and trait methods, are a compile error. Neither C nor generated clients
+  could keep the returned handle tied to its owner: the Rust client turned
+  it into an owned wrapper with no lifetime, and trait forwarders panicked.
+  Return an owned handle, a value, or a lifetime-bearing view handle
+  instead. The check is type-level as well, so a type alias of a borrowed
+  handle is rejected too. Methods returning `&Self` / `&mut Self` from a
+  reference receiver stay supported as chaining: the C function returns
+  nothing and generated clients return the receiver, so the method must
+  return its receiver.
 - Rename the schema's `ExportedType::is_builder_type` to
   `replaces_self_by_value` and `Return::is_builder_self` to
   `Return::replaces_self`.
@@ -22,13 +33,6 @@
   `ffier`. Remove imports such as `use crate::{FfiBorrow, FfiType};` from
   modules that define errors with typed payload fields; they are no longer
   needed.
-
-### Fixed
-
-- Accept `Result<&Handle, E>` in vtable-implementable traits. The vtable
-  caller now uses the handle-or-null convention that the schema and C header
-  already declared; previously the crate failed to compile with a "handle
-  detection mismatch" assertion.
 
 ## 0.3.1
 

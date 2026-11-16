@@ -252,6 +252,28 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
         })
         .collect();
 
+    // Also checked by the bridge; a library crate without one gets it here.
+    let owner = Some(&trait_name as &dyn std::fmt::Display);
+    if let Some(error) = parsed_methods
+        .iter()
+        .filter(|m| m.cfg.is_none())
+        .find_map(|m| crate::return_shape::reject_borrowed_handle_return(owner, m, &handle_names))
+    {
+        return error.into();
+    }
+    let borrowed_return_asserts: Vec<_> = parsed_methods[..inp.own_method_count]
+        .iter()
+        .filter_map(|m| {
+            crate::return_shape::assert_no_borrowed_handle_return(
+                owner,
+                m,
+                &handle_names,
+                &value_names,
+                &quote! { __FfierLocalToken },
+            )
+        })
+        .collect();
+
     // --- Vtable struct fields ---
     let mut vtable_fields: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut next_slot = 0usize;
@@ -480,10 +502,9 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, Some(__r), __err) })
                                 }
                             }},
-                            // GLib-style: __f returns the handle or null, the
-                            // error through an out-param. A borrowed handle is
-                            // converted like a plain `&Handle` return.
-                            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
+                            // GLib-style: __f returns the owned handle or
+                            // null, the error through an out-param.
+                            ResultConv::OwnedHandleOrNull => {
                                 let ok_conversion = match ok {
                                     Some(_) => quote! { Ok(unsafe { ffier::FromC::<__FfierLocalToken>::from_c(__raw) }) },
                                     None => quote! { Ok(()) },
@@ -636,6 +657,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
             use #crate_path::*;
 
             #(#handle_assertions)*
+            #(#borrowed_return_asserts)*
 
             impl #trait_path #trait_generics for #wrapper<'_> {
                 #(#own_method_impls)*
