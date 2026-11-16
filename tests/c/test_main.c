@@ -1107,6 +1107,8 @@ static void abort_case(const char* name) {
         ft_widget_update_gadget(widget, (FtGadget)widget, 1);
     } else if (strcmp(name, "trait-impl-wrong-receiver") == 0) {
         ft_apple_value((FtApple)ft_widget_new());
+    } else if (strcmp(name, "null-receiver") == 0) {
+        ft_widget_get_count(NULL);
     } else if (strcmp(name, "null-borrow") == 0) {
         ft_widget_read_gadget(ft_widget_new(), NULL);
     } else {
@@ -1118,7 +1120,7 @@ static const char* const g_abort_cases[] = {
     "consume-wrong-type", "payload-code-only", "code-mismatch", "wrong-error-type",
     "other-tag-code-only", "unknown-code-only", "null-handle-without-error",
     "success-with-error", "borrow-wrong-type", "borrow-mut-wrong-type",
-    "trait-impl-wrong-receiver", "null-borrow",
+    "trait-impl-wrong-receiver", "null-receiver", "null-borrow",
 };
 
 #ifndef _WIN32
