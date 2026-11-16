@@ -148,7 +148,7 @@ pub(super) fn wrap_concrete_dispatch(
                     let vcfg_attr = cfg_predicate_attr(vcfg.as_ref());
                     let binding = match p.ref_kind {
                         ImplTraitRefKind::Value => quote! {
-                            let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id) };
+                            let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id, <#ty_tokens as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) };
                         },
                         ImplTraitRefKind::Mut => quote! {
                             let #dyn_id = unsafe { ffier::ffier_handle_borrow_mut::<#ty_tokens>(#dyn_id) };

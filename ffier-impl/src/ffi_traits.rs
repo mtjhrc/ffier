@@ -70,7 +70,7 @@ pub(crate) fn native_handle_impls(
         }
         impl #impl_generics ffier::FromC<#tok> for #ty {
             unsafe fn from_c(repr: *mut core::ffi::c_void) -> Self {
-                unsafe { ffier::ffier_handle_consume::<Self>(repr) }
+                unsafe { ffier::ffier_handle_consume::<Self>(repr, #type_tag) }
             }
         }
     }

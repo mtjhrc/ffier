@@ -80,7 +80,7 @@ pub(super) fn generate_exportable_bridge(
             };
             let cast = if is_by_value {
                 quote! {
-                    ffier::ffier_handle_consume::<#struct_path>(handle)
+                    ffier::ffier_handle_consume::<#struct_path>(handle, __expected)
                 }
             } else if is_mut {
                 quote! {
