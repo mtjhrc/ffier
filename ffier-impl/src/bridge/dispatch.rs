@@ -151,10 +151,10 @@ pub(super) fn wrap_concrete_dispatch(
                             let #dyn_id = unsafe { ffier::ffier_handle_consume::<#ty_tokens>(#dyn_id, <#ty_tokens as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) };
                         },
                         ImplTraitRefKind::Mut => quote! {
-                            let #dyn_id = unsafe { ffier::ffier_handle_borrow_mut::<#ty_tokens>(#dyn_id) };
+                            let #dyn_id = unsafe { ffier::ffier_handle_borrow_mut::<#ty_tokens>(#dyn_id, <#ty_tokens as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) };
                         },
                         ImplTraitRefKind::Ref => quote! {
-                            let #dyn_id = unsafe { ffier::ffier_handle_borrow::<#ty_tokens>(#dyn_id) };
+                            let #dyn_id = unsafe { ffier::ffier_handle_borrow::<#ty_tokens>(#dyn_id, <#ty_tokens as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) };
                         },
                     };
                     quote! {
@@ -283,7 +283,7 @@ pub(super) fn generate_self_dispatch_bridge(
                 let metadata_guard =
                     if v.kind == TraitVariantKind::Wrapper && m.has_default() && !m.raw_handle() {
                         if let Some(helper) = &default_helper_path {
-                            let obj_for_default = borrow_from_handle(ty, m.is_mut());
+                            let obj_for_default = borrow_from_handle(ty, m.is_mut(), lib_crate);
                             let default_base_call = quote! { #helper(obj #(, #converted_args)*) };
                             let default_call_expr = wrap_concrete_dispatch(
                                 default_base_call,
@@ -326,7 +326,7 @@ pub(super) fn generate_self_dispatch_bridge(
                         quote! {},
                     )
                 } else {
-                    let obj_binding = borrow_from_handle(ty, m.is_mut());
+                    let obj_binding = borrow_from_handle(ty, m.is_mut(), lib_crate);
                     (
                         quote! {
                             <#ty as #trait_path>::#method_name(obj #(, #converted_args)*)
