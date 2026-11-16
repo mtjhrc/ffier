@@ -281,7 +281,7 @@ pub(super) fn convert_params(
                     branches.push(quote! {
                         #vcfg
                         if __type_tag == <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG {
-                            let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id) };
+                            let __val = unsafe { ffier::ffier_handle_consume::<#ty>(#dyn_id, <#ty as ffier::FfiHandle<#lib_crate::__FfierLocalToken>>::TYPE_TAG) };
                             break 'dispatch (Box::new(__val) as Box<dyn #trait_ident + #object_lifetime>);
                         }
                     });

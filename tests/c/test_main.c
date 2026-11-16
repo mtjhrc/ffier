@@ -993,6 +993,143 @@ void destroy_handle(void) {
     /* No crash means success */
 }
 
+/* A C ErrorForwarder whose error reporting is picked per test. */
+typedef enum {
+    REPORT_CODE_ONLY,
+    REPORT_PAYLOAD_CODE_ONLY,
+    REPORT_MISMATCH,
+    REPORT_WRONG_TYPE,
+    REPORT_OTHER_TAG_CODE_ONLY,
+    REPORT_UNKNOWN_CODE_ONLY,
+    REPORT_SUCCESS_WITH_ERROR,
+} ErrorReport;
+static ErrorReport g_error_report;
+
+static FtResult report_error(FtError* err_out) {
+    switch (g_error_report) {
+    case REPORT_CODE_ONLY:
+        *err_out = NULL;
+        return FT_ERROR_TEST_CUSTOM_MESSAGE;
+    case REPORT_PAYLOAD_CODE_ONLY:
+        *err_out = NULL;
+        return FT_ERROR_TEST_NUMERIC_ERROR;
+    case REPORT_MISMATCH:
+        *err_out = ft_error_new(FT_ERROR_TEST_INVALID_INPUT);
+        return FT_ERROR_TEST_CUSTOM_MESSAGE;
+    case REPORT_WRONG_TYPE:
+        *err_out = (FtError)ft_widget_new();
+        return FT_ERROR_TEST_CUSTOM_MESSAGE;
+    case REPORT_OTHER_TAG_CODE_ONLY:
+        /* A payload-free code, but under another type's tag. */
+        *err_out = NULL;
+        return ((uint64_t)FT_PROCESSOR_TYPE_TAG << 32) | (FT_ERROR_TEST_CUSTOM_MESSAGE & 0xffffffffu);
+    case REPORT_UNKNOWN_CODE_ONLY:
+        *err_out = NULL;
+        return (FT_ERROR_TEST_CUSTOM_MESSAGE & ~(uint64_t)0xffffffffu) | 999u;
+    case REPORT_SUCCESS_WITH_ERROR:
+        *err_out = ft_error_new(FT_ERROR_TEST_CUSTOM_MESSAGE);
+        return FT_RESULT_SUCCESS;
+    }
+    abort();
+}
+
+static FtResult report_value(void* self_data, int32_t* result, FtError* err_out) {
+    (void)self_data;
+    (void)result;
+    return report_error(err_out);
+}
+
+static FtGadget report_handle(void* self_data, FtError* err_out) {
+    (void)self_data;
+    *err_out = NULL; /* A null handle with no error: nothing to report. */
+    return NULL;
+}
+
+static FtResult report_unit(void* self_data, FtError* err_out) {
+    (void)self_data;
+    return report_error(err_out);
+}
+
+static const FtErrorForwarderVtable g_error_reporter = FT_VTABLE(FtErrorForwarderVtable,
+    .forward_value = report_value,
+    .forward_handle = report_handle,
+    .forward_unit = report_unit,
+);
+
+static FtResult roundtrip_reported_error(uint32_t method) {
+    void* callback = ft_vtable_handle_new(FT_ERROR_FORWARDER_TYPE_TAG, &g_error_reporter, NULL);
+    FtError err = NULL;
+    FtResult result = ft_roundtrip_callback_error(callback, method, &err);
+    ft_error_destroy(err);
+    return result;
+}
+
+/* A payload-free error may come back as its code alone. */
+void callback_error_code_without_handle(void) {
+    g_error_report = REPORT_CODE_ONLY;
+    assert(roundtrip_reported_error(0) == FT_ERROR_TEST_CUSTOM_MESSAGE);
+    assert(roundtrip_reported_error(2) == FT_ERROR_TEST_CUSTOM_MESSAGE);
+}
+
+/* Contract violations that must abort rather than return. */
+static void abort_case(const char* name) {
+    if (strcmp(name, "payload-code-only") == 0) {
+        g_error_report = REPORT_PAYLOAD_CODE_ONLY;
+        roundtrip_reported_error(2);
+    } else if (strcmp(name, "code-mismatch") == 0) {
+        g_error_report = REPORT_MISMATCH;
+        roundtrip_reported_error(2);
+    } else if (strcmp(name, "wrong-error-type") == 0) {
+        g_error_report = REPORT_WRONG_TYPE;
+        roundtrip_reported_error(2);
+    } else if (strcmp(name, "other-tag-code-only") == 0) {
+        g_error_report = REPORT_OTHER_TAG_CODE_ONLY;
+        roundtrip_reported_error(2);
+    } else if (strcmp(name, "unknown-code-only") == 0) {
+        g_error_report = REPORT_UNKNOWN_CODE_ONLY;
+        roundtrip_reported_error(2);
+    } else if (strcmp(name, "success-with-error") == 0) {
+        /* Call the slot directly: without the check, success would return. */
+        g_error_report = REPORT_SUCCESS_WITH_ERROR;
+        void* callback = ft_vtable_handle_new(FT_ERROR_FORWARDER_TYPE_TAG, &g_error_reporter, NULL);
+        FtError err = NULL;
+        ft_error_forwarder_forward_unit(callback, &err);
+        ft_error_forwarder_destroy(callback);
+    } else if (strcmp(name, "null-handle-without-error") == 0) {
+        roundtrip_reported_error(1);
+    } else if (strcmp(name, "consume-wrong-type") == 0) {
+        ft_gadget_value((FtGadget)ft_widget_new());
+    } else {
+        assert(!"unknown abort case");
+    }
+}
+
+static const char* const g_abort_cases[] = {
+    "consume-wrong-type", "payload-code-only", "code-mismatch", "wrong-error-type",
+    "other-tag-code-only", "unknown-code-only", "null-handle-without-error",
+    "success-with-error",
+};
+
+#ifndef _WIN32
+void contract_violations_abort(void) {
+    for (size_t i = 0; i < sizeof(g_abort_cases) / sizeof(g_abort_cases[0]); i++) {
+        pid_t child = fork();
+        assert(child >= 0);
+        if (child == 0) {
+            struct rlimit limit = { 0, 0 };
+            assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+            assert(freopen("/dev/null", "w", stderr) != NULL);
+            abort_case(g_abort_cases[i]);
+            _exit(0);
+        }
+        int status;
+        assert(waitpid(child, &status, 0) == child);
+        assert(WIFSIGNALED(status));
+        assert(WTERMSIG(status) == SIGABRT);
+    }
+}
+#endif
+
 void destroy_null_handle(void) {
     /* destroy(NULL) should be safe */
     ft_widget_destroy(NULL);
@@ -1023,9 +1160,14 @@ int main(int argc, char** argv) {
         if (widget != NULL) ft_widget_destroy(widget);
         return 0; /* The parent requires an abort, so returning is a failure. */
     }
+    if (argc == 3 && strcmp(argv[1], "--abort-case") == 0) {
+        abort_case(argv[2]);
+        return 0; /* The parent requires an abort, so returning is a failure. */
+    }
 #ifndef _WIN32
     if (argc == 2 && strcmp(argv[1], "--payload-abort-tests") == 0) {
         RUN_TEST(error_payload_invalid_access_aborts);
+        RUN_TEST(contract_violations_abort);
         return 0;
     }
 #endif
@@ -1067,6 +1209,7 @@ int main(int argc, char** argv) {
 
     printf("\n[result returns]\n");
     RUN_TEST(never_returns_report_errors);
+    RUN_TEST(callback_error_code_without_handle);
     RUN_TEST(method_returning_result_void_ok);
     RUN_TEST(method_returning_result_void_err);
     RUN_TEST(method_returning_result_value_ok);

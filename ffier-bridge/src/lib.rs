@@ -16,8 +16,9 @@
 use core::ffi::c_void;
 
 use ffier_rt::{
-    FfierBorrowedHandle, FfierHandle, METADATA_DROP_VALUE, METADATA_FFIER_ALLOCATED,
-    METADATA_INDIRECT,
+    FfiError, FfiHandle, FfiType, FfierBorrowedHandle, FfierHandle, FfierResult, FromC,
+    METADATA_DROP_VALUE, METADATA_FFIER_ALLOCATED, METADATA_INDIRECT, ffier_result,
+    ffier_result_code, ffier_result_type_tag,
 };
 
 /// Allocate a new owned handle on the heap and return a raw pointer.
@@ -61,10 +62,12 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
 
 /// Consume a handle: move the value out and free the allocation.
 ///
-/// Only valid for inline handles that ffier allocated. Panics in all builds
-/// when the handle is indirect, foreign, null, or uninitialized: an indirect
-/// value is owned elsewhere, and a foreign handle may have been allocated
-/// anywhere, so freeing either through Rust's allocator would be unsound.
+/// Only valid for inline handles that ffier allocated with `type_tag`, the
+/// tag of `T`. Panics in all builds when the handle is null, uninitialized,
+/// of another type, indirect, or foreign: reading another type's value as
+/// `T` is type confusion, an indirect value is owned elsewhere, and a foreign
+/// handle may have been allocated anywhere, so freeing either through Rust's
+/// allocator would be unsound.
 ///
 /// # Safety
 /// - `handle` must point to a valid, heap-allocated `FfierHandle<T>` created
@@ -72,11 +75,13 @@ pub unsafe fn ffier_handle_new_borrowed<T>(tag: u32, value: *const T) -> *mut c_
 ///   is clear, and the allocation came from Rust's allocator).
 /// - After this call the handle pointer is dangling.
 #[inline]
-pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void) -> T {
+pub unsafe fn ffier_handle_consume<T>(handle: *mut c_void, type_tag: u32) -> T {
     assert!(!handle.is_null(), "consuming null handle");
+    let actual = unsafe { ffier_rt::handle_type_tag(handle) };
+    assert!(actual != 0, "consuming uninitialized handle");
     assert!(
-        unsafe { ffier_rt::handle_type_tag(handle) } != 0,
-        "consuming uninitialized handle"
+        actual == type_tag,
+        "consuming a handle of type tag {actual:#x} as type tag {type_tag:#x}"
     );
     let meta = unsafe { ffier_rt::handle_metadata(handle) };
     assert!(
@@ -147,4 +152,62 @@ pub unsafe fn ffier_handle_drop<T>(handle: *mut c_void) {
         // Borrowed: dealloc the 16-byte handle and leave the pointee alone.
         drop(unsafe { Box::from_raw(handle as *mut FfierBorrowedHandle) });
     }
+}
+
+/// Lift the error a C callback reported: its result `r` (`None` when it
+/// signals failure by returning a null handle) and the handle it stored in
+/// `err_out`.
+///
+/// A payload-free error may come back as its code alone, with `err_out`
+/// left null, as callers of library functions may also leave it null.
+/// Otherwise `err` is consumed as `E`, which checks its type, and is
+/// returned. Its code should match `r`; debug builds check it.
+/// `callback` names the callback in panic messages.
+///
+/// # Panics
+/// When `err` is null and `r` is not a payload-free code of `E`.
+///
+/// # Safety
+/// `err` must be null or an owned handle allocated by this library.
+pub unsafe fn ffier_callback_error<Tok, E>(
+    callback: &str,
+    r: Option<FfierResult>,
+    err: *mut c_void,
+) -> E
+where
+    E: FfiError + FfiHandle<Tok> + FromC<Tok> + FfiType<Tok, CRepr = *mut c_void>,
+{
+    let type_tag = <E as FfiHandle<Tok>>::TYPE_TAG;
+    let name = <E as FfiHandle<Tok>>::C_HANDLE_NAME;
+    if err.is_null() {
+        let Some(r) = r else {
+            panic!("callback `{callback}` failed without storing a {name} in err_out");
+        };
+        if ffier_result_type_tag(r) == type_tag
+            && let Some(error) = E::from_code(ffier_result_code(r))
+        {
+            return error;
+        }
+        panic!(
+            "callback `{callback}` returned {r:#x} without storing a {name} in err_out; \
+             only a payload-free {name} code may leave it null"
+        );
+    }
+    let error = unsafe { <E as FromC<Tok>>::from_c(err) };
+    if let Some(r) = r {
+        let stored = ffier_result(type_tag, error.code());
+        debug_assert!(
+            stored == r,
+            "callback `{callback}` returned {r:#x} but stored an error for {stored:#x} in err_out"
+        );
+    }
+    error
+}
+
+/// Debug-check that a C callback reporting success left `err_out` null.
+pub fn ffier_callback_success(callback: &str, err: *mut c_void) {
+    debug_assert!(
+        err.is_null(),
+        "callback `{callback}` returned success but stored an error in err_out"
+    );
 }
