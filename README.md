@@ -208,6 +208,12 @@ has to stay distinguishable from an output the callee never wrote.
 See [value struct returns](docs/value-struct-returns.md) for all four
 signatures, the write order, and the caller contract.
 
+For operations that diverge or return only an error, see
+[never returns](docs/never-returns.md). Define a compiler-dependent `Never`
+alias matching `ffier::Never`: `!` on Rust 1.100 and later, `()` before. Mark a
+`Result<Never, E>` return with `#[ffier(never_type = Never)]`; generated clients
+use `Result<ffier::Never, E>`.
+
 **Caller contract.** The bridge does not validate incoming values. An enum
 field is the plain integer on the wire; Rust assumes it holds a declared
 variant. A C caller writing any other value constructs an invalid Rust enum,

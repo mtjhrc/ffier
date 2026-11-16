@@ -10,3 +10,4 @@ default = ["std"]
 std = []
 
 [dependencies]
+rustversion = "1"

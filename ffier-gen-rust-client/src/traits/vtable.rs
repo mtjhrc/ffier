@@ -204,7 +204,7 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
             }
             let call_str = call_args.join(", ");
 
-            let binding = if matches!(m.ret, Return::Void) {
+            let binding = if matches!(m.ret, Return::Void | Return::Never) {
                 ""
             } else {
                 "let __result = "
@@ -217,8 +217,37 @@ pub(super) fn emit_vtable_constructor(out: &mut String, tr: &ImplementableTrait,
             .unwrap();
 
             match &m.ret {
-                Return::Void => {
-                    // Nothing to convert
+                // Nothing to convert; a never-returning call diverges above.
+                Return::Void | Return::Never => {}
+                // Only the error is marshalled. `ffier::Never` is `()` on
+                // older compilers, where an implementation can still return
+                // `Ok`; matching on `.err()` keeps the success arm reachable
+                // there and unlinted where it is `!`.
+                Return::ResultNeverOk { .. } => {
+                    writeln!(out, "                    match __result.err() {{").unwrap();
+                    writeln!(
+                        out,
+                        "                        None => std::process::abort(),"
+                    )
+                    .unwrap();
+                    writeln!(out, "                        Some(__e) => {{").unwrap();
+                    writeln!(out, "                            if err_out.is_null() {{").unwrap();
+                    writeln!(out, "                                __e.ffi_result_of()").unwrap();
+                    writeln!(out, "                            }} else {{").unwrap();
+                    writeln!(
+                        out,
+                        "                                let (__code, __handle) = __e.into_ffi();"
+                    )
+                    .unwrap();
+                    writeln!(
+                        out,
+                        "                                unsafe {{ *err_out = __handle }};"
+                    )
+                    .unwrap();
+                    writeln!(out, "                                __code").unwrap();
+                    writeln!(out, "                            }}").unwrap();
+                    writeln!(out, "                        }}").unwrap();
+                    writeln!(out, "                    }}").unwrap();
                 }
                 Return::OptionalValue(tr) => {
                     let ty = tr.without_optional().to_rust_type();

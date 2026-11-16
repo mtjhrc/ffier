@@ -172,6 +172,9 @@ dependencies = [
 [[package]]
 name = "ffier-rt"
 version = "0.3.1"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "ffier-schema"
@@ -240,6 +243,7 @@ dependencies = [
  "ffier-builtins",
  "ffier-test-foreign-lib-via-cdylib",
  "foreign-trait-crate",
+ "rustversion",
  "thiserror",
 ]
 
@@ -253,6 +257,7 @@ dependencies = [
  "ffier-test-foreign-lib-via-cdylib",
  "ffier-test-lib",
  "libloading",
+ "rustversion",
 ]
 
 [[package]]
@@ -365,6 +370,12 @@ checksum = "41f2619966050689382d2b44f664f4bc593e129785a36d6ee376ddf37259b924"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "rustversion"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "serde"

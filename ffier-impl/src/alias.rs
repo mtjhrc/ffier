@@ -1,7 +1,7 @@
 //! Definition-site type aliases and lifetime-preserving signature rewriting.
 
 use quote::{format_ident, quote};
-use syn::{GenericArgument, PathArguments, Type, visit_mut::VisitMut};
+use syn::{GenericArgument, PathArguments, Type, spanned::Spanned, visit_mut::VisitMut};
 
 use crate::cfg::{combine_cfg_predicates, extract_cfg_predicates};
 use crate::meta::{self, erase_lifetimes};
@@ -193,6 +193,8 @@ pub(crate) struct AliasContext {
     pub(crate) helper_mod: proc_macro2::TokenStream,
     pub(crate) current_cfg: Option<proc_macro2::TokenStream>,
     alias_cfgs: Vec<Option<proc_macro2::TokenStream>>,
+    /// Aliases of types required to be `ffier::Never`, each with the method's cfg.
+    never_types: Vec<(syn::Ident, Option<proc_macro2::TokenStream>)>,
 }
 
 impl AliasContext {
@@ -204,7 +206,16 @@ impl AliasContext {
             helper_mod: quote! { #helper_mod },
             current_cfg: None,
             alias_cfgs: Vec::new(),
+            never_types: Vec::new(),
         }
+    }
+
+    /// Require the annotation and return type to resolve to `ffier::Never`.
+    /// Let Rust compare types so equivalent paths and aliases are accepted.
+    pub(crate) fn require_ffier_never(&mut self, ty: &Type) {
+        let alias = self.alias_ident(&normalize_omitted_lifetimes(ty));
+        let alias = syn::Ident::new(&alias.to_string(), ty.span());
+        self.never_types.push((alias, self.current_cfg.clone()));
     }
 
     /// Produce bridge_type tokens for any Rust type, including references.
@@ -372,7 +383,10 @@ impl AliasContext {
                     quote! { <#(#formals),*> }
                 };
                 erased = alias_body(ty, &formals);
-                if is_absolute_type_path(&erased) {
+                if is_absolute_type_path(&erased)
+                    || is_primitive(&erased)
+                    || !matches!(erased, Type::Path(_))
+                {
                     quote! { #cfg pub type #alias #generics = #erased; }
                 } else if let Type::Path(tp) = &mut erased
                     && tp.path.segments[0].ident == "self"
@@ -385,6 +399,19 @@ impl AliasContext {
                 }
             })
             .collect();
+        aliases.extend(self.never_types.iter().map(|(alias, cfg)| {
+            let cfg = meta::cfg_predicate_attr(cfg.as_ref());
+            quote::quote_spanned! {alias.span()=>
+                #cfg
+                const _: () = {
+                    fn is_ffier_never<T: ffier::IsFfierNever + ?Sized>() {}
+                    #[allow(dead_code)]
+                    fn check() {
+                        is_ffier_never::<#alias>();
+                    }
+                };
+            }
+        }));
         // Relative module paths and external crate paths have identical syntax.
         // Import the definition's scope so both resolve inside this helper.
         if !aliases.is_empty() {

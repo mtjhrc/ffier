@@ -16,4 +16,5 @@ foreign-trait-crate = { path = "../foreign-trait-crate" }
 ffier-test-foreign-lib-via-cdylib = { path = "../foreign-lib-via-cdylib", features = ["ffier-strong"] }
 anyhow = "1"
 bitflags = "2"
+rustversion = "1"
 thiserror = "2"
