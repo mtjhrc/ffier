@@ -1001,6 +1001,7 @@ typedef enum {
     REPORT_WRONG_TYPE,
     REPORT_OTHER_TAG_CODE_ONLY,
     REPORT_UNKNOWN_CODE_ONLY,
+    REPORT_SUCCESS_WITH_ERROR,
 } ErrorReport;
 static ErrorReport g_error_report;
 
@@ -1025,6 +1026,9 @@ static FtResult report_error(FtError* err_out) {
     case REPORT_UNKNOWN_CODE_ONLY:
         *err_out = NULL;
         return (FT_ERROR_TEST_CUSTOM_MESSAGE & ~(uint64_t)0xffffffffu) | 999u;
+    case REPORT_SUCCESS_WITH_ERROR:
+        *err_out = ft_error_new(FT_ERROR_TEST_CUSTOM_MESSAGE);
+        return FT_RESULT_SUCCESS;
     }
     abort();
 }
@@ -1084,6 +1088,13 @@ static void abort_case(const char* name) {
     } else if (strcmp(name, "unknown-code-only") == 0) {
         g_error_report = REPORT_UNKNOWN_CODE_ONLY;
         roundtrip_reported_error(2);
+    } else if (strcmp(name, "success-with-error") == 0) {
+        /* Call the slot directly: without the check, success would return. */
+        g_error_report = REPORT_SUCCESS_WITH_ERROR;
+        void* callback = ft_vtable_handle_new(FT_ERROR_FORWARDER_TYPE_TAG, &g_error_reporter, NULL);
+        FtError err = NULL;
+        ft_error_forwarder_forward_unit(callback, &err);
+        ft_error_forwarder_destroy(callback);
     } else if (strcmp(name, "null-handle-without-error") == 0) {
         roundtrip_reported_error(1);
     } else if (strcmp(name, "consume-wrong-type") == 0) {
@@ -1096,6 +1107,7 @@ static void abort_case(const char* name) {
 static const char* const g_abort_cases[] = {
     "consume-wrong-type", "payload-code-only", "code-mismatch", "wrong-error-type",
     "other-tag-code-only", "unknown-code-only", "null-handle-without-error",
+    "success-with-error",
 };
 
 #ifndef _WIN32

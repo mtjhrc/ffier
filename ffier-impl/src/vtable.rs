@@ -522,6 +522,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                     &mut __err as *mut *mut core::ffi::c_void,
                                 ) };
                                 if __r == ffier::FFIER_RESULT_SUCCESS {
+                                    ffier::ffier_callback_success(#callback_name, __err);
                                     if __is_some {
                                         Ok(Some(unsafe {
                                             <#inner as ffier::FromC<__FfierLocalToken>>::from_c(__out.assume_init())
@@ -549,6 +550,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                         &mut __err as *mut *mut core::ffi::c_void,
                                     ) };
                                     if !__raw.is_null() {
+                                        ffier::ffier_callback_success(#callback_name, __err);
                                         #ok_conversion
                                     } else {
                                         Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, None, __err) })
@@ -576,6 +578,7 @@ pub(crate) fn __generate_vtable(input: TokenStream) -> TokenStream {
                                         &mut __err as *mut *mut core::ffi::c_void,
                                     ) };
                                     if __r == ffier::FFIER_RESULT_SUCCESS {
+                                        ffier::ffier_callback_success(#callback_name, __err);
                                         #ok_conversion
                                     } else {
                                         Err(unsafe { ffier::ffier_callback_error::<__FfierLocalToken, #err_ty>(#callback_name, Some(__r), __err) })
