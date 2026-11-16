@@ -114,6 +114,7 @@ pub(super) fn trait_impl_inner(input: ItemImpl, export_cfg: &ExportCfg) -> Token
                 mattrs.raw_handle,
                 mattrs.foreign_return.as_ref(),
                 mattrs.foreign_return_c_name.as_deref(),
+                mattrs.returns_self,
             ) {
                 Ok(Some(mut m)) => {
                     m.ffi_name = format!("{}_{}", struct_snake, method.sig.ident);

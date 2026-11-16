@@ -18,18 +18,6 @@ pub(super) fn format_receiver(m: &Method) -> String {
     }
 }
 
-pub(super) fn build_wrapper_return_type(m: &Method, lib: &Library) -> String {
-    if m.ret.replaces_self(&lib.type_registry) {
-        return match m.receiver {
-            Receiver::Mut => " -> &mut Self".to_string(),
-            Receiver::Value => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
-            _ => format!(" -> {}", m.ret.to_rust_type(&lib.type_registry)),
-        };
-    }
-
-    plain_return_type(&m.ret, lib)
-}
-
 /// ` -> T` for a wrapper returning the schema's Rust type, or empty for void.
 pub(super) fn plain_return_type(ret: &Return, lib: &Library) -> String {
     match ret {

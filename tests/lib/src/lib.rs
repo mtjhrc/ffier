@@ -33,6 +33,10 @@ pub use native_attachment::{AttachContext, Describable, Requirements};
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use native_attachment::{AttachDevice, AttachItem, attach_device};
 
+mod returns_self;
+#[cfg_attr(feature = "ffi", ffier::reexport)]
+pub use returns_self::Counter;
+
 mod variance;
 #[cfg_attr(feature = "ffi", ffier::reexport)]
 pub use variance::{CovariantText, MixedVariance};
@@ -233,7 +237,8 @@ impl Widget {
         self.count = n;
     }
 
-    /// Set count and return `&mut Self` for method chaining.
+    /// Set count and return a mutable reference in native Rust.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn with_count(&mut self, n: i32) -> &mut Self {
         self.count = n;
         self
@@ -618,12 +623,14 @@ impl Config {
     }
 
     /// Set the size (builder pattern).
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn set_size(mut self, size: i32) -> Self {
         self.size = size;
         self
     }
 
     /// Validate and return self, or error if name is empty.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn validated(self) -> Result<Self, TestError> {
         if self.name.is_empty() {
             Err(TestError::InvalidInput())
@@ -1236,6 +1243,7 @@ impl Mixer {
         Mixer { total: 0 }
     }
 
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
     pub fn add(mut self, fruit: impl Fruit) -> Self {
         self.total += fruit.value();
         self
@@ -1246,6 +1254,16 @@ impl Mixer {
     #[cfg(feature = "fruit-label")]
     pub fn fruit_label_len(&self, fruit: impl Fruit) -> i32 {
         fruit.label().len() as i32
+    }
+
+    /// Add a fruit's value through concrete dispatch.
+    #[cfg_attr(feature = "ffi", ffier(returns_self))]
+    pub fn add_fruit(
+        &mut self,
+        #[cfg_attr(feature = "ffi", ffier(dispatch = concrete))] fruit: impl Fruit,
+    ) -> &mut Self {
+        self.total += fruit.value();
+        self
     }
 
     /// Both concrete (9^2=81 > 64, override with annotation).
@@ -2158,6 +2176,7 @@ ffier::library_definition!("ft", library_tag = 1,
     fn create_foreign_item,
     fn create_foreign_config_checked,
     trait ForeignConfigSource = 55,
+    Counter = 56,
 );
 
 #[cfg(feature = "ffi")]
@@ -2886,11 +2905,8 @@ mod tests {
     #[test]
     fn builder_method_returning_self() {
         unsafe {
-            let mut c = ft_config_new();
-            ft_config_set_name(
-                &mut c as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
-                ffier::FfierBytes::from_str("myconfig"),
-            );
+            let mut c =
+                ft_config_set_name(ft_config_new(), ffier::FfierBytes::from_str("myconfig"));
             ft_config_set_size(
                 &mut c as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
                 42,
@@ -2904,11 +2920,7 @@ mod tests {
     #[test]
     fn builder_method_returning_result_self_ok() {
         unsafe {
-            let mut c = ft_config_new();
-            ft_config_set_name(
-                &mut c as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
-                ffier::FfierBytes::from_str("valid"),
-            );
+            let mut c = ft_config_set_name(ft_config_new(), ffier::FfierBytes::from_str("valid"));
             let mut err: *mut core::ffi::c_void = ptr::null_mut();
             let r = ft_config_validated(
                 &mut c as *mut *mut core::ffi::c_void as *mut core::ffi::c_void,
@@ -2932,7 +2944,7 @@ mod tests {
             );
             assert_ne!(r, 0);
             assert_eq!(ffier::ffier_result_code(r), 3); // InvalidInput
-            // After error with by-value self, handle is consumed
+            assert!(c.is_null());
             assert!(!err.is_null());
             ft_error_destroy(err);
         }
@@ -3450,6 +3462,17 @@ mod tests {
             let orange = ft_orange_new(20);
             assert_eq!(ft_mixer_blend_concrete(m, apple, orange,), 30);
             assert_eq!(ft_mixer_total(m), 30);
+            ft_mixer_destroy(m);
+        }
+    }
+
+    #[test]
+    fn mixer_add_fruit_returns_self_through_concrete_dispatch() {
+        unsafe {
+            let m = ft_mixer_new();
+            ft_mixer_add_fruit(m, ft_apple_new(10));
+            ft_mixer_add_fruit(m, ft_orange_new(5));
+            assert_eq!(ft_mixer_total(m), 15);
             ft_mixer_destroy(m);
         }
     }

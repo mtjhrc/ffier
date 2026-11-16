@@ -1,6 +1,5 @@
 //! Shared type classification and rewriting for export and bridge generation.
 
-use quote::ToTokens;
 use syn::{GenericArgument, PathArguments, Type, visit_mut::VisitMut};
 
 /// Detect `&[&str]` — a slice of string references.
@@ -159,17 +158,6 @@ pub(crate) fn type_ident_name(ty: &Type) -> String {
 
 pub(crate) fn is_unit_type(ty: &Type) -> bool {
     matches!(ty, Type::Tuple(t) if t.elems.is_empty())
-}
-
-/// Check if `ty` is the same type as `target` or a reference to it.
-/// Matches: `Self`, `&Self`, `&mut Self` (after Self→concrete replacement).
-pub(crate) fn is_self_return(ty: &Type, target: &Type) -> bool {
-    let tgt = target.to_token_stream().to_string().replace(' ', "");
-    let inner = match ty {
-        Type::Reference(ref_ty) => ref_ty.elem.to_token_stream().to_string().replace(' ', ""),
-        _ => ty.to_token_stream().to_string().replace(' ', ""),
-    };
-    inner == tgt
 }
 
 /// Replace all occurrences of `Self` in a type with a concrete type.

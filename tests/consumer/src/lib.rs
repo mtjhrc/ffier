@@ -185,7 +185,7 @@ mod tests {
     }
 
     #[test]
-    fn test_mut_self_return_chaining() {
+    fn test_mut_self_return() {
         let mut w = Widget::new();
         w.with_count(10).with_count(20);
         assert_eq!(w.get_count(), 20);

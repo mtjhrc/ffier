@@ -70,13 +70,13 @@ fn schema() -> Library {
             "WindowsCallback": {"kind": {"trait": {"c_name": "ProbeWindowsCallback"}}, "type_tag": 4}
         },
         "exported_types": [
-            {"name": "Widget", "destroy_ffi_name": "probe_widget_destroy", "replaces_self_by_value": false,
+            {"name": "Widget", "destroy_ffi_name": "probe_widget_destroy",
              "methods": [
                 method("windows_only", Some(Cfg::Windows), true, None),
                 method("optional", Some(optional.clone()), false, None),
                 method("mixed", Some(Cfg::All(vec![Cfg::Windows, optional])), true, None)
              ]},
-            {"name": "WindowsOwner", "destroy_ffi_name": "probe_windows_owner_destroy", "replaces_self_by_value": false,
+            {"name": "WindowsOwner", "destroy_ffi_name": "probe_windows_owner_destroy",
              "cfg": Cfg::Windows, "methods": [windows_owner_method]}
         ],
         "errors": [],

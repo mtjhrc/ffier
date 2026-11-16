@@ -21,18 +21,27 @@
   it into an owned wrapper with no lifetime, and trait forwarders panicked.
   Return an owned handle, a value, or a lifetime-bearing view handle
   instead. The check is type-level as well, so a type alias of a borrowed
-  handle is rejected too. Methods returning `&Self` / `&mut Self` from a
-  reference receiver stay supported as chaining: the C function returns
-  nothing and generated clients return the receiver, so the method must
-  return its receiver.
-- Rename the schema's `ExportedType::is_builder_type` to
-  `replaces_self_by_value` and `Return::is_builder_self` to
-  `Return::replaces_self`.
+  handle is rejected too. A matching receiver reference can be discarded
+  with `#[ffier(returns_self)]`.
+- `#[ffier(returns_self)]` selects handle replacement for an individual
+  `self -> Self` or `self -> Result<Self, E>` method. Other consuming methods
+  receive the handle directly. On `&self -> &Self`, `&mut self -> &mut Self`,
+  and their `Result` forms, the C ABI discards the reference. Generated
+  Rust returns its receiver for chaining.
+- Remove the type-wide receiver replacement flag from the schema. Rename
+  `Return::is_builder_self` to `Return::replaces_self`.
 - `library_definition!` no longer defines `FfiType`, `FfiHandle` and
   `FfiBorrow` at the library crate root; the conversion traits now live in
   `ffier`. Remove imports such as `use crate::{FfiBorrow, FfiType};` from
   modules that define errors with typed payload fields; they are no longer
   needed.
+
+### Fixed
+
+- `&self -> Self`, `&mut self -> Self` and `&self -> Result<Self, E>` are
+  ordinary owned returns: C gets a new handle. They used to be taken for
+  chaining, so the C function returned `void` and dropped the new object, and
+  the generated Rust client did not compile.
 
 ## 0.3.1
 

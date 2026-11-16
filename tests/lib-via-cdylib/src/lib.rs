@@ -58,6 +58,18 @@ mod receiver_default_tests {
 }
 
 #[cfg(test)]
+mod returns_self_tests {
+    use super as api;
+
+    use super::init;
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../returns_self_client.rs"
+    ));
+}
+
+#[cfg(test)]
 mod variance_tests {
     use super as api;
 

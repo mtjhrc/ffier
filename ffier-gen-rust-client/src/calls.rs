@@ -8,46 +8,14 @@ use crate::abi::optional_value_out_type;
 use crate::error::find_error_dispatch_fns;
 use crate::ffi_traits::{self, TypeRefExt};
 
-/// How a safe wrapper turns the FFI result into its Rust return value.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct ReturnPolicy {
-    /// How `Self` is rebuilt when the return [replaces the
-    /// receiver](ffier_schema::Return::replaces_self) (`-> Self` /
-    /// `-> Result<Self, E>`): the bridge writes the new handle back instead of
-    /// returning a value. `None` where no receiver can be replaced.
-    pub(crate) replaces_self: Option<SelfReceiver>,
-}
-
-/// Receiver of a method whose return replaces `self`, which decides how
-/// `Self` is produced.
-#[derive(Clone, Copy)]
-pub(crate) enum SelfReceiver {
-    /// `&mut self` — the handle is updated in place; return `self`.
-    Mut,
-    /// `self` — the bridge wrote the new handle into `__handle`.
-    Value { has_lifetimes: bool },
-}
-
-impl SelfReceiver {
-    fn self_expr(self) -> &'static str {
-        match self {
-            SelfReceiver::Mut => "self",
-            SelfReceiver::Value {
-                has_lifetimes: true,
-            } => "Self(__handle, std::marker::PhantomData)",
-            SelfReceiver::Value {
-                has_lifetimes: false,
-            } => "Self(__handle)",
-        }
-    }
-}
-
 const ERR_DECL: &str = "let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();";
 const ERR_ARG: &str = "&mut __err as *mut *mut core::ffi::c_void";
 
 /// Emit a safe wrapper body that forwards to `ffi_name`: param pre-bindings,
 /// the call with `self_arg` (if any) followed by the converted params, and the
 /// conversion of the result into the wrapper's return value.
+/// `receiver_return` gives the Rust success expression for an annotated
+/// receiver return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_call_body(
     out: &mut String,
@@ -57,7 +25,7 @@ pub(crate) fn emit_call_body(
     ret: &Return,
     indent: &str,
     lib: &Library,
-    policy: ReturnPolicy,
+    receiver_return: Option<&str>,
 ) {
     let mut args: Vec<String> = self_arg.map(str::to_string).into_iter().collect();
     for p in params {
@@ -67,7 +35,15 @@ pub(crate) fn emit_call_body(
         }
         args.extend(converted.exprs);
     }
-    emit_ffi_call_return(out, ffi_name, &args.join(", "), ret, indent, lib, policy);
+    emit_ffi_call_return(
+        out,
+        ffi_name,
+        &args.join(", "),
+        ret,
+        indent,
+        lib,
+        receiver_return,
+    );
 }
 
 /// Emit an FFI call and convert its result into the wrapper's return value.
@@ -81,7 +57,7 @@ fn emit_ffi_call_return(
     ret: &Return,
     indent: &str,
     lib: &Library,
-    policy: ReturnPolicy,
+    receiver_return: Option<&str>,
 ) {
     let i = indent;
     // The call expression, with return out-params appended to the args.
@@ -96,22 +72,17 @@ fn emit_ffi_call_return(
     let err = |err_type: &str| format!("Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})");
     // Convert a raw C value into the Rust ok type.
     let from_c = |tr: &TypeRef, raw: &str| format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw));
-    let replaced_self = policy
-        .replaces_self
-        .filter(|_| ret.replaces_self(&lib.type_registry));
-
-    match (ret, replaced_self) {
-        (Return::Value(_), Some(b)) => {
+    match (ret, receiver_return) {
+        (Return::Value(_), Some(receiver_return)) => {
             writeln!(out, "{i}unsafe {{ {} }};", call(&[])).unwrap();
-            writeln!(out, "{i}{}", b.self_expr()).unwrap();
+            writeln!(out, "{i}{receiver_return}").unwrap();
         }
-        (Return::Result { err_type, .. }, Some(b)) => {
+        (Return::Result { err_type, .. }, Some(receiver_return)) => {
             writeln!(out, "{i}{ERR_DECL}").unwrap();
             writeln!(out, "{i}let __r = unsafe {{ {} }};", call(&[ERR_ARG])).unwrap();
             writeln!(
                 out,
-                "{i}if __r == 0 {{ Ok({}) }} else {{ {} }}",
-                b.self_expr(),
+                "{i}if __r == 0 {{ Ok({receiver_return}) }} else {{ {} }}",
                 err(err_type)
             )
             .unwrap();

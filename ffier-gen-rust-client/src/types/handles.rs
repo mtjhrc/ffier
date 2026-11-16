@@ -213,14 +213,7 @@ pub(crate) fn emit_exported_type(
     emit_cfg_attr(out, ty.cfg.as_ref());
     writeln!(out, "impl{lt_params} {}{lt_params} {{", ty.name).unwrap();
     for m in &ty.methods {
-        emit_method_wrapper(
-            out,
-            m,
-            &m.ffi_name,
-            ty.replaces_self_by_value,
-            has_lifetimes,
-            lib,
-        );
+        emit_method_wrapper(out, m, &m.ffi_name, has_lifetimes, lib);
     }
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();

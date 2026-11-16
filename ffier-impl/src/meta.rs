@@ -178,17 +178,6 @@ pub struct MetaExportable {
     pub cfg_predicate: Option<TokenStream>,
 }
 
-impl MetaExportable {
-    /// Whether some by-value `self` method returns a `Self` that replaces the
-    /// receiver. Every by-value `self` method of such a type then takes a
-    /// pointer to the caller's handle so the new handle can be written back.
-    pub fn replaces_self_by_value(&self) -> bool {
-        self.methods
-            .iter()
-            .any(|m| m.replaces_self() && m.receiver == MetaReceiver::Value)
-    }
-}
-
 impl HasPrefix for MetaExportable {
     fn prefix(&self) -> &str {
         &self.prefix
@@ -246,9 +235,8 @@ pub enum MetaMethodContext {
     /// Method from an exported struct impl or trait impl block.
     Exportable {
         ffi_name: String,
-        /// The method returns `Self` (`-> Self` / `-> Result<Self, E>`) on a
-        /// receiver, and the new value replaces that receiver.
-        replaces_self: bool,
+        /// Method annotated with `#[ffier(returns_self)]`.
+        returns_self: bool,
     },
     /// Method from an exported trait definition.
     Trait {
@@ -276,12 +264,12 @@ impl MetaMethod {
         }
     }
 
-    /// See [`MetaMethodContext::Exportable::replaces_self`].
-    pub fn replaces_self(&self) -> bool {
+    /// See [`MetaMethodContext::Exportable::returns_self`].
+    pub fn returns_self(&self) -> bool {
         matches!(
             &self.context,
             MetaMethodContext::Exportable {
-                replaces_self: true,
+                returns_self: true,
                 ..
             }
         )
@@ -867,13 +855,13 @@ impl syn::parse::Parse for MetaMethod {
                 let ffi_name = parse_string(input)?;
                 parse_comma(input)?;
 
-                expect_key(input, "replaces_self")?;
-                let replaces_self = parse_bool(input)?;
+                expect_key(input, "returns_self")?;
+                let returns_self = parse_bool(input)?;
                 parse_comma(input)?;
 
                 MetaMethodContext::Exportable {
                     ffi_name,
-                    replaces_self,
+                    returns_self,
                 }
             }
             "definition" => {

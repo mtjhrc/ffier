@@ -122,9 +122,8 @@ pub(crate) fn classify_return<'a>(
 }
 
 /// Reject a method that returns a borrowed handle: `&H`, `&mut H` or
-/// `Result<&H, E>` of a local or foreign handle, including `&Self`. A
-/// receiver-replacing `&mut self -> &mut Self` is not a returned value and
-/// stays allowed.
+/// `Result<&H, E>` of a local or foreign handle, including `&Self`.
+/// An annotated receiver borrow is already omitted from the metadata.
 ///
 /// Neither C nor a generated client can keep such a handle tied to its
 /// owner's lifetime, so these returns are not supported. `owner` names the
@@ -150,9 +149,10 @@ pub(crate) fn reject_borrowed_handle_return(
         None => method.name.to_string(),
     };
     let shown = quote!(#ty).to_string().replace("& ", "&");
+    let hint = returns_self_hint(owner, method, &ty);
     let msg = format!(
         "ffier: `{name}` returns the borrowed handle `{shown}`, which is not supported; \
-         return an owned handle or a value instead"
+         return an owned handle or a value instead{hint}"
     );
     Some(syn::Error::new_spanned(&tp.rust_type, msg).to_compile_error())
 }
@@ -184,14 +184,40 @@ pub(crate) fn assert_no_borrowed_handle_return(
         Some(owner) => format!("{owner}::{}", method.name),
         None => method.name.to_string(),
     };
+    let hint = syn::parse2::<syn::Type>(tp.rust_type.clone())
+        .map_or("", |ty| returns_self_hint(owner, method, &ty));
     let msg = format!(
         "ffier: `{name}` returns a borrowed handle, which is not supported; \
-         return an owned handle or a value instead"
+         return an owned handle or a value instead{hint}"
     );
     Some(quote! {
         #cfg
         const _: () = assert!(!<#bt as ffier::FfiType<#tok>>::IS_BORROWED_HANDLE, #msg);
     })
+}
+
+/// Point to the explicit discard annotation for a matching receiver reference.
+fn returns_self_hint(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    ty: &syn::Type,
+) -> &'static str {
+    let syn::Type::Reference(r) = ty else {
+        return "";
+    };
+    let returns_owner = owner.is_some_and(|owner| {
+        crate::meta::type_last_name(&r.elem).is_some_and(|name| name == owner.to_string())
+    });
+    let matching_receiver = match method.receiver {
+        crate::meta::MetaReceiver::Ref => r.mutability.is_none(),
+        crate::meta::MetaReceiver::Mut => r.mutability.is_some(),
+        _ => false,
+    };
+    if returns_owner && matching_receiver {
+        "; add #[ffier(returns_self)] to discard a matching receiver reference"
+    } else {
+        ""
+    }
 }
 
 /// A reference into `std`, `core` or `alloc` (`&std::path::Path`), which no

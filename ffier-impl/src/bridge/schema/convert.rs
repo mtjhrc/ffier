@@ -106,7 +106,7 @@ pub(super) fn convert_free_fn(
             .iter()
             .map(|p| convert_param(p, r, type_registry))
             .collect::<syn::Result<_>>()?,
-        ret: convert_return(&m.ret, &m.rust_ret, r, false, handle_types, value_types)?,
+        ret: convert_return(&m.ret, &m.rust_ret, r, None, handle_types, value_types)?,
         cfg: cfg_to_schema(cfg),
     })
 }
@@ -123,7 +123,6 @@ pub(super) fn convert_exportable(
     Ok(ffier_schema::ExportedType {
         name,
         destroy_ffi_name: r.ffi_fn_name(&format!("{name_snake}_destroy")),
-        replaces_self_by_value: meta.replaces_self_by_value(),
         thread_safety: meta.thread_safety,
         methods: meta
             .methods
@@ -268,7 +267,7 @@ fn convert_method(
         &meta.ret,
         &meta.rust_ret,
         r,
-        meta.replaces_self(),
+        meta.returns_self().then(|| self_type_ref(meta)),
         handle_types,
         value_types,
     )?;
@@ -403,11 +402,16 @@ fn convert_param(
     })
 }
 
-fn replaced_self_type_ref() -> ffier_schema::TypeRef {
+fn self_type_ref(meta: &MetaMethod) -> ffier_schema::TypeRef {
+    let ref_kind = match meta.receiver {
+        MetaReceiver::Ref => ffier_schema::RefKind::Shared,
+        MetaReceiver::Mut => ffier_schema::RefKind::Mut,
+        MetaReceiver::Value | MetaReceiver::None => ffier_schema::RefKind::None,
+    };
     ffier_schema::TypeRef {
         type_name: ffier_schema::SELF_TYPE.to_string(),
-        ref_kind: ffier_schema::RefKind::None,
-        ref_lifetime: None,
+        ref_kind,
+        ref_lifetime: meta.receiver_lifetime.as_ref().map(ToString::to_string),
         type_args: vec![],
         optional: false,
         owned: false,
@@ -418,7 +422,7 @@ fn convert_return(
     ret: &MetaReturn,
     rust_ret: &TokenStream2,
     r: &CTypeResolver,
-    replaces_self: bool,
+    self_return: Option<ffier_schema::TypeRef>,
     handle_types: &HashSet<String>,
     value_types: &HashSet<String>,
 ) -> syn::Result<ffier_schema::Return> {
@@ -430,11 +434,9 @@ fn convert_return(
     };
     Ok(
         match classify_return(ret, rust_ret, handle_types, value_types) {
-            // `-> Self` replacing the receiver: encode as Value(Self).
-            ReturnShape::Void if replaces_self => {
-                ffier_schema::Return::Value(replaced_self_type_ref())
+            ReturnShape::Void => {
+                self_return.map_or(ffier_schema::Return::Void, ffier_schema::Return::Value)
             }
-            ReturnShape::Void => ffier_schema::Return::Void,
             ReturnShape::Never => ffier_schema::Return::Never,
             ReturnShape::ResultNeverOk { err_ident } => ffier_schema::Return::ResultNeverOk {
                 err_type: err_ident.to_string(),
@@ -458,10 +460,7 @@ fn convert_return(
                         Some(ok_ref)
                     }
                     (Some(tp), _) => Some(type_ref(tp)?),
-                    // `-> Result<Self, E>`: the metadata suppresses ok; restore
-                    // it as Self.
-                    (None, _) if replaces_self => Some(replaced_self_type_ref()),
-                    (None, _) => None,
+                    (None, _) => self_return,
                 };
                 ffier_schema::Return::Result {
                     ok: ok_ref,

@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ffier_schema::{FreeFunction, Library};
 
-use crate::calls::{ReturnPolicy, emit_call_body};
+use crate::calls::emit_call_body;
 use crate::cfg::emit_cfg_attr;
 use crate::ffi::{SymbolInfo, emit_extern_fns, extern_fn_from_free};
 use crate::signature::{emit_doc_attrs, format_param_sig, lifetime_generics, plain_return_type};
@@ -34,16 +34,7 @@ pub(crate) fn emit_free_function(
     )
     .unwrap();
 
-    emit_call_body(
-        out,
-        &f.ffi_name,
-        None,
-        &f.params,
-        &f.ret,
-        "    ",
-        lib,
-        ReturnPolicy::default(),
-    );
+    emit_call_body(out, &f.ffi_name, None, &f.params, &f.ret, "    ", lib, None);
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
