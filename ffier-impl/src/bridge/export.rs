@@ -73,6 +73,9 @@ pub(super) fn generate_exportable_bridge(
                 // in the C ABI (so the caller can pass &handle consistently).
                 quote! {
                     let __handle_slot = handle as *mut *mut core::ffi::c_void;
+                    if __handle_slot.is_null() {
+                        __ffier_null_handle_panic(#ffi_name_str);
+                    }
                     let handle = unsafe { *__handle_slot };
                 }
             } else {
