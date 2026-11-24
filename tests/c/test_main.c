@@ -721,6 +721,36 @@ void error_factory_constructs_fieldless_variants_only(void) {
     assert(ft_error_new(UINT64_MAX) == NULL);
 }
 
+/* A never-returning operation has an error output and no success output. */
+static FtResult never_callback_fails(void* self_data, FtError* err_out) {
+    (void)self_data;
+    *err_out = ft_error_new(FT_ERROR_TEST_CUSTOM_MESSAGE);
+    return FT_ERROR_TEST_CUSTOM_MESSAGE;
+}
+
+static const FtNeverCallbackVtable g_never_callback_vtable = FT_VTABLE(FtNeverCallbackVtable,
+    .run = never_callback_fails,
+);
+
+void never_returns_report_errors(void) {
+    FtError err = NULL;
+    assert(ft_never_run_run(ft_never_run_new(), &err) == FT_ERROR_TEST_NUMERIC_ERROR);
+    int32_t number = 0;
+    ft_error_payload(err, 0, &number, sizeof(number));
+    assert(number == 73);
+    ft_error_destroy(err);
+
+    size_t before = ft_test_error_drop_count();
+    assert(ft_never_run_run(ft_never_run_new(), NULL) == FT_ERROR_TEST_NUMERIC_ERROR);
+    assert(ft_test_error_drop_count() == before + 1);
+
+    void* callback =
+        ft_vtable_handle_new(FT_NEVER_CALLBACK_TYPE_TAG, &g_never_callback_vtable, NULL);
+    err = NULL;
+    assert(ft_run_never_callback(callback, &err) == FT_ERROR_TEST_CUSTOM_MESSAGE);
+    ft_error_destroy(err);
+}
+
 void error_payload_uses_native_field_indices(void) {
     FtWidget widget = ft_widget_new();
     FtError error = NULL;
@@ -1036,6 +1066,7 @@ int main(int argc, char** argv) {
     #endif
 
     printf("\n[result returns]\n");
+    RUN_TEST(never_returns_report_errors);
     RUN_TEST(method_returning_result_void_ok);
     RUN_TEST(method_returning_result_void_err);
     RUN_TEST(method_returning_result_value_ok);

@@ -36,6 +36,9 @@ fn init() {
 }
 
 #[cfg(test)]
+mod never_tests;
+
+#[cfg(test)]
 mod callback_errors {
     use super as api;
     use super::init;
