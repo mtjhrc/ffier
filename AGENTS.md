@@ -81,7 +81,7 @@ ffier::generate_bridge!(external = mylib::__ffier_ft_metadata,
 Methods in the proc-macro token stream carry an explicit `method_kind` tag:
 
 - `method_kind = definition` — trait definition method. Carries `index`, `has_default`, `raw_handle`.
-- `method_kind = impl` — concrete method (struct impl or trait impl). Carries `ffi_name`, `replaces_self`.
+- `method_kind = impl` — concrete method (struct impl or trait impl). Carries `ffi_name`, `returns_self`.
 
 ## Testing
 

@@ -7,7 +7,7 @@ use crate::ffi_traits::TOKEN;
 
 use ffier_schema::{Cfg, Library, Method, TraitImpl};
 
-use crate::calls::{ReturnPolicy, emit_call_body};
+use crate::calls::emit_call_body;
 use crate::cfg::{self, emit_cfg_attr};
 use crate::ffi::{ExternFn, SymbolInfo, emit_extern_fns, extern_fn_from_dispatch};
 use crate::signature::build_trait_method_sig;
@@ -295,6 +295,6 @@ fn emit_trait_forwarder_body(out: &mut String, m: &Method, lib: &Library) {
         &m.ret,
         "        ",
         lib,
-        ReturnPolicy::default(),
+        None,
     );
 }

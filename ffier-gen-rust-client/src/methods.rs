@@ -4,17 +4,16 @@ use std::fmt::Write;
 
 use ffier_schema::{Library, Method, Receiver};
 
-use crate::calls::{ReturnPolicy, SelfReceiver, emit_call_body};
+use crate::calls::emit_call_body;
 use crate::cfg::emit_cfg_attr;
 use crate::signature::{
-    build_wrapper_return_type, emit_doc_attrs, format_param_sig, format_receiver, lifetime_generics,
+    emit_doc_attrs, format_param_sig, format_receiver, lifetime_generics, plain_return_type,
 };
 
 pub(super) fn emit_method_wrapper(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    replaces_self_by_value: bool,
     has_lifetimes: bool,
     lib: &Library,
 ) {
@@ -31,7 +30,7 @@ pub(super) fn emit_method_wrapper(
     let param_sigs: Vec<String> = m.params.iter().map(format_param_sig).collect();
     let params_str = param_sigs.join(", ");
 
-    let ret_type = build_wrapper_return_type(m, lib);
+    let ret_type = plain_return_type(&m.ret, lib);
 
     if m.receiver_lifetime.is_some() {
         writeln!(out, "    #[allow(clippy::needless_lifetimes)]").unwrap();
@@ -44,7 +43,7 @@ pub(super) fn emit_method_wrapper(
     .unwrap();
 
     // Method body
-    emit_method_body(out, m, ffi_name, replaces_self_by_value, has_lifetimes, lib);
+    emit_method_body(out, m, ffi_name, has_lifetimes, lib);
 
     writeln!(out, "    }}").unwrap();
 }
@@ -53,14 +52,14 @@ fn emit_method_body(
     out: &mut String,
     m: &Method,
     ffi_name: &str,
-    replaces_self_by_value: bool,
     has_lifetimes: bool,
     lib: &Library,
 ) {
     let by_value_self = m.receiver == Receiver::Value;
+    let replaces_self = by_value_self && m.ret.replaces_self(&lib.type_registry);
 
     // Handle extraction for by-value self
-    if by_value_self && replaces_self_by_value {
+    if replaces_self {
         writeln!(
             out,
             "        let mut __handle = {{ let this = std::mem::ManuallyDrop::new(self); this.0 }};"
@@ -76,22 +75,29 @@ fn emit_method_body(
 
     let self_arg = match m.receiver {
         Receiver::None => None,
-        Receiver::Value if replaces_self_by_value => {
+        Receiver::Value if replaces_self => {
             Some("&mut __handle as *mut *mut core::ffi::c_void as *mut core::ffi::c_void")
         }
         Receiver::Value => Some("__handle"),
         Receiver::Ref | Receiver::Mut => Some("self.0"),
     };
-    let replaces_self = match m.receiver {
-        Receiver::Mut => Some(SelfReceiver::Mut),
-        Receiver::Value => Some(SelfReceiver::Value { has_lifetimes }),
-        Receiver::None | Receiver::Ref => None,
-    };
-    let policy = ReturnPolicy {
-        replaces_self,
-        own_borrowed_handles: true,
+    let receiver_return = match m.receiver {
+        Receiver::Value if replaces_self => Some(if has_lifetimes {
+            "Self(__handle, std::marker::PhantomData)"
+        } else {
+            "Self(__handle)"
+        }),
+        Receiver::Ref | Receiver::Mut if m.ret.returns_self(&lib.type_registry) => Some("self"),
+        _ => None,
     };
     emit_call_body(
-        out, ffi_name, self_arg, &m.params, &m.ret, "        ", lib, policy,
+        out,
+        ffi_name,
+        self_arg,
+        &m.params,
+        &m.ret,
+        "        ",
+        lib,
+        receiver_return,
     );
 }

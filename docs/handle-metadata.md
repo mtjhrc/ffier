@@ -59,7 +59,7 @@ Where does the value live?
 
 Set: the payload field is a `*const c_void` to the real `T`. The only
 constructor, `ffier_handle_new_borrowed`, pairs this with a pointee owned by
-someone else: it stores a borrow for `&T` and `&mut T` returns.
+someone else.
 
 Clear: the payload is an inline `T`, which the handle owns whenever it is
 ffier-allocated.
@@ -107,13 +107,16 @@ Such handles carry no allocation bit, so they can never be consumed or freed.
 
 ## States
 
-Each row is a combination the tree produces today.
+Each row is a combination the runtime supports.
 
 | State | `FFIER_ALLOCATED` | `INDIRECT` | `DROP_VALUE` |
 | --- | --- | --- | --- |
 | Inline owned handle | 1 | 0 | 1 |
-| Borrowed shell (`&T` return) | 1 | 1 | 0 |
+| Borrowed shell (`ffier_handle_new_borrowed`) | 1 | 1 | 0 |
 | Caller-owned inline (`PREFIX_TEMP_OBJ`) | 0 | 0 | 0 |
+
+No generated code creates borrowed shells: borrowed handle returns are
+rejected at compile time. The runtime keeps supporting them.
 
 `INDIRECT` with `DROP_VALUE` is deliberately absent: that pair would mean ffier
 owns a pointee reached through a pointer, which nothing constructs yet.

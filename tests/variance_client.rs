@@ -42,6 +42,7 @@ fn covariance_preserves_borrowed_data() {
     init();
     let source = String::from("borrowed text");
     let value = CovariantText::new(&source);
+    assert_eq!(value.same().value(), source);
     let scope = ();
     let value = shorten(value, &scope);
     assert_eq!(shorten_shared(&value).value(), source);

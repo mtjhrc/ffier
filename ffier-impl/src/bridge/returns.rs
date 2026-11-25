@@ -5,11 +5,12 @@ use std::collections::HashSet;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 
+use crate::c_abi::token_for;
+use crate::conv::lower_value;
 use crate::meta::MetaReturn;
-use crate::return_shape::{ResultConv, ReturnShape, borrowed_handle_target, classify_return};
+use crate::return_shape::{ResultConv, ReturnShape, classify_return};
 
 use super::dispatch::ErrorMap;
-use super::signature::resolve_trait_crate;
 
 /// Wrap a call expression in the appropriate return-value conversion.
 ///
@@ -31,6 +32,11 @@ pub(super) fn wrap_return(
     lib_crate: &TokenStream2,
 ) -> TokenStream2 {
     let mut call_expr = call_expr;
+    let local_token = crate::ffi_traits::token_of(lib_crate);
+    // Convert a returned value; it outlives the call.
+    let lower_ok = |tp: &crate::meta::MetaTypePair, value: TokenStream2| {
+        lower_value(&token_for(tp, &local_token), &value)
+    };
     let (ok, err_ident, conv) = match classify_return(ret, rust_ret, handle_types, value_types) {
         // The native function must not return; abort before control comes
         // back to C if it does.
@@ -82,28 +88,11 @@ pub(super) fn wrap_return(
                 }
             };
         }
-        ReturnShape::Value {
-            tp,
-            borrowed_handle,
-        } => {
-            let tc = resolve_trait_crate(tp, lib_crate);
-            if borrowed_handle {
-                // &T where T is a handle — shallow-copy into a borrowed handle.
-                let target = borrowed_handle_target(tp);
-                return quote! {
-                    let result = #call_expr;
-                    unsafe {
-                        ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as ffier::FfiHandle<#tc::__FfierLocalToken>>::TYPE_TAG,
-                            result as *const #target,
-                        )
-                    }
-                };
-            }
-            let bridge_type = &tp.bridge_type;
+        ReturnShape::Value { tp } => {
+            let value = lower_ok(tp, quote! { result });
             return quote! {
                 let result = #call_expr;
-                <#bridge_type as ffier::IntoC<#tc::__FfierLocalToken>>::into_c(result)
+                #value
             };
         }
         ReturnShape::Result {
@@ -127,9 +116,6 @@ pub(super) fn wrap_return(
             unsafe { *err_out = <_ as ffier::IntoC<#lib_crate::__FfierLocalToken>>::into_c(e); }
         }
     };
-    let ok_tc = ok
-        .map(|tp| resolve_trait_crate(tp, lib_crate))
-        .unwrap_or(lib_crate);
 
     match conv {
         // Presence and value go through their own out-params. `None` writes
@@ -159,23 +145,11 @@ pub(super) fn wrap_return(
             }
         },
         // Return the owned handle directly, NULL on error.
-        ResultConv::OwnedHandleOrNull => quote! {
-            match #call_expr {
-                Ok(ok_val) => <_ as ffier::IntoC<#ok_tc::__FfierLocalToken>>::into_c(ok_val),
-                Err(e) => { #box_expr core::ptr::null_mut() }
-            }
-        },
-        // Result<&Handle, E> → borrowed shell, NULL on error.
-        ResultConv::BorrowedHandleOrNull => {
-            let target = borrowed_handle_target(ok.expect("borrowed handle ok type"));
+        ResultConv::OwnedHandleOrNull => {
+            let value = lower_ok(ok.expect("handle-or-null ok type"), quote! { ok_val });
             quote! {
                 match #call_expr {
-                    Ok(ok_val) => unsafe {
-                        ffier::ffier_handle_new_borrowed::<#target>(
-                            <#target as ffier::FfiHandle<#ok_tc::__FfierLocalToken>>::TYPE_TAG,
-                            ok_val as *const #target,
-                        )
-                    },
+                    Ok(ok_val) => #value,
                     Err(e) => { #box_expr core::ptr::null_mut() }
                 }
             }
@@ -183,10 +157,10 @@ pub(super) fn wrap_return(
         ResultConv::OutParam => {
             let ok_branch = match (ok, replaced_self) {
                 (Some(tp), _) => {
-                    let bridge_type = &tp.bridge_type;
+                    let value = lower_ok(tp, quote! { ok_val });
                     quote! {
                         Ok(ok_val) => {
-                            unsafe { result.write(<#bridge_type as ffier::IntoC<#ok_tc::__FfierLocalToken>>::into_c(ok_val)) };
+                            unsafe { result.write(#value) };
                             ffier::FFIER_RESULT_SUCCESS
                         }
                     }

@@ -59,7 +59,7 @@ fn conditional_sections_and_methods_use_library_guards() {
     let mut schema = schema();
     schema["primitives_prefix"] = json!("shared");
     schema["exported_types"] = json!([{
-        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy", "replaces_self_by_value": false,
+        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy",
         "cfg": Cfg::Feature("owner".into()),
         "methods": [method("widget_run", Some(Cfg::Feature("files".into())), None)]
     }]);
@@ -132,7 +132,7 @@ fn conditional_sections_and_methods_use_library_guards() {
 fn conditional_owners_keep_handles_used_by_unconditional_signatures() {
     let mut schema = schema();
     schema["exported_types"] = json!([{
-        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy", "replaces_self_by_value": false,
+        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy",
         "cfg": Cfg::Feature("owner".into()),
         "methods": [method("run", None, None)]
     }]);
@@ -255,7 +255,7 @@ fn invalid_or_colliding_guard_names_return_errors() {
 
     let mut owner_schema = schema();
     owner_schema["exported_types"] = json!([{
-        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy", "replaces_self_by_value": false,
+        "name": "Widget", "destroy_ffi_name": "ft_widget_destroy",
         "cfg": Cfg::Feature("foo-bar".into()),
         "methods": [method("run", Some(Cfg::Feature("foo_bar".into())), None)]
     }]);

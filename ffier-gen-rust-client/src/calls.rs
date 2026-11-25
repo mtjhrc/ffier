@@ -2,136 +2,11 @@
 
 use std::fmt::Write;
 
-use ffier_schema::{CResultConvention, Library, ParamType, Return, TypeRef};
+use ffier_schema::{CResultConvention, Library, Return, TypeRef};
 
 use crate::abi::optional_value_out_type;
 use crate::error::find_error_dispatch_fns;
 use crate::ffi_traits::{self, TypeRefExt};
-use crate::signature::borrowed_handle_return_type;
-
-/// Build FFI call arguments from method params. Each param is converted
-/// via `IntoC::into_c`, `ClientHandle::as_handle`, `__into_raw_handle()`, or
-/// a pre-bound slice reference. Borrowed handle params (`&Handle`) use
-/// `as_handle` so the pointer keeps the borrow's lifetime.
-fn build_ffi_param_args(params: &[ffier_schema::Param], lib: &Library) -> Vec<String> {
-    let mut args = Vec::new();
-    for p in params {
-        match &p.param_type {
-            ParamType::Regular(tr) => {
-                // For borrowed references to handle types, use as_handle()
-                // to avoid lifetime escape from into_c().
-                let is_borrowed_handle = tr.ref_kind != ffier_schema::RefKind::None
-                    && lib
-                        .type_entry(&tr.type_name)
-                        .is_some_and(|e| e.kind.is_handle());
-                if is_borrowed_handle {
-                    let tok = ffi_traits::token(tr, lib);
-                    args.push(format!(
-                        "ffier::ClientHandle::<{tok}>::as_handle({})",
-                        p.name
-                    ));
-                } else {
-                    args.push(tr.convert_into_c(lib, &p.name));
-                }
-            }
-            ParamType::Slice { element, .. } => {
-                if element.ref_kind != ffier_schema::RefKind::None {
-                    // Ref elements (str, handles) were converted into a Vec
-                    // by emit_param_pre_bindings — use the converted Vec.
-                    args.push(format!("__ffi_{}.as_ptr()", p.name));
-                    args.push(format!("__ffi_{}.len()", p.name));
-                } else {
-                    // Non-ref elements (primitives) are layout-compatible,
-                    // pass the slice data directly.
-                    args.push(format!("{}.as_ptr()", p.name));
-                    args.push(format!("{}.len()", p.name));
-                }
-            }
-            ParamType::ImplTrait { ref_kind, .. } => {
-                args.push(match ref_kind {
-                    ffier_schema::RefKind::None => {
-                        format!("{}.__into_callback_handle().into_raw()", p.name)
-                    }
-                    _ => format!("__ffi_{}.as_raw()", p.name),
-                });
-            }
-        }
-    }
-    args
-}
-
-/// Emit borrowed callback guards and ref-element slice conversions.
-fn emit_param_pre_bindings(
-    out: &mut String,
-    params: &[ffier_schema::Param],
-    indent: &str,
-    lib: &Library,
-) {
-    for p in params {
-        if let ParamType::ImplTrait { ref_kind, .. } = &p.param_type {
-            let method = match ref_kind {
-                ffier_schema::RefKind::None => continue,
-                ffier_schema::RefKind::Shared => "__borrow_callback_handle",
-                ffier_schema::RefKind::Mut => "__borrow_callback_handle_mut",
-            };
-            writeln!(out, "{indent}let __ffi_{} = {}.{method}();", p.name, p.name).unwrap();
-        }
-        if let ParamType::Slice { element, .. } = &p.param_type
-            && element.ref_kind != ffier_schema::RefKind::None
-        {
-            let tok = ffi_traits::token(element, lib);
-            let elem_ty = element.to_rust_type();
-            writeln!(
-                out,
-                "{indent}let __ffi_{}: Vec<{}> = {}.iter().map(|s| {}).collect();",
-                p.name,
-                ffi_traits::c_repr(&elem_ty, &tok),
-                p.name,
-                ffi_traits::into_c(&elem_ty, &tok, "*s"),
-            )
-            .unwrap();
-        }
-    }
-}
-
-/// How a safe wrapper turns the FFI result into its Rust return value.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct ReturnPolicy {
-    /// How `Self` is rebuilt when the return [replaces the
-    /// receiver](ffier_schema::Return::replaces_self) (`-> Self` /
-    /// `-> Result<Self, E>`): the bridge writes the new handle back instead of
-    /// returning a value. `None` where no receiver can be replaced.
-    pub(crate) replaces_self: Option<SelfReceiver>,
-    /// Surface `&Handle` returns as the owned wrapper via
-    /// `ClientHandle::from_raw`. Only inherent methods set this, because
-    /// `build_wrapper_return_type` rewrites their signature to the owned
-    /// wrapper; trait signatures keep `&T`.
-    pub(crate) own_borrowed_handles: bool,
-}
-
-/// Receiver of a method whose return replaces `self`, which decides how
-/// `Self` is produced.
-#[derive(Clone, Copy)]
-pub(crate) enum SelfReceiver {
-    /// `&mut self` — the handle is updated in place; return `self`.
-    Mut,
-    /// `self` — the bridge wrote the new handle into `__handle`.
-    Value { has_lifetimes: bool },
-}
-
-impl SelfReceiver {
-    fn self_expr(self) -> &'static str {
-        match self {
-            SelfReceiver::Mut => "self",
-            SelfReceiver::Value {
-                has_lifetimes: true,
-            } => "Self(__handle, std::marker::PhantomData)",
-            SelfReceiver::Value {
-                has_lifetimes: false,
-            } => "Self(__handle)",
-        }
-    }
-}
 
 const ERR_DECL: &str = "let mut __err: *mut core::ffi::c_void = core::ptr::null_mut();";
 const ERR_ARG: &str = "&mut __err as *mut *mut core::ffi::c_void";
@@ -139,6 +14,8 @@ const ERR_ARG: &str = "&mut __err as *mut *mut core::ffi::c_void";
 /// Emit a safe wrapper body that forwards to `ffi_name`: param pre-bindings,
 /// the call with `self_arg` (if any) followed by the converted params, and the
 /// conversion of the result into the wrapper's return value.
+/// `receiver_return` gives the Rust success expression for an annotated
+/// receiver return.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_call_body(
     out: &mut String,
@@ -148,15 +25,25 @@ pub(crate) fn emit_call_body(
     ret: &Return,
     indent: &str,
     lib: &Library,
-    policy: ReturnPolicy,
+    receiver_return: Option<&str>,
 ) {
-    emit_param_pre_bindings(out, params, indent, lib);
-    let args: Vec<String> = self_arg
-        .map(str::to_string)
-        .into_iter()
-        .chain(build_ffi_param_args(params, lib))
-        .collect();
-    emit_ffi_call_return(out, ffi_name, &args.join(", "), ret, indent, lib, policy);
+    let mut args: Vec<String> = self_arg.map(str::to_string).into_iter().collect();
+    for p in params {
+        let converted = crate::conv::lower_arg(p, lib);
+        for pre in converted.pre {
+            writeln!(out, "{indent}{pre}").unwrap();
+        }
+        args.extend(converted.exprs);
+    }
+    emit_ffi_call_return(
+        out,
+        ffi_name,
+        &args.join(", "),
+        ret,
+        indent,
+        lib,
+        receiver_return,
+    );
 }
 
 /// Emit an FFI call and convert its result into the wrapper's return value.
@@ -170,7 +57,7 @@ fn emit_ffi_call_return(
     ret: &Return,
     indent: &str,
     lib: &Library,
-    policy: ReturnPolicy,
+    receiver_return: Option<&str>,
 ) {
     let i = indent;
     // The call expression, with return out-params appended to the args.
@@ -184,41 +71,18 @@ fn emit_ffi_call_return(
     };
     let err = |err_type: &str| format!("Err(unsafe {{ {err_type}::from_ffi(__r, __err) }})");
     // Convert a raw C value into the Rust ok type.
-    let from_c = |tr: &TypeRef, raw: &str| -> String {
-        if borrowed_handle_return_type(ret, lib).is_none() {
-            format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw))
-        } else if policy.own_borrowed_handles {
-            // Borrowed handle: wrap the shell in the owned wrapper.
-            let tok = ffi_traits::token(tr, lib);
-            format!(
-                "unsafe {{ <{} as ffier::ClientHandle<{tok}>>::from_raw({raw}) }}",
-                tr.type_name
-            )
-        } else {
-            // A client wrapper is not stored where a `&Handle` could point;
-            // producing one needs a borrow type that keeps the lifetime.
-            format!(
-                "{{ let _ = {raw}; unimplemented!(\"ffier: Rust clients cannot yet return `&{}` from a trait method\") }}",
-                tr.type_name
-            )
-        }
-    };
-    let replaced_self = policy
-        .replaces_self
-        .filter(|_| ret.replaces_self(&lib.type_registry));
-
-    match (ret, replaced_self) {
-        (Return::Value(_), Some(b)) => {
+    let from_c = |tr: &TypeRef, raw: &str| format!("unsafe {{ {} }}", tr.convert_from_c(lib, raw));
+    match (ret, receiver_return) {
+        (Return::Value(_), Some(receiver_return)) => {
             writeln!(out, "{i}unsafe {{ {} }};", call(&[])).unwrap();
-            writeln!(out, "{i}{}", b.self_expr()).unwrap();
+            writeln!(out, "{i}{receiver_return}").unwrap();
         }
-        (Return::Result { err_type, .. }, Some(b)) => {
+        (Return::Result { err_type, .. }, Some(receiver_return)) => {
             writeln!(out, "{i}{ERR_DECL}").unwrap();
             writeln!(out, "{i}let __r = unsafe {{ {} }};", call(&[ERR_ARG])).unwrap();
             writeln!(
                 out,
-                "{i}if __r == 0 {{ Ok({}) }} else {{ {} }}",
-                b.self_expr(),
+                "{i}if __r == 0 {{ Ok({receiver_return}) }} else {{ {} }}",
                 err(err_type)
             )
             .unwrap();

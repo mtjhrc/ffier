@@ -58,6 +58,18 @@ mod receiver_default_tests {
 }
 
 #[cfg(test)]
+mod returns_self_tests {
+    use super as api;
+
+    use super::init;
+
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../returns_self_client.rs"
+    ));
+}
+
+#[cfg(test)]
 mod variance_tests {
     use super as api;
 
@@ -320,6 +332,11 @@ mod tests {
         let mut w = Widget::new();
         w.set_tags(&["alpha", "beta", "gamma"]);
         assert_eq!(w.tags_joined(), "alpha,beta,gamma");
+
+        let apple = Apple::new(42);
+        let count_tags = __ffier_vtable_Fruit::<Apple>().count_tags.unwrap();
+        let user_data = core::ptr::from_ref(&apple).cast_mut().cast();
+        assert_eq!(unsafe { count_tags(user_data, core::ptr::null(), 0) }, 42);
     }
 
     // ================================================================
@@ -452,21 +469,6 @@ mod tests {
         assert_eq!(gadget_ref_value(&g), 34);
         // Borrowed: still usable afterwards.
         assert_eq!(g.get(), 34);
-    }
-
-    #[test]
-    fn method_returning_borrowed_handle() {
-        init();
-        let w = Widget::new();
-        // Widget has an internal gadget with value 42.
-        let g = w.gadget();
-        assert_eq!(g.get(), 42);
-        // g is an owned Gadget wrapper around a borrowed handle.
-        // Dropping g calls ft_gadget_destroy, which deallocates the
-        // shell without dropping the inner Gadget (still owned by w).
-        drop(g);
-        // Widget is still alive and usable.
-        assert_eq!(w.name(), "widget");
     }
 
     // ================================================================

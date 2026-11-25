@@ -84,7 +84,7 @@ pub enum Blessing {
     BorrowedHandle,
     /// Owned Windows handle (transfers ownership).
     OwnedHandle,
-    /// Builder method return — `void` at C level, `-> Self` in Rust.
+    /// Annotated receiver return. The C ABI omits its success value.
     ReplacesSelf,
     /// Streaming string writer trait (PushStr).
     PushStr,
@@ -449,10 +449,6 @@ pub struct ExportedType {
     pub name: String,
     /// FFI destroy function name (e.g. `"ft_widget_destroy"`).
     pub destroy_ffi_name: String,
-    /// Whether some by-value `self` method returns `Self`, replacing the
-    /// receiver. When true, every by-value `self` method takes a pointer to
-    /// the handle so the bridge can write the new handle back in place.
-    pub replaces_self_by_value: bool,
     /// Compiler-checked guarantees declared on the inherent export.
     #[serde(default, skip_serializing_if = "ThreadSafety::is_empty")]
     pub thread_safety: ThreadSafety,
@@ -696,17 +692,17 @@ impl Return {
     /// Lower this return to its C ABI shape: the C return value and the
     /// out-parameters appended after the regular params.
     ///
-    /// A returned `Self` that [replaces the receiver](Self::replaces_self) is
-    /// written back through the receiver's handle instead of being returned.
+    /// [Annotated receiver returns](Self::returns_self) carry no success
+    /// value through the C return or an out-parameter.
     pub fn c_abi(
         &self,
         registry: &BTreeMap<String, TypeEntry>,
     ) -> (AbiReturn<'_>, Vec<AbiOutParam>) {
-        let replaces_self = self.replaces_self(registry);
+        let returns_self = self.returns_self(registry);
         match self {
             Return::Void | Return::Never => (AbiReturn::Void, vec![]),
             Return::ResultNeverOk { .. } => (AbiReturn::FfierResult, vec![AbiOutParam::ErrOut]),
-            Return::Value(_) if replaces_self => (AbiReturn::Void, vec![]),
+            Return::Value(_) if returns_self => (AbiReturn::Void, vec![]),
             Return::Value(tr) => (AbiReturn::Value(tr), vec![]),
             // The schema marks inline optional values `optional`, but the
             // out-param holds a bare `T`.
@@ -722,7 +718,7 @@ impl Return {
                 }
                 CResultConvention::OutParam => {
                     let mut out = Vec::new();
-                    if let Some(tr) = ok.as_ref().filter(|_| !replaces_self) {
+                    if let Some(tr) = ok.as_ref().filter(|_| !returns_self) {
                         out.push(AbiOutParam::Result(tr.clone()));
                     }
                     out.push(AbiOutParam::ErrOut);
@@ -751,34 +747,46 @@ impl Return {
         matches!(self, Return::Result { .. } | Return::ResultNeverOk { .. })
     }
 
-    /// True if this returns `Self` (`-> Self` or `-> Result<Self, E>`) that
-    /// replaces the receiver, detected via `Blessing::ReplacesSelf` in the
-    /// type registry. The new value is written back through the receiver's
-    /// handle rather than returned at the C level.
+    fn returned_self(&self, registry: &BTreeMap<String, TypeEntry>) -> Option<&TypeRef> {
+        let ty = match self {
+            Return::Value(ty) | Return::Result { ok: Some(ty), .. } => ty,
+            _ => return None,
+        };
+        is_replaces_self(&ty.type_name, registry).then_some(ty)
+    }
+
+    /// True for a return marked by `Blessing::ReplacesSelf`.
+    pub fn returns_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
+        self.returned_self(registry).is_some()
+    }
+
+    /// True if the bridge writes a new owned receiver to the caller's handle slot.
     pub fn replaces_self(&self, registry: &BTreeMap<String, TypeEntry>) -> bool {
-        match self {
-            Return::Value(tr) => is_replaces_self(&tr.type_name, registry),
-            Return::Result { ok: Some(tr), .. } => is_replaces_self(&tr.type_name, registry),
-            _ => false,
-        }
+        self.returned_self(registry)
+            .is_some_and(|ty| ty.ref_kind == RefKind::None)
     }
 
     /// Reconstruct the Rust return type syntax.
-    /// Types with `Blessing::ReplacesSelf` in the registry render as `Self`.
+    /// Receiver returns render as `Self` with their reference kind and lifetime.
     pub fn to_rust_type(&self, registry: &BTreeMap<String, TypeEntry>) -> String {
+        let rust_type = |ty: &TypeRef| {
+            if ty.ref_kind == RefKind::None && is_replaces_self(&ty.type_name, registry) {
+                SELF_TYPE.to_string()
+            } else {
+                ty.to_rust_type()
+            }
+        };
         match self {
             Return::Void => "()".to_string(),
             Return::Never => "!".to_string(),
             Return::ResultNeverOk { err_type } => {
                 format!("Result<core::convert::Infallible, {err_type}>")
             }
-            Return::Value(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
-            Return::Value(tr) => tr.to_rust_type(),
+            Return::Value(tr) => rust_type(tr),
             Return::OptionalValue(tr) => format!("Option<{}>", tr.to_rust_type()),
             Return::Result { ok, err_type, .. } => {
                 let ok_str = match ok {
-                    Some(tr) if is_replaces_self(&tr.type_name, registry) => "Self".to_string(),
-                    Some(tr) => tr.to_rust_type(),
+                    Some(tr) => rust_type(tr),
                     None => "()".to_string(),
                 };
                 format!("Result<{ok_str}, {err_type}>")

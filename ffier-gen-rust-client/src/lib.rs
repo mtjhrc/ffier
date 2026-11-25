@@ -10,6 +10,7 @@
 mod abi;
 mod calls;
 mod cfg;
+mod conv;
 mod error;
 mod ffi;
 mod ffi_traits;

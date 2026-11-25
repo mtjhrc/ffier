@@ -609,8 +609,7 @@ fn emit_type_section(
     for m in &ty.methods {
         cfg::block(out, assumptions, m.cfg.as_ref(), |out| {
             emit_doc_comment(out, &m.doc, &m.ret, "");
-            let (ret_type, params_str) =
-                build_c_declaration_parts(c_name, m, ty.replaces_self_by_value, lib);
+            let (ret_type, params_str) = build_c_declaration_parts(c_name, m, lib);
             write_decl(out, &ret_type, &m.ffi_name, &params_str, opts);
         });
     }
@@ -836,18 +835,13 @@ fn format_c_params(params: &[Param], lib: &Library, out: &mut Vec<String>) {
 
 /// Build the components of a C function declaration for an exported method.
 /// Returns `(return_type, params_str)`.
-fn build_c_declaration_parts(
-    handle_c_name: &str,
-    m: &Method,
-    replaces_self_by_value: bool,
-    lib: &Library,
-) -> (String, String) {
+fn build_c_declaration_parts(handle_c_name: &str, m: &Method, lib: &Library) -> (String, String) {
     let mut params: Vec<String> = Vec::new();
 
     // Handle param (self)
     match m.receiver {
         Receiver::None => {}
-        Receiver::Value if replaces_self_by_value => {
+        Receiver::Value if m.ret.replaces_self(&lib.type_registry) => {
             params.push(format!("{handle_c_name}* handle"));
         }
         Receiver::Ref | Receiver::Mut | Receiver::Value => {

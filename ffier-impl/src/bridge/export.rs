@@ -29,11 +29,6 @@ pub(super) fn generate_exportable_bridge(
 
     let struct_lower = camel_to_snake(struct_name);
 
-    // Whether some by-value self method returns a Self that replaces the
-    // receiver. When true, ALL by-value self methods receive a
-    // pointer-to-handle (void**) in the C ABI, not just those methods.
-    let replaces_self_by_value = meta.replaces_self_by_value();
-
     let mut ffi_fns = Vec::new();
 
     // Method FFI functions
@@ -45,15 +40,15 @@ pub(super) fn generate_exportable_bridge(
         let has_receiver = m.receiver != MetaReceiver::None;
         let is_mut = m.receiver == MetaReceiver::Mut;
         let is_by_value = m.receiver == MetaReceiver::Value;
+        let replaces_self = m.returns_self() && is_by_value;
 
         // Single source of truth: the extern "C" fn signature.
         let c_sig = c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
         // Self access via borrow/consume (instance methods only).
         //
-        // For by-value methods on such types, the C param is a pointer-to-pointer
-        // (FtConfig* = void**). We dereference it first, storing the slot
-        // address for write-back later.
+        // A replacement method receives a pointer to the caller's handle
+        // so it can write the replacement back through the same slot.
         let obj_binding = if has_receiver {
             let type_assert = quote! {
                 let __actual = unsafe { __ffier_handle_tag(#ffi_name_str, handle) };
@@ -67,10 +62,7 @@ pub(super) fn generate_exportable_bridge(
                     );
                 }
             };
-            let deref_slot = if replaces_self_by_value && is_by_value {
-                // `handle` param is *mut c_void but actually void**.
-                // All by-value self methods on such types use pointer-to-handle
-                // in the C ABI (so the caller can pass &handle consistently).
+            let deref_slot = if replaces_self {
                 quote! {
                     let __handle_slot = handle as *mut *mut core::ffi::c_void;
                     if __handle_slot.is_null() {
@@ -100,7 +92,14 @@ pub(super) fn generate_exportable_bridge(
         };
 
         // Shared param conversion + impl Trait dispatch.
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            handle_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };
@@ -128,7 +127,7 @@ pub(super) fn generate_exportable_bridge(
         let sig_ret = &c_sig.ret;
 
         // A returned Self replacing a by-value receiver is written back.
-        let replaced_self = (m.replaces_self() && is_by_value).then_some(struct_path);
+        let replaced_self = replaces_self.then_some(struct_path);
         let return_body = wrap_return(
             method_call,
             &m.ret,
@@ -205,7 +204,14 @@ pub(super) fn generate_free_fn_bridge(
                 c_signature_for_method(m, &meta.prefix, handle_types, value_types, lib_crate);
 
             // Shared param conversion + impl Trait dispatch.
-            let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+            let cp = match convert_params(
+                &m.params,
+                &c_sig,
+                &ffi_name_str,
+                trait_map,
+                handle_types,
+                lib_crate,
+            ) {
                 Ok(cp) => cp,
                 Err(err) => return err,
             };
@@ -298,7 +304,14 @@ pub(super) fn generate_trait_impl_bridge(
         let sig_ret = &c_sig.ret;
 
         // Shared param conversion
-        let cp = match convert_params(&m.params, &c_sig, &ffi_name_str, trait_map, lib_crate) {
+        let cp = match convert_params(
+            &m.params,
+            &c_sig,
+            &ffi_name_str,
+            trait_map,
+            handle_types,
+            lib_crate,
+        ) {
             Ok(cp) => cp,
             Err(err) => return err,
         };

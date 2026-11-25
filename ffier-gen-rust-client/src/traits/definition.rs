@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use ffier_schema::{ImplementableTrait, Library, Method};
 
-use crate::calls::{ReturnPolicy, emit_call_body};
+use crate::calls::emit_call_body;
 use crate::cfg::emit_cfg_attr;
 use crate::ffi::{ExternFn, SymbolInfo, emit_extern_fns, extern_fn, extern_fn_from_dispatch};
 use crate::signature::build_trait_method_sig;
@@ -265,6 +265,6 @@ pub(super) fn emit_default_dispatch_body(
         &m.ret,
         "        ",
         lib,
-        ReturnPolicy::default(),
+        None,
     );
 }

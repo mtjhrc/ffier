@@ -599,7 +599,7 @@ fn build_schema(
         )?;
     }
 
-    // Self sentinel — methods returning Self are void at C ABI level.
+    // Self sentinel for annotated returns with no success value in the C ABI.
     registry.register(
         ffier_schema::SELF_TYPE,
         ffier_schema::TypeEntry {

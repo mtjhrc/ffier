@@ -9,8 +9,8 @@ use crate::cfg::{combine_cfg_predicates, extract_cfg_predicates};
 use crate::contracts::thread_safety_bound;
 use crate::meta::erase_lifetimes;
 use crate::types::{
-    extract_result_types, is_handle_slice, is_self_return, is_str_slice, is_unit_type,
-    primitive_slice_elem, replace_self_type, type_ident_name,
+    extract_result_types, is_handle_slice, is_str_slice, is_unit_type, primitive_slice_elem,
+    replace_self_type, type_ident_name,
 };
 
 /// A bridge/rust type pair. Used for params and return types.
@@ -144,8 +144,8 @@ pub(crate) struct MethodInfo {
     // --- exported-impl-specific (defaults for trait methods) ---
     /// FFI function name suffix (e.g. `"widget_new"`). Empty for trait methods.
     pub(crate) ffi_name: String,
-    /// The method returns `Self` on a receiver, replacing it.
-    replaces_self: bool,
+    /// The Rust binding returns its receiver or the owned replacement.
+    returns_self: bool,
     /// Method-level lifetime params.
     method_lifetimes: Vec<syn::Ident>,
     doc_lines: Vec<String>,
@@ -271,6 +271,53 @@ pub(crate) fn sized_self_where(sig: &syn::Signature) -> bool {
     })
 }
 
+/// Validate the return type of an annotated method whose success value is
+/// omitted from the C ABI. An owned value replaces the consumed receiver.
+/// A borrowed value is discarded by the bridge.
+fn validate_receiver_return(
+    sig: &syn::Signature,
+    name: &str,
+    receiver: Receiver,
+    self_ty: &Type,
+) -> syn::Result<()> {
+    let expected = match receiver {
+        Receiver::Ref => "&Self",
+        Receiver::Mut => "&mut Self",
+        Receiver::Value => "Self",
+        Receiver::None => {
+            return Err(syn::Error::new_spanned(
+                &sig.ident,
+                format!("#[ffier(returns_self)] on `{name}` needs a receiver"),
+            ));
+        }
+    };
+    let matches_receiver = match &sig.output {
+        ReturnType::Default => false,
+        ReturnType::Type(_, ty) => {
+            let ty = replace_self_type(ty, self_ty);
+            let ok = extract_result_types(&ty).map_or(ty, |(ok, _)| ok);
+            match (receiver, ok) {
+                (Receiver::Value, ok) => ok == *self_ty,
+                (Receiver::Ref | Receiver::Mut, Type::Reference(reference)) => {
+                    reference.mutability.is_some() == (receiver == Receiver::Mut)
+                        && reference.elem.as_ref() == self_ty
+                }
+                _ => false,
+            }
+        }
+    };
+    if !matches_receiver {
+        return Err(syn::Error::new_spanned(
+            &sig.ident,
+            format!(
+                "#[ffier(returns_self)] on `{name}` needs the return type \
+                 `{expected}` (or `Result<{expected}, E>`), matching its receiver"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Parse a single method signature into a unified `MethodInfo`.
 ///
 /// - `attrs`: method-level attributes (for doc comments and `#[ffier(dispatch = ...)]` on params)
@@ -279,6 +326,7 @@ pub(crate) fn sized_self_where(sig: &syn::Signature) -> bool {
 ///   for trait definitions and trait impls.
 /// - `has_default`: whether this method has a default impl body (trait methods only)
 /// - `raw_handle`: whether this is a raw-handle method
+/// - `returns_self`: the method carries `#[ffier(returns_self)]`
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn parse_method_sig(
     sig: &syn::Signature,
@@ -289,6 +337,7 @@ pub(crate) fn parse_method_sig(
     raw_handle: bool,
     foreign_return: Option<&syn::Path>,
     foreign_return_c_name: Option<&str>,
+    returns_self: bool,
 ) -> syn::Result<Option<MethodInfo>> {
     ctx.current_cfg = combine_cfg_predicates(&extract_cfg_predicates(attrs)?);
     let name = sig.ident.unraw().to_string();
@@ -298,6 +347,22 @@ pub(crate) fn parse_method_sig(
             format!(
                 "exported function or method name `{name}` starts with `_`, which is reserved for generated code"
             ),
+        ));
+    }
+
+    if returns_self && self_ty.is_none() {
+        return Err(syn::Error::new_spanned(
+            &sig.ident,
+            format!(
+                "#[ffier(returns_self)] on `{name}` is only supported on methods \
+                 of an exported inherent impl"
+            ),
+        ));
+    }
+    if returns_self && foreign_return.is_some() {
+        return Err(syn::Error::new_spanned(
+            &sig.ident,
+            "#[ffier(returns_self)] cannot be combined with foreign_return",
         ));
     }
 
@@ -499,21 +564,11 @@ pub(crate) fn parse_method_sig(
     let foreign_return_tokens = foreign_return.map(|p| quote! { #p });
     let foreign_ret_c_name = foreign_return_c_name.map(|s| s.to_string());
 
-    // A returned Self replaces the receiver (only for exported impls, requires a receiver)
-    let has_receiver = receiver != Receiver::None;
-    let replaces_self = if let (Some(sty_static), true) = (&self_ty_static, has_receiver) {
-        match &sig.output {
-            ReturnType::Default => false,
-            ReturnType::Type(_, ty) => {
-                let ty = &replace_self_type(ty, sty_static);
-                is_self_return(ty, sty_static)
-                    || extract_result_types(ty)
-                        .is_some_and(|(ok, _)| is_self_return(&ok, sty_static))
-            }
-        }
-    } else {
-        false
-    };
+    // Match the full owner type before erasing lifetimes. An owned
+    // replacement cannot change the lifetime carried by the client handle.
+    if returns_self && let Some(self_ty) = self_ty {
+        validate_receiver_return(sig, &name, receiver, self_ty)?;
+    }
 
     let ret = match &sig.output {
         ReturnType::Default => ReturnKind::Void,
@@ -531,20 +586,15 @@ pub(crate) fn parse_method_sig(
 
             if let Some(never) = never_return(ty, ctx) {
                 never
-            } else if replaces_self && extract_result_types(&ty_bridge).is_none() {
-                // A returned Self replacing the receiver → void in C
+            } else if returns_self && extract_result_types(&ty_bridge).is_none() {
+                // Only owned replacement writes a value back through the handle slot.
                 ReturnKind::Void
             } else if is_handle_slice(&ty_bridge) {
                 return Err(handle_slice_error(ty));
             } else if let Some((ok_bridge, err)) = extract_result_types(&ty_bridge) {
                 let err_ident = type_ident_name(&err);
                 let ok_rust = extract_result_types(&ty_rust).map(|(ok, _)| ok);
-                let ok_pair = if is_unit_type(&ok_bridge)
-                    || (replaces_self
-                        && self_ty_static
-                            .as_ref()
-                            .is_some_and(|sty| is_self_return(&ok_bridge, sty)))
-                {
+                let ok_pair = if is_unit_type(&ok_bridge) || returns_self {
                     None
                 } else if raw_handle {
                     let erased = erase_lifetimes(&ok_bridge);
@@ -652,7 +702,7 @@ pub(crate) fn parse_method_sig(
         params,
         ret,
         ffi_name: String::new(),
-        replaces_self,
+        returns_self,
         method_lifetimes: sig
             .generics
             .lifetimes()
@@ -672,7 +722,7 @@ pub(crate) fn parse_method_sig(
 pub(crate) enum MethodMetaKind {
     /// Trait definition method — carries index/has_default/raw_handle.
     Definition,
-    /// Concrete method (exported struct impl or trait impl) — carries ffi_name/replaces_self.
+    /// Concrete method (exported struct impl or trait impl) — carries ffi_name/returns_self.
     Impl,
 }
 
@@ -776,11 +826,11 @@ fn emit_one_method_meta(m: &MethodInfo, ctx: MethodMetaKind) -> proc_macro2::Tok
         }
         MethodMetaKind::Impl => {
             let ffi_name = &m.ffi_name;
-            let replaces_self = m.replaces_self;
+            let returns_self = m.returns_self;
             quote! {
                 method_kind = r#impl,
                 ffi_name = #ffi_name,
-                replaces_self = #replaces_self,
+                returns_self = #returns_self,
             }
         }
     };
@@ -820,6 +870,7 @@ mod tests {
             false,
             None,
             None,
+            false,
         )
     }
 

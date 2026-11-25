@@ -11,8 +11,8 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 use crate::meta::{
-    MetaReturn, MetaTypePair, extract_result_ok_type, is_result_ok_handle, option_inner_tokens,
-    option_value_struct_inner, type_last_name,
+    MetaReturn, MetaTypePair, is_result_ok_handle, option_inner_tokens, option_value_struct_inner,
+    type_last_name,
 };
 
 /// How a method's return crosses the C ABI.
@@ -35,8 +35,6 @@ pub(crate) enum ReturnShape<'a> {
     /// A value returned as its C representation.
     Value {
         tp: &'a MetaTypePair,
-        /// `&Handle`: returned as a borrowed handle shell.
-        borrowed_handle: bool,
     },
     /// `Result<T, E>`.
     Result {
@@ -52,8 +50,6 @@ pub(crate) enum ResultConv {
     OutParam,
     /// The owned ok handle is returned directly, null on error.
     OwnedHandleOrNull,
-    /// A borrowed `&Handle` ok is returned as a borrowed shell, null on error.
-    BorrowedHandleOrNull,
     /// `Result<Option<ValueStruct>, E>`: presence through `result_is_some`,
     /// value through `result`. `inner` is the bridge-side value type.
     OptionalValueOutParam { inner: TokenStream },
@@ -63,9 +59,7 @@ impl ResultConv {
     pub(crate) fn c_convention(&self) -> ffier_schema::CResultConvention {
         match self {
             ResultConv::OutParam => ffier_schema::CResultConvention::OutParam,
-            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull => {
-                ffier_schema::CResultConvention::HandleOrNull
-            }
+            ResultConv::OwnedHandleOrNull => ffier_schema::CResultConvention::HandleOrNull,
             ResultConv::OptionalValueOutParam { .. } => {
                 ffier_schema::CResultConvention::OptionalValueOutParam
             }
@@ -74,10 +68,7 @@ impl ResultConv {
 
     /// The ok handle is the C return value.
     pub(crate) fn is_handle_or_null(&self) -> bool {
-        matches!(
-            self,
-            ResultConv::OwnedHandleOrNull | ResultConv::BorrowedHandleOrNull
-        )
+        matches!(self, ResultConv::OwnedHandleOrNull)
     }
 }
 
@@ -103,13 +94,7 @@ pub(crate) fn classify_return<'a>(
         MetaReturn::ResultNeverOk { err_ident } => ReturnShape::ResultNeverOk { err_ident },
         MetaReturn::Value(tp) => match optional_value_inner(tp) {
             Some(inner) => ReturnShape::OptionalValue { tp, inner },
-            None => ReturnShape::Value {
-                tp,
-                // Foreign types are owned handles of another library.
-                borrowed_handle: tp.foreign_crate.is_none()
-                    && syn::parse2::<syn::Type>(rust_ret.clone())
-                        .is_ok_and(|ty| is_borrowed_handle(&ty, handle_types)),
-            },
+            None => ReturnShape::Value { tp },
         },
         MetaReturn::Result { ok, err_ident } => {
             let conv = match ok {
@@ -120,10 +105,6 @@ pub(crate) fn classify_return<'a>(
                     } else if tp.foreign_crate.is_some() {
                         // A foreign ok type is always an owned handle.
                         ResultConv::OwnedHandleOrNull
-                    } else if syn::parse2::<syn::Type>(extract_result_ok_type(rust_ret))
-                        .is_ok_and(|ty| is_borrowed_handle(&ty, handle_types))
-                    {
-                        ResultConv::BorrowedHandleOrNull
                     } else if is_result_ok_handle(rust_ret, handle_types) {
                         ResultConv::OwnedHandleOrNull
                     } else {
@@ -140,24 +121,127 @@ pub(crate) fn classify_return<'a>(
     }
 }
 
+/// Reject a method that returns a borrowed handle: `&H`, `&mut H` or
+/// `Result<&H, E>` of a local or foreign handle, including `&Self`.
+/// An annotated receiver borrow is already omitted from the metadata.
+///
+/// Neither C nor a generated client can keep such a handle tied to its
+/// owner's lifetime, so these returns are not supported. `owner` names the
+/// type or trait in the error.
+pub(crate) fn reject_borrowed_handle_return(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    handle_types: &HashSet<String>,
+) -> Option<TokenStream> {
+    let tp = match &method.ret {
+        MetaReturn::Value(tp) | MetaReturn::Result { ok: Some(tp), .. } => tp,
+        _ => return None,
+    };
+    let ty = syn::parse2::<syn::Type>(tp.rust_type.clone()).ok()?;
+    if !matches!(ty, syn::Type::Reference(_))
+        || !(tp.foreign_crate.is_some() || is_borrowed_handle(&ty, handle_types))
+        || is_std_reference(&ty)
+    {
+        return None;
+    }
+    let name = match owner {
+        Some(owner) => format!("{owner}::{}", method.name),
+        None => method.name.to_string(),
+    };
+    let shown = quote!(#ty).to_string().replace("& ", "&");
+    let hint = returns_self_hint(owner, method, &ty);
+    let msg = format!(
+        "ffier: `{name}` returns the borrowed handle `{shown}`, which is not supported; \
+         return an owned handle or a value instead{hint}"
+    );
+    Some(syn::Error::new_spanned(&tp.rust_type, msg).to_compile_error())
+}
+
+/// The type-level form of [`reject_borrowed_handle_return`], which a type
+/// alias cannot hide: a compile-time assertion that the method's return is
+/// not a borrowed handle, gated by the method's cfg. `local_token` names
+/// this library's token where the assertion is emitted.
+pub(crate) fn assert_no_borrowed_handle_return(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    handle_types: &HashSet<String>,
+    value_types: &HashSet<String>,
+    local_token: &TokenStream,
+) -> Option<TokenStream> {
+    let tp = match classify_return(&method.ret, &method.rust_ret, handle_types, value_types) {
+        ReturnShape::Value { tp } => tp,
+        ReturnShape::Result {
+            ok: Some(tp),
+            conv: ResultConv::OutParam | ResultConv::OwnedHandleOrNull,
+            ..
+        } => tp,
+        _ => return None,
+    };
+    let bt = &tp.bridge_type;
+    let tok = crate::c_abi::token_for(tp, local_token);
+    let cfg = method.cfg_attr();
+    let name = match owner {
+        Some(owner) => format!("{owner}::{}", method.name),
+        None => method.name.to_string(),
+    };
+    let hint = syn::parse2::<syn::Type>(tp.rust_type.clone())
+        .map_or("", |ty| returns_self_hint(owner, method, &ty));
+    let msg = format!(
+        "ffier: `{name}` returns a borrowed handle, which is not supported; \
+         return an owned handle or a value instead{hint}"
+    );
+    Some(quote! {
+        #cfg
+        const _: () = assert!(!<#bt as ffier::FfiType<#tok>>::IS_BORROWED_HANDLE, #msg);
+    })
+}
+
+/// Point to the explicit discard annotation for a matching receiver reference.
+fn returns_self_hint(
+    owner: Option<&dyn std::fmt::Display>,
+    method: &crate::meta::MetaMethod,
+    ty: &syn::Type,
+) -> &'static str {
+    let syn::Type::Reference(r) = ty else {
+        return "";
+    };
+    let returns_owner = owner.is_some_and(|owner| {
+        crate::meta::type_last_name(&r.elem).is_some_and(|name| name == owner.to_string())
+    });
+    let matching_receiver = match method.receiver {
+        crate::meta::MetaReceiver::Ref => r.mutability.is_none(),
+        crate::meta::MetaReceiver::Mut => r.mutability.is_some(),
+        _ => false,
+    };
+    if returns_owner && matching_receiver {
+        "; add #[ffier(returns_self)] to discard a matching receiver reference"
+    } else {
+        ""
+    }
+}
+
+/// A reference into `std`, `core` or `alloc` (`&std::path::Path`), which no
+/// handle name can shadow.
+fn is_std_reference(ty: &syn::Type) -> bool {
+    let syn::Type::Reference(r) = ty else {
+        return false;
+    };
+    let syn::Type::Path(p) = &*r.elem else {
+        return false;
+    };
+    p.path
+        .segments
+        .first()
+        .is_some_and(|s| matches!(s.ident.to_string().as_str(), "std" | "core" | "alloc"))
+        && p.path.segments.len() > 1
+}
+
 /// Check if a type is `&T` or `&mut T` where `T` is a handle type.
-fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
+pub(crate) fn is_borrowed_handle(ty: &syn::Type, handle_types: &HashSet<String>) -> bool {
     if let syn::Type::Reference(ref_ty) = ty {
         type_last_name(&ref_ty.elem)
             .is_some_and(|name| name == "Self" || handle_types.contains(&name))
     } else {
         false
-    }
-}
-
-/// The bridge type of a borrowed handle with its reference stripped
-/// (`&Gadget` → `Gadget`).
-pub(crate) fn borrowed_handle_target(tp: &MetaTypePair) -> TokenStream {
-    match syn::parse2::<syn::Type>(tp.bridge_type.clone()) {
-        Ok(syn::Type::Reference(ref_ty)) => {
-            let elem = &ref_ty.elem;
-            quote! { #elem }
-        }
-        _ => tp.bridge_type.clone(),
     }
 }
